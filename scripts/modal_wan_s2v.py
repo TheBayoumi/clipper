@@ -66,7 +66,6 @@ def image_spec() -> modal.Image:
             " einops Pillow sentencepiece dashscope ninja wheel setuptools decord safetensors"
             " 'peft==0.15.2'",
             "python -m pip install flash-attn==2.7.3 --no-build-isolation",
-            "cd /opt/Wan2.2 && python -c 'import wan; print(\"WAN_OFFICIAL_IMPORT_OK\")'",
             # Check CUDA package presence, not driver-dependent import in image build.
             "python -c 'import importlib.util;"
             ' assert importlib.util.find_spec("flash_attn") is not None;'
@@ -125,6 +124,13 @@ def generate_s2v(
     with Image.open(io.BytesIO(reference)) as source:
         if source.width < 384 or source.height < 512:
             raise ValueError("Reference resolution below official S2V technical input floor")
+    # Upstream Wan calls torch.cuda.current_device() during package import.
+    # Driverless Modal image builders must never import the Wan package.
+    sys.path.insert(0, "/opt/Wan2.2")
+    import wan
+
+    if not hasattr(wan, "WanS2V"):
+        raise RuntimeError("Official Wan S2V runtime import is unavailable")
     checkpoint = snapshot_download(
         repo_id=MODEL_ID,
         revision=MODEL_REVISION,
