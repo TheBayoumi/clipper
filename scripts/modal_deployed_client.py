@@ -86,9 +86,7 @@ def render_speaking(args: argparse.Namespace) -> None:
 
     candidate = output / "wan-s2v-candidate.mp4"
     manifest = output / "model-evidence.json"
-    if verified_wan_output(
-        candidate, manifest, source_sha, audio_sha, args.prompt, args.seed
-    ):
+    if verified_wan_output(candidate, manifest, source_sha, audio_sha, args.prompt, args.seed):
         print("WAN_SHOT_CACHE_HIT_LOCAL_VERIFIED")
         return
 
@@ -102,9 +100,7 @@ def render_speaking(args: argparse.Namespace) -> None:
     }
     try:
         function = modal.Function.from_name(args.app, WAN_FUNCTION)
-        response = function.remote(
-            reference, audio, source_sha, audio_sha, args.prompt, args.seed
-        )
+        response = function.remote(reference, audio, source_sha, audio_sha, args.prompt, args.seed)
         video = response.pop("video")
         if sha(video) != response["video_sha256"]:
             raise RuntimeError("Modal returned video SHA mismatch")
