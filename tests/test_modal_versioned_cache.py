@@ -77,8 +77,8 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
         '  if [[ "$FAILURE" == "quota_probe" && "$MODAL_TOKEN_ID" == "primary" ]]; then '
         'echo "quota exceeded in deployment probe" >&2; exit 17; fi\n'
         '  if [[ "$DEPLOY_STATE" == "missing" ]]; then exit 44; fi\n'
-        '  exit 0\n'
-        'fi\n'
+        "  exit 0\n"
+        "fi\n"
         'if [[ "$MODAL_TOKEN_ID" == "primary" || '
         '( "$MODAL_TOKEN_ID" == "secondary" && "$FAILURE" == "quota_twice" ) ]]; then\n'
         '  case "$FAILURE" in\n'
