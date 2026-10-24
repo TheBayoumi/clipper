@@ -9,7 +9,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import subprocess
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +74,39 @@ def read_contract(path: Path) -> dict[str, Any]:
     return data
 
 
+
+def verify_physical_contact(expected: dict[str, Any], actual: dict[str, Any], master_hash: str) -> None:
+    """Check evaluated skeletal/prop transforms, not a claimed interaction flag.
+
+    Distances are world-space meters; this is numeric validation, not visual approval.
+    """
+    proof = _required(actual.get("physical_contact_evidence"), dict, "physical evidence")
+    if proof.get("evaluation_source") != "evaluated_3d_scene":
+        raise CreativeGateError("physical contact was not measured from evaluated 3D transforms")
+    if proof.get("character_sha256") != master_hash:
+        raise CreativeGateError("physical contact evidence belongs to another character")
+    if proof.get("prop_id") != expected["required_prop_interaction"]:
+        raise CreativeGateError("wrong physical interaction prop")
+
+    def vec(key: str) -> tuple[float, float, float]:
+        value = _required(proof.get(key), list, key)
+        if len(value) != 3 or any(type(n) not in (float, int) for n in value):
+            raise CreativeGateError(f"{key} must be a numeric 3D position")
+        if any(not math.isfinite(float(v)) for v in value):
+            raise CreativeGateError(f"{key} contains non-finite coordinates")
+        return tuple(float(v) for v in value)
+
+    start_hand, contact_hand = vec("hand_start"), vec("hand_at_contact")
+    start_prop, contact_prop = vec("prop_start"), vec("prop_at_contact")
+    end_prop = vec("prop_end")
+    initial_distance = math.dist(start_hand, start_prop)
+    contact_distance = math.dist(contact_hand, contact_prop)
+    if contact_distance > 0.08 or initial_distance - contact_distance < 0.05:
+        raise CreativeGateError("hand never made a measurable reach/contact with the prop")
+    if expected["id"] != "hook" and math.dist(start_prop, end_prop) < 0.04:
+        raise CreativeGateError("book/notebook never underwent a real scene transformation")
+
+
 def audit_render(contract: dict[str, Any], manifest_path: Path, video: Path) -> dict[str, Any]:
     if not manifest_path.is_file():
         raise CreativeGateError(
@@ -103,8 +138,11 @@ def audit_render(contract: dict[str, Any], manifest_path: Path, video: Path) -> 
             raise CreativeGateError(f"{expected['id']} did not enact the storyboard")
         if actual.get("character_id") != character["character_id"]:
             raise CreativeGateError("character identity varies across shots")
+        verify_physical_contact(expected, actual, asset_hash)
     if manifest.get("audio") != "Kokoro" or not manifest.get("voice_timing_verified"):
         raise CreativeGateError("Kokoro timing evidence is missing")
+    if manifest.get("viseme_blendshapes_verified") is not True:
+        raise CreativeGateError("jaw-only timing is not an approved facial-viseme rig")
     if not video.is_file():
         raise CreativeGateError("missing final 15-second MP4")
     actual_sha256 = hashlib.sha256(video.read_bytes()).hexdigest()
@@ -116,7 +154,7 @@ def audit_render(contract: dict[str, Any], manifest_path: Path, video: Path) -> 
             "-v",
             "error",
             "-show_entries",
-            "format=duration:stream=codec_type,width,height,r_frame_rate",
+            "format=duration:stream=codec_type,width,height,r_frame_rate,nb_frames",
             "-of",
             "json",
             str(video),
@@ -138,6 +176,17 @@ def audit_render(contract: dict[str, Any], manifest_path: Path, video: Path) -> 
         raise CreativeGateError("1080x1920 video missing")
     if not any(s.get("codec_type") == "audio" for s in streams):
         raise CreativeGateError("Kokoro soundtrack missing")
+    for stream in streams:
+        if stream.get("codec_type") == "video":
+            try:
+                fps = Fraction(stream.get("r_frame_rate", "0"))
+            except (ValueError, ZeroDivisionError) as exc:
+                raise CreativeGateError("invalid video frame rate") from exc
+            if fps != 24:
+                raise CreativeGateError(f"storyboard requires native 24 fps; got {fps}")
+            count = stream.get("nb_frames")
+            if count is not None and int(count) != 360:
+                raise CreativeGateError("15-second video does not contain 360 frames")
     subprocess.run(
         ["ffmpeg", "-v", "error", "-i", str(video), "-f", "null", "-"],
         stdout=subprocess.DEVNULL,
