@@ -57,6 +57,35 @@ jobs:
       - name: Exit after credential-only probe
         if: inputs.mode == 'credentials'
         run: echo "Credentials authenticated. GPU build/inference NOT requested."
+      - name: Validate HF_TOKEN access to gated DINOv3 before GPU inference
+        if: inputs.mode == 'generate'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "::error::HF_TOKEN is missing"; exit 1; }
+          python -m pip install 'huggingface-hub>=0.35,<3'
+          python - <<'PY'
+          import os
+          from huggingface_hub import hf_hub_download
+
+          model = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+          try:
+              path = hf_hub_download(repo_id=model, filename="config.json", token=os.environ["HF_TOKEN"])
+          except Exception as exc:
+              print("::error::The configured HF_TOKEN cannot access the gated DINOv3 model. "
+                    "Grant this token access at https://huggingface.co/" + model)
+              raise SystemExit(1) from exc
+          assert path
+          print("Authorized DINOv3 model configuration access verified")
+          PY
+      - name: Provision dedicated TRELLIS.2 Hugging Face secret in Modal
+        if: inputs.mode == 'generate'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          modal secret create clipper-trellis2-hf HF_TOKEN="$HF_TOKEN" --force
       - name: Decode and checksum locked character reference
         if: inputs.mode == 'generate'
         run: |
