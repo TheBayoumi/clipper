@@ -132,6 +132,60 @@ def choose_lesson(
     return payload
 
 
+
+def to_niche_config(selection: dict[str, Any]) -> dict[str, Any]:
+    """Bridge the selected book into the existing cached Qwen3/Kokoro script runtime."""
+    if selection.get("schema") != SCHEMA or selection.get("publish_eligible") is not False:
+        raise BookSelectionError("cannot use unqualified selection for Qwen narration")
+    book = selection["book"]
+    idea = selection["lesson"]
+    return {
+        "format": "book_lesson",
+        "niche": "Animated original lessons from books on growth, psychology, and business",
+        "audience": "Curious adults looking for practical source-backed lessons",
+        "brand": "PAGE TO LIFE",
+        "voice": "af_heart",
+        "pillar": book["pillar"],
+        "book_title": book["title"],
+        "book_author": book["author"],
+        "source_url": idea["claim_source_url"],
+        "topic": idea["topic"],
+        "facts": selection["approved_facts"],
+    }
+
+
+def to_storyboard_outline(
+    selection: dict[str, Any], production_spec: dict[str, Any]
+) -> dict[str, Any]:
+    """Deliver narrative roles, not arbitrary durations or invented AI video footage."""
+    spec = production_spec.get("production_storyboard")
+    if not isinstance(spec, dict) or spec.get("schema") != "clipper-production-storyboard-v2":
+        raise BookSelectionError("unsupported 30-60 second production storyboard")
+    roles = spec.get("editorial_sequence")
+    if not isinstance(roles, list) or not roles:
+        raise BookSelectionError("missing narrative roles")
+    result = {
+        "schema": "clipper-book-story-outline-v1",
+        "selection_fingerprint": selection["fingerprint"],
+        "book": selection["book"],
+        "lesson": selection["lesson"],
+        "selected_hook_angle": selection["lesson"]["hook_angle"],
+        "selected_concrete_visual_action": selection["lesson"]["visual_action"],
+        "source_links": selection["sources"],
+        "duration_range_seconds": [30, 60],
+        "narrative_roles": [
+            {"role": role["role"], "objective": role["objective"],
+             "direction": "AI_DIRECTOR_TO_AUTHOR_MEANINGFUL_ACTION"}
+            for role in roles
+        ],
+        "timing": "WAIT_FOR_KOKORO_AUDIO_THEN_DIRECT_CUTS_AT_IDEA_BOUNDARIES",
+        "stage": "SOURCED_OUTLINE_REQUIRES_ORIGINAL_SCRIPT_AND_AI_DIRECTION",
+        "publish_eligible": False,
+    }
+    result["fingerprint"] = _digest(result)
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=Path, default=CATALOG_PATH)
@@ -140,6 +194,9 @@ def main() -> None:
     parser.add_argument("--lesson-id")
     parser.add_argument("--pillar")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--niche-config-output", type=Path)
+    parser.add_argument("--storyboard-template", type=Path)
+    parser.add_argument("--storyboard-output", type=Path)
     args = parser.parse_args()
     catalog = json.loads(args.catalog.read_text(encoding="utf-8"))
     history = json.loads(args.history.read_text(encoding="utf-8")) if args.history else []
@@ -152,6 +209,21 @@ def main() -> None:
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+    if args.niche_config_output:
+        args.niche_config_output.parent.mkdir(parents=True, exist_ok=True)
+        # JSON is valid YAML; pass directly to existing NicheConfig.load().
+        args.niche_config_output.write_text(
+            json.dumps(to_niche_config(result), indent=2, ensure_ascii=False) + "\n"
+        )
+    if args.storyboard_output:
+        if not args.storyboard_template:
+            raise BookSelectionError("storyboard output requires a production template")
+        template = json.loads(args.storyboard_template.read_text(encoding="utf-8"))
+        outline = to_storyboard_outline(result, template)
+        args.storyboard_output.parent.mkdir(parents=True, exist_ok=True)
+        args.storyboard_output.write_text(
+            json.dumps(outline, indent=2, ensure_ascii=False) + "\n"
+        )
     print(json.dumps({
         "book_id": result["book"]["id"],
         "lesson_id": result["lesson"]["id"],
