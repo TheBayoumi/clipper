@@ -112,7 +112,6 @@ def genuine_wave_motion(rig: bpy.types.Object) -> tuple[bpy.types.Action, dict[s
     }
 
 
-
 def load_cue_tools():
     """Load the versioned adjacent cue module independent of Blender sys.path."""
     source = Path(__file__).with_name("viseme_cues.py")
