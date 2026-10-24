@@ -114,8 +114,12 @@ def genuine_wave_motion(rig: bpy.types.Object) -> tuple[bpy.types.Action, dict[s
 
 
 def timed_jaw_animation(
-    rig: bpy.types.Object, wave: bpy.types.Action, cues_file: Path,
-    *, frame_start: int, frames: int,
+    rig: bpy.types.Object,
+    wave: bpy.types.Action,
+    cues_file: Path,
+    *,
+    frame_start: int,
+    frames: int,
 ) -> dict[str, object]:
     """Add a voice-derived jaw NLA track above the actual body performance."""
     jaw = rig.pose.bones.get("Jaw")
@@ -140,7 +144,9 @@ def timed_jaw_animation(
     for index, angle in enumerate(values):
         jaw.rotation_euler.x = -angle
         jaw.keyframe_insert(
-            data_path="rotation_euler", index=0, frame=frame_start + index,
+            data_path="rotation_euler",
+            index=0,
+            frame=frame_start + index,
             group="Speech_Jaw",
         )
     animation.action = None
@@ -156,14 +162,10 @@ def timed_jaw_animation(
         bpy.context.view_layer.update()
         samples.append(tuple(float(v) for row in jaw.matrix for v in row))
     max_change = max(
-        abs(a - b)
-        for sample in samples[1:]
-        for a, b in zip(samples[0], sample, strict=True)
+        abs(a - b) for sample in samples[1:] for a, b in zip(samples[0], sample, strict=True)
     )
     if max_change < 0.015:
-        raise RuntimeError(
-            "acoustic speech cues did not drive visible jaw-bone motion"
-        )
+        raise RuntimeError("acoustic speech cues did not drive visible jaw-bone motion")
     return {
         "recognizer": "Rhubarb-Lip-Sync-1.14.0",
         "voice_origin": "archived_kokoro_tts",
@@ -198,10 +200,14 @@ def main() -> None:
     action, evidence = genuine_wave_motion(rig)
     jaw_evidence = (
         timed_jaw_animation(
-            rig, action, options.mouth_cues,
-            frame_start=int(evidence["wave_start_frame"]), frames=options.frames,
+            rig,
+            action,
+            options.mouth_cues,
+            frame_start=int(evidence["wave_start_frame"]),
+            frames=options.frames,
         )
-        if options.mouth_cues is not None else None
+        if options.mouth_cues is not None
+        else None
     )
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
@@ -253,9 +259,7 @@ def main() -> None:
         "motion": evidence,
         "creative_status": "REAL_RIG_MOTION_NOT_EDITORIALLY_APPROVED",
         "publish_eligible": False,
-        "lip_sync": (
-            "RHUBARB_TIMED_JAW_ONLY" if jaw_evidence is not None else "NOT_IMPLEMENTED"
-        ),
+        "lip_sync": ("RHUBARB_TIMED_JAW_ONLY" if jaw_evidence is not None else "NOT_IMPLEMENTED"),
         "jaw_evidence": jaw_evidence,
     }
     (options.output / "rig-proof.json").write_text(json.dumps(result, indent=2))

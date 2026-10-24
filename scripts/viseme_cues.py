@@ -4,6 +4,7 @@ Maps acoustic recognizer mouth shapes to jaw-opening amplitudes. A jaw bone
 alone is not a complete lip rig; label this as timed jaw animation, not perfect
 phoneme/viseme lips. No audio generated and no AI inference in this module.
 """
+
 from __future__ import annotations
 
 import json
@@ -11,8 +12,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 JAW_OPENING_RADIANS = {
-    "X": 0.0, "A": 0.0, "B": 0.055, "C": 0.16, "D": 0.28,
-    "E": 0.095, "F": 0.055, "G": 0.045, "H": 0.07,
+    "X": 0.0,
+    "A": 0.0,
+    "B": 0.055,
+    "C": 0.16,
+    "D": 0.28,
+    "E": 0.095,
+    "F": 0.055,
+    "G": 0.045,
+    "H": 0.07,
 }
 
 
@@ -71,9 +79,7 @@ def angle_at(cues: tuple[MouthCue, ...], time_s: float) -> float:
     return 0.0
 
 
-def frame_angles(
-    cues: tuple[MouthCue, ...], *, fps: int, frames: int
-) -> tuple[float, ...]:
+def frame_angles(cues: tuple[MouthCue, ...], *, fps: int, frames: int) -> tuple[float, ...]:
     if fps < 1 or frames < 2:
         raise MouthCueError("invalid animation frame rate or frame count")
     return tuple(angle_at(cues, n / fps) for n in range(frames))
