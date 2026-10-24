@@ -1,0 +1,73 @@
+name: Approved cinematic host image-to-3D
+
+on:
+  workflow_dispatch:
+    inputs:
+      probe_only:
+        type: boolean
+        required: true
+        default: true
+        description: Probe TRELLIS.2 API; do not allocate GPU or generate mesh
+      reference_url:
+        type: string
+        required: false
+        description: HTTPS location of the standalone approved character image
+      reference_base64:
+        type: string
+        required: false
+        description: Optional base64-encoded approved WebP/PNG (avoid external hosting)
+
+permissions:
+  contents: read
+
+jobs:
+  trellis2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install open-source Gradio and GLB QA dependencies
+        run: |
+          python -m pip install "gradio_client>=1.12,<3" "Pillow>=11,<13" "trimesh>=4.6,<5" "numpy>=1.26,<3"
+      - name: Stage user-approved image without generic fallback
+        if: inputs.probe_only == false
+        env:
+          IMAGE_B64: ${{ inputs.reference_base64 }}
+          IMAGE_URL: ${{ inputs.reference_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/host-3d
+          if [[ -n "$IMAGE_B64" ]]; then
+            printf '%s' "$IMAGE_B64" | base64 -d > artifacts/host-3d/source-image.webp
+          elif [[ "$IMAGE_URL" == https://* ]]; then
+            curl --fail --location --max-time 90 --retry 2 --silent --show-error \
+              "$IMAGE_URL" -o artifacts/host-3d/source-image.webp
+          else
+            echo "::error::Provide a real approved standalone image URL or base64 reference"
+            exit 1
+          fi
+          test -s artifacts/host-3d/source-image.webp
+      - name: Probe Space API or generate candidate GLB with ZeroGPU
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PROBE_ONLY: ${{ inputs.probe_only }}
+        run: |
+          set -euo pipefail
+          if [[ "$PROBE_ONLY" == "true" ]]; then
+            python scripts/trellis_image_to_3d.py --probe --output artifacts/host-3d
+          else
+            python scripts/trellis_image_to_3d.py \
+              --reference artifacts/host-3d/source-image.webp \
+              --output artifacts/host-3d --seed 724 --resolution 512
+          fi
+      - name: Upload source, mesh candidate and factual failure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-to-3d-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/host-3d/
+          if-no-files-found: warn
+          retention-days: 14
