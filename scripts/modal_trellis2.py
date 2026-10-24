@@ -34,6 +34,7 @@ def image_spec() -> modal.Image:
             "git",
             "git-lfs",
             "build-essential",
+            "clang",
             "cmake",
             "ninja-build",
             "libjpeg-dev",
