@@ -100,6 +100,24 @@ jobs:
             fi
           done
           echo 'All three Modal credentials authenticate; independent quotas and GPU permissions require separate verification'
+      - name: Verify Modal SDK deployment lookup without GPU
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'credentials'
+        run: |
+          set -euo pipefail
+          # Each check targets a guaranteed non-deployed, per-run unique App.
+          # Exit 44 confirms missing deployment; other failures abort.
+          if python scripts/modal_deployment_probe.py "clipper-gpu-free-probe-$GITHUB_RUN_ID" "absent" > /tmp/modal-probe.log 2>&1; then
+            echo "::error::Unexpected deployed application for SDK probe"
+            exit 1
+          else
+            code="$?"
+            if [[ "$code" != 44 ]]; then
+              cat /tmp/modal-probe.log
+              echo "::error::Modal SDK deployment lookup failed"
+              exit 1
+            fi
+            echo "MODAL_SDK_DEPLOYMENT_LOOKUP_OK expected_not_found=true gpu=false"
+          fi
       - name: Decode one hash-locked identity and construct storyboard-derived shots
         if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'keyframes' || inputs.mode == 'speaking')
         env:
