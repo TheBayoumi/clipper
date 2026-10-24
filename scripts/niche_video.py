@@ -66,8 +66,17 @@ class NicheConfig:
         if not isinstance(raw, dict):
             raise NicheVideoError("niche config must be an object")
         allowed = {
-            "niche", "audience", "brand", "voice", "facts", "topic",
-            "format", "pillar", "book_title", "book_author", "source_url",
+            "niche",
+            "audience",
+            "brand",
+            "voice",
+            "facts",
+            "topic",
+            "format",
+            "pillar",
+            "book_title",
+            "book_author",
+            "source_url",
         }
         if set(raw) - allowed:
             raise NicheVideoError(
@@ -471,16 +480,26 @@ def _duration(path: Path) -> float:
 
 
 def _render_scene(
-    scene: Scene, audio: Path, target: Path, brand: str,
-    config: NicheConfig | None = None, scene_index: int = 0, total_scenes: int = 1,
+    scene: Scene,
+    audio: Path,
+    target: Path,
+    brand: str,
+    config: NicheConfig | None = None,
+    scene_index: int = 0,
+    total_scenes: int = 1,
 ) -> float:
     duration = math.ceil((_duration(audio) + 0.20) * 30) / 30.0
     if config is not None and config.format == "book_lesson":
         from book_cartoon import create_assets
 
         bg, talking, idle = create_assets(
-            target.parent, config.brand, config.book_title, config.book_author,
-            scene.headline, scene_index, total_scenes,
+            target.parent,
+            config.brand,
+            config.book_title,
+            config.book_author,
+            scene.headline,
+            scene_index,
+            total_scenes,
         )
         # Rhythmic speaking-pose animation, not phoneme-accurate lip sync.
         motion = "x='(W-w)/2+9*sin(t*1.4)':y='735+10*sin(t*2.2)'"
@@ -490,16 +509,56 @@ def _render_scene(
         )
         _process(
             [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-loop", "1", "-framerate", "30", "-i", str(bg),
-                "-i", str(audio),
-                "-loop", "1", "-framerate", "30", "-i", str(talking),
-                "-loop", "1", "-framerate", "30", "-i", str(idle),
-                "-filter_complex", filters, "-map", "[v]", "-map", "1:a",
-                "-af", "apad", "-t", f"{duration:.3f}",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-                "-pix_fmt", "yuv420p", "-r", "30",
-                "-c:a", "aac", "-b:a", "192k", str(target),
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-loop",
+                "1",
+                "-framerate",
+                "30",
+                "-i",
+                str(bg),
+                "-i",
+                str(audio),
+                "-loop",
+                "1",
+                "-framerate",
+                "30",
+                "-i",
+                str(talking),
+                "-loop",
+                "1",
+                "-framerate",
+                "30",
+                "-i",
+                str(idle),
+                "-filter_complex",
+                filters,
+                "-map",
+                "[v]",
+                "-map",
+                "1:a",
+                "-af",
+                "apad",
+                "-t",
+                f"{duration:.3f}",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "22",
+                "-pix_fmt",
+                "yuv420p",
+                "-r",
+                "30",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                str(target),
             ],
             timeout=360,
         )
@@ -636,11 +695,12 @@ def produce(config: NicheConfig, output_root: Path) -> Path:
             "title": config.book_title,
             "author": config.book_author,
             "source_url": config.source_url,
-        } if config.format == "book_lesson" else None,
+        }
+        if config.format == "book_lesson"
+        else None,
         "character": "Pip" if config.format == "book_lesson" else None,
         "animation": (
-            "pip-cartoon-v1-approximate-mouth-motion"
-            if config.format == "book_lesson" else None
+            "pip-cartoon-v1-approximate-mouth-motion" if config.format == "book_lesson" else None
         ),
         "title": episode.title,
         "approved_facts": list(config.facts),

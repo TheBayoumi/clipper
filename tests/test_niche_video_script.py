@@ -224,7 +224,9 @@ def test_source_attributed_book_lesson_config(tmp_path: Path) -> None:
     assert "approved_facts" in str(request)
 
 
-@pytest.mark.parametrize("source_url", ["http://example.com/fact", "https://user:pass@example.com/x"])
+@pytest.mark.parametrize(
+    "source_url", ["http://example.com/fact", "https://user:pass@example.com/x"]
+)
 def test_book_lesson_rejects_untrusted_source(tmp_path: Path, source_url: str) -> None:
     path = tmp_path / "book.yaml"
     path.write_text(
@@ -260,8 +262,7 @@ def test_cartoon_original_artwork_and_animated_render(
     from book_cartoon import CANVAS, HOST_SIZE, create_assets
 
     bg, speaking, idle = create_assets(
-        tmp_path, "PAGE TO LIFE", "Atomic Habits", "James Clear",
-        "START WITH AN OBVIOUS CUE", 0, 4
+        tmp_path, "PAGE TO LIFE", "Atomic Habits", "James Clear", "START WITH AN OBVIOUS CUE", 0, 4
     )
     assert Image.open(bg).size == CANVAS == (1080, 1920)
     assert Image.open(speaking).size == HOST_SIZE
@@ -273,13 +274,10 @@ def test_cartoon_original_artwork_and_animated_render(
     )
     commands: list[list[str]] = []
     monkeypatch.setattr(nv, "_duration", lambda _audio: 2.6)
-    monkeypatch.setattr(
-        nv, "_process", lambda command, **_kwargs: commands.append(command) or ""
-    )
+    monkeypatch.setattr(nv, "_process", lambda command, **_kwargs: commands.append(command) or "")
     scene = nv.Scene("START WITH AN OBVIOUS CUE", "An original and actionable lesson.")
     seconds = nv._render_scene(
-        scene, tmp_path / "narration.wav", tmp_path / "scene.mp4",
-        config.brand, config, 0, 4
+        scene, tmp_path / "narration.wav", tmp_path / "scene.mp4", config.brand, config, 0, 4
     )
     assert seconds >= 2.8
     assert "-filter_complex" in commands[0]
@@ -294,9 +292,7 @@ def test_candidate_backlog_never_auto_eligible() -> None:
     data = yaml.safe_load(source.read_text(encoding="utf-8"))
     assert data["production_eligible"] is False
     assert len(data["episodes"]) == 20
-    assert {e["pillar"] for e in data["episodes"]} == {
-        "self_improvement", "psychology", "business"
-    }
+    assert {e["pillar"] for e in data["episodes"]} == {"self_improvement", "psychology", "business"}
     assert all(e["source_status"] == "research_required" for e in data["episodes"])
 
 

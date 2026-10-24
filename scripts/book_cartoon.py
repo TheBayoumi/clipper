@@ -48,8 +48,17 @@ def _lines(text: str, font: Any, width: float, *, max_lines: int = 3) -> list[st
     return result
 
 
-def _multiline(draw: ImageDraw.ImageDraw, text: str, x: int, y: int, size: int, *,
-               width: int = 910, max_lines: int = 3, fill: str = WHITE) -> int:
+def _multiline(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    x: int,
+    y: int,
+    size: int,
+    *,
+    width: int = 910,
+    max_lines: int = 3,
+    fill: str = WHITE,
+) -> int:
     font = _font(size, bold=True)
     for line in _lines(text, font, width, max_lines=max_lines):
         draw.text((x, y), line, font=font, fill=fill, stroke_width=0)
@@ -57,22 +66,24 @@ def _multiline(draw: ImageDraw.ImageDraw, text: str, x: int, y: int, size: int, 
     return y
 
 
-def _background(path: Path, brand: str, book: str, author: str, headline: str,
-                index: int, total: int) -> None:
+def _background(
+    path: Path, brand: str, book: str, author: str, headline: str, index: int, total: int
+) -> None:
     image = Image.new("RGB", CANVAS, NAVY)
     d = ImageDraw.Draw(image)
     for y in range(CANVAS[1]):
         blend = y / CANVAS[1]
-        d.line((0, y, CANVAS[0], y),
-               fill=(int(16 + 18 * blend), int(33 + 11 * blend), int(58 + 20 * blend)))
+        d.line(
+            (0, y, CANVAS[0], y),
+            fill=(int(16 + 18 * blend), int(33 + 11 * blend), int(58 + 20 * blend)),
+        )
     accent = ("#395681", "#356B69", "#6B5580", "#765C55", "#3C6684")[index % 5]
     d.ellipse((710, 440, 1490, 1260), fill=accent, outline=None)
     d.ellipse((-340, 1260, 330, 1930), outline="#456779", width=6)
     d.ellipse((-235, 1370, 245, 1850), outline="#456779", width=4)
     d.rounded_rectangle((59, 100, 1021, 188), radius=34, fill="#213A51")
     d.text((89, 122), brand.upper(), font=_font(32, bold=True), fill=MINT)
-    d.text((832, 124), f"{index+1:02d}/{total:02d}", font=_font(31, bold=True),
-           fill=WHITE)
+    d.text((832, 124), f"{index + 1:02d}/{total:02d}", font=_font(31, bold=True), fill=WHITE)
     d.text((80, 239), "AN IDEA FROM", font=_font(34, bold=True), fill=MINT)
     y = _multiline(d, book, 80, 301, 64, width=920, max_lines=2, fill=CREAM)
     d.text((82, y + 4), f"BY {author.upper()}", font=_font(29, bold=True), fill=YELLOW)
@@ -86,8 +97,9 @@ def _background(path: Path, brand: str, book: str, author: str, headline: str,
     d.ellipse((201, 1416, 325, 1540), outline="#D59355", width=10)
     d.line((240, 1475, 273, 1507, 309, 1446), fill=INK, width=9)
     d.rounded_rectangle((64, 1640, 1016, 1722), radius=24, fill="#20374D")
-    d.text((91, 1658), "A BOOK IDEA. A REAL-LIFE EXPERIMENT.",
-           font=_font(27, bold=True), fill=WHITE)
+    d.text(
+        (91, 1658), "A BOOK IDEA. A REAL-LIFE EXPERIMENT.", font=_font(27, bold=True), fill=WHITE
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path, format="PNG")
 
@@ -116,8 +128,10 @@ def _host(path: Path, *, talking: bool) -> None:
     d.rounded_rectangle((129, 80, 494, 453), radius=150, fill=CREAM, outline=INK, width=13)
     # Hair contour
     d.pieslice((124, 62, 490, 267), 183, 358, fill=INK)
-    d.polygon([(195, 105), (174, 179), (269, 145), (298, 198), (343, 140),
-               (438, 189), (450, 122)], fill=INK)
+    d.polygon(
+        [(195, 105), (174, 179), (269, 145), (298, 198), (343, 140), (438, 189), (450, 122)],
+        fill=INK,
+    )
     d.polygon([(259, 90), (323, 61), (344, 85), (278, 120)], fill=YELLOW)
     # Glasses and eyes
     for x in (181, 346):
@@ -145,8 +159,9 @@ def _host(path: Path, *, talking: bool) -> None:
     image.save(path, format="PNG")
 
 
-def create_assets(folder: Path, brand: str, book: str, author: str,
-                  headline: str, index: int, total: int) -> tuple[Path, Path, Path]:
+def create_assets(
+    folder: Path, brand: str, book: str, author: str, headline: str, index: int, total: int
+) -> tuple[Path, Path, Path]:
     """Return background and two RGBA host poses, all original and deterministic."""
     bg = folder / f"book-scene-{index:02d}.png"
     talking = folder / "pip-talking.png"
