@@ -176,6 +176,8 @@ def generate_s2v(
         "image_sha256": source_sha,
         "audio_sha256": audio_sha,
         "video_sha256": hashlib.sha256(result).hexdigest(),
+        "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        "seed": seed,
         "creative_review": "PENDING",
         "publish_eligible": False,
     }
