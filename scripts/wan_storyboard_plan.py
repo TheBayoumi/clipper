@@ -52,7 +52,14 @@ def build_plan(board: dict[str, object], source_sha: str) -> dict[str, object]:
         seconds = scene.get("end")
         if not isinstance(seconds, int) or seconds <= scene["start"]:
             raise StoryboardPlanError("invalid shot timing")
-        requirements = ("set", "action", "camera", "emotion", "narrative", "required_prop_interaction")
+        requirements = (
+            "set",
+            "action",
+            "camera",
+            "emotion",
+            "narrative",
+            "required_prop_interaction",
+        )
         if not all(isinstance(scene.get(k), str) and scene[k].strip() for k in requirements):
             raise StoryboardPlanError("missing action-specific creative directions")
         prompt = (
@@ -92,14 +99,18 @@ def build_plan(board: dict[str, object], source_sha: str) -> dict[str, object]:
         "accepted_video_sha256": None,
     }
     payload["plan_sha256"] = hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
     ).hexdigest()
     return payload
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--storyboard", type=Path, default=Path("niches/atomic-habits-approved-storyboard.json"))
+    parser.add_argument(
+        "--storyboard", type=Path, default=Path("niches/atomic-habits-approved-storyboard.json")
+    )
     parser.add_argument("--source-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
