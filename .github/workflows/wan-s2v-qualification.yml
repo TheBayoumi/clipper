@@ -13,12 +13,12 @@ on:
         required: true
       reference_path:
         type: string
-        default: assets/character/page-to-life-host-approved-master.png
+        default: assets/character/page-to-life-host-approved-512.webp.b64
         required: true
       approved_reference_sha256:
         type: string
-        required: false
-        default: ''
+        required: true
+        default: c3bbc6395e47c04646ad3f0ad44f13873511e4ee3189046eafbc682225e746d2
       voice_source_run:
         type: string
         default: '40047215101'
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Test shot contract and low-quality source rejection
+      - name: Test shot identity and honest low-resolution labeling
         run: |
           python -m pip install 'pytest>=9,<10' 'Pillow>=11,<13' 'ruff>=0.15.22,<1'
           python -m ruff check scripts/wan_shot_contract.py scripts/modal_wan_s2v.py tests/test_wan_shot_contract.py
@@ -66,7 +66,7 @@ jobs:
           assert hf_hub_download(repo_id=repo, revision=rev, filename='config.json', token=token)
           print('WAN_S2V_PUBLIC_CHECKPOINT_VERIFIED', info.sha)
           PY
-      - name: Bind original approved character and cached Kokoro WAV
+      - name: Restore hash-locked approved character and cached Kokoro WAV for technical qualification
         if: inputs.mode == 'generate'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -78,16 +78,25 @@ jobs:
           [[ "$REFERENCE" == assets/character/* && "$REFERENCE" != *..* ]]
           [[ "$SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Approved reference hash required"; exit 1; }
           [[ "$VOICE_RUN" =~ ^[0-9]+$ ]]
-          test -f "$REFERENCE" || { echo "::error::High-resolution approved original missing: $REFERENCE"; exit 1; }
-          echo "$SHA256  $REFERENCE" | sha256sum --check -
+          test -f "$REFERENCE" || { echo "::error::Approved source missing: $REFERENCE"; exit 1; }
           mkdir -p artifacts/wan-s2v/source artifacts/wan-s2v/output
+          if [[ "$REFERENCE" == *.webp.b64 ]]; then
+            SOURCE_IMAGE="artifacts/wan-s2v/output/reference-source.webp"
+            base64 --decode "$REFERENCE" > "$SOURCE_IMAGE"
+          else
+            SOURCE_IMAGE="artifacts/wan-s2v/output/reference-source.png"
+            cp "$REFERENCE" "$SOURCE_IMAGE"
+          fi
+          echo "$SHA256  $SOURCE_IMAGE" | sha256sum --check -
+          echo "WAN_REFERENCE_FILE=$SOURCE_IMAGE" >> "$GITHUB_ENV"
+          echo "::notice::Source fidelity is independently reviewed; passing a 512px technical input is not creative approval."
           gh run download "$VOICE_RUN" --pattern 'niche-draft-*' --dir artifacts/wan-s2v/source
           SOURCE="$(find artifacts/wan-s2v/source -type f -name draft.mp4 -print -quit)"
           test -n "$SOURCE" || { echo "::error::Cached Kokoro source unavailable"; exit 1; }
           ffmpeg -hide_banner -loglevel error -y -i "$SOURCE" -map 0:a:0 \
-            -t 3 -ac 1 -ar 24000 -c:a pcm_s16le artifacts/wan-s2v/output/kokoro.wav
+            -t 5 -ac 1 -ar 24000 -c:a pcm_s16le artifacts/wan-s2v/output/kokoro.wav
           python scripts/wan_shot_contract.py \
-            --reference "$REFERENCE" --audio artifacts/wan-s2v/output/kokoro.wav \
+            --reference "$WAN_REFERENCE_FILE" --audio artifacts/wan-s2v/output/kokoro.wav \
             --prompt "$WAN_PROMPT" \
             --manifest artifacts/wan-s2v/output/shot-preflight.json
       - name: Deploy official Wan S2V Modal renderer
@@ -106,7 +115,7 @@ jobs:
         env:
           REFERENCE: ${{ inputs.reference_path }}
         run: |
-          modal run scripts/modal_wan_s2v.py --reference "$REFERENCE" \
+          modal run scripts/modal_wan_s2v.py --reference "$WAN_REFERENCE_FILE" \
             --audio artifacts/wan-s2v/output/kokoro.wav --output artifacts/wan-s2v/output \
             --prompt "$WAN_PROMPT"
       - name: Audit actual video without granting publication approval
@@ -116,7 +125,7 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/wan_shot_contract.py \
-            --reference "$REFERENCE" --audio artifacts/wan-s2v/output/kokoro.wav \
+            --reference "$WAN_REFERENCE_FILE" --audio artifacts/wan-s2v/output/kokoro.wav \
             --prompt "$WAN_PROMPT" \
             --video artifacts/wan-s2v/output/wan-s2v-candidate.mp4 \
             --manifest artifacts/wan-s2v/output/shot-qa.json
