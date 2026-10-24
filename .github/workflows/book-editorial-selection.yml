@@ -1,0 +1,80 @@
+name: Original book lesson editorial selection
+on:
+  push:
+    branches: [feat/unified-niche-tts]
+    paths: [.github/workflows/book-editorial-selection.yml]
+  workflow_dispatch:
+    inputs:
+      book_id:
+        description: Optional book ID (blank for auto)
+        type: string
+        default: ''
+      lesson_id:
+        description: Optional lesson ID (requires book)
+        type: string
+        default: ''
+      pillar:
+        description: Optional topical pillar
+        type: string
+        default: ''
+permissions:
+  contents: read
+jobs:
+  editorial:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test source-backed editorial selection
+        run: |
+          set -euo pipefail
+          python -m pip install 'pytest>=9,<10' 'PyYAML>=6,<7' 'ruff>=0.15.22,<1'
+          python -m ruff check scripts/book_episode_selection.py tests/test_book_episode_selection.py
+          python -m ruff format --check scripts/book_episode_selection.py tests/test_book_episode_selection.py
+          python -m pytest -q -o addopts='' tests/test_book_episode_selection.py
+      - name: Select book and generate production storyboard outline
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          BOOK_ID: ${{ inputs.book_id }}
+          LESSON_ID: ${{ inputs.lesson_id }}
+          PILLAR: ${{ inputs.pillar }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/editorial
+          args=(
+            --catalog niches/book-editorial-catalog.json
+            --history niches/accepted-episode-history.json
+            --output artifacts/editorial/selection.json
+            --niche-config-output artifacts/editorial/qwen-niche-config.yaml
+            --storyboard-template niches/atomic-habits-approved-storyboard.json
+            --storyboard-output artifacts/editorial/story-outline.json
+          )
+          if [[ -n "$BOOK_ID" ]]; then args+=(--book-id "$BOOK_ID"); fi
+          if [[ -n "$LESSON_ID" ]]; then args+=(--lesson-id "$LESSON_ID"); fi
+          if [[ -n "$PILLAR" ]]; then args+=(--pillar "$PILLAR"); fi
+          python scripts/book_episode_selection.py "\${args[@]}"
+          python scripts/niche_video.py --config artifacts/editorial/qwen-niche-config.yaml --validate-only
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('artifacts/editorial')
+          selection = json.loads((root/'selection.json').read_text())
+          outline = json.loads((root/'story-outline.json').read_text())
+          assert selection['fingerprint'] == outline['selection_fingerprint']
+          assert outline['duration_range_seconds'] == [30, 60]
+          assert selection['publish_eligible'] is False
+          assert outline['publish_eligible'] is False
+          print('BOOK_CHOICE', selection['book']['title'], selection['lesson']['topic'])
+          print('NO_GPU_OR_VIDEO_EXECUTED')
+          PY
+      - name: Save editorial proposal
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: book-editorial-${{ github.run_id }}
+          path: artifacts/editorial/
+          if-no-files-found: error
+          retention-days: 14
