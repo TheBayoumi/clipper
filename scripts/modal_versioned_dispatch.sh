@@ -53,10 +53,17 @@ for ((slot=preferred; slot<=3; slot++)); do
   fi
 
   probe_log="$(mktemp)"
-  if modal function info "${app_name}/${function_tag}" --json >"$probe_log" 2>&1; then
+  if python scripts/modal_deployment_probe.py "$app_name" "$function_tag" >"$probe_log" 2>&1; then
     rm -f "$probe_log"
     echo "MODAL_DEPLOY_REUSED version=${source_digest} slot=${slot}"
-  elif grep -Eiq '(not found|does not exist|could not find|no such function|404|not deployed)' "$probe_log"; then
+  else
+    probe_status=$?
+    if [[ "$probe_status" -ne 44 ]]; then
+      tail -n 35 "$probe_log" >&2
+      rm -f "$probe_log"
+      echo "::error::Modal deployment lookup failed; NO account failover"
+      exit 1
+    fi
     rm -f "$probe_log"
     # Backup workspaces are initialized lazily and only when selected.
     if ! modal secret create clipper-wan-hf "HF_TOKEN=$HF_TOKEN" --force >/dev/null; then
@@ -68,11 +75,6 @@ for ((slot=preferred; slot<=3; slot++)); do
       exit 1
     fi
     echo "MODAL_DEPLOY_CREATED version=${source_digest} slot=${slot}"
-  else
-    tail -n 35 "$probe_log" >&2
-    rm -f "$probe_log"
-    echo "::error::Modal deployment lookup failed; NO account failover"
-    exit 1
   fi
 
   inference_log="$(mktemp)"
