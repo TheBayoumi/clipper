@@ -66,12 +66,15 @@ def prepare(glb: Path, target: Path) -> dict[str, Any]:
         body.face_adjacency, nodes=np.arange(len(body.faces)), min_len=1
     )
     components = body.submesh(face_groups, append=False, repair=False)
-    if sum(len(c.faces) for c in components) != len(body.faces):
+    if sum(len(component.faces) for component in components) != len(body.faces):
         raise MeshGateError("connected components did not conserve faces")
     keep, background = [], []
     for component in components:
         spans = tuple(float(v) for v in component.extents)
-        (background if is_background_sheet(spans, float(component.centroid[1])) else keep).append(component)
+        if is_background_sheet(spans, float(component.centroid[1])):
+            background.append(component)
+        else:
+            keep.append(component)
     if not keep or not background:
         raise MeshGateError("background not confidently separable; human review required")
     removed = sum(len(c.faces) for c in background)
