@@ -70,6 +70,7 @@ def image_spec() -> modal.Image:
             "python -m pip install"
             " 'git+https://github.com/EasternJournalist/utils3d.git"
             "@9a4eb15e4021b67b12c460c7057d642626897ec8'",
+            "python -m pip install wheel==0.45.1 setuptools>=70",
             "python -m pip install flash-attn==2.7.3 --no-build-isolation",
             "git clone --depth 1 --branch v0.4.0"
             " https://github.com/NVlabs/nvdiffrast.git /tmp/nvdiffrast"
