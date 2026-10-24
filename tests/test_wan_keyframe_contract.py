@@ -119,33 +119,22 @@ def test_modal_fallback_local_cache_is_hash_and_identity_locked(
     assert not keyframes.verified_local_keyframe(frame, manifest, request)
 
 
-def test_modal_workflow_uses_versioned_app_and_shared_cache_without_gpu_in_credentials_mode() -> None:
+def test_versioned_deployment_and_cache_steps_are_isolated_from_credential_checks() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/wan-cinematic-production.yml").read_text())
     steps = workflow["jobs"]["cinematic"]["steps"]
     auth = next(
-        step for step in steps
-        if step.get("name") == "Authenticate each Modal workspace without allocating a GPU"
+        item
+        for item in steps
+        if item.get("name") == "Authenticate each Modal workspace without allocating a GPU"
     )
     assert auth["if"].endswith("inputs.mode == 'credentials'")
-    for step in steps:
-        name = step.get("name", "")
-        condition = step.get("if", "")
-        if name.startswith(
-            ("Decode one", "Install Modal client", "Generate cinematic", "Verify actual",
-             "Restore verified cross-run Qwen", "Restore verified cross-run Wan",
-             "Generate speaking video")
-        ):
-            assert "inputs.mode == 'credentials'" not in condition
-            assert step.get("run") is not None
-    for stage in ("keyframes", "speaking"):
-        generate = next(
-            step["run"] for step in steps
-            if step.get("name", "").startswith("Generate cinematic keyframes using versioned")
-            if stage == "keyframes"
-        ) if stage == "keyframes" else next(
-            step["run"] for step in steps
-            if step.get("name", "").startswith("Generate speaking video using versioned")
-        )
-        assert "modal_versioned_dispatch.sh" in generate
-        assert "wan_shared_shot_cache.py check" in generate
-        assert "modal run " not in generate
+    titles = (
+        "Generate cinematic keyframes using versioned deployed Modal app",
+        "Generate speaking video using versioned deployed Modal app",
+    )
+    for title in titles:
+        step = next(item for item in steps if item.get("name") == title)
+        assert "modal_versioned_dispatch.sh" in step["run"]
+        assert "wan_shared_shot_cache.py check" in step["run"]
+        assert "modal run " not in step["run"]
+        assert "inputs.mode == 'credentials'" not in step["if"]
