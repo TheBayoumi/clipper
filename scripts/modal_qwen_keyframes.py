@@ -187,11 +187,15 @@ def main(
         frame = output_path / f"{shot_id}.png"
         frame_evidence = output_path / f"{shot_id}.json"
         if verified_local_keyframe(frame, frame_evidence, req):
-            print(json.dumps({
-                "shot": shot_id,
-                "status": "FRAME_GENERATED_TECHNICAL_CANDIDATE",
-                "cache": "REUSED_LOCAL_VERIFIED",
-            }))
+            print(
+                json.dumps(
+                    {
+                        "shot": shot_id,
+                        "status": "FRAME_GENERATED_TECHNICAL_CANDIDATE",
+                        "cache": "REUSED_LOCAL_VERIFIED",
+                    }
+                )
+            )
             continue
         evidence: dict[str, Any] = {
             **req,
