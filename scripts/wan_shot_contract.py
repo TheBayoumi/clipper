@@ -19,6 +19,7 @@ MODEL_IDS = {
     "i2v": "Wan-AI/Wan2.2-I2V-A14B",
 }
 MODEL_REVISION_S2V = "dab4e9c55bbe4c8c4d03db1c2c98c7f0ac9c454b"
+MODEL_REVISION_I2V = "206a9ee1b7bfaaf8f7e4d81335650533490646a3"
 MIN_REFERENCE_WIDTH = 384
 MIN_REFERENCE_HEIGHT = 512
 MAX_AUDIO_SECONDS = 6.5
@@ -116,6 +117,47 @@ def prepare(
     ).hexdigest()
     return {
         **identity,
+        "fingerprint": fingerprint,
+        "stage": "INPUTS_QUALIFIED_NOT_RENDERED",
+        "creative_review": "PENDING",
+        "publish_eligible": False,
+    }
+
+
+
+def prepare_i2v(
+    keyframe: Path,
+    prompt: str,
+    shot_id: str,
+    seed: int = 724,
+) -> dict[str, object]:
+    """Bind a real starting frame to an action shot; never invent a fake 3D rig."""
+    if shot_id not in ("book_intro", "lesson_example"):
+        raise ShotContractError("I2V action must belong to approved book/notebook scenes")
+    if not 15 <= len(prompt.strip()) <= 1500:
+        raise ShotContractError("I2V action prompt is missing or too long")
+    if not 0 <= seed < 2**31:
+        raise ShotContractError("seed outside supported range")
+    image = inspect_image(keyframe)
+    payload = {
+        "schema": SCHEMA,
+        "backend": "i2v",
+        "model_id": MODEL_IDS["i2v"],
+        "model_revision": MODEL_REVISION_I2V,
+        "shot_id": shot_id,
+        "image": image,
+        "audio": None,
+        "prompt": prompt.strip(),
+        "seed": seed,
+        "storyboard": "niches/atomic-habits-approved-storyboard.json",
+        "character": "page-to-life-host-cinematic-v1",
+        "keyframe_creative_review": "PENDING",
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {
+        **payload,
         "fingerprint": fingerprint,
         "stage": "INPUTS_QUALIFIED_NOT_RENDERED",
         "creative_review": "PENDING",
