@@ -18,6 +18,7 @@ MODEL_IDS = {
     "s2v": "Wan-AI/Wan2.2-S2V-14B",
     "i2v": "Wan-AI/Wan2.2-I2V-A14B",
 }
+MODEL_REVISION_S2V = "dab4e9c55bbe4c8c4d03db1c2c98c7f0ac9c454b"
 MIN_REFERENCE_WIDTH = 1024
 MIN_REFERENCE_HEIGHT = 1024
 MAX_AUDIO_SECONDS = 6.5
@@ -93,6 +94,7 @@ def prepare(
         "schema": SCHEMA,
         "backend": backend,
         "model_id": MODEL_IDS[backend],
+        "model_revision": MODEL_REVISION_S2V,
         "shot_id": shot_id,
         "image": source,
         "audio": voice,
