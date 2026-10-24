@@ -39,9 +39,13 @@ def test_generated_asset_never_receives_false_rigging_claim() -> None:
 def test_workflow_uses_approved_reference_and_unprivileged_gpu_service() -> None:
     root = PATH.parents[1]
     wf = (root / ".github/workflows/approved-host-image-to-3d.yml").read_text()
-    assert "reference_base64" in wf
-    assert "reference_url" in wf
+    assert "reference_base64" not in wf
+    assert "reference_url" not in wf
     assert "probe_only" in wf
+    assert "default: false" in wf
+    assert "assets/character/page-to-life-host-approved-512.webp.b64" in wf
+    assert "c3bbc6395e47c04646ad3f0ad44f13873511e4ee3189046eafbc682225e746d2" in wf
+    assert (root / "assets/character/page-to-life-host-approved-512.webp.b64").is_file()
     assert "secrets.HF_TOKEN" in wf
     assert "github.sha" in wf
     assert "if: always()" in wf
