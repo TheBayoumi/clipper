@@ -19,6 +19,43 @@ Branch: `feat/unified-niche-tts`. Review: PR #10. Publishing remains disabled.
 - Review actual rendered frames, audiovisual sync and full MP4. Codec and CI
   success alone do **not** constitute creative acceptance.
 
+## Book selection and semantic storyboard (new)
+
+- \`niches/book-editorial-catalog.json\` contains sourced, single-idea
+  editorial candidates across Atomic Habits, Deep Work and The Psychology of
+  Money. A source URL, factual claim, topical hook and physical visual
+  demonstration are required for each selectable lesson.
+- \`scripts/book_episode_selection.py\` implements two modes:
+  (1) automatic rotation over **source-backed** books/lessons, scoring down
+  recently accepted books and lessons, and (2) explicit \`book_id\` /
+  \`lesson_id\` override (optional pillar filter). Neither writes new,
+  unverified author/book claims. This selection is currently deterministic,
+  not an LLM-trained taste/ranking system.
+- \`niches/accepted-episode-history.json\` is currently empty because no
+  episode has been accepted for publishing; persist an entry there **only
+  after acceptance**, or book diversity will reset across workflow runs.
+- The selected book/lesson compiles to an actual source-locked Qwen3 niche
+  script config and an original semantic story outline via the same
+  selection script. No manual storyboard image transfer is needed at
+  this stage.
+- \`niches/atomic-habits-approved-storyboard.json\` now has an adaptive
+  \`production_storyboard\` narrative arc: pattern-breaking hook, relatable
+  problem, book/author attribution, one mechanism, visible before/after
+  action, truthful payoff, and one-step takeaway. The roles are flexible,
+  **not** timestamps or a mandated count of rendered shots. Historical
+  15s pilot is retained solely as a regression fixture.
+- Cheap GitHub editorial action:
+  \`/.github/workflows/book-editorial-selection.yml\`. Its actual
+  \`workflow_dispatch\` CPU run #40135945366 passed seven new tests and
+  selected **Atomic Habits / Make It Easy**, emitting:
+  \`selection.json\`, \`qwen-niche-config.yaml\`, \`story-outline.json\`.
+  It allocated **no GPU** and did **not** produce a video.
+- The remaining integration is to have a genuine AI director build
+  idea-aligned, meaningful scene actions and choose S2V/I2V/Animate models
+  from that outline plus Kokoro word/phrase timing; then assemble one
+  complete 30-60s MP4. The existing 15s pilot video workflow has not
+  been secretly switched to this new production path.
+
 ## Current implementation boundaries
 
 1. Qwen3 can generate and cache a book-lesson script. Kokoro can synthesize
