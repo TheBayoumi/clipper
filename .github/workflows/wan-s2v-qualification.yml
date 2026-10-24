@@ -58,7 +58,7 @@ jobs:
           python - <<'PY'
           import os
           from huggingface_hub import HfApi, hf_hub_download
-          repo, rev = 'Wan-AI/Wan2.2-S2V-14B', 'dab4e9c'
+          repo, rev = 'Wan-AI/Wan2.2-S2V-14B', 'dab4e9c55bbe4c8c4d03db1c2c98c7f0ac9c454b'
           token = os.environ.get('HF_TOKEN') or None
           info = HfApi().model_info(repo, revision=rev, token=token)
           assert info.sha
