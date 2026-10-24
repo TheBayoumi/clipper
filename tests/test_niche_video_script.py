@@ -424,7 +424,9 @@ def test_produce_is_draft_only_with_hash_evidence(
     monkeypatch.setattr(nv, "generate_episode", lambda *_args: (episode, "a" * 64))
     monkeypatch.setattr(nv, "synthesize_scene", lambda *_args: tmp_path / "audio.mp3")
 
-    def fake_render(_scene: nv.Scene, _audio: Path, target: Path, _brand: str) -> float:
+    def fake_render(
+        _scene: nv.Scene, _audio: Path, target: Path, _brand: str, *_args: object
+    ) -> float:
         target.write_bytes(b"encoded")
         return 4.0
 
