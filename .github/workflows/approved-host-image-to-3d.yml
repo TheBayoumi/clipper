@@ -12,16 +12,8 @@ on:
       probe_only:
         type: boolean
         required: true
-        default: true
-        description: Probe TRELLIS.2 API; do not allocate GPU or generate mesh
-      reference_url:
-        type: string
-        required: false
-        description: HTTPS location of the standalone approved character image
-      reference_base64:
-        type: string
-        required: false
-        description: Optional base64-encoded approved WebP/PNG (avoid external hosting)
+        default: false
+        description: Probe only when explicitly requested (default generates the GLB)
 
 permissions:
   contents: read
@@ -38,24 +30,13 @@ jobs:
       - name: Install open-source Gradio and GLB QA dependencies
         run: |
           python -m pip install "gradio_client>=1.12,<3" "Pillow>=11,<13" "trimesh>=4.6,<5" "numpy>=1.26,<3"
-      - name: Stage user-approved image without generic fallback
+      - name: Decode pinned approved character image from repository
         if: github.event_name == 'workflow_dispatch' && inputs.probe_only == false
-        env:
-          IMAGE_B64: ${{ inputs.reference_base64 }}
-          IMAGE_URL: ${{ inputs.reference_url }}
         run: |
           set -euo pipefail
           mkdir -p artifacts/host-3d
-          if [[ -n "$IMAGE_B64" ]]; then
-            printf '%s' "$IMAGE_B64" | base64 -d > artifacts/host-3d/source-image.webp
-          elif [[ "$IMAGE_URL" == https://* ]]; then
-            curl --fail --location --max-time 90 --retry 2 --silent --show-error \
-              "$IMAGE_URL" -o artifacts/host-3d/source-image.webp
-          else
-            echo "::error::Provide a real approved standalone image URL or base64 reference"
-            exit 1
-          fi
-          test -s artifacts/host-3d/source-image.webp
+          base64 -d assets/character/page-to-life-host-approved-512.webp.b64 > artifacts/host-3d/source-image.webp
+          echo "c3bbc6395e47c04646ad3f0ad44f13873511e4ee3189046eafbc682225e746d2  artifacts/host-3d/source-image.webp" | sha256sum -c -
       - name: Probe Space API or generate candidate GLB with ZeroGPU
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
