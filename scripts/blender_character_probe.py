@@ -16,6 +16,8 @@ from pathlib import Path
 import bpy
 from mathutils import Vector
 
+from viseme_cues import frame_angles, read_cues
+
 
 def args() -> argparse.Namespace:
     cli = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
@@ -24,6 +26,7 @@ def args() -> argparse.Namespace:
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--frames", type=int, default=24)
     p.add_argument("--samples", type=int, default=8)
+    p.add_argument("--mouth-cues", type=Path)
     return p.parse_args(cli)
 
 
@@ -110,6 +113,70 @@ def genuine_wave_motion(rig: bpy.types.Object) -> tuple[bpy.types.Action, dict[s
     }
 
 
+
+def timed_jaw_animation(
+    rig: bpy.types.Object, wave: bpy.types.Action, cues_file: Path,
+    *, frame_start: int, frames: int,
+) -> dict[str, object]:
+    """Add a voice-derived jaw NLA track above the actual body performance."""
+    jaw = rig.pose.bones.get("Jaw")
+    if jaw is None:
+        raise RuntimeError("CC0 skinned character has no jaw bone for spoken cues")
+    cues = read_cues(cues_file)
+    values = frame_angles(cues, fps=12, frames=frames)
+    if len({round(value, 3) for value in values}) < 3:
+        raise RuntimeError("audio-derived jaw animation has insufficient shape changes")
+
+    animation = rig.animation_data
+    if animation is None:
+        raise RuntimeError("imported human armature has no animation data")
+    animation.action = None
+    body_track = animation.nla_tracks.new()
+    body_track.name = "Actual_Skinned_Wave"
+    body_track.strips.new("Wave", frame_start, wave)
+
+    jaw_action = bpy.data.actions.new("Kokoro_Rhubarb_Jaw")
+    animation.action = jaw_action
+    jaw.rotation_mode = "XYZ"
+    for index, angle in enumerate(values):
+        jaw.rotation_euler.x = -angle
+        jaw.keyframe_insert(
+            data_path="rotation_euler", index=0, frame=frame_start + index,
+            group="Speech_Jaw",
+        )
+    animation.action = None
+    jaw_track = animation.nla_tracks.new()
+    jaw_track.name = "Voice_Derived_Viseme_Jaw"
+    jaw_strip = jaw_track.strips.new("Jaw_Cues", frame_start, jaw_action)
+    jaw_strip.blend_type = "REPLACE"
+
+    scene = bpy.context.scene
+    samples = []
+    for index in range(frames):
+        scene.frame_set(frame_start + index)
+        bpy.context.view_layer.update()
+        samples.append(tuple(float(v) for row in jaw.matrix for v in row))
+    max_change = max(
+        abs(a - b)
+        for sample in samples[1:]
+        for a, b in zip(samples[0], sample, strict=True)
+    )
+    if max_change < 0.015:
+        raise RuntimeError(
+            "acoustic speech cues did not drive visible jaw-bone motion"
+        )
+    return {
+        "recognizer": "Rhubarb-Lip-Sync-1.14.0",
+        "voice_origin": "archived_kokoro_tts",
+        "mouth_cues": len(cues),
+        "distinct_sampled_jaw_positions": len({round(v, 3) for v in values}),
+        "jaw_bone": jaw.name,
+        "max_jaw_bone_matrix_delta": round(max_change, 6),
+        "full_lip_visemes": False,
+        "face_review": "PENDING",
+    }
+
+
 def main() -> None:
     options = args()
     if not 12 <= options.frames <= 72:
@@ -130,6 +197,13 @@ def main() -> None:
     if not skinned:
         raise RuntimeError("The GLB has no mesh rigged to a real armature")
     action, evidence = genuine_wave_motion(rig)
+    jaw_evidence = (
+        timed_jaw_animation(
+            rig, action, options.mouth_cues,
+            frame_start=int(evidence["wave_start_frame"]), frames=options.frames,
+        )
+        if options.mouth_cues is not None else None
+    )
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
     scene.cycles.device = "CPU"
@@ -180,7 +254,10 @@ def main() -> None:
         "motion": evidence,
         "creative_status": "REAL_RIG_MOTION_NOT_EDITORIALLY_APPROVED",
         "publish_eligible": False,
-        "lip_sync": "NOT_IMPLEMENTED",
+        "lip_sync": (
+            "RHUBARB_TIMED_JAW_ONLY" if jaw_evidence is not None else "NOT_IMPLEMENTED"
+        ),
+        "jaw_evidence": jaw_evidence,
     }
     (options.output / "rig-proof.json").write_text(json.dumps(result, indent=2))
     print("RIG_MOTION_VERIFIED:", json.dumps(result))
