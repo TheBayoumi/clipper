@@ -1,4 +1,5 @@
 """Reject missing/degenerate 3D meshes and keep image-to-3D unapproved."""
+
 from __future__ import annotations
 
 import importlib.util
