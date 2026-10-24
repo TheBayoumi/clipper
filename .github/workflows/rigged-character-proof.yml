@@ -33,12 +33,16 @@ jobs:
         uses: bradyajohnston/setup-blender@9d0ba03aa0f7be59e09bdc70e08418a4298185f7
         with:
           version: '4.2'
-      - name: Verify Blender and runner FFmpeg binaries
+      - name: Install pinned cached FFmpeg and FFprobe
+        uses: federicocarboni/setup-ffmpeg@37062fbf7149fc5578d6c57e08aed62458b375d6
+        with:
+          ffmpeg-version: release
+      - name: Verify Blender and media encoders
         run: |
           set -euo pipefail
           blender --version
-          command -v ffmpeg
-          command -v ffprobe
+          ffmpeg -version
+          ffprobe -version
       - name: Retrieve pinned MIT/CC0 rig-generator source
         run: |
           set -euo pipefail
