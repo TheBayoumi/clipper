@@ -63,8 +63,10 @@ def image_spec() -> modal.Image:
             " 'huggingface-hub>=0.30,<1' 'tokenizers>=0.20.3'"
             " 'opencv-python-headless>=4.9,<5' easydict ftfy tqdm"
             " 'imageio[ffmpeg]' imageio-ffmpeg soundfile librosa"
-            " einops Pillow sentencepiece dashscope ninja wheel setuptools decord safetensors",
+            " einops Pillow sentencepiece dashscope ninja wheel setuptools decord safetensors"
+            " 'peft==0.15.2'",
             "python -m pip install flash-attn==2.7.3 --no-build-isolation",
+            "cd /opt/Wan2.2 && python -c 'import wan; print(\"WAN_OFFICIAL_IMPORT_OK\")'",
             # Check CUDA package presence, not driver-dependent import in image build.
             "python -c 'import importlib.util;"
             ' assert importlib.util.find_spec("flash_attn") is not None;'
