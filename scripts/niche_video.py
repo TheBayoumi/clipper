@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -53,13 +54,21 @@ class NicheConfig:
     voice: str
     facts: tuple[str, ...]
     topic: str
+    format: str = "general"
+    pillar: str = ""
+    book_title: str = ""
+    book_author: str = ""
+    source_url: str = ""
 
     @classmethod
     def load(cls, path: Path, topic_override: str | None = None) -> NicheConfig:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise NicheVideoError("niche config must be an object")
-        allowed = {"niche", "audience", "brand", "voice", "facts", "topic"}
+        allowed = {
+            "niche", "audience", "brand", "voice", "facts", "topic",
+            "format", "pillar", "book_title", "book_author", "source_url",
+        }
         if set(raw) - allowed:
             raise NicheVideoError(
                 f"unsupported niche configuration keys: {sorted(set(raw) - allowed)}"
@@ -72,6 +81,31 @@ class NicheConfig:
         voice = _text(raw.get("voice", "af_heart"), "voice", 30).lower()
         if voice not in VOICES:
             raise NicheVideoError("unsupported Kokoro voice")
+        story_format = _text(raw.get("format", "general"), "format", 30)
+        if story_format not in {"general", "book_lesson"}:
+            raise NicheVideoError("unsupported niche video format")
+        pillar = str(raw.get("pillar", ""))
+        title = str(raw.get("book_title", ""))
+        author = str(raw.get("book_author", ""))
+        source = str(raw.get("source_url", ""))
+        if story_format == "book_lesson":
+            if pillar not in {"self_improvement", "psychology", "business"}:
+                raise NicheVideoError("book lesson requires a recognized pillar")
+            title = _text(title, "book_title", 100)
+            author = _text(author, "book_author", 100)
+            source = _text(source, "source_url", 500)
+            parts = urlsplit(source)
+            if (
+                parts.scheme != "https"
+                or not parts.hostname
+                or parts.username is not None
+                or parts.password is not None
+            ):
+                raise NicheVideoError("book lesson source must be an HTTPS URL")
+            if not facts:
+                raise NicheVideoError("book lesson requires approved, sourced facts")
+        elif any((pillar, title, author, source)):
+            raise NicheVideoError("book metadata requires format: book_lesson")
         return cls(
             niche=_text(raw.get("niche"), "niche", 150),
             audience=_text(raw.get("audience"), "audience", 200),
@@ -79,6 +113,11 @@ class NicheConfig:
             voice=voice,
             facts=tuple(fact.strip() for fact in facts),
             topic=_text(topic_override or raw.get("topic"), "topic", 200),
+            format=story_format,
+            pillar=pillar,
+            book_title=title,
+            book_author=author,
+            source_url=source,
         )
 
 
@@ -160,7 +199,10 @@ def _script_request(config: NicheConfig) -> dict[str, object]:
                     "Start with a clear honest hook, develop useful original "
                     "ideas, finish with a complete payoff. Never invent statistics, "
                     "quotes, or news. Concrete claims may use approved_facts only. "
-                    "With no facts, use general reproducible methods instead."
+                    "With no facts, use general reproducible methods instead. "
+                    "For book lessons, attribute the author naturally, explain "
+                    "one precise idea, one relatable original example, and one "
+                    "actionable experiment. Do not quote or reproduce book prose."
                 ),
             },
             {
@@ -171,6 +213,11 @@ def _script_request(config: NicheConfig) -> dict[str, object]:
                         "audience": config.audience,
                         "topic": config.topic,
                         "approved_facts": config.facts,
+                        "format": config.format,
+                        "pillar": config.pillar,
+                        "book_title": config.book_title,
+                        "book_author": config.book_author,
+                        "source_url": config.source_url,
                     },
                     ensure_ascii=False,
                 ),
@@ -423,8 +470,40 @@ def _duration(path: Path) -> float:
     return seconds
 
 
-def _render_scene(scene: Scene, audio: Path, target: Path, brand: str) -> float:
+def _render_scene(
+    scene: Scene, audio: Path, target: Path, brand: str,
+    config: NicheConfig | None = None, scene_index: int = 0, total_scenes: int = 1,
+) -> float:
     duration = math.ceil((_duration(audio) + 0.20) * 30) / 30.0
+    if config is not None and config.format == "book_lesson":
+        from book_cartoon import create_assets
+
+        bg, talking, idle = create_assets(
+            target.parent, config.brand, config.book_title, config.book_author,
+            scene.headline, scene_index, total_scenes,
+        )
+        # Rhythmic speaking-pose animation, not phoneme-accurate lip sync.
+        motion = "x='(W-w)/2+9*sin(t*1.4)':y='735+10*sin(t*2.2)'"
+        filters = (
+            f"[0:v][2:v]overlay={motion}:enable='lt(mod(t\,0.44)\,0.23)'[a];"
+            f"[a][3:v]overlay={motion}:enable='gte(mod(t\,0.44)\,0.23)'[v]"
+        )
+        _process(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-loop", "1", "-framerate", "30", "-i", str(bg),
+                "-i", str(audio),
+                "-loop", "1", "-framerate", "30", "-i", str(talking),
+                "-loop", "1", "-framerate", "30", "-i", str(idle),
+                "-filter_complex", filters, "-map", "[v]", "-map", "1:a",
+                "-af", "apad", "-t", f"{duration:.3f}",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+                "-pix_fmt", "yuv420p", "-r", "30",
+                "-c:a", "aac", "-b:a", "192k", str(target),
+            ],
+            timeout=360,
+        )
+        return duration
     headline_path = target.with_suffix(".headline.txt")
     brand_path = target.with_suffix(".brand.txt")
     headline_path.write_text(scene.headline, encoding="utf-8")
@@ -538,7 +617,9 @@ def produce(config: NicheConfig, output_root: Path) -> Path:
     for i, scene in enumerate(episode.scenes):
         audio = synthesize_scene(scene, config, cache_root)
         clip = run_dir / f"scene-{i:02d}.mp4"
-        durations.append(_render_scene(scene, audio, clip, config.brand))
+        durations.append(
+            _render_scene(scene, audio, clip, config.brand, config, i, len(episode.scenes))
+        )
         clips.append(clip)
     draft = run_dir / "draft.mp4"
     _concat(clips, draft)
@@ -549,6 +630,18 @@ def produce(config: NicheConfig, output_root: Path) -> Path:
         "source_revision": os.getenv("GITHUB_SHA", "untracked"),
         "niche": config.niche,
         "topic": config.topic,
+        "format": config.format,
+        "pillar": config.pillar,
+        "book": {
+            "title": config.book_title,
+            "author": config.book_author,
+            "source_url": config.source_url,
+        } if config.format == "book_lesson" else None,
+        "character": "Pip" if config.format == "book_lesson" else None,
+        "animation": (
+            "pip-cartoon-v1-approximate-mouth-motion"
+            if config.format == "book_lesson" else None
+        ),
         "title": episode.title,
         "approved_facts": list(config.facts),
         "script_fingerprint": script_hash,
