@@ -85,10 +85,30 @@ def render(
         )
         _run(
             [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-loop", "1", "-framerate", "30", "-i", str(frame_path),
-                "-vf", vf, "-t", str(seconds), "-an", "-c:v", "libx264",
-                "-preset", "fast", "-crf", "19", "-pix_fmt", "yuv420p",
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-loop",
+                "1",
+                "-framerate",
+                "30",
+                "-i",
+                str(frame_path),
+                "-vf",
+                vf,
+                "-t",
+                str(seconds),
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-crf",
+                "19",
+                "-pix_fmt",
+                "yuv420p",
                 str(clip),
             ]
         )
@@ -106,21 +126,47 @@ def render(
         command.extend(["-i", str(clip)])
     command.extend(
         [
-            "-i", str(narration), "-filter_complex", graph,
-            "-map", "[v]", "-map", "3:a", "-t", str(DURATION_SECONDS),
-            "-af", f"afade=t=out:st={DURATION_SECONDS - 0.17:.2f}:d=0.15",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "19",
-            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
-            "-movflags", "+faststart", str(output),
+            "-i",
+            str(narration),
+            "-filter_complex",
+            graph,
+            "-map",
+            "[v]",
+            "-map",
+            "3:a",
+            "-t",
+            str(DURATION_SECONDS),
+            "-af",
+            f"afade=t=out:st={DURATION_SECONDS - 0.17:.2f}:d=0.15",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "19",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            str(output),
         ]
     )
     _run(command)
     details = json.loads(
         subprocess.check_output(
             [
-                "ffprobe", "-v", "error", "-show_entries",
-                "format=duration:stream=codec_type,width,height", "-of",
-                "json", str(output),
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration:stream=codec_type,width,height",
+                "-of",
+                "json",
+                str(output),
             ],
             text=True,
         )
@@ -129,8 +175,7 @@ def render(
     if abs(duration - DURATION_SECONDS) > 0.15:
         raise AnimaticError("rendered media duration did not match storyboard")
     if not any(
-        item.get("codec_type") == "video"
-        and (item.get("width"), item.get("height")) == FRAME
+        item.get("codec_type") == "video" and (item.get("width"), item.get("height")) == FRAME
         for item in details["streams"]
     ):
         raise AnimaticError("missing 1080x1920 video stream")
