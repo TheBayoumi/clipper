@@ -74,7 +74,7 @@ def image_spec() -> modal.Image:
     )
 
 
-app = modal.App(APP_NAME)
+app = modal.App(os.environ.get("CLIPPER_MODAL_APP_NAME", APP_NAME))
 
 
 def check_request(reference: bytes, wav: bytes, source_sha: str, audio_sha: str) -> None:
