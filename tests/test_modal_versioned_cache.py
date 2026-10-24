@@ -62,10 +62,8 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
         'echo "modal:$MODAL_TOKEN_ID:$1:$2" >> "$CALLS"\n'
         'if [[ "$FAILURE" == "auth" && "$MODAL_TOKEN_ID" == "primary" '
         '&& "$1" == "app" ]]; then echo "Bad token" >&2; exit 17; fi\n'
-        'if [[ "$1" == "function" && "$FAILURE" == "quota_probe" ]]; then '
-        'echo "quota exceeded" >&2; exit 17; fi\n'
-        'if [[ "$1" == "function" && "$DEPLOY_STATE" == "missing" ]]; then '
-        'echo "Function not found" >&2; exit 17; fi\n'
+        'if [[ "$1" == "function" ]]; then '
+        'echo "Unsupported Modal function CLI invoked" >&2; exit 99; fi\n'
         'if [[ "$1" == "deploy" && "$FAILURE" == "deploy" ]]; then '
         'echo "build failed" >&2; exit 17; fi\n'
         "exit 0\n"
@@ -75,6 +73,12 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
     python.write_text(
         "#!/usr/bin/env bash\n"
         'echo "infer:$MODAL_TOKEN_ID:$1:$2" >> "$CALLS"\n'
+        'if [[ "$1" == "scripts/modal_deployment_probe.py" ]]; then\n'
+        '  if [[ "$FAILURE" == "quota_probe" && "$MODAL_TOKEN_ID" == "primary" ]]; then '
+        'echo "quota exceeded in deployment probe" >&2; exit 17; fi\n'
+        '  if [[ "$DEPLOY_STATE" == "missing" ]]; then exit 44; fi\n'
+        '  exit 0\n'
+        'fi\n'
         'if [[ "$MODAL_TOKEN_ID" == "primary" || '
         '( "$MODAL_TOKEN_ID" == "secondary" && "$FAILURE" == "quota_twice" ) ]]; then\n'
         '  case "$FAILURE" in\n'
