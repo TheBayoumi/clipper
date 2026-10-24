@@ -87,6 +87,58 @@ Branch: `feat/unified-niche-tts`. Review: PR #10. Publishing remains disabled.
    exact shot stitching, final 30-60s full-video creative QA, and complete
    end-to-end production are **not yet proven** and remain gating work.
 
+
+## Modal quota-failover configuration (2026-10-25)
+
+The active cinematic workflow authenticates GitHub Actions to Modal using
+`MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` and provisions the `clipper-wan-hf`
+secret from GitHub's existing `HF_TOKEN`. This is not a Modal-hosted
+video API: GitHub runs `modal deploy` and `modal run` on pinned open-source
+Qwen and Wan application code.
+
+Backup routing is implemented in
+`.github/workflows/wan-cinematic-production.yml` and requires **four new
+GitHub Actions repository secret values**, representing two complete
+workspace credentials:
+
+- Workspace slot 2: `MODAL_TOKEN_ID_2` + `MODAL_TOKEN_SECRET_2`
+- Workspace slot 3: `MODAL_TOKEN_ID_3` + `MODAL_TOKEN_SECRET_3`
+
+Each credential pair must belong to an authorized, independent Modal
+workspace. Extra tokens for the **same** workspace do not provide additional
+quota. The workflow does not create credentials or enroll new workspaces;
+the secret values must be provisioned securely by a workspace administrator.
+Partial credential pairs fail closed; missing optional pairs are skipped.
+
+For each Qwen or Wan GPU stage, the workflow authenticates, provisions
+`clipper-wan-hf`, deploys the app, and invokes inference in the **same**
+workspace. It attempts the preferred slot, then remaining configured slots
+only when logs identify a quota, credit, usage or budget exhaustion error.
+It does not mask auth failures, model errors, CUDA OOM or non-quota failures.
+The selected slot is propagated across stages and recorded in the uploaded
+provenance evidence without recording token values.
+
+Workspace Modal Volumes and deployed apps are isolated by workspace.
+Weights may download and build anew in a backup workspace, increasing
+latency and cost. The Qwen local-entrypoint reuses already generated frames
+only after checking the request identity, source/model revision, output
+size and actual PNG SHA256, so account failover does not need to regenerate
+completed frames within a single GitHub run.
+
+**Budget policy:** Account failover is intended for separately authorized
+workspaces with approved budgets, not to circumvent platform/account usage
+limitations or defeat a deliberately set global cost ceiling. Configure
+per-workspace spending and a project-level total budget before enabling
+backup credentials.
+
+**Verification:** Mock-Modal subprocess tests exercise quota failover and
+fail-closed non-quota GPU errors without allocating a GPU. End-to-end
+cross-workspace fallback remains **unverified** until actual backup
+credentials are supplied and the exact branch workflow is qualified.
+The retired TRELLIS and legacy Wan technical qualification workflows are
+not the active production account-router; do not infer they have fallback.
+
+
 ## Acceptance and regression policy
 
 - Preserve existing archived 15-second storyboard tests for backwards
