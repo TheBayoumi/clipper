@@ -198,7 +198,7 @@ jobs:
                 return 0
               fi
               # Explicit quota-exhaustion error from inference ONLY.
-              if tail -n 50 "$log_file" | grep -Eiq 'quota[[:space:]:_-]*(exceeded|exhausted|reached)|quota[[:space:]:_-]*limit[[:space:]:_-]*(exceeded|reached)|exceeded[[:space:]]+(the[[:space:]]+)?(workspace[[:space:]]+)?(GPU[[:space:]]+)?quota|reached[[:space:]]+(the[[:space:]]+)?(workspace[[:space:]]+)?quota'; then
+              if awk 'NF { last=$0 } END { print last }' "$log_file" | grep -Eiq 'quota[[:space:]:_-]*(exceeded|exhausted|reached)|quota[[:space:]:_-]*limit[[:space:]:_-]*(exceeded|reached)|exceeded[[:space:]]+(the[[:space:]]+)?(workspace[[:space:]]+)?(GPU[[:space:]]+)?quota|reached[[:space:]]+(the[[:space:]]+)?(workspace[[:space:]]+)?quota'; then
                 tail -n 80 "$log_file"; rm -f "$log_file"
                 echo "::warning::Explicit Modal inference quota exhaustion in workspace slot ${slot}; next authorized workspace"
               else
@@ -301,7 +301,7 @@ jobs:
                 return 0
               fi
               # Explicit quota-exhaustion error from inference ONLY.
-              if tail -n 50 "$log_file" | grep -Eiq 'quota[[:space:]:_-]*(exceeded|exhausted|reached)|quota[[:space:]:_-]*limit[[:space:]:_-]*(exceeded|reached)|exceeded[[:space:]]+(the[[:space:]]+)?(workspace[[:space:]]+)?(GPU[[:space:]]+)?quota|reached[[:space:]]+(the[[:space:]]+)?(workspace[[:space:]]+)?quota'; then
+              if awk 'NF { last=$0 } END { print last }' "$log_file" | grep -Eiq 'quota[[:space:]:_-]*(exceeded|exhausted|reached)|quota[[:space:]:_-]*limit[[:space:]:_-]*(exceeded|reached)|exceeded[[:space:]]+(the[[:space:]]+)?(workspace[[:space:]]+)?(GPU[[:space:]]+)?quota|reached[[:space:]]+(the[[:space:]]+)?(workspace[[:space:]]+)?quota'; then
                 tail -n 80 "$log_file"; rm -f "$log_file"
                 echo "::warning::Explicit Modal inference quota exhaustion in workspace slot ${slot}; next authorized workspace"
               else
