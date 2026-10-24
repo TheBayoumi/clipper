@@ -63,7 +63,7 @@ def image_spec() -> modal.Image:
             " 'huggingface-hub>=0.30,<1' 'tokenizers>=0.20.3'"
             " 'opencv-python-headless>=4.9,<5' easydict ftfy tqdm"
             " 'imageio[ffmpeg]' imageio-ffmpeg soundfile librosa"
-            " einops Pillow sentencepiece dashscope ninja wheel setuptools",
+            " einops Pillow sentencepiece dashscope ninja wheel setuptools decord safetensors",
             "python -m pip install flash-attn==2.7.3 --no-build-isolation",
             # Check CUDA package presence, not driver-dependent import in image build.
             "python -c 'import importlib.util;"
@@ -121,8 +121,8 @@ def generate_s2v(
     with Image.open(io.BytesIO(reference)) as source:
         source.verify()
     with Image.open(io.BytesIO(reference)) as source:
-        if min(source.size) < 1024:
-            raise ValueError("Production reference must have dimensions >= 1024x1024")
+        if source.width < 384 or source.height < 512:
+            raise ValueError("Reference resolution below official S2V technical input floor")
     checkpoint = snapshot_download(
         repo_id=MODEL_ID,
         revision=MODEL_REVISION,
@@ -156,8 +156,6 @@ def generate_s2v(
             str(reference_file),
             "--audio",
             str(audio_file),
-            "--num_clip",
-            "1",
             "--base_seed",
             str(seed),
             "--save_file",
