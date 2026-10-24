@@ -88,3 +88,31 @@ def test_storyboard_readonly_inputs(source_image: Path, tmp_path: Path) -> None:
     bogus.write_text(json.dumps(board))
     with pytest.raises(ValueError, match="shot identity"):
         keyframes.prepare(source_image, bogus, "hook")
+
+
+def test_modal_fallback_local_cache_is_hash_and_identity_locked(
+    source_image: Path, tmp_path: Path
+) -> None:
+    request = keyframes.prepare(source_image, BOARD, "hook")
+    frame = tmp_path / "hook.png"
+    manifest = tmp_path / "hook.json"
+    Image.effect_noise((832, 1472), 60).convert("RGB").save(frame)
+    import hashlib
+
+    evidence = {
+        **request,
+        "status": "FRAME_GENERATED_TECHNICAL_CANDIDATE",
+        "creative_review": "PENDING",
+        "publish_eligible": False,
+        "image_sha256": hashlib.sha256(frame.read_bytes()).hexdigest(),
+    }
+    manifest.write_text(json.dumps(evidence), encoding="utf-8")
+    assert keyframes.verified_local_keyframe(frame, manifest, request)
+
+    wrong = dict(request, fingerprint="0" * 64)
+    assert not keyframes.verified_local_keyframe(frame, manifest, wrong)
+    manifest.write_text(json.dumps({**evidence, "publish_eligible": True}))
+    assert not keyframes.verified_local_keyframe(frame, manifest, request)
+    manifest.write_text(json.dumps(evidence))
+    frame.write_bytes(frame.read_bytes() + b"tampered")
+    assert not keyframes.verified_local_keyframe(frame, manifest, request)
