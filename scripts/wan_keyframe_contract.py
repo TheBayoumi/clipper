@@ -99,7 +99,6 @@ def prepare(reference: Path, storyboard: Path, shot_id: str, seed: int = BASE_SE
     return identity
 
 
-
 def verified_local_keyframe(frame: Path, manifest: Path, request: dict) -> bool:
     """Only reuse a completed frame whose provenance and actual bytes match."""
     if not frame.is_file() or not manifest.is_file():
