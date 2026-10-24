@@ -73,3 +73,61 @@ def test_current_generic_character_is_not_storyboard_character() -> None:
     assert legacy["outfit"] == "male_casualsuit01"
     assert legacy["name"] != config["character"]["character_id"]
     assert legacy["outfit"] in config["character"]["forbidden_substitutes"]
+
+
+def _physical_sample(prop_id: str = "hand_lifts_book") -> dict:
+    return {
+        "evaluation_source": "evaluated_3d_scene",
+        "character_sha256": "a" * 64,
+        "prop_id": prop_id,
+        "hand_start": [0.0, 0.0, 0.0],
+        "hand_at_contact": [0.97, 0.0, 0.0],
+        "prop_start": [1.0, 0.0, 0.0],
+        "prop_at_contact": [1.0, 0.0, 0.0],
+        "prop_end": [1.2, 0.0, 0.0],
+    }
+
+
+def test_measured_book_pickup_is_admissible_but_not_creative_approval() -> None:
+    expected = {"id": "book_intro", "required_prop_interaction": "hand_lifts_book"}
+    actual = {"physical_contact_evidence": _physical_sample()}
+    assert sa.verify_physical_contact(expected, actual, "a" * 64) is None
+
+
+def test_hand_wave_without_contact_does_not_count_as_pickup() -> None:
+    expected = {"id": "book_intro", "required_prop_interaction": "hand_lifts_book"}
+    evidence = _physical_sample()
+    evidence["hand_at_contact"] = [0.0, 0.0, 0.0]
+    with pytest.raises(sa.CreativeGateError, match="measurable reach"):
+        sa.verify_physical_contact(expected, {"physical_contact_evidence": evidence}, "a" * 64)
+
+
+def test_stationary_book_does_not_count_as_interaction() -> None:
+    expected = {"id": "book_intro", "required_prop_interaction": "hand_lifts_book"}
+    evidence = _physical_sample()
+    evidence["prop_end"] = evidence["prop_start"]
+    with pytest.raises(sa.CreativeGateError, match="scene transformation"):
+        sa.verify_physical_contact(expected, {"physical_contact_evidence": evidence}, "a" * 64)
+
+
+def test_prop_proof_cannot_be_transferred_to_another_character() -> None:
+    expected = {"id": "book_intro", "required_prop_interaction": "hand_lifts_book"}
+    with pytest.raises(sa.CreativeGateError, match="another character"):
+        sa.verify_physical_contact(
+            expected, {"physical_contact_evidence": _physical_sample()}, "b" * 64
+        )
+
+
+def test_boolean_prop_flags_do_not_substitute_for_scene_measurements() -> None:
+    expected = {"id": "hook", "required_prop_interaction": "hand_reaches_for_phone"}
+    with pytest.raises(sa.CreativeGateError, match="physical evidence"):
+        sa.verify_physical_contact(expected, {"prop_interaction_verified": True}, "a" * 64)
+
+
+def test_nonfinite_or_boolean_coords_are_never_valid_measurement() -> None:
+    expected = {"id": "book_intro", "required_prop_interaction": "hand_lifts_book"}
+    for invalid in (float("nan"), True):
+        evidence = _physical_sample()
+        evidence["hand_at_contact"][0] = invalid
+        with pytest.raises(sa.CreativeGateError, match="numeric|non-finite"):
+            sa.verify_physical_contact(expected, {"physical_contact_evidence": evidence}, "a" * 64)
