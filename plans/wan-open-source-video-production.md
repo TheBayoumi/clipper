@@ -341,6 +341,46 @@ complete until source book text, absence of baked subtitles, synchronized
 voiceover, remaining action shots and final montage have been reviewed.
 
 
+
+## Verified original male-narrator recovery and current GPU blocker
+
+- [CPU source/voice/caption qualification #40195091920](https://github.com/TheBayoumi/clipper/actions/runs/40195091920) **passed**.
+  The source-locked four-scene Qwen script generated all four new audio
+  passages in Kokoro `am_adam`, producing exactly **37.270 seconds** of
+  24 kHz mono male narration. The script/source fingerprint and voice/cache
+  identity remain recorded in `plan.json`. Narrator voice is an original
+  cinematic baritone, **not an imitation of Morgan Freeman**.
+  The open-weight Whisper word alignment passed with **114 words and
+  agreement=1.000**; the final ASS word timings were saved before any GPU
+  inference. [Immutable preparation artifact](https://github.com/TheBayoumi/clipper/actions/runs/40195091920/artifacts/12598949670)
+  contains original Kokoro WAV, segmented WAVs, captions, and evidence.
+  `faster-whisper==1.2.1` was pinned alongside the previously qualified
+  `av==18.1.0` because later PyAV 19 removed the
+  `metadata_errors` argument required by the decoder.
+- Scene zero picture is pinned to the prior immutable MP4 SHA and must be
+  reused without old narration. The final assembler retimes its video-only
+  content modestly against new voice, and flags lip-sync quality as a
+  creative review requirement.
+- The defective book keyframe's Qwen request changed only for
+  `book_intro`; exact book-cover words `ATOMIC HABITS` and `JAMES
+  CLEAR` are required on the physical prop, while in-scene subtitles and
+  gibberish are explicitly forbidden. A known historical subtitle-box
+  detector blocks bad repeat generations before Wan inference, although
+  correctly spelled lettering still requires visual approval.
+- **GPU is currently blocked** by primary Modal workspace
+  `ConflictError: workspace ... is disabled` on
+  [#40190367185](https://github.com/TheBayoumi/clipper/actions/runs/40190367185).
+  This is not explicit quota exhaustion, so the strict quota-only fallback
+  forbids an automatic switch to backups. No corrected Qwen book frame
+  or new-voice Wan shot is claimed as rendered. Reactivating the
+  authorized primary workspace (or receiving an actual quota-specific
+  error under the agreed policy) is required before continuing GPU work.
+- [CI #40195082878](https://github.com/TheBayoumi/clipper/actions/runs/40195082878)
+  passed on the exact CPU acceptance commit. Full 30–60s cinematic
+  creative/product acceptance remains **pending**, and auto-publication
+  stays disabled.
+
+
 ## Acceptance and regression policy
 
 - Preserve existing archived 15-second storyboard tests for backwards
