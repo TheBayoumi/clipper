@@ -85,7 +85,6 @@ def make_ass(words: list[dict[str, Any]], duration: float) -> str:
     return header + "\n".join(lines) + "\n"
 
 
-
 def verified_whisper_word_timestamps(
     segments: Any, duration: float
 ) -> tuple[list[dict[str, Any]], int]:
