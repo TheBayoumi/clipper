@@ -121,6 +121,26 @@ jobs:
           identity = next((m.group(1) for p in candidates if (m := re.search(p, raw))), None)
           print(f"MODAL_SLOT_{slot}_WORKSPACE={identity or 'NOT_EXPOSED_BY_TOKEN_INFO'}")
           PY
+              # Modal's SDK resolves the backing workspace from the same token
+              # pair; use its internal ID, not just the display name from CLI.
+              MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret" python - "$slot" <<'PY'
+          import sys
+          import modal
+
+          slot = sys.argv[1]
+          workspace = modal.Workspace.from_context()
+          workspace.hydrate()
+          internal_id = getattr(workspace, "object_id", None) or getattr(
+              workspace, "_object_id", None
+          )
+          actual_name = getattr(workspace, "name", None)
+          if callable(actual_name):
+              actual_name = actual_name()
+          print(f"MODAL_SDK_WORKSPACE_SLOT_{slot}_NAME={actual_name}")
+          print(f"MODAL_SDK_WORKSPACE_SLOT_{slot}_ID={internal_id}")
+          if not isinstance(internal_id, str) or not internal_id.startswith("ac-"):
+              raise SystemExit("::error::Modal workspace internal ID could not be verified")
+          PY
             else
               echo "::error::Modal authentication failed for workspace slot ${slot}"; exit 1
             fi
