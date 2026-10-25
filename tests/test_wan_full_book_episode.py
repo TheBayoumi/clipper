@@ -36,7 +36,9 @@ def test_38_second_source_splits_only_at_speech_pauses() -> None:
 
 
 def test_must_refuse_mid_speech_scene_cut() -> None:
-    script = ["Narration words repeated in a spoken paragraph about simple daily routine actions and better cues"] * 4
+    script = [
+        "Narration words repeated in a spoken paragraph about simple daily routine actions and better cues"
+    ] * 4
     pcm = make_audio([9, 10, 9, 10], pauses=False)
     with pytest.raises(EpisodeError, match="no adequate source narration pauses"):
         select_cuts(pcm, script, 38.0)
