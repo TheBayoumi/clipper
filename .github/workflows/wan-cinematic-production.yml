@@ -8,7 +8,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [preflight, credentials, gpu_probe, redeploy_backup_1, keyframes, speaking, full_book_prepare, full_book_visual, full_book]
+        options: [preflight, credentials, gpu_probe, profile_backup_1, redeploy_backup_1, keyframes, speaking, full_book_prepare, full_book_visual, full_book]
         default: preflight
         required: true
       shot_ids:
@@ -225,10 +225,11 @@ jobs:
               modal run scripts/modal_a100_access_probe.py
             echo "MODAL_A100_PROBE_PASSED slot=${slot}"
           done
-      - name: Force Qwen and Wan redeployment specifically on current backup 1
-        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'redeploy_backup_1'
+      - name: Activate and verify backup-1 Modal profile before any model deployment
+        if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'profile_backup_1' || inputs.mode == 'redeploy_backup_1')
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          MODAL_PROFILE_ACTIVATION_ONLY: ${{ inputs.mode == 'profile_backup_1' && '1' || '0' }}
         run: |
           set -euo pipefail
           python -m pip install 'modal==1.5.5'
