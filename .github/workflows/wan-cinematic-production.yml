@@ -49,8 +49,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || (inputs.mode != 'full_book_prepare' && inputs.mode != 'full_book_visual' && inputs.mode != 'full_book')
     runs-on: ubuntu-24.04
     env:
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ACCOUNT_SLOT: '2'
       MODAL_TOKEN_ID_2: ${{ secrets.MODAL_TOKEN_ID_2 }}
       MODAL_TOKEN_SECRET_2: ${{ secrets.MODAL_TOKEN_SECRET_2 }}
       MODAL_TOKEN_ID_3: ${{ secrets.MODAL_TOKEN_ID_3 }}
@@ -90,9 +89,8 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install 'modal==1.5.5'
-          for slot in 1 2 3; do
-            if [[ "$slot" == 1 ]]; then id_key=MODAL_TOKEN_ID; secret_key=MODAL_TOKEN_SECRET;
-            else id_key="MODAL_TOKEN_ID_${slot}"; secret_key="MODAL_TOKEN_SECRET_${slot}"; fi
+          for slot in 2 3; do
+            id_key="MODAL_TOKEN_ID_${slot}"; secret_key="MODAL_TOKEN_SECRET_${slot}"
             id="${!id_key:-}"; secret="${!secret_key:-}"
             if [[ -z "$id" || -z "$secret" ]]; then
               echo "::error::Modal workspace slot ${slot} lacks a complete token pair"; exit 2
@@ -103,14 +101,15 @@ jobs:
               echo "::error::Modal authentication failed for workspace slot ${slot}"; exit 1
             fi
           done
-          echo 'All three Modal credentials authenticate; independent quotas and GPU permissions require separate verification'
+          echo 'Both backup Modal credentials authenticate. Primary remains disabled; quotas and GPUs require separate verification'
       - name: Verify Modal SDK deployment lookup without GPU
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'credentials'
         run: |
           set -euo pipefail
           # Each check targets a guaranteed non-deployed, per-run unique App.
           # Exit 44 confirms missing deployment; other failures abort.
-          if python scripts/modal_deployment_probe.py "clipper-gpu-free-probe-$GITHUB_RUN_ID" "absent" > /tmp/modal-probe.log 2>&1; then
+          if MODAL_TOKEN_ID="$MODAL_TOKEN_ID_2" MODAL_TOKEN_SECRET="$MODAL_TOKEN_SECRET_2" \
+             python scripts/modal_deployment_probe.py "clipper-gpu-free-probe-$GITHUB_RUN_ID" "absent" > /tmp/modal-probe.log 2>&1; then
             echo "::error::Unexpected deployed application for SDK probe"
             exit 1
           else
@@ -166,12 +165,11 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'keyframes' || inputs.mode == 'speaking')
         run: |
           set -euo pipefail
-          test -n "$MODAL_TOKEN_ID" && test -n "$MODAL_TOKEN_SECRET" || { echo '::error::Primary Modal credential pair missing'; exit 2; }
           for slot in 2 3; do
             id_key="MODAL_TOKEN_ID_${slot}"; secret_key="MODAL_TOKEN_SECRET_${slot}"
             id="${!id_key:-}"; secret="${!secret_key:-}"
-            if [[ -n "$id" && -z "$secret" || -z "$id" && -n "$secret" ]]; then
-              echo "::error::Backup Modal slot ${slot} must have both token ID and secret"; exit 2
+            if [[ -z "$id" || -z "$secret" ]]; then
+              echo "::error::Backup Modal slot ${slot} requires both token ID and secret"; exit 2
             fi
           done
           python -m pip install 'modal==1.5.5'
