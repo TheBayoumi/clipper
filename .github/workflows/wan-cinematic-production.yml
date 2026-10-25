@@ -41,7 +41,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: clipper-open-source-cinematic
+  group: clipper-open-source-cinematic-${{ github.ref_name }}-${{ inputs.mode || 'push' }}
   cancel-in-progress: false
 
 jobs:
