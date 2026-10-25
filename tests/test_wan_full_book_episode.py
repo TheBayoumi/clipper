@@ -25,7 +25,7 @@ def make_audio(scene_lengths: list[float], pauses: bool = True) -> bytes:
 
 
 def test_38_second_source_splits_only_at_speech_pauses() -> None:
-    script = [" ".join([f"word{x}" for x in range(n)]) for n in (9, 10, 9, 10)]
+    script = [" ".join([f"word{x}" for x in range(n)]) for n in (12, 13, 12, 13)]
     lengths = [9, 10, 9, 10]
     pcm = make_audio(lengths)
     spans = silence_spans(pcm, float(sum(lengths)))
@@ -36,7 +36,7 @@ def test_38_second_source_splits_only_at_speech_pauses() -> None:
 
 
 def test_must_refuse_mid_speech_scene_cut() -> None:
-    script = ["Narration words repeated in a spoken paragraph"] * 4
+    script = ["Narration words repeated in a spoken paragraph about simple daily routine actions and better cues"] * 4
     pcm = make_audio([9, 10, 9, 10], pauses=False)
     with pytest.raises(EpisodeError, match="no adequate source narration pauses"):
         select_cuts(pcm, script, 38.0)
