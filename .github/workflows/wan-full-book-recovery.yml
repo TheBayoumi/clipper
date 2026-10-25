@@ -62,9 +62,12 @@ jobs:
           [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
           mkdir -p artifacts/full-book
           gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
-            --pattern "full-book-prep-$SOURCE_RUN" --dir artifacts/full-book
-          test -s artifacts/full-book/source/plan.json
-          test -s artifacts/full-book/source/scene-00.wav
+            --name "full-book-prep-$SOURCE_RUN" --dir artifacts/full-book
+          if [[ ! -s artifacts/full-book/source/plan.json || ! -s artifacts/full-book/source/scene-00.wav ]]; then
+            echo "::error::Source artifact layout did not contain scene zero plan/audio"
+            find artifacts/full-book -maxdepth 4 -type f -printf '%P\n' | head -n 35
+            exit 1
+          fi
       - name: Restore approved historical scene-zero video and original frame by immutable hashes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -125,7 +128,7 @@ jobs:
           [[ "$SOURCE_RUN" =~ ^[0-9]+$ && "$ZERO_RUN" =~ ^[0-9]+$ ]]
           mkdir -p artifacts/full-book artifacts/previous
           gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
-            --pattern "full-book-prep-$SOURCE_RUN" --dir artifacts/full-book
+            --name "full-book-prep-$SOURCE_RUN" --dir artifacts/full-book
           gh run download "$ZERO_RUN" --repo "$GITHUB_REPOSITORY" \
             --pattern "full-book-shot-0-recovery-$ZERO_RUN" \
             --dir artifacts/previous/scene-0
