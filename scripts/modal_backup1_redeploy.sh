@@ -5,13 +5,35 @@ set -euo pipefail
 [[ -n "${MODAL_TOKEN_ID_2:-}" && -n "${MODAL_TOKEN_SECRET_2:-}" ]] || {
   echo "::error::Backup slot 2 credentials are incomplete"; exit 2;
 }
-[[ -n "${HF_TOKEN:-}" ]] || { echo "::error::Missing HF_TOKEN"; exit 2; }
 
-# Bind and validate every command to the current GitHub backup-1 secret pair.
-export MODAL_TOKEN_ID="$MODAL_TOKEN_ID_2"
-export MODAL_TOKEN_SECRET="$MODAL_TOKEN_SECRET_2"
+# Create a private per-run profile for the actual GitHub backup-1 token pair.
+# Modal environment tokens override active profiles, so remove them after
+# configuring this profile to ensure 'modal profile activate' is meaningful.
 export MODAL_ENVIRONMENT=main
 unset MODAL_OAUTH_REFRESH_TOKEN MODAL_OAUTH_CLIENT_ID MODAL_OAUTH_CLIENT_SECRET || true
+umask 077
+MODAL_PROFILE_TEMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$MODAL_PROFILE_TEMP_DIR"' EXIT
+export MODAL_CONFIG_PATH="$MODAL_PROFILE_TEMP_DIR/.modal.toml"
+python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+config_path = Path(os.environ["MODAL_CONFIG_PATH"])
+config_path.write_text(
+    "[mahmoud-bayoumi-bb]\\n"
+    + "token_id = " + json.dumps(os.environ["MODAL_TOKEN_ID_2"]) + "\\n"
+    + "token_secret = " + json.dumps(os.environ["MODAL_TOKEN_SECRET_2"]) + "\\n",
+    encoding="utf-8",
+)
+config_path.chmod(0o600)
+PY
+unset MODAL_TOKEN_ID MODAL_TOKEN_SECRET MODAL_PROFILE
+echo "MODAL_BACKUP1_PROFILE_ACTIVATION_START"
+modal profile activate mahmoud-bayoumi-bb
+modal profile current
+echo "MODAL_BACKUP1_PROFILE_ACTIVATED"
 echo "MODAL_REDEPLOY_REQUESTED_SLOT=2"
 modal token info >/tmp/clipper-backup1-modal-token-info
 python - <<'PY'
@@ -33,6 +55,11 @@ PY
 
 modal app list --json > /tmp/clipper-backup1-apps-before.json
 echo "MODAL_BACKUP1_PREDEPLOY_LISTED (JSON stored in runner temp)"
+if [[ "${MODAL_PROFILE_ACTIVATION_ONLY:-0}" == "1" ]]; then
+  echo "MODAL_BACKUP1_PROFILE_ONLY_PASS workspace=mahmoud-bayoumi-bb environment=main"
+  exit 0
+fi
+[[ -n "${HF_TOKEN:-}" ]] || { echo "::error::Missing HF_TOKEN"; exit 2; }
 modal secret create clipper-wan-hf "HF_TOKEN=$HF_TOKEN" --force >/dev/null
 
 # Deploy immutable canonical app names, so later Clipper production resolves them.
