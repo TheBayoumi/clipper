@@ -255,3 +255,98 @@ def test_cross_workspace_artifact_reuse_restores_verified_keyframe_and_mp4(
     assert copy_verified_wan(archive, wan_args) == 0
     wan_args.prompt = "different narration direction"
     assert not local_wan_complete(wan_args)
+
+
+def test_modal_predeployment_provisions_once_and_never_calls_inference(
+    tmp_path: Path,
+) -> None:
+    """Simulate the real predeploy command on two calls, without any GPU."""
+    source = tmp_path / "scripts" / "modal_wan_s2v.py"
+    source.parent.mkdir()
+    source.write_text("app = 'versioned'\n")
+    directory = tmp_path / "bin"
+    directory.mkdir()
+    calls = tmp_path / "calls.log"
+    deployed = tmp_path / "deployed.flag"
+    fake_modal = directory / "modal"
+    fake_modal.write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "modal:$1" >> "$CALLS"\n'
+        'if [[ "$1" == "deploy" ]]; then touch "$DEPLOYED"; fi\n'
+        "exit 0\n"
+    )
+    fake_modal.chmod(0o755)
+    fake_python = directory / "python"
+    fake_python.write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "python:$1" >> "$CALLS"\n'
+        'if [[ "$1" != "scripts/modal_deployment_probe.py" ]]; then exit 97; fi\n'
+        'test -f "$DEPLOYED" || exit 44\n'
+        "exit 0\n"
+    )
+    fake_python.chmod(0o755)
+    env_file = tmp_path / "github_env"
+    env = {
+        **os.environ,
+        "PATH": f"{directory}:{os.environ['PATH']}",
+        "MODAL_TOKEN_ID": "primary",
+        "MODAL_TOKEN_SECRET": "synthetic",
+        "HF_TOKEN": "synthetic",
+        "CALLS": str(calls),
+        "DEPLOYED": str(deployed),
+        "GITHUB_ENV": str(env_file),
+    }
+    command = [
+        "bash",
+        str(ROOT / "scripts/modal_versioned_dispatch.sh"),
+        "scripts/modal_wan_s2v.py",
+        "generate_s2v",
+        "speaking",
+        "--deploy-only",
+    ]
+    first = subprocess.run(
+        command, cwd=tmp_path, env=env, capture_output=True, text=True, check=False, timeout=10
+    )
+    assert first.returncode == 0, first.stderr
+    assert "MODAL_DEPLOY_CREATED" in first.stdout
+    second = subprocess.run(
+        command, cwd=tmp_path, env=env, capture_output=True, text=True, check=False, timeout=10
+    )
+    assert second.returncode == 0, second.stderr
+    assert "MODAL_DEPLOY_REUSED" in second.stdout
+    assert "MODAL_APP_PREDEPLOY_READY" in second.stdout
+    recorded = calls.read_text()
+    assert recorded.count("modal:deploy") == 1
+    assert "modal:run" not in recorded
+    assert "python:scripts/modal_deployed_client.py" not in recorded
+    assert not env_file.exists()
+
+
+def test_full_book_deployment_precedes_parallel_render_and_avoids_custom_limits() -> None:
+    import ast
+
+    import yaml
+
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/wan-full-book-production.yml").read_text()
+    )
+    jobs = workflow["jobs"]
+    assert jobs["deploy_wan"]["needs"] == "prepare"
+    assert jobs["render"]["needs"] == ["prepare", "deploy_wan"]
+    assert "--deploy-only" in jobs["deploy_wan"]["steps"][-1]["run"]
+    for job in ("prepare", "deploy_wan", "render", "assemble"):
+        assert "timeout-minutes" not in jobs[job]
+
+    wan = ast.parse((ROOT / "scripts/modal_wan_s2v.py").read_text())
+    run_calls = [
+        node
+        for node in ast.walk(wan)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "run"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "subprocess"
+    ]
+    assert run_calls
+    assert all(not any(kw.arg == "timeout" for kw in node.keywords) for node in run_calls)
+    assert "timeout=24 * 60 * 60" in (ROOT / "scripts/modal_wan_s2v.py").read_text()
