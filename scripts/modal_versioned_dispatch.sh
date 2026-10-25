@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Modal versioned app routing: no GPU deployment when unchanged.
-# A different credential is selected ONLY after explicit inference quota exhaustion.
+# Primary workspace is disabled by user policy. Only slot 2 then slot 3 are eligible.
+# Slot 3 is selected only after explicit inference quota exhaustion on slot 2.
 set -euo pipefail
 
 if (( $# < 3 )); then
@@ -30,21 +31,25 @@ esac
 # changes; changing the GitHub workflow or inference client does not redeploy.
 source_digest="$(sha256sum "$app_script" | cut -c1-16)"
 app_name="${app_base}-${source_digest}"
-preferred="${MODAL_ACCOUNT_SLOT:-1}"
-[[ "$preferred" =~ ^[123]$ ]] || { echo "::error::Invalid Modal slot"; exit 2; }
+preferred="${MODAL_ACCOUNT_SLOT:-2}"
+[[ "$preferred" =~ ^[23]$ ]] || {
+  echo "::error::Primary Modal slot 1 is DISABLED. Only backup slots 2 or 3 permitted"
+  exit 2
+}
+echo "MODAL_PRIMARY_DISABLED=true ACTIVE_BACKUP_SLOT=${preferred}"
 [[ -n "${HF_TOKEN:-}" ]] || { echo "::error::Missing HF_TOKEN"; exit 2; }
 
 for ((slot=preferred; slot<=3; slot++)); do
-  if [[ "$slot" == 1 ]]; then
-    id_key=MODAL_TOKEN_ID
-    secret_key=MODAL_TOKEN_SECRET
-  else
-    id_key="MODAL_TOKEN_ID_${slot}"
-    secret_key="MODAL_TOKEN_SECRET_${slot}"
-  fi
+  # Never evaluate or export primary credentials under this policy.
+  [[ "$slot" == 2 || "$slot" == 3 ]] || exit 2
+  id_key="MODAL_TOKEN_ID_${slot}"
+  secret_key="MODAL_TOKEN_SECRET_${slot}"
   id="${!id_key:-}"
   secret="${!secret_key:-}"
-  if [[ -z "$id" && -z "$secret" ]]; then continue; fi
+  if [[ -z "$id" && -z "$secret" ]]; then
+    echo "::error::Required backup slot ${slot} has no configured token pair"
+    exit 2
+  fi
   if [[ -z "$id" || -z "$secret" ]]; then
     echo "::error::Incomplete credentials for Modal slot $slot"
     exit 2
