@@ -38,6 +38,7 @@ def main() -> None:
         raise SystemExit("::error::Modal binding audit requires main environment")
 
     workspace = modal.Workspace.from_context()
+    workspace.hydrate()
     attribute = workspace.name
     name = attribute() if callable(attribute) else attribute
     print(f"MODAL_BINDING_WORKSPACE_ACTUAL={name} EXPECTED={args.expected}")
