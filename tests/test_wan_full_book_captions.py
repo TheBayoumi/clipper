@@ -52,10 +52,6 @@ def test_whisper_zero_length_and_last_word_boundary_are_repaired() -> None:
 
 
 def test_whisper_rejects_large_timing_corruption() -> None:
-    segments = [
-        SimpleNamespace(
-            words=[SimpleNamespace(word="impossible", start=7.0, end=6.0)]
-        )
-    ]
+    segments = [SimpleNamespace(words=[SimpleNamespace(word="impossible", start=7.0, end=6.0)])]
     with pytest.raises(ValueError, match="differs substantially"):
         verified_whisper_word_timestamps(segments, 38.912)
