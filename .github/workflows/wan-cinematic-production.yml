@@ -8,7 +8,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [preflight, credentials, gpu_probe, keyframes, speaking, full_book_prepare, full_book_visual, full_book]
+        options: [preflight, credentials, gpu_probe, redeploy_backup_1, keyframes, speaking, full_book_prepare, full_book_visual, full_book]
         default: preflight
         required: true
       shot_ids:
@@ -169,6 +169,14 @@ jobs:
               modal run scripts/modal_a100_access_probe.py
             echo "MODAL_A100_PROBE_PASSED slot=${slot}"
           done
+      - name: Force Qwen and Wan redeployment specifically on current backup 1
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'redeploy_backup_1'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          python -m pip install 'modal==1.5.5'
+          bash scripts/modal_backup1_redeploy.sh
       - name: Decode one hash-locked identity and construct storyboard-derived shots
         if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'keyframes' || inputs.mode == 'speaking')
         env:
