@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Explicitly deploy canonical Qwen/Wan Modal apps on the requested backup slot.
 # File name retained to avoid breaking the historical backup-1 workflow.
-# Unlike modal_versioned_dispatch.sh, do not probe/reuse an old deployment.
+# Probe the current immutable deployment first to avoid rebuilding existing apps.
 set -euo pipefail
 slot="${MODAL_REDEPLOY_SLOT:-2}"
 case "$slot" in
@@ -73,23 +73,37 @@ fi
 [[ -n "${HF_TOKEN:-}" ]] || { echo "::error::Missing HF_TOKEN"; exit 2; }
 modal secret create clipper-wan-hf "HF_TOKEN=$HF_TOKEN" --force >/dev/null
 
-# Deploy immutable canonical app names, so later Clipper production resolves them.
-# NEVER skip deploy due to an existing app/cache. CLI prints real build/deploy logs.
+# Reuse ONLY the exact deployed source-hash/version and required function.
+# A successful Modal deployment is not a GPU inference; SDK hydration verifies it.
 for kind in qwen wan; do
   if [[ "$kind" == qwen ]]; then
     src=scripts/modal_qwen_keyframes.py
     base=clipper-qwen-cinematic-keyframes
+    function_tag=generate_keyframe
   else
     src=scripts/modal_wan_s2v.py
     base=clipper-wan-s2v
+    function_tag=generate_s2v
   fi
   digest="$(sha256sum "$src" | cut -c1-16)"
   app="${base}-${digest}"
-  echo "MODAL_FORCED_REDEPLOY_STARTED kind=$kind app=$app workspace=$expected_workspace slot=$slot"
-  CLIPPER_MODAL_APP_NAME="$app" modal deploy --name "$app" --env main --timestamps "$src"
-  echo "MODAL_FORCED_REDEPLOY_COMPLETED kind=$kind app=$app"
-  modal app info --env main --json "$app" >"/tmp/clipper-backup-${kind}-info.json"
-  echo "MODAL_REMOTE_DEPLOYMENT_VERIFIED kind=$kind app=$app"
+  if python scripts/modal_deployment_probe.py "$app" "$function_tag"; then
+    echo "MODAL_CANONICAL_DEPLOYMENT_REUSED kind=$kind app=$app slot=$slot"
+  else
+    probe_status=$?
+    if [[ "$probe_status" -ne 44 ]]; then
+      echo "::error::Modal deployment lookup failed with exit code $probe_status; no redeploy"
+      exit 1
+    fi
+    echo "MODAL_CANONICAL_DEPLOYMENT_STARTED kind=$kind app=$app workspace=$expected_workspace slot=$slot"
+    CLIPPER_MODAL_APP_NAME="$app" modal deploy --name "$app" --env main --timestamps "$src"
+    echo "MODAL_CANONICAL_DEPLOYMENT_COMPLETED kind=$kind app=$app"
+  fi
+  if ! python scripts/modal_deployment_probe.py "$app" "$function_tag"; then
+    echo "::error::Modal deployed function not resolvable after deploy kind=$kind app=$app"
+    exit 1
+  fi
+  echo "MODAL_REMOTE_DEPLOYMENT_VERIFIED kind=$kind app=$app function=$function_tag workspace=$expected_workspace"
 done
 
 echo "MODAL_BACKUP_A100_INFERENCE_PROBE_START slot=$slot"
