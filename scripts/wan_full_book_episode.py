@@ -210,7 +210,7 @@ def make_prepare(source_video: Path, manifest_file: Path, output: Path) -> None:
     print(f"EPISODE_AUDIO_LOCKED duration={duration:.3f}s cuts={cuts} shots={len(shots)}")
 
 
-def prepare_concat(plan: dict, paths: list[Path], output: Path) -> None:
+def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) -> None:
     """Produce professional vertical 24fps picture, exact original Kokoro narration.
 
     Audio is not regenerated or retimed, each shot is required and hash-checked.
@@ -269,6 +269,11 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path) -> None:
     inputs += ["-i", str(audio)]
     labels = "".join(f"[v{i}]" for i in range(len(clips)))
     filters.append(f"{labels}concat=n={len(clips)}:v=1:a=0[vout]")
+    if not captions.is_file() or captions.stat().st_size < 3000:
+        raise EpisodeError("verified word-timed captions required for complete episode")
+    if not (captions.parent / "caption-evidence.json").is_file():
+        raise EpisodeError("caption transcript must be hash-verified")
+    filters.append(f"[vout]subtitles=filename={captions.as_posix()}[vcaptions]")
     target = output / "atomic-habits-full-candidate.mp4"
     command_run(
         [
@@ -281,7 +286,7 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path) -> None:
             "-filter_complex",
             ";".join(filters),
             "-map",
-            "[vout]",
+            "[vcaptions]",
             "-map",
             f"{len(clips)}:a:0",
             "-c:v",
@@ -322,6 +327,8 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path) -> None:
     sound = [item for item in decoded["streams"] if item["codec_type"] == "audio"]
     if not 30 <= duration <= 60 or len(visual) != 1 or len(sound) != 1:
         raise EpisodeError("assembled video lacks production-length audio/video")
+    if abs(duration - plan["seconds"]) > 0.35:
+        raise EpisodeError("final audio/video mismatch: source speech was truncated or padded")
     if (visual[0]["width"], visual[0]["height"], visual[0]["r_frame_rate"]) != (1080, 1920, "24/1"):
         raise EpisodeError("final video geometry is not 1080x1920 24fps")
     command_run(["ffmpeg", "-v", "error", "-i", str(target), "-f", "null", "-"], timeout=200)
@@ -334,9 +341,10 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path) -> None:
         "height": 1920,
         "fps": FPS,
         "source_audio_sha256": digest(audio.read_bytes()),
+        "captions_sha256": digest(captions.read_bytes()),
         "shots": [{"id": s["id"], "seed": s["seed"]} for s in plan["shots"]],
         "status": "COMPLETE_MP4_TECHNICAL_CANDIDATE_NEEDS_CREATIVE_REVIEW",
-        "word_level_captions": "NOT_YET_IMPLEMENTED",
+        "word_level_captions": "OPEN_SOURCE_WHISPER_ALIGNED_ASS",
         "creative_review": "PENDING",
         "publish_eligible": False,
     }
@@ -355,11 +363,12 @@ def main() -> None:
     assembly.add_argument("--plan", type=Path, required=True)
     assembly.add_argument("--shots", type=Path, nargs=4, required=True)
     assembly.add_argument("--output", type=Path, required=True)
+    assembly.add_argument("--captions", type=Path, required=True)
     args = parser.parse_args()
     if args.operation == "prepare":
         make_prepare(args.video, args.manifest, args.output)
     else:
-        prepare_concat(json.loads(args.plan.read_text()), args.shots, args.output)
+        prepare_concat(json.loads(args.plan.read_text()), args.shots, args.output, args.captions)
 
 
 if __name__ == "__main__":
