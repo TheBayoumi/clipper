@@ -61,8 +61,8 @@ jobs:
           python -m pip install 'pytest>=9,<10' 'Pillow>=11,<13' 'ruff>=0.15.22,<1'
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg
-          python -m ruff check scripts/wan_full_book_episode.py scripts/wan_full_book_shot_cache.py scripts/wan_full_book_captions.py scripts/wan_full_book_voice.py scripts/wan_full_book_scene_zero.py tests/test_wan_full_book_episode.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
-          python -m ruff format --check scripts/wan_full_book_episode.py scripts/wan_full_book_shot_cache.py scripts/wan_full_book_captions.py scripts/wan_full_book_voice.py scripts/wan_full_book_scene_zero.py tests/test_wan_full_book_episode.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
+          python -m ruff check scripts/wan_full_book_episode.py scripts/wan_full_book_shot_cache.py scripts/wan_full_book_captions.py scripts/wan_full_book_voice.py scripts/wan_full_book_scene_zero.py scripts/wan_book_frame_qa.py tests/test_wan_full_book_episode.py tests/test_wan_book_frame_qa.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
+          python -m ruff format --check scripts/wan_full_book_episode.py scripts/wan_full_book_shot_cache.py scripts/wan_full_book_captions.py scripts/wan_full_book_voice.py scripts/wan_full_book_scene_zero.py scripts/wan_book_frame_qa.py tests/test_wan_full_book_episode.py tests/test_wan_book_frame_qa.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
           PYTHONPATH=scripts python -m pytest -q -o addopts='' tests/test_wan_full_book_episode.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
       - name: Recover 38-second genuine Qwen3 Kokoro source and inspect original story
         env:
@@ -154,6 +154,8 @@ jobs:
           cp artifacts/cinematic/keyframes/*.png artifacts/full-book/frames/
           cp artifacts/cinematic/keyframes/*.json artifacts/full-book/frames/
           test "$(find artifacts/full-book/frames -maxdepth 1 -name '*.png' | wc -l)" -eq 3
+          python scripts/wan_book_frame_qa.py \
+            --frame artifacts/full-book/frames/book_intro.png
       - name: Archive immutable full-episode narration and production frame sources
         if: always()
         uses: actions/upload-artifact@v4
