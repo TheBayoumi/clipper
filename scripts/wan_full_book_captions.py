@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 from difflib import SequenceMatcher
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,47 @@ def make_ass(words: list[dict[str, Any]], duration: float) -> str:
     return header + "\n".join(lines) + "\n"
 
 
+
+def verified_whisper_word_timestamps(segments: Any, duration: float) -> tuple[list[dict[str, Any]], int]:
+    """Repair only subsecond alignment jitter, not arbitrary missing speech."""
+    words: list[dict[str, Any]] = []
+    adjustments = 0
+    for segment in segments:
+        for item in segment.words or ():
+            if item.start is None or item.end is None or not normalized(item.word):
+                continue
+            raw_start = float(item.start)
+            raw_end = float(item.end)
+            if (
+                not isfinite(raw_start)
+                or not isfinite(raw_end)
+                or raw_start < -0.25
+                or raw_end < -0.25
+                or raw_start > duration + 0.25
+                or raw_end > duration + 0.25
+                or raw_end < raw_start - 0.25
+            ):
+                raise ValueError("Whisper word timing differs substantially from source narration")
+            start = min(max(0.0, raw_start), duration - 0.06)
+            if words and start < words[-1]["start"]:
+                if words[-1]["start"] - start > 0.25:
+                    raise ValueError("Whisper timestamps materially out of order")
+                start = words[-1]["start"]
+            end = min(duration, max(start + 0.06, raw_end))
+            if end <= start:
+                raise ValueError("Whisper timestamp cannot fit source duration")
+            if abs(start - raw_start) > 0.01 or abs(end - raw_end) > 0.01:
+                adjustments += 1
+            words.append({
+                "word": item.word.strip(),
+                "start": round(start, 3),
+                "end": round(end, 3),
+            })
+    if words and adjustments > max(4, len(words) // 6):
+        raise ValueError("too many Whisper timing corrections; manual audio review required")
+    return words, adjustments
+
+
 def generate_captions(audio: Path, plan: Path, output: Path) -> None:
     from faster_whisper import WhisperModel
 
@@ -105,19 +147,7 @@ def generate_captions(audio: Path, plan: Path, output: Path) -> None:
         initial_prompt=expected,
         condition_on_previous_text=False,
     )
-    words = []
-    for segment in segments:
-        for item in segment.words or ():
-            if item.start is None or item.end is None:
-                continue
-            if normalized(item.word):
-                words.append(
-                    {
-                        "word": item.word.strip(),
-                        "start": round(max(0, item.start), 3),
-                        "end": round(min(duration, item.end), 3),
-                    }
-                )
+    words, timing_adjustments = verified_whisper_word_timestamps(segments, duration)
     recognized = " ".join(w["word"] for w in words)
     match = SequenceMatcher(None, normalized(expected), normalized(recognized)).ratio()
     if match < MIN_SIMILARITY:
@@ -130,6 +160,7 @@ def generate_captions(audio: Path, plan: Path, output: Path) -> None:
         "audio_sha256": actual_hash,
         "source_episode_fingerprint": episode["fingerprint"],
         "word_count": len(words),
+        "timing_adjustments": timing_adjustments,
         "word_agreement": round(match, 4),
         "subtitle_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
         "creative_review": "PENDING",
