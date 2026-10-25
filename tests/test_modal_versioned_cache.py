@@ -382,3 +382,14 @@ def test_explicit_backup_two_routes_only_to_slot_three() -> None:
     assert "3) expected_workspace=thebayoumi" in profile_route
     assert "unset MODAL_TOKEN_ID MODAL_TOKEN_SECRET MODAL_PROFILE" in profile_route
     assert "Only Modal backup slots 2 or 3 are permitted" in profile_route
+
+
+def test_backup_deployment_uses_sdk_hydration_not_unsupported_modal_app_info() -> None:
+    """Avoid aborting after a successful image build or rebuilding an existing app."""
+    script = (ROOT / "scripts/modal_backup1_redeploy.sh").read_text()
+    assert "modal app info" not in script
+    assert 'python scripts/modal_deployment_probe.py "$app" "$function_tag"' in script
+    assert "MODAL_CANONICAL_DEPLOYMENT_REUSED" in script
+    assert "MODAL_REMOTE_DEPLOYMENT_VERIFIED" in script
+    assert "probe_status" in script and '"$probe_status" -ne 44' in script
+    assert "modal deploy --name" in script
