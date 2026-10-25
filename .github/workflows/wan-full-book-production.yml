@@ -220,7 +220,7 @@ jobs:
       - name: Install final media QA
         run: |
           set -euo pipefail
-          python -m pip install 'Pillow>=11,<13'
+          python -m pip install 'Pillow>=11,<13' 'faster-whisper==1.2.1'
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg
       - uses: actions/download-artifact@v4
@@ -232,6 +232,14 @@ jobs:
           pattern: full-book-shot-*
           path: artifacts/full-book/rendered
           merge-multiple: true
+      - name: Generate precise open-source Whisper word captions with Style-B background
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/full-book/final
+          python scripts/wan_full_book_captions.py \
+            --audio artifacts/full-book/source/full-kokoro.wav \
+            --plan artifacts/full-book/source/plan.json \
+            --output artifacts/full-book/final/captions.ass
       - name: Assemble exact narration with four distinct verified Wan scenes
         run: |
           set -euo pipefail
@@ -241,7 +249,8 @@ jobs:
                     artifacts/full-book/rendered/scene-01 \
                     artifacts/full-book/rendered/scene-02 \
                     artifacts/full-book/rendered/scene-03 \
-            --output artifacts/full-book/final
+            --output artifacts/full-book/final \
+            --captions artifacts/full-book/final/captions.ass
       - name: Retain complete MP4 and non-publication QA
         if: always()
         uses: actions/upload-artifact@v4
