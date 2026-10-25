@@ -30,10 +30,14 @@ PROMPTS = (
     "with notebook in clear view and a phone placed out of reach. Host points "
     "to a simple visible cue while speaking. Believable hand contact, gentle "
     "motivated movement, cinematic amber light and realistic depth of field.",
-    "Same exact animated host in the warm bookshelf study, wearing the charcoal "
-    "hoodie and rectangular glasses. He lifts a neutral unbranded book, looks "
-    "pleased at completing a small task, and speaks naturally. Genuine physical "
-    "book interaction, readable face, no invented printed words.",
+    "Warm cinematic study, close-up of the SAME dark-blue hardcover book genuinely "
+    "held open by the recognizable curly-haired host. Keep the physical jacket "
+    "print exactly and only ATOMIC HABITS with JAMES CLEAR below it, sharp correct "
+    "gold letters that remain attached to the book as it moves. The character "
+    "interacts naturally with the pages. No floating words, absolutely NO "
+    "subtitles, no black translucent subtitle box, no lower-third text, no "
+    "gibberish captions, and no unrelated letters within the generated scene. "
+    "Clean 3D animation, carefully controlled camera and warm amber studio.",
     "Same exact character, camera now framed medium-wide, returns to his desk "
     "to open his notebook and actually write the first line. He smiles with "
     "relief as he speaks the conclusion. End on an intentional finished gesture, "
