@@ -32,5 +32,7 @@ def check_a100() -> str:
 
 @app.local_entrypoint()
 def main() -> None:
-    assert check_a100.remote() == "A100-80GB_AVAILABLE"
+    result = check_a100.remote()
+    if result != "A100-80GB_AVAILABLE":
+        raise RuntimeError("A100 access probe returned unexpected result")
     print("MODAL_A100_GPU_ACCESS_VERIFIED")
