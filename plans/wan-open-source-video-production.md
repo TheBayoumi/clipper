@@ -247,6 +247,47 @@ storage. Simulated quota-only failover is covered by tests; **live backup
 GPU inference after an actual quota error is not yet demonstrated.**
 
 
+
+## Full-length production recovery — parallel-deploy race and inference deadlines (2026-10-25)
+
+Evidence: [full-book run #40174311275](https://github.com/TheBayoumi/clipper/actions/runs/40174311275) completed two immutable candidates
+(scene 0 and 2). Scene 1 failed because two GitHub render workers raced to
+deploy the **same** Wan application version, not because invoking a shared
+deployed function is invalid. Scene 3 reused the deployed app but the child
+`Wan2.2/generate.py` process hit Clipper's own `subprocess.run(timeout=4800)`
+after 80 minutes. Neither failure qualifies for backup-account routing.
+The failed scene 3 artifact records a failure, not an MP4 cache hit.
+
+Applied:
+- A single dedicated `deploy_wan` GitHub job runs **after the immutable
+  source/character preparation** and **before the parallel render matrix**.
+  It uses `modal_versioned_dispatch.sh ... --deploy-only`, which authenticates,
+  installs an app version only when missing and never invokes a GPU function.
+  Render jobs depend on this gate; any overlapping deployment also retains the
+  already-implemented winner-reuse race recovery.
+- Removed the **4,800-second subprocess deadline** from the Wan worker.
+  The Modal function now uses the **maximum 86,400 seconds / 24 hours**,
+  rather than our earlier 7,200-second cap. This changes the immutable app
+  version, so Modal deploys the new version once; persistent model-weight
+  Volumes remain workspace scoped. Completed scenes 0 and 2 are recovered
+  from hash-verified earlier GitHub artifacts and do **not** get rerendered.
+- Removed all custom `timeout-minutes` values from the cinematic and
+  full-book GitHub jobs; removed the book FFmpeg/ffprobe and shot artifact
+  download subprocess deadlines. This removes **Clipper-imposed** aborts,
+  not the hosting services' execution limits.
+- Keep strict **quota-only** account failover, no fallback for deployment
+  errors, CUDA errors, spending caps or execution timeouts, and per-shot
+  artifact recovery after failures.
+
+**Platform reality:** GitHub-hosted job execution is capped at 6 hours
+(including when `timeout-minutes` is omitted), and Modal functions at
+24 hours. Truly unbounded GPU execution is not possible on these platforms.
+Very long shots must eventually be split into independently resumable
+semantic scenes (or use durable detached Modal call IDs with later recovery)
+if they exceed the GitHub job lifetime. No human creative approval or
+30–60-second finished video is implied by the infrastructure tests.
+
+
 ## Acceptance and regression policy
 
 - Preserve existing archived 15-second storyboard tests for backwards
