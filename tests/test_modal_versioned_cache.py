@@ -360,3 +360,25 @@ def test_full_book_deployment_precedes_parallel_render_and_avoids_custom_limits(
     assert run_calls
     assert all(not any(kw.arg == "timeout" for kw in node.keywords) for node in run_calls)
     assert "timeout=24 * 60 * 60" in (ROOT / "scripts/modal_wan_s2v.py").read_text()
+
+
+def test_explicit_backup_two_routes_only_to_slot_three() -> None:
+    """The authorized starting workspace is backup 2, not the spend-limited slot 2."""
+    import yaml
+
+    cinematic = yaml.safe_load(
+        (ROOT / ".github/workflows/wan-cinematic-production.yml").read_text()
+    )
+    full_book = yaml.safe_load(
+        (ROOT / ".github/workflows/wan-full-book-production.yml").read_text()
+    )
+    assert cinematic["jobs"]["cinematic"]["env"]["MODAL_ACCOUNT_SLOT"] == "3"
+    for job in ("prepare", "deploy_wan", "render"):
+        assert full_book["jobs"][job]["env"]["MODAL_ACCOUNT_SLOT"] == "3"
+    assert "profile_backup_2" in cinematic[True]["workflow_dispatch"]["inputs"]["mode"]["options"]
+    assert "redeploy_backup_2" in cinematic[True]["workflow_dispatch"]["inputs"]["mode"]["options"]
+    profile_route = (ROOT / "scripts/modal_backup1_redeploy.sh").read_text()
+    assert 'modal profile activate "$expected_workspace"' in profile_route
+    assert '3) expected_workspace=thebayoumi' in profile_route
+    assert 'unset MODAL_TOKEN_ID MODAL_TOKEN_SECRET MODAL_PROFILE' in profile_route
+    assert 'Only Modal backup slots 2 or 3 are permitted' in profile_route
