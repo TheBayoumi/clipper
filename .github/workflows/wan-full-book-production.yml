@@ -243,9 +243,10 @@ jobs:
           IMAGE="artifacts/full-book/frames/$IMAGE_NAME.png"
           AUDIO="artifacts/full-book/source/scene-$INDEX.wav"
           if [[ "$SHOT_INDEX" == "0" ]]; then
-            python scripts/wan_full_book_scene_zero.py \
-              --reference "$IMAGE" --audio "$AUDIO" --output "$SHOT_DIR"
-            echo "SCENE_ZERO_OLD_VISUAL_REUSED_NEW_NARRATOR_AUDIO_ONLY"
+            # Do not reuse an old talking-head clip against a new narrator WAV.
+            # This path is isolated; shots 1-3 retain their existing logic.
+            bash scripts/wan_full_book_render_scene_zero.sh \
+              artifacts/full-book/source/plan.json "$IMAGE" "$AUDIO" "$SHOT_DIR"
           else
           python scripts/wan_full_book_shot_cache.py --shot "$SHOT_INDEX" \
             --plan artifacts/full-book/source/plan.json --output "$SHOT_DIR" \
