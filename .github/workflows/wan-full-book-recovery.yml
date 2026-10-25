@@ -1,6 +1,18 @@
 name: Clipper full-book targeted recovery (no GPU)
 
 on:
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        required: true
+      source_run:
+        type: string
+        required: true
+      scene0_recovery_run:
+        type: string
+        required: false
+        default: ''
   workflow_dispatch:
     inputs:
       mode:
