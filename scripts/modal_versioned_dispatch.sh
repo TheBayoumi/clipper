@@ -8,6 +8,11 @@ if (( $# < 3 )); then
   exit 2
 fi
 app_script="$1"; function_tag="$2"; client_mode="$3"; shift 3
+deploy_only=false
+if [[ "${1:-}" == "--deploy-only" ]]; then
+  deploy_only=true
+  shift
+fi
 [[ -f "$app_script" ]] || { echo "::error::No Modal source script: $app_script"; exit 2; }
 [[ "$client_mode" == keyframes || "$client_mode" == speaking ]] || exit 2
 case "$client_mode" in
@@ -102,6 +107,12 @@ for ((slot=preferred; slot<=3; slot++)); do
     rm -f "$deploy_log"
   fi
 
+  # A dedicated setup job pre-deploys this exact immutable app version before
+  # any parallel render jobs. Never run GPU inference in deploy-only mode.
+  if [[ "$deploy_only" == true ]]; then
+    echo "MODAL_APP_PREDEPLOY_READY app=${app_name} slot=${slot}"
+    exit 0
+  fi
   inference_log="$(mktemp)"
   if python scripts/modal_deployed_client.py "$client_mode" --app "$app_name" "$@" >"$inference_log" 2>&1; then
     cat "$inference_log"
