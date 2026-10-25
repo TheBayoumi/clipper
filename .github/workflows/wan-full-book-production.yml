@@ -115,7 +115,9 @@ jobs:
       - name: Align original Kokoro narration to word-level subtitles before GPU
         run: |
           set -euo pipefail
-          python -m pip install 'faster-whisper==1.2.1'
+          # Pin PyAV to the exact revision that passed book caption QC on run 40190279159.
+          # PyAV 19 removed av.open(metadata_errors=...), required by faster-whisper 1.2.1.
+          python -m pip install 'faster-whisper==1.2.1' 'av==18.1.0'
           python scripts/wan_full_book_captions.py \
             --audio artifacts/full-book/source/full-kokoro.wav \
             --plan artifacts/full-book/source/plan.json \
