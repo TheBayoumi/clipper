@@ -48,7 +48,6 @@ jobs:
   cinematic:
     if: github.event_name != 'workflow_dispatch' || (inputs.mode != 'full_book_prepare' && inputs.mode != 'full_book')
     runs-on: ubuntu-24.04
-    timeout-minutes: 170
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
