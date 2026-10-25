@@ -19,10 +19,7 @@ def make_audio(scene_lengths: list[float], pauses: bool = True) -> bytes:
     for seconds in scene_lengths:
         count = round(seconds * 24000)
         for i in range(count):
-            if pauses and i < 6000:
-                value = 0
-            else:
-                value = round(9000 * math.sin(i * (math.pi / 40)))
+            value = 0 if pauses and i < 6000 else round(9000 * math.sin(i * (math.pi / 40)))
             pcm.append(value)
     return pcm.tobytes()
 
