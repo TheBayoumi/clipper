@@ -103,7 +103,7 @@ def generate(manifest: Path, output: Path, cache: Path) -> None:
                 )
             ]
             if not parts:
-                raise ValueError("No speech returned from open-source Kokoro voice")
+                raise ValueError("No speech returned from open-source Kokoro voice") from None
             speech_frames = pcm(wav_bytes(np.concatenate(parts)))
             cached.write_bytes(make_wav(speech_frames))
             print(f"ORIGINAL_VOICE_SCENE_GENERATED scene={index}")
