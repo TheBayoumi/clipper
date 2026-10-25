@@ -71,10 +71,8 @@ def _original_prompt() -> str:
 
 def restore(reference: Path, new_audio: Path, destination: Path) -> None:
     if verified_scene_zero_visual(destination, reference, new_audio):
-        if not verified_scene_zero_visual(destination, reference, new_audio):
-        raise ValueError("scene-zero visual provenance could not be verified after recovery")
-    print("SCENE_ZERO_VISUAL_PRESERVED_VERIFIED", VIDEO_SHA256)
-    print("SCENE_ZERO_HISTORICAL_KEYFRAME_LOCKED", IMAGE_SHA256)
+        print("SCENE_ZERO_VISUAL_PRESERVED_VERIFIED", VIDEO_SHA256)
+        print("SCENE_ZERO_HISTORICAL_KEYFRAME_LOCKED", IMAGE_SHA256)
         return
     if not reference.is_file() or not new_audio.is_file():
         raise ValueError("scene-zero source keyframe or replacement narration missing")
@@ -156,7 +154,10 @@ def restore(reference: Path, new_audio: Path, destination: Path) -> None:
         "publish_eligible": False,
     }
     (destination / "visual-reuse.json").write_text(json.dumps(reuse, indent=2) + "\n")
+    if not verified_scene_zero_visual(destination, reference, new_audio):
+        raise ValueError("scene-zero visual provenance could not be verified after recovery")
     print("SCENE_ZERO_VISUAL_PRESERVED_VERIFIED", VIDEO_SHA256)
+    print("SCENE_ZERO_HISTORICAL_KEYFRAME_LOCKED", IMAGE_SHA256)
 
 
 def main() -> None:
