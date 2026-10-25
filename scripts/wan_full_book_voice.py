@@ -117,33 +117,37 @@ def generate(manifest: Path, output: Path, cache: Path) -> None:
         target = output / f"scene-{index:02d}.wav"
         target.write_bytes(segment)
         full_frames.extend(speech_frames)
-        shot.update({
-            "audio": target.name,
-            "audio_sha256": sha(segment),
-            "start_seconds": round(start / RATE, 6),
-            "end_seconds": round(previous / RATE, 6),
-            "duration_seconds": round((previous - start) / RATE, 6),
-            "voice_id": VOICE_ID,
-        })
+        shot.update(
+            {
+                "audio": target.name,
+                "audio_sha256": sha(segment),
+                "start_seconds": round(start / RATE, 6),
+                "end_seconds": round(previous / RATE, 6),
+                "duration_seconds": round((previous - start) / RATE, 6),
+                "voice_id": VOICE_ID,
+            }
+        )
     full_wav = make_wav(bytes(full_frames))
     duration = previous / RATE
     if not 30 <= duration <= 60:
         raise ValueError(f"New baritone voice duration {duration:.3f}s is outside 30-60s")
     (output / "full-kokoro.wav").write_bytes(full_wav)
-    plan.update({
-        "seconds": round(duration, 6),
-        "full_audio_sha256": sha(full_wav),
-        "voice": {
-            "model": VOICE_MODEL,
-            "revision": VOICE_MODEL_REVISION,
-            "voice_id": VOICE_ID,
-            "style": VOICE_STYLE,
-            "speed": VOICE_SPEED,
-            "celebrity_voice_clone": False,
-        },
-        "status": "ORIGINAL_CINEMATIC_BARITONE_AUDIO_LOCKED_NEEDS_VISUAL_REVIEW",
-        "publish_eligible": False,
-    })
+    plan.update(
+        {
+            "seconds": round(duration, 6),
+            "full_audio_sha256": sha(full_wav),
+            "voice": {
+                "model": VOICE_MODEL,
+                "revision": VOICE_MODEL_REVISION,
+                "voice_id": VOICE_ID,
+                "style": VOICE_STYLE,
+                "speed": VOICE_SPEED,
+                "celebrity_voice_clone": False,
+            },
+            "status": "ORIGINAL_CINEMATIC_BARITONE_AUDIO_LOCKED_NEEDS_VISUAL_REVIEW",
+            "publish_eligible": False,
+        }
+    )
     plan.pop("fingerprint", None)
     plan["fingerprint"] = sha(json.dumps(plan, sort_keys=True).encode())
     plan_file.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
