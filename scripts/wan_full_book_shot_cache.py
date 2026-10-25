@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from wan_shared_shot_cache import list_prior_runs, verified_wan_output, sha
+from wan_shared_shot_cache import list_prior_runs, sha, verified_wan_output
 
 
 def main() -> None:
@@ -26,7 +26,12 @@ def main() -> None:
     shot = plan["shots"][args.shot]
     video = args.output / "wan-s2v-candidate.mp4"
     manifest = args.output / "model-evidence.json"
-    values = (sha(args.reference.read_bytes()), sha(args.audio.read_bytes()), shot["prompt"], shot["seed"])
+    values = (
+        sha(args.reference.read_bytes()),
+        sha(args.audio.read_bytes()),
+        shot["prompt"],
+        shot["seed"],
+    )
     if verified_wan_output(video, manifest, *values):
         print("FULL_BOOK_SHOT_VERIFIED_LOCAL", args.shot)
         return
