@@ -78,7 +78,7 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
             for k, member in enumerate(phrase):
                 fragment = escape_ass(member["word"].strip())
                 if k == j:
-                    text.append(r"{\\c&H009EFF&\\b1}" + fragment + r"{\\rWords}")
+                    text.append(r"{\c&H009EFF&\b1}" + fragment + r"{\rWords}")
                 else:
                     text.append(fragment)
             lines.append(
