@@ -30,11 +30,17 @@ SCENE_INSTRUCTIONS = {
         "Use a three-quarter eye-level cinematic camera, not a plain gray backdrop."
     ),
     "book_intro": (
-        "Vertical 9:16 cinematic medium shot in a warm book-lined creative studio. "
-        "The SAME host has one hand placed naturally on a generic unbranded physical "
-        "hardcover book on the desk, preparing to lift it; the other hand rests casually. "
-        "Camera has clean line of sight to face, both hands and book. No printed title; "
-        "book title is added later by Clipper as a separate overlay."
+        "Vertical 9:16 cinematic medium-close shot in a warm book-lined study. "
+        "The SAME host physically holds an elegant deep-navy hardcover book fully in view "
+        "with pages open naturally and anatomically convincing fingers. This specific "
+        "physical book MUST have beautifully typeset, precisely spelled gold typography "
+        "on the front cover: ATOMIC HABITS. Directly below it: JAMES CLEAR. "
+        "The title and author are printed on the physical book ONLY, not floating over "
+        "the picture; the book is the important visual prop. No other printed letters "
+        "on the visible jacket. ABSOLUTELY NO embedded subtitles, subtitles boxes, "
+        "translucent caption panels, black lower-third overlays, gibberish letters, "
+        "watermarks, synthetic signs, or stray words anywhere else in the frame. "
+        "Keep the exact established host identity, warm amber studio and real desk."
     ),
     "lesson_example": (
         "Vertical 9:16 intimate over-the-shoulder desk shot in the same bedroom. "
