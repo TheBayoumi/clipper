@@ -107,11 +107,11 @@ jobs:
           import re
           import sys
           slot = sys.argv[1]
-          raw = re.sub(r"\\x1b\\[[0-9;]*m", "", os.environ["MODAL_TOKEN_INFO"])
+          raw = re.sub(r"\x1b\[[0-9;]*m", "", os.environ["MODAL_TOKEN_INFO"])
           candidates = (
-              r"(?im)^\\s*workspace(?:\\s+name)?\\s*[:=]\\s*([a-zA-Z0-9_.-]+)",
-              r"(?im)authenticated\\s+to\\s+workspace\\s+([a-zA-Z0-9_.-]+)",
-              r"(?im)workspace\\s+[\\x27\\x22]([a-zA-Z0-9_.-]+)[\\x27\\x22]",
+              r"(?im)^\s*workspace(?:\s+name)?\s*[:=]\s*([a-zA-Z0-9_.-]+)",
+              r"(?im)authenticated\s+to\s+workspace\s+([a-zA-Z0-9_.-]+)",
+              r"(?im)workspace\s+[\x27\x22]([a-zA-Z0-9_.-]+)[\x27\x22]",
           )
           identity = next((m.group(1) for p in candidates if (m := re.search(p, raw))), None)
           print(f"MODAL_SLOT_{slot}_WORKSPACE={identity or 'NOT_EXPOSED_BY_TOKEN_INFO'}")
