@@ -61,7 +61,7 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
     modal.write_text(
         "#!/usr/bin/env bash\n"
         'echo "modal:$MODAL_TOKEN_ID:$1:$2" >> "$CALLS"\n'
-        'if [[ "$FAILURE" == "auth" && "$MODAL_TOKEN_ID" == "primary" '
+        'if [[ "$FAILURE" == "auth" && "$MODAL_TOKEN_ID" == "secondary" '
         '&& "$1" == "app" ]]; then echo "Bad token" >&2; exit 17; fi\n'
         'if [[ "$1" == "function" ]]; then '
         'echo "Unsupported Modal function CLI invoked" >&2; exit 99; fi\n'
@@ -78,15 +78,14 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
         "#!/usr/bin/env bash\n"
         'echo "infer:$MODAL_TOKEN_ID:$1:$2" >> "$CALLS"\n'
         'if [[ "$1" == "scripts/modal_deployment_probe.py" ]]; then\n'
-        '  if [[ "$FAILURE" == "quota_probe" && "$MODAL_TOKEN_ID" == "primary" ]]; then '
+        '  if [[ "$FAILURE" == "quota_probe" && "$MODAL_TOKEN_ID" == "secondary" ]]; then '
         'echo "quota exceeded in deployment probe" >&2; exit 17; fi\n'
         '  if [[ "$FAILURE" == "race" ]]; then '
         'test -f "$RACE_DEPLOYED_FILE" || exit 44; exit 0; fi\n'
         '  if [[ "$DEPLOY_STATE" == "missing" ]]; then exit 44; fi\n'
         "  exit 0\n"
         "fi\n"
-        'if [[ "$MODAL_TOKEN_ID" == "primary" || '
-        '( "$MODAL_TOKEN_ID" == "secondary" && "$FAILURE" == "quota_twice" ) ]]; then\n'
+        'if [[ "$MODAL_TOKEN_ID" == "secondary" ]]; then\n'
         '  case "$FAILURE" in\n'
         '    quota|quota_twice) echo "QuotaExceededError: quota exceeded" >&2; exit 17 ;;\n'
         '    cuda) echo "CUDA out of memory" >&2; exit 17 ;;\n'
@@ -106,8 +105,9 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
-        "MODAL_TOKEN_ID": "primary",
+        "MODAL_TOKEN_ID": "primary-UNUSABLE",
         "MODAL_TOKEN_SECRET": "s1",
+        "MODAL_ACCOUNT_SLOT": "2",
         "MODAL_TOKEN_ID_2": "secondary",
         "MODAL_TOKEN_SECRET_2": "s2",
         "MODAL_TOKEN_ID_3": "tertiary",
@@ -137,11 +137,12 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
         check=False,
     )
     used = calls.read_text()
+    assert "primary-UNUSABLE" not in used
     if failure in ("success", "fresh_deploy", "race", "quota", "quota_twice"):
         assert process.returncode == 0, process.stderr + process.stdout
-        winner = {"success": 1, "fresh_deploy": 1, "race": 1, "quota": 2, "quota_twice": 3}[failure]
+        winner = {"success": 2, "fresh_deploy": 2, "race": 2, "quota": 3, "quota_twice": 3}[failure]
         assert f"MODAL_ACCOUNT_SLOT={winner}" in env_file.read_text()
-        assert ("infer:secondary:" in used) == (winner >= 2)
+        assert "infer:secondary:" in used
         assert ("infer:tertiary:" in used) == (winner == 3)
     else:
         assert process.returncode != 0
@@ -149,9 +150,9 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
         assert "infer:tertiary:" not in used
         assert not env_file.exists()
     if failure == "success":
-        assert "modal:primary:deploy" not in used
+        assert "modal:secondary:deploy" not in used
     if failure in ("fresh_deploy", "deploy", "race"):
-        assert "modal:primary:deploy" in used
+        assert "modal:secondary:deploy" in used
     if failure == "race":
         assert "MODAL_DEPLOY_REUSED_AFTER_RACE" in process.stdout
         assert "infer:secondary:" not in used
@@ -289,8 +290,11 @@ def test_modal_predeployment_provisions_once_and_never_calls_inference(
     env = {
         **os.environ,
         "PATH": f"{directory}:{os.environ['PATH']}",
-        "MODAL_TOKEN_ID": "primary",
+        "MODAL_TOKEN_ID": "primary-UNUSABLE",
         "MODAL_TOKEN_SECRET": "synthetic",
+        "MODAL_TOKEN_ID_2": "secondary",
+        "MODAL_TOKEN_SECRET_2": "synthetic",
+        "MODAL_ACCOUNT_SLOT": "2",
         "HF_TOKEN": "synthetic",
         "CALLS": str(calls),
         "DEPLOYED": str(deployed),
@@ -316,6 +320,7 @@ def test_modal_predeployment_provisions_once_and_never_calls_inference(
     assert "MODAL_DEPLOY_REUSED" in second.stdout
     assert "MODAL_APP_PREDEPLOY_READY" in second.stdout
     recorded = calls.read_text()
+    assert "primary-UNUSABLE" not in recorded
     assert recorded.count("modal:deploy") == 1
     assert "modal:run" not in recorded
     assert "python:scripts/modal_deployed_client.py" not in recorded
