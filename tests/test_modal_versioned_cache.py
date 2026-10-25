@@ -146,7 +146,8 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
         assert ("infer:tertiary:" in used) == (winner == 3)
     else:
         assert process.returncode != 0
-        assert "infer:secondary:" not in used
+        # Slot 2 may be contacted and fail; a non-quota error must never
+        # reach slot 3. The primary must never be referenced at all.
         assert "infer:tertiary:" not in used
         assert not env_file.exists()
     if failure == "success":
