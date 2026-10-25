@@ -107,7 +107,7 @@ def list_prior_runs(repo: str, branch: str, limit: int) -> list[int]:
         "--json",
         "databaseId,status",
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=40)
+    result = subprocess.run(command, capture_output=True, text=True, check=True)
     runs = json.loads(result.stdout)
     this_run = os.environ.get("GITHUB_RUN_ID", "")
     return [
