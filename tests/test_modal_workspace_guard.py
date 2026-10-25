@@ -19,7 +19,6 @@ def _check(
     active_workspace: str,
     expected_workspace: str,
     environment: str = "main",
-    token_id: str = "ak-synthetic",
 ) -> None:
     monkeypatch.setitem(
         sys.modules,
@@ -30,14 +29,16 @@ def _check(
             )
         ),
     )
-    monkeypatch.setenv("MODAL_TOKEN_ID", token_id)
+    monkeypatch.setenv("MODAL_TOKEN_ID", "ak-synthetic")
     monkeypatch.setenv("MODAL_TOKEN_SECRET", "as-synthetic")
     monkeypatch.setenv("MODAL_ENVIRONMENT", environment)
     monkeypatch.setattr(sys, "argv", [str(GUARD), "--expected", expected_workspace])
     runpy.run_path(str(GUARD), run_name="__main__")
 
 
-def test_accepts_live_expected_backup(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_accepts_live_expected_backup(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     _check(
         monkeypatch,
         active_workspace="mahmoud-bayoumi-bb",
