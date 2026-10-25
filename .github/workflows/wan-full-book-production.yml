@@ -18,7 +18,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [prepare, full]
+        options: [prepare, visual, full]
         default: prepare
         required: true
       cached_draft_run:
@@ -128,7 +128,7 @@ jobs:
           fi
           echo "$SOURCE_SHA  artifacts/full-book/source/host.webp" | sha256sum -c -
       - name: Restore verified full-book Qwen keyframe candidates
-        if: inputs.mode == 'full'
+        if: inputs.mode == 'full' || inputs.mode == 'visual'
         env:
           GH_TOKEN: ${{ github.token }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
