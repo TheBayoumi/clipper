@@ -352,8 +352,7 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) 
         "scene_zero_picture_reused": False,
         "scene_zero_current_keyframe_sha256": digest(
             (
-                Path("artifacts/full-book/frames")
-                / (plan["shots"][0]["keyframe_name"] + ".png")
+                Path("artifacts/full-book/frames") / (plan["shots"][0]["keyframe_name"] + ".png")
             ).read_bytes()
         ),
         "scene_zero_s2v_audio_sha256": plan["shots"][0]["audio_sha256"],
