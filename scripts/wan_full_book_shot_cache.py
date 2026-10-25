@@ -44,8 +44,16 @@ def main() -> None:
             folder = Path(root)
             result = subprocess.run(
                 [
-                    "gh", "run", "download", str(run_id), "--repo", repo,
-                    "--pattern", f"full-book-shot-{args.shot}-*", "--dir", str(folder),
+                    "gh",
+                    "run",
+                    "download",
+                    str(run_id),
+                    "--repo",
+                    repo,
+                    "--pattern",
+                    f"full-book-shot-{args.shot}-*",
+                    "--dir",
+                    str(folder),
                 ],
                 capture_output=True,
                 text=True,
