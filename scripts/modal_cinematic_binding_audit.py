@@ -40,6 +40,7 @@ def main() -> None:
     workspace = modal.Workspace.from_context()
     attribute = workspace.name
     name = attribute() if callable(attribute) else attribute
+    print(f"MODAL_BINDING_WORKSPACE_ACTUAL={name} EXPECTED={args.expected}")
     if name != args.expected:
         raise SystemExit("::error::Current workspace differs from requested workspace")
     print(f"MODAL_BINDING_WORKSPACE={name} ENVIRONMENT={env_name}")
