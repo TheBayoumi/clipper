@@ -8,7 +8,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [preflight, credentials, gpu_probe, profile_backup_1, redeploy_backup_1, keyframes, speaking, full_book_prepare, full_book_visual, full_book]
+        options: [preflight, credentials, gpu_probe, profile_backup_1, redeploy_backup_1, profile_backup_2, redeploy_backup_2, keyframes, speaking, full_book_prepare, full_book_visual, full_book]
         default: preflight
         required: true
       shot_ids:
@@ -54,7 +54,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || (inputs.mode != 'full_book_prepare' && inputs.mode != 'full_book_visual' && inputs.mode != 'full_book')
     runs-on: ubuntu-24.04
     env:
-      MODAL_ACCOUNT_SLOT: '2'
+      MODAL_ACCOUNT_SLOT: '3'
       MODAL_TOKEN_ID_2: ${{ secrets.MODAL_TOKEN_ID_2 }}
       MODAL_TOKEN_SECRET_2: ${{ secrets.MODAL_TOKEN_SECRET_2 }}
       MODAL_TOKEN_ID_3: ${{ secrets.MODAL_TOKEN_ID_3 }}
@@ -225,11 +225,12 @@ jobs:
               modal run scripts/modal_a100_access_probe.py
             echo "MODAL_A100_PROBE_PASSED slot=${slot}"
           done
-      - name: Activate and verify backup-1 Modal profile before any model deployment
-        if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'profile_backup_1' || inputs.mode == 'redeploy_backup_1')
+      - name: Activate selected backup profile and optionally force Qwen/Wan deployment
+        if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'profile_backup_1' || inputs.mode == 'redeploy_backup_1' || inputs.mode == 'profile_backup_2' || inputs.mode == 'redeploy_backup_2')
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          MODAL_PROFILE_ACTIVATION_ONLY: ${{ inputs.mode == 'profile_backup_1' && '1' || '0' }}
+          MODAL_REDEPLOY_SLOT: ${{ (inputs.mode == 'profile_backup_2' || inputs.mode == 'redeploy_backup_2') && '3' || '2' }}
+          MODAL_PROFILE_ACTIVATION_ONLY: ${{ (inputs.mode == 'profile_backup_1' || inputs.mode == 'profile_backup_2') && '1' || '0' }}
         run: |
           set -euo pipefail
           python -m pip install 'modal==1.5.5'
