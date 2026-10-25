@@ -1,5 +1,19 @@
 name: Clipper full book episode - original Wan multi-shot production
 on:
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        required: true
+      cached_draft_run:
+        type: string
+        default: '40047215101'
+      reference_path:
+        type: string
+        default: assets/character/page-to-life-host-approved-512.webp.b64
+      source_sha256:
+        type: string
+        default: c3bbc6395e47c04646ad3f0ad44f13873511e4ee3189046eafbc682225e746d2
   workflow_dispatch:
     inputs:
       mode:
