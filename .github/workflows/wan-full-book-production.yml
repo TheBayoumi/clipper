@@ -43,7 +43,6 @@ concurrency:
 jobs:
   prepare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 165
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -142,11 +141,35 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-  render:
+  deploy_wan:
     needs: prepare
     if: inputs.mode == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 165
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_TOKEN_ID_2: ${{ secrets.MODAL_TOKEN_ID_2 }}
+      MODAL_TOKEN_SECRET_2: ${{ secrets.MODAL_TOKEN_SECRET_2 }}
+      MODAL_TOKEN_ID_3: ${{ secrets.MODAL_TOKEN_ID_3 }}
+      MODAL_TOKEN_SECRET_3: ${{ secrets.MODAL_TOKEN_SECRET_3 }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Ensure one immutable Wan application deployment before GPU matrix
+        run: |
+          set -euo pipefail
+          python -m pip install 'modal==1.5.5'
+          bash scripts/modal_versioned_dispatch.sh \
+            scripts/modal_wan_s2v.py generate_s2v speaking --deploy-only
+          echo "WAN_APP_DEPLOYMENT_READY_NO_GPU_INFERENCE"
+ 
+  render:
+    needs: [prepare, deploy_wan]
+    if: inputs.mode == 'full'
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -220,7 +243,6 @@ jobs:
     needs: [prepare, render]
     if: inputs.mode == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
