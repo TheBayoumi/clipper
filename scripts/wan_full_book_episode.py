@@ -266,7 +266,7 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) 
         clips.append((video, actual))
     inputs = []
     filters = []
-    for i, ((video, actual), shot) in enumerate(zip(clips, plan["shots"], strict=True)):
+    for i, ((video, _actual), shot) in enumerate(zip(clips, plan["shots"], strict=True)):
         inputs += ["-i", str(video)]
         frames = round(shot["duration_seconds"] * FPS)
         filters.append(
@@ -351,7 +351,10 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) 
         "voice_profile": plan.get("voice"),
         "scene_zero_picture_reused": False,
         "scene_zero_current_keyframe_sha256": digest(
-            (Path("artifacts/full-book/frames") / (plan["shots"][0]["keyframe_name"] + ".png")).read_bytes()
+            (
+                Path("artifacts/full-book/frames")
+                / (plan["shots"][0]["keyframe_name"] + ".png")
+            ).read_bytes()
         ),
         "scene_zero_s2v_audio_sha256": plan["shots"][0]["audio_sha256"],
         "scene_zero_wan_lip_sync_review": "PENDING_HUMAN_REVIEW",
