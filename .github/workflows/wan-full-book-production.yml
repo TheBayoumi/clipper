@@ -61,8 +61,8 @@ jobs:
           python -m pip install 'pytest>=9,<10' 'Pillow>=11,<13' 'ruff>=0.15.22,<1'
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg
-          python -m ruff check scripts/wan_full_book_episode.py scripts/wan_full_book_shot_cache.py scripts/wan_full_book_captions.py scripts/wan_full_book_voice.py tests/test_wan_full_book_episode.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
-          python -m ruff format --check scripts/wan_full_book_episode.py scripts/wan_full_book_shot_cache.py scripts/wan_full_book_captions.py scripts/wan_full_book_voice.py tests/test_wan_full_book_episode.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
+          python -m ruff check scripts/wan_full_book_episode.py scripts/wan_full_book_shot_cache.py scripts/wan_full_book_captions.py scripts/wan_full_book_voice.py scripts/wan_full_book_scene_zero.py tests/test_wan_full_book_episode.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
+          python -m ruff format --check scripts/wan_full_book_episode.py scripts/wan_full_book_shot_cache.py scripts/wan_full_book_captions.py scripts/wan_full_book_voice.py scripts/wan_full_book_scene_zero.py tests/test_wan_full_book_episode.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
           PYTHONPATH=scripts python -m pytest -q -o addopts='' tests/test_wan_full_book_episode.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
       - name: Recover 38-second genuine Qwen3 Kokoro source and inspect original story
         env:
@@ -232,6 +232,11 @@ jobs:
           SEED="$(python -c 'import json,os; print(json.load(open("artifacts/full-book/source/plan.json"))["shots"][int(os.environ["SHOT_INDEX"])]["seed"])')"
           IMAGE="artifacts/full-book/frames/$IMAGE_NAME.png"
           AUDIO="artifacts/full-book/source/scene-$INDEX.wav"
+          if [[ "$SHOT_INDEX" == "0" ]]; then
+            python scripts/wan_full_book_scene_zero.py \
+              --reference "$IMAGE" --audio "$AUDIO" --output "$SHOT_DIR"
+            echo "SCENE_ZERO_OLD_VISUAL_REUSED_NEW_NARRATOR_AUDIO_ONLY"
+          else
           python scripts/wan_full_book_shot_cache.py --shot "$SHOT_INDEX" \
             --plan artifacts/full-book/source/plan.json --output "$SHOT_DIR" \
             --reference "$IMAGE" --audio "$AUDIO"
@@ -253,6 +258,7 @@ jobs:
               scripts/modal_wan_s2v.py generate_s2v speaking \
               --reference "$IMAGE" --audio "$AUDIO" \
               --output "$SHOT_DIR" --prompt "$PROMPT" --seed "$SEED"
+          fi
           fi
       - name: Save each completed shot independently for recovery
         if: always()
