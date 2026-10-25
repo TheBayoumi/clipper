@@ -407,6 +407,38 @@ backup selection. GPU eligibility on slot 3 must not be misrepresented as
 success of the entire 30–60 second finished video.
 
 
+
+## Live correction: backup slot 2 was reauthenticated — October 25, 2026
+
+The user changed the GitHub secret for slot 2 after the earlier billing
+test. **Do not treat the previous `mahmoud-bayoumi-mb` mapping as current.**
+
+- [Read-only credential audit #40209470334](https://github.com/TheBayoumi/clipper/actions/runs/40209470334)
+  passed with the current secrets:
+  `MODAL_SLOT_2_WORKSPACE=mahmoud-bayoumi-bb` and
+  `MODAL_SLOT_3_WORKSPACE=thebayoumi`. Primary remains excluded.
+- [Live A100 probe #40209548199](https://github.com/TheBayoumi/clipper/actions/runs/40209548199)
+  selected slot 2, but Modal refused before GPU allocation with
+  `Workspace ac-0LNag4aLq4g5YG1fg5GCTq has exceeded its spend limit`.
+  Importantly, **the same internal workspace ID** was returned by
+  [the earlier slot-2 A100 probe #40209029353](https://github.com/TheBayoumi/clipper/actions/runs/40209029353),
+  which had identified the workspace by the earlier display name.
+  Thus, current token-info metadata identifies a new workspace *name*,
+  but the live authorization check still resolves to the same
+  spending-limited Modal internal workspace. This is a verified
+  discrepancy; **the cause has not been proven** (name change,
+  account/workspace relationship, or credential routing).
+- [Backup slot-3 A100 probe #40209139919](https://github.com/TheBayoumi/clipper/actions/runs/40209139919)
+  succeeded earlier, independently of slot 2.
+
+No new Qwen/Wan inference or full episode was launched during this
+correction. Spend-limit errors remain excluded from **quota-only**
+fallback. Before changing the initial GPU workspace or charging
+other accounts, reconcile the internal workspace ID and spending
+limit in Modal account/workspace settings or receive an explicit user
+instruction to select slot 3 initially.
+
+
 ## Acceptance and regression policy
 
 - Preserve existing archived 15-second storyboard tests for backwards
