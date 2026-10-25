@@ -22,9 +22,9 @@ from pathlib import Path
 
 config_path = Path(os.environ["MODAL_CONFIG_PATH"])
 config_path.write_text(
-    "[mahmoud-bayoumi-bb]\\n"
-    + "token_id = " + json.dumps(os.environ["MODAL_TOKEN_ID_2"]) + "\\n"
-    + "token_secret = " + json.dumps(os.environ["MODAL_TOKEN_SECRET_2"]) + "\\n",
+    "[mahmoud-bayoumi-bb]\n"
+    + "token_id = " + json.dumps(os.environ["MODAL_TOKEN_ID_2"]) + "\n"
+    + "token_secret = " + json.dumps(os.environ["MODAL_TOKEN_SECRET_2"]) + "\n",
     encoding="utf-8",
 )
 config_path.chmod(0o600)
