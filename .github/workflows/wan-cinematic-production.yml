@@ -97,6 +97,25 @@ jobs:
             fi
             if MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret" modal app list --json > /dev/null; then
               echo "MODAL_AUTHENTICATED_SLOT=${slot}"
+              # Read-only: Modal token metadata, never emit token ID or secret.
+              TOKEN_INFO="$(MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret" modal token info 2>&1)" || {
+                echo "::error::Cannot inspect Modal token metadata for slot ${slot}"
+                exit 1
+              }
+              MODAL_TOKEN_INFO="$TOKEN_INFO" python - "$slot" <<'PY'
+          import os
+          import re
+          import sys
+          slot = sys.argv[1]
+          raw = re.sub(r"\\x1b\\[[0-9;]*m", "", os.environ["MODAL_TOKEN_INFO"])
+          candidates = (
+              r"(?im)^\\s*workspace(?:\\s+name)?\\s*[:=]\\s*([a-zA-Z0-9_.-]+)",
+              r"(?im)authenticated\\s+to\\s+workspace\\s+([a-zA-Z0-9_.-]+)",
+              r"(?im)workspace\\s+[\\x27\\x22]([a-zA-Z0-9_.-]+)[\\x27\\x22]",
+          )
+          identity = next((m.group(1) for p in candidates if (m := re.search(p, raw))), None)
+          print(f"MODAL_SLOT_{slot}_WORKSPACE={identity or 'NOT_EXPOSED_BY_TOKEN_INFO'}")
+          PY
             else
               echo "::error::Modal authentication failed for workspace slot ${slot}"; exit 1
             fi
