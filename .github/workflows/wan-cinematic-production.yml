@@ -8,7 +8,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [preflight, credentials, keyframes, speaking]
+        options: [preflight, credentials, keyframes, speaking, full_book_prepare, full_book]
         default: preflight
         required: true
       shot_ids:
@@ -46,6 +46,7 @@ concurrency:
 
 jobs:
   cinematic:
+    if: github.event_name != 'workflow_dispatch' || (inputs.mode != 'full_book_prepare' && inputs.mode != 'full_book')
     runs-on: ubuntu-24.04
     timeout-minutes: 170
     env:
@@ -314,3 +315,13 @@ jobs:
             artifacts/cinematic/model-evidence.json
           if-no-files-found: warn
           retention-days: 14
+
+  full_book:
+    if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'full_book_prepare' || inputs.mode == 'full_book')
+    uses: ./.github/workflows/wan-full-book-production.yml
+    with:
+      mode: ${{ inputs.mode == 'full_book' && 'full' || 'prepare' }}
+      cached_draft_run: '40047215101'
+      reference_path: ${{ inputs.reference_path }}
+      source_sha256: ${{ inputs.approved_reference_sha256 }}
+    secrets: inherit
