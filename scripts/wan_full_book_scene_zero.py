@@ -71,10 +71,16 @@ def restore(reference: Path, new_audio: Path, destination: Path) -> None:
     source_root = destination.parent / "approved-scene-zero"
     subprocess.run(
         [
-            "gh", "run", "download", str(SOURCE_RUN),
-            "--repo", os.environ["GITHUB_REPOSITORY"],
-            "--pattern", f"full-book-shot-0-{SOURCE_RUN}",
-            "--dir", str(source_root),
+            "gh",
+            "run",
+            "download",
+            str(SOURCE_RUN),
+            "--repo",
+            os.environ["GITHUB_REPOSITORY"],
+            "--pattern",
+            f"full-book-shot-0-{SOURCE_RUN}",
+            "--dir",
+            str(source_root),
         ],
         check=True,
     )
@@ -83,9 +89,12 @@ def restore(reference: Path, new_audio: Path, destination: Path) -> None:
         raise ValueError("expected exactly one user-accepted scene-zero video")
     source = sources[0]
     evidence = source.with_name("model-evidence.json")
-    if not verified_wan_output(
-        source, evidence, IMAGE_SHA256, OLD_AUDIO_SHA256, _original_prompt(), 735
-    ) or sha(source) != VIDEO_SHA256:
+    if (
+        not verified_wan_output(
+            source, evidence, IMAGE_SHA256, OLD_AUDIO_SHA256, _original_prompt(), 735
+        )
+        or sha(source) != VIDEO_SHA256
+    ):
         raise ValueError("approved original scene-zero clip failed provenance checks")
     import shutil
 
