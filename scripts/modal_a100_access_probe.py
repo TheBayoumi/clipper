@@ -24,7 +24,7 @@ def check_a100() -> str:
         check=True,
     )
     device = probe.stdout.strip()
-    if "A100" not in device or not any(tag in device for tag in ("80 GiB", "81920 MiB")):
+    if "A100" not in device or not any(tag in device for tag in ("80GB", "80 GiB", "81920 MiB")):
         # This failure must not be interpreted as a production quota event.
         raise RuntimeError("Allocated device is not the requested A100-80GB")
     return "A100-80GB_AVAILABLE"
