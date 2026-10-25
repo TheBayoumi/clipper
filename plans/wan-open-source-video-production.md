@@ -439,6 +439,40 @@ limit in Modal account/workspace settings or receive an explicit user
 instruction to select slot 3 initially.
 
 
+
+## Direct backup-1 redeployment evidence — October 25, 2026
+
+User explicitly requested a real redeploy on `mahmoud-bayoumi-bb`
+because no Modal dashboard deployment/execution logs were visible.
+
+- Added `scripts/modal_backup1_redeploy.sh` and the
+  `redeploy_backup_1` mode of the existing, dispatchable
+  `wan-cinematic-production.yml`. It **does not consult**
+  `modal_deployment_probe.py`, saved MP4s, Qwen frames, or deployment
+  reuse; it invokes `modal deploy` directly with only
+  `MODAL_TOKEN_ID_2`/`MODAL_TOKEN_SECRET_2`.
+- [Forced redeploy GitHub run #40217322101](https://github.com/TheBayoumi/clipper/actions/runs/40217322101)
+  executed with:
+  `MODAL_EFFECTIVE_WORKSPACE=mahmoud-bayoumi-bb`;
+  `MODAL_WORKSPACE_IDENTITY_GUARD_PASSED`;
+  `MODAL_FORCED_REDEPLOY_STARTED kind=qwen
+  app=clipper-qwen-cinematic-keyframes-2e0b521712fa8089`.
+- The actual CLI `modal deploy --name ... --env main` rejected
+  **immediately**, returning
+  `Workspace ac-0LNag4aLq4g5YG1fg5GCTq has exceeded its spend limit`.
+  This is the **same internal workspace ID** returned by prior live
+  A100 tests for slot 2.
+- **Neither Qwen deployment completion, Wan deployment, nor an A100
+  invocation occurred.** This explains missing Modal app/inference
+  logs: Modal rejected the requested deployment at workspace
+  authorization, not at model initialization. No evidence of an
+  old cached app being used in this forced deploy.
+- Do not report this as successful video render, or silently route
+  to slot 3 on this *spending-limit* failure. The user must resolve
+  the Modal-side workspace spend limit or explicitly authorize a
+  different starting slot.
+
+
 ## Acceptance and regression policy
 
 - Preserve existing archived 15-second storyboard tests for backwards
