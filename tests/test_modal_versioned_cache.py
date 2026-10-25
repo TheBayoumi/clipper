@@ -30,6 +30,7 @@ from wan_shared_shot_cache import (  # noqa: E402
     (
         "success",
         "fresh_deploy",
+        "race",
         "quota",
         "quota_twice",
         "cuda",
@@ -66,6 +67,9 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
         'echo "Unsupported Modal function CLI invoked" >&2; exit 99; fi\n'
         'if [[ "$1" == "deploy" && "$FAILURE" == "deploy" ]]; then '
         'echo "build failed" >&2; exit 17; fi\n'
+        'if [[ "$1" == "deploy" && "$FAILURE" == "race" ]]; then '
+        'touch "$RACE_DEPLOYED_FILE"; '
+        'echo "App deploy name x is already taken by a deployed app." >&2; exit 17; fi\n'
         "exit 0\n"
     )
     modal.chmod(0o755)
@@ -76,6 +80,8 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
         'if [[ "$1" == "scripts/modal_deployment_probe.py" ]]; then\n'
         '  if [[ "$FAILURE" == "quota_probe" && "$MODAL_TOKEN_ID" == "primary" ]]; then '
         'echo "quota exceeded in deployment probe" >&2; exit 17; fi\n'
+        '  if [[ "$FAILURE" == "race" ]]; then '
+        'test -f "$RACE_DEPLOYED_FILE" || exit 44; exit 0; fi\n'
         '  if [[ "$DEPLOY_STATE" == "missing" ]]; then exit 44; fi\n'
         "  exit 0\n"
         "fi\n"
@@ -110,7 +116,8 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
         "GITHUB_ENV": str(env_file),
         "CALLS": str(calls),
         "FAILURE": failure,
-        "DEPLOY_STATE": "missing" if failure in ("deploy", "fresh_deploy") else "found",
+        "DEPLOY_STATE": "missing" if failure in ("deploy", "fresh_deploy", "race") else "found",
+        "RACE_DEPLOYED_FILE": str(tmp_path / "deployed"),
     }
     process = subprocess.run(
         [
@@ -130,9 +137,9 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
         check=False,
     )
     used = calls.read_text()
-    if failure in ("success", "fresh_deploy", "quota", "quota_twice"):
+    if failure in ("success", "fresh_deploy", "race", "quota", "quota_twice"):
         assert process.returncode == 0, process.stderr + process.stdout
-        winner = {"success": 1, "fresh_deploy": 1, "quota": 2, "quota_twice": 3}[failure]
+        winner = {"success": 1, "fresh_deploy": 1, "race": 1, "quota": 2, "quota_twice": 3}[failure]
         assert f"MODAL_ACCOUNT_SLOT={winner}" in env_file.read_text()
         assert ("infer:secondary:" in used) == (winner >= 2)
         assert ("infer:tertiary:" in used) == (winner == 3)
@@ -143,8 +150,11 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
         assert not env_file.exists()
     if failure == "success":
         assert "modal:primary:deploy" not in used
-    if failure in ("fresh_deploy", "deploy"):
+    if failure in ("fresh_deploy", "deploy", "race"):
         assert "modal:primary:deploy" in used
+    if failure == "race":
+        assert "MODAL_DEPLOY_REUSED_AFTER_RACE" in process.stdout
+        assert "infer:secondary:" not in used
 
 
 def test_wan_shared_cache_requires_every_input_hash_and_candidate_status(
