@@ -134,7 +134,11 @@ def generate_keyframe(reference: bytes, request: dict[str, Any]) -> dict[str, An
                 prompt=request["prompt"],
                 generator=generator,
                 true_cfg_scale=4.0,
-                negative_prompt="low quality, gray background, identity drift, wrong clothes",
+                negative_prompt=(
+                    "low quality, gray background, identity drift, wrong clothes, "
+                    "baked captions, subtitle panels, translucent lower-third boxes, "
+                    "floating text, random letters, misspelled book covers, gibberish words"
+                ),
                 num_inference_steps=request["steps"],
                 guidance_scale=1.0,
                 num_images_per_prompt=1,
