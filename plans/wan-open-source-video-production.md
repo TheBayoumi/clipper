@@ -473,6 +473,66 @@ because no Modal dashboard deployment/execution logs were visible.
   different starting slot.
 
 
+
+## Forensic check: stale Modal function ID hypothesis — October 25, 2026
+
+Evidence sources and outcome:
+
+1. Inspected the entire feature-branch source tree and active cinematic route.
+   `scripts/modal_deployed_client.py` uses `modal.Function.from_name()`
+   with a deterministic app name derived from current Qwen/Wan source hashes.
+   `scripts/modal_deployment_probe.py` also uses `from_name`.
+   **No static `fu-...` function ID, `ac-...` workspace ID, or
+   `Function.from_id(...)` exists in the active full-book route.**
+   The older editorial implementation `src/clipper/modal_execution.py`
+   dynamically obtains `function_id` *after* SDK function hydration;
+   this is a separate execution pipeline, not the Atomic Habits GPU route.
+2. Removed one concrete ambiguity: production now explicitly pins
+   `MODAL_ENVIRONMENT=main` before lookup/deployment; both
+   `modal_deployed_client.py` and `modal_deployment_probe.py`
+   use `environment_name="main"`. A new
+   `scripts/modal_workspace_guard.py` hydrates live Modal SDK identity
+   and fails closed when slot 2/3 credentials don't resolve to the
+   expected workspaces. It does not access any cached function ID.
+3. Added read-only `scripts/modal_cinematic_binding_audit.py` and
+   `wan-cinematic-production.yml` credentials-mode binding audit.
+   [GitHub run #40219820935](https://github.com/TheBayoumi/clipper/actions/runs/40219820935)
+   **passed**, with real Modal SDK lookups in `main`:
+   - `mahmoud-bayoumi-bb`: Qwen `ABSENT_IN_CURRENT_WORKSPACE`;
+     Wan `ABSENT_IN_CURRENT_WORKSPACE`.
+   - `thebayoumi`: Qwen `ABSENT_IN_CURRENT_WORKSPACE`;
+     Wan `ABSENT_IN_CURRENT_WORKSPACE`.
+   Therefore neither backup currently has the canonical Qwen/Wan GPU
+   functions deployed in `main`; these are **not old function bindings**.
+4. The previous [forced deployment #40217322101](https://github.com/TheBayoumi/clipper/actions/runs/40217322101)
+   bypassed app reuse and confirmed authenticated name
+   `mahmoud-bayoumi-bb`, but Modal denied the actual `modal deploy`
+   RPC: `Workspace ac-0LNag4aLq4g5YG1fg5GCTq has exceeded its spend limit`.
+   This internal ID appeared with the earlier workspace name, and
+   Modal's public SDK did not expose an independently comparable ID.
+   The cause of that same-ID/name discrepancy is still unresolved.
+5. [CI #40219786856](https://github.com/TheBayoumi/clipper/actions/runs/40219786856)
+   passed both Python versions after identity-guard fixes. Diagnostic
+   false negatives from attempting to read `Workspace.name` before
+   `hydrate()` were corrected.
+
+**Conclusion:** No hardcoded old function reference or use of old
+Modal function IDs explains the failure. The verified immediate
+blocker remains Modal's spending-limit rejection before deployment.
+Do not auto-failover on budget errors or trigger full paid GPU
+generation until routing/account constraints are resolved.
+
+**Separate global caveat:** Older Clipper workflows
+(`modal-workers-deploy.yml`, `provision-modal-hf-secret.yml`,
+`wan-s2v-qualification.yml`, `approved-host-modal-trellis2.yml`
+and `production-pipeline.yml`) still source legacy primary
+`MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` secrets. The **current
+cinematic and full-book production workflows exclude primary credentials**,
+but this is not a repository-wide primary ban yet; those independent
+legacy workflows must be migrated or explicitly disabled before
+using them again.
+
+
 ## Acceptance and regression policy
 
 - Preserve existing archived 15-second storyboard tests for backwards
