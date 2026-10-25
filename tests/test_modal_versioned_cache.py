@@ -379,6 +379,6 @@ def test_explicit_backup_two_routes_only_to_slot_three() -> None:
     assert "redeploy_backup_2" in cinematic[True]["workflow_dispatch"]["inputs"]["mode"]["options"]
     profile_route = (ROOT / "scripts/modal_backup1_redeploy.sh").read_text()
     assert 'modal profile activate "$expected_workspace"' in profile_route
-    assert '3) expected_workspace=thebayoumi' in profile_route
-    assert 'unset MODAL_TOKEN_ID MODAL_TOKEN_SECRET MODAL_PROFILE' in profile_route
-    assert 'Only Modal backup slots 2 or 3 are permitted' in profile_route
+    assert "3) expected_workspace=thebayoumi" in profile_route
+    assert "unset MODAL_TOKEN_ID MODAL_TOKEN_SECRET MODAL_PROFILE" in profile_route
+    assert "Only Modal backup slots 2 or 3 are permitted" in profile_route
