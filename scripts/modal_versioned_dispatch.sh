@@ -70,11 +70,36 @@ for ((slot=preferred; slot<=3; slot++)); do
       echo "::error::Modal secret provisioning failure; NO account failover"
       exit 1
     fi
-    if ! CLIPPER_MODAL_APP_NAME="$app_name" modal deploy "$app_script"; then
+    deploy_log="$(mktemp)"
+    if CLIPPER_MODAL_APP_NAME="$app_name" modal deploy "$app_script" >"$deploy_log" 2>&1; then
+      tail -n 18 "$deploy_log"
+      echo "MODAL_DEPLOY_CREATED version=${source_digest} slot=${slot}"
+    elif grep -Fq "already taken by a" "$deploy_log" && grep -Fq "deployed app" "$deploy_log"; then
+      # A parallel shot raced to deploy this identical immutable version.
+      # Never switch account or overwrite it. Wait for the winner to hydrate.
+      echo "MODAL_DEPLOY_CONCURRENT_WINNER_DETECTED slot=${slot}"
+      ready=false
+      for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        if python scripts/modal_deployment_probe.py "$app_name" "$function_tag" >/dev/null 2>&1; then
+          ready=true
+          break
+        fi
+        sleep 5
+      done
+      if [[ "$ready" != true ]]; then
+        tail -n 40 "$deploy_log" >&2
+        echo "::error::Concurrent deployment did not become ready; NO account failover"
+        rm -f "$deploy_log"
+        exit 1
+      fi
+      echo "MODAL_DEPLOY_REUSED_AFTER_RACE version=${source_digest} slot=${slot}"
+    else
+      tail -n 40 "$deploy_log" >&2
       echo "::error::Modal deployment failure; NO account failover"
+      rm -f "$deploy_log"
       exit 1
     fi
-    echo "MODAL_DEPLOY_CREATED version=${source_digest} slot=${slot}"
+    rm -f "$deploy_log"
   fi
 
   inference_log="$(mktemp)"
