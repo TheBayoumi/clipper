@@ -133,13 +133,28 @@ jobs:
           internal_id = getattr(workspace, "object_id", None) or getattr(
               workspace, "_object_id", None
           )
+          if not internal_id:
+              # Modal SDK v1.5.5 exposes the workspace name, but does not
+              # promise a public object ID property; do not misreport this
+              # as an account failure or invent an ID.
+              internal_id = next(
+                  (
+                      value
+                      for key, value in vars(workspace).items()
+                      if "id" in key.lower()
+                      and isinstance(value, str)
+                      and value.startswith("ac-")
+                  ),
+                  None,
+              )
           actual_name = getattr(workspace, "name", None)
           if callable(actual_name):
               actual_name = actual_name()
+          expected_name = {"2": "mahmoud-bayoumi-bb", "3": "thebayoumi"}[slot]
           print(f"MODAL_SDK_WORKSPACE_SLOT_{slot}_NAME={actual_name}")
-          print(f"MODAL_SDK_WORKSPACE_SLOT_{slot}_ID={internal_id}")
-          if not isinstance(internal_id, str) or not internal_id.startswith("ac-"):
-              raise SystemExit("::error::Modal workspace internal ID could not be verified")
+          print(f"MODAL_SDK_WORKSPACE_SLOT_{slot}_ID={internal_id or 'NOT_EXPOSED_BY_SDK'}")
+          if actual_name != expected_name:
+              raise SystemExit("::error::Unexpected workspace identity; no deployment allowed")
           PY
             else
               echo "::error::Modal authentication failed for workspace slot ${slot}"; exit 1
