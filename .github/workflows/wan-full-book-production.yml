@@ -61,9 +61,9 @@ jobs:
           python -m pip install 'pytest>=9,<10' 'Pillow>=11,<13' 'ruff>=0.15.22,<1'
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg
-          python -m ruff check scripts/wan_full_book_episode.py scripts/wan_full_book_shot_cache.py scripts/wan_full_book_captions.py tests/test_wan_full_book_episode.py tests/test_wan_full_book_captions.py
-          python -m ruff format --check scripts/wan_full_book_episode.py scripts/wan_full_book_shot_cache.py scripts/wan_full_book_captions.py tests/test_wan_full_book_episode.py tests/test_wan_full_book_captions.py
-          PYTHONPATH=scripts python -m pytest -q -o addopts='' tests/test_wan_full_book_episode.py tests/test_wan_full_book_captions.py
+          python -m ruff check scripts/wan_full_book_episode.py scripts/wan_full_book_shot_cache.py scripts/wan_full_book_captions.py scripts/wan_full_book_voice.py tests/test_wan_full_book_episode.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
+          python -m ruff format --check scripts/wan_full_book_episode.py scripts/wan_full_book_shot_cache.py scripts/wan_full_book_captions.py scripts/wan_full_book_voice.py tests/test_wan_full_book_episode.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
+          PYTHONPATH=scripts python -m pytest -q -o addopts='' tests/test_wan_full_book_episode.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
       - name: Recover 38-second genuine Qwen3 Kokoro source and inspect original story
         env:
           GH_TOKEN: ${{ github.token }}
@@ -79,6 +79,30 @@ jobs:
           python scripts/wan_full_book_episode.py prepare \
             --video "$SOURCE_MP4" --manifest "$SOURCE_MANIFEST" \
             --output artifacts/full-book/source
+      - name: Restore content-addressed original baritone voice cache
+        uses: actions/cache@v4
+        with:
+          path: artifacts/full-book/voice-cache
+          key: original-book-baritone-${{ hashFiles('scripts/wan_full_book_voice.py') }}-${{ inputs.cached_draft_run }}
+      - name: Generate original warm cinematic male narration from cached Qwen script
+        run: |
+          set -euo pipefail
+          python -m pip install 'torch>=2.6,<3' --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install 'kokoro==0.9.4' 'soundfile>=0.13,<1' 'numpy>=2,<2.5'
+          SOURCE_MANIFEST="$(find artifacts/full-book/original-draft -name manifest.json -type f -print -quit)"
+          test -s "$SOURCE_MANIFEST"
+          python scripts/wan_full_book_voice.py \
+            --manifest "$SOURCE_MANIFEST" \
+            --output artifacts/full-book/source \
+            --cache artifacts/full-book/voice-cache
+          python - <<'PY'
+          import json
+          p=json.load(open("artifacts/full-book/source/plan.json"))
+          assert p["voice"]["voice_id"] == "am_adam"
+          assert p["voice"]["celebrity_voice_clone"] is False
+          assert 30 <= p["seconds"] <= 60
+          print("ORIGINAL_BARITONE_VOICE_SOURCE_VERIFIED", p["seconds"])
+          PY
       - name: Align original Kokoro narration to word-level subtitles before GPU
         run: |
           set -euo pipefail
