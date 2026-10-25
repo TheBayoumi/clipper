@@ -37,6 +37,8 @@ preferred="${MODAL_ACCOUNT_SLOT:-2}"
   exit 2
 }
 echo "MODAL_PRIMARY_DISABLED=true ACTIVE_BACKUP_SLOT=${preferred}"
+# Resolve the same environment for app deployment and function lookup.
+export MODAL_ENVIRONMENT=main
 [[ -n "${HF_TOKEN:-}" ]] || { echo "::error::Missing HF_TOKEN"; exit 2; }
 
 for ((slot=preferred; slot<=3; slot++)); do
@@ -56,7 +58,18 @@ for ((slot=preferred; slot<=3; slot++)); do
   fi
   # Do not print or write credentials. Every command below is workspace-bound.
   export MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret"
-  echo "MODAL_ROUTING_APP=${app_name} WORKSPACE_SLOT=${slot}"
+  # No persisted function ID is loaded; the current credentials are checked
+  # against Modal's live workspace metadata on every route.
+  case "$slot" in
+    2) expected_workspace="${MODAL_EXPECTED_WORKSPACE_2:-mahmoud-bayoumi-bb}" ;;
+    3) expected_workspace="${MODAL_EXPECTED_WORKSPACE_3:-thebayoumi}" ;;
+    *) echo "::error::Primary account disabled"; exit 2 ;;
+  esac
+  echo "MODAL_ROUTING_APP=${app_name} WORKSPACE_SLOT=${slot} ENVIRONMENT=main"
+  if ! python scripts/modal_workspace_guard.py --expected "$expected_workspace"; then
+    echo "::error::Backup workspace identity does not match current token; NO account failover"
+    exit 1
+  fi
   if ! modal app list --json >/dev/null; then
     echo "::error::Modal authentication failed; NO account failover"
     exit 1
@@ -81,7 +94,7 @@ for ((slot=preferred; slot<=3; slot++)); do
       exit 1
     fi
     deploy_log="$(mktemp)"
-    if CLIPPER_MODAL_APP_NAME="$app_name" modal deploy "$app_script" >"$deploy_log" 2>&1; then
+    if CLIPPER_MODAL_APP_NAME="$app_name" modal deploy --env main "$app_script" >"$deploy_log" 2>&1; then
       tail -n 18 "$deploy_log"
       echo "MODAL_DEPLOY_CREATED version=${source_digest} slot=${slot}"
     elif grep -Fq "already taken by a" "$deploy_log" && grep -Fq "deployed app" "$deploy_log"; then
