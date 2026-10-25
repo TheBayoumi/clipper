@@ -1,4 +1,4 @@
-name: Clipper full-book targeted recovery (no GPU)
+name: Clipper full-book targeted recovery and scene-0-only Wan render
 
 on:
   workflow_call:
@@ -17,8 +17,8 @@ on:
     inputs:
       mode:
         type: choice
-        options: [recover_scene0, assemble_from_artifacts]
-        default: recover_scene0
+        options: [render_fresh_scene0, assemble_from_artifacts]
+        default: render_fresh_scene0
         required: true
       source_run:
         type: string
@@ -39,21 +39,21 @@ concurrency:
 
 jobs:
   recover_scene0:
-    if: inputs.mode == 'recover_scene0'
+    if: inputs.mode == 'render_fresh_scene0'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Validate recovered scene-zero provenance without a GPU
+      - name: Validate isolated scene-zero render source and tests
         run: |
           set -euo pipefail
-          python -m pip install 'pytest>=9,<10' 'ruff>=0.15.22,<1'
-          python -m ruff check scripts/wan_full_book_scene_zero.py tests/test_wan_full_book_scene_zero.py
-          python -m ruff format --check scripts/wan_full_book_scene_zero.py tests/test_wan_full_book_scene_zero.py
-          PYTHONPATH=scripts python -m pytest -q -o addopts='' tests/test_wan_full_book_scene_zero.py
-      - name: Download source run preparation, preserving narration and new keyframes
+          python -m pip install 'pytest>=9,<10' 'ruff>=0.15.22,<1' 'Pillow>=11,<13'
+          python -m ruff check scripts/wan_full_book_episode.py tests/test_wan_full_book_episode.py
+          python -m ruff format --check scripts/wan_full_book_episode.py tests/test_wan_full_book_episode.py
+          PYTHONPATH=scripts python -m pytest -q -o addopts='' tests/test_wan_full_book_episode.py
+      - name: Recover exact current full-book plan, Qwen frame and updated baritone WAV
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_RUN: ${{ inputs.source_run }}
@@ -63,43 +63,41 @@ jobs:
           mkdir -p artifacts/full-book
           gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
             --name "full-book-prep-$SOURCE_RUN" --dir artifacts/full-book
-          if [[ ! -s artifacts/full-book/source/plan.json || ! -s artifacts/full-book/source/scene-00.wav ]]; then
-            echo "::error::Source artifact layout did not contain scene zero plan/audio"
-            find artifacts/full-book -maxdepth 4 -type f -printf '%P\n' | head -n 35
-            exit 1
-          fi
-      - name: Restore approved historical scene-zero video and original frame by immutable hashes
+          test -s artifacts/full-book/source/plan.json
+          test -s artifacts/full-book/source/scene-00.wav
+          test -s artifacts/full-book/frames/hook.png
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root = Path("artifacts/full-book")
+          plan = json.loads((root / "source/plan.json").read_text())
+          assert plan["shots"][0]["audio_sha256"] == hashlib.sha256(
+              (root / "source/scene-00.wav").read_bytes()
+          ).hexdigest()
+          assert plan["voice"]["voice_id"] == "am_adam"
+          assert plan["voice"]["style"] == "original_warm_low_cinematic_baritone"
+          print("SCENE_ZERO_NEW_BARITONE_LOCKED", plan["shots"][0]["audio_sha256"])
+          PY
+      - name: Render only scene zero on Modal backup 2, never touching other scenes
         env:
           GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          MODAL_ACCOUNT_SLOT: '3'
+          MODAL_TOKEN_ID_3: ${{ secrets.MODAL_TOKEN_ID_3 }}
+          MODAL_TOKEN_SECRET_3: ${{ secrets.MODAL_TOKEN_SECRET_3 }}
         run: |
           set -euo pipefail
-          IMAGE_NAME="$(python - <<'PY'
-          import json
-          plan = json.load(open("artifacts/full-book/source/plan.json"))
-          assert plan["shots"][0]["id"] == "scene-00"
-          print(plan["shots"][0]["keyframe_name"])
-          PY
-          )"
-          IMAGE="artifacts/full-book/frames/$IMAGE_NAME.png"
-          AUDIO="artifacts/full-book/source/scene-00.wav"
-          test -s "$IMAGE"
-          python scripts/wan_full_book_scene_zero.py \
-            --reference "$IMAGE" --audio "$AUDIO" \
-            --output artifacts/full-book/rendered/scene-00
-          PYTHONPATH=scripts python - "$IMAGE" "$AUDIO" <<'PY'
-          import sys
-          from pathlib import Path
-          from wan_full_book_scene_zero import verified_scene_zero_visual
-          folder = Path("artifacts/full-book/rendered/scene-00")
-          assert verified_scene_zero_visual(folder, Path(sys.argv[1]), Path(sys.argv[2]))
-          assert (folder / "wan-s2v-candidate.mp4").stat().st_size > 300_000
-          print("SCENE_ZERO_RESTORED_HASH_VERIFIED_GPU_FREE")
-          PY
-      - name: Archive independently recovered scene zero
+          python -m pip install 'modal==1.5.5'
+          bash scripts/wan_full_book_render_scene_zero.sh \
+            artifacts/full-book/source/plan.json \
+            artifacts/full-book/frames/hook.png \
+            artifacts/full-book/source/scene-00.wav \
+            artifacts/full-book/rendered/scene-00
+      - name: Archive only fresh-current-audio scene zero, independently of scenes 1-3
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: full-book-shot-0-recovery-${{ github.run_id }}
+          name: full-book-shot-0-fresh-${{ github.run_id }}
           path: artifacts/full-book/rendered/
           retention-days: 14
           if-no-files-found: warn
@@ -130,11 +128,11 @@ jobs:
           gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
             --name "full-book-prep-$SOURCE_RUN" --dir artifacts/full-book
           gh run download "$ZERO_RUN" --repo "$GITHUB_REPOSITORY" \
-            --pattern "full-book-shot-0-recovery-$ZERO_RUN" \
+            --name "full-book-shot-0-fresh-$ZERO_RUN" \
             --dir artifacts/previous/scene-0
           for index in 1 2 3; do
             gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
-              --pattern "full-book-shot-$index-$SOURCE_RUN" \
+              --name "full-book-shot-$index-$SOURCE_RUN" \
               --dir "artifacts/previous/scene-$index"
           done
           for index in 0 1 2 3; do
