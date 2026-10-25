@@ -61,7 +61,9 @@ def inspect_audio(path: Path) -> tuple[int, bytes]:
         return wav.getnframes(), wav.readframes(wav.getnframes())
 
 
-def silence_spans(wav_bytes: bytes, seconds: float, max_rms: float = 0.014) -> list[tuple[float, float]]:
+def silence_spans(
+    wav_bytes: bytes, seconds: float, max_rms: float = 0.014
+) -> list[tuple[float, float]]:
     """Find long low-energy pauses; never assume proportional word cuts."""
     samples = array.array("h")
     samples.frombytes(wav_bytes)
