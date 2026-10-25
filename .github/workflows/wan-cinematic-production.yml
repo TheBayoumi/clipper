@@ -8,7 +8,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [preflight, credentials, gpu_probe, profile_backup_1, redeploy_backup_1, profile_backup_2, redeploy_backup_2, keyframes, speaking, full_book_prepare, full_book_visual, full_book]
+        options: [preflight, credentials, gpu_probe, profile_backup_1, redeploy_backup_1, profile_backup_2, redeploy_backup_2, recover_scene0, assemble_recovered, keyframes, speaking, full_book_prepare, full_book_visual, full_book]
         default: preflight
         required: true
       shot_ids:
@@ -40,6 +40,14 @@ on:
         options: ['2', '3', both]
         default: both
         required: true
+      recovery_source_run:
+        type: string
+        default: '40236460264'
+        required: true
+      scene0_recovery_run:
+        type: string
+        default: ''
+        required: false
 
 permissions:
   contents: read
@@ -51,7 +59,7 @@ concurrency:
 
 jobs:
   cinematic:
-    if: github.event_name != 'workflow_dispatch' || (inputs.mode != 'full_book_prepare' && inputs.mode != 'full_book_visual' && inputs.mode != 'full_book')
+    if: github.event_name != 'workflow_dispatch' || (inputs.mode != 'full_book_prepare' && inputs.mode != 'full_book_visual' && inputs.mode != 'full_book' && inputs.mode != 'recover_scene0' && inputs.mode != 'assemble_recovered')
     runs-on: ubuntu-24.04
     env:
       MODAL_ACCOUNT_SLOT: '3'
@@ -435,4 +443,13 @@ jobs:
       cached_draft_run: '40047215101'
       reference_path: ${{ inputs.reference_path }}
       source_sha256: ${{ inputs.approved_reference_sha256 }}
+    secrets: inherit
+
+  targeted_recovery:
+    if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'recover_scene0' || inputs.mode == 'assemble_recovered')
+    uses: ./.github/workflows/wan-full-book-recovery.yml
+    with:
+      mode: ${{ inputs.mode == 'recover_scene0' && 'recover_scene0' || 'assemble_from_artifacts' }}
+      source_run: ${{ inputs.recovery_source_run }}
+      scene0_recovery_run: ${{ inputs.scene0_recovery_run }}
     secrets: inherit
