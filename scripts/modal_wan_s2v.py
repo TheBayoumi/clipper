@@ -96,7 +96,7 @@ def check_request(reference: bytes, wav: bytes, source_sha: str, audio_sha: str)
     timeout=7200,
     volumes={"/model-cache": weights},
     secrets=[hf_secret],
-    max_containers=1,
+    max_containers=2,
     scaledown_window=60,
 )
 def generate_s2v(
