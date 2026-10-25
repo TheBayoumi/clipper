@@ -16,7 +16,12 @@ from modal.exception import NotFoundError
 
 ROOT = Path(__file__).resolve().parents[1]
 FUNCTIONS = (
-    ("qwen", "scripts/modal_qwen_keyframes.py", "clipper-qwen-cinematic-keyframes", "generate_keyframe"),
+    (
+        "qwen",
+        "scripts/modal_qwen_keyframes.py",
+        "clipper-qwen-cinematic-keyframes",
+        "generate_keyframe",
+    ),
     ("wan", "scripts/modal_wan_s2v.py", "clipper-wan-s2v", "generate_s2v"),
 )
 
