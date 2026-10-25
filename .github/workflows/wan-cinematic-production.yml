@@ -35,6 +35,11 @@ on:
         type: boolean
         default: false
         required: true
+      gpu_probe_slot:
+        type: choice
+        options: ['2', '3', both]
+        default: both
+        required: true
 
 permissions:
   contents: read
@@ -142,10 +147,15 @@ jobs:
           fi
       - name: Qualify A100-80GB allocation on backup Modal accounts without model inference
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'gpu_probe'
+        env:
+          REQUESTED_GPU_PROBE_SLOT: ${{ inputs.gpu_probe_slot }}
         run: |
           set -euo pipefail
           python -m pip install 'modal==1.5.5'
           for slot in 2 3; do
+            if [[ "$REQUESTED_GPU_PROBE_SLOT" != "both" && "$slot" != "$REQUESTED_GPU_PROBE_SLOT" ]]; then
+              continue
+            fi
             id_key="MODAL_TOKEN_ID_${slot}"
             secret_key="MODAL_TOKEN_SECRET_${slot}"
             id="${!id_key:-}"
