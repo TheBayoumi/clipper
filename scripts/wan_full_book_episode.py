@@ -221,7 +221,6 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) 
     Audio is not regenerated or retimed, each shot is required and hash-checked.
     This remains an editorial-review candidate, NOT automatically publishable.
     """
-    from wan_full_book_scene_zero import verified_scene_zero_visual
     from wan_shared_shot_cache import verified_wan_output
 
     output.mkdir(parents=True, exist_ok=True)
@@ -234,10 +233,10 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) 
         manifest = folder / "model-evidence.json"
         ref = Path("artifacts/full-book/frames") / (shot["keyframe_name"] + ".png")
         voice = Path("artifacts/full-book/source") / shot["audio"]
-        if name == "scene-00":
-            if not verified_scene_zero_visual(folder, ref, voice):
-                raise EpisodeError("original scene zero picture not pinned/verified")
-        elif not verified_wan_output(
+        # Every scene, including the hook, must be generated from the current
+        # source-plan image and baritone audio. The historical B-roll cache has
+        # a different audio hash and is never accepted as a synced S2V shot.
+        if not verified_wan_output(
             video,
             manifest,
             digest(ref.read_bytes()),
@@ -245,7 +244,7 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) 
             shot["prompt"],
             shot["seed"],
         ):
-            raise EpisodeError(f"invalid or missing Wan shot {name}")
+            raise EpisodeError(f"invalid or missing current-audio Wan shot {name}")
         probe = json.loads(
             command_run(
                 [
@@ -262,11 +261,7 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) 
         )
         actual = float(probe["format"]["duration"])
         wanted = shot["duration_seconds"]
-        if name == "scene-00":
-            factor = wanted / actual
-            if not 0.60 <= factor <= 1.65:
-                raise EpisodeError("preserved scene zero would require excessive visual retiming")
-        elif abs(actual - wanted) > 1.0:
+        if abs(actual - wanted) > 1.0:
             raise EpisodeError(f"{name} video duration diverges from narration by >1s")
         clips.append((video, actual))
     inputs = []
@@ -274,20 +269,10 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) 
     for i, ((video, actual), shot) in enumerate(zip(clips, plan["shots"], strict=True)):
         inputs += ["-i", str(video)]
         frames = round(shot["duration_seconds"] * FPS)
-        if i == 0:
-            # Picture-only conservation: the original synced audio is NEVER used.
-            # Tempo-adjust visual B-roll to the new baritone passage; no lip-sync claim.
-            factor = shot["duration_seconds"] / actual
-            filters.append(
-                f"[{i}:v]setpts={factor:.8f}*(PTS-STARTPTS),fps=24,"
-                f"scale=1080:1920:flags=lanczos,setsar=1,"
-                f"trim=end_frame={frames},setpts=PTS-STARTPTS[v{i}]"
-            )
-        else:
-            filters.append(
-                f"[{i}:v]fps=24,scale=1080:1920:flags=lanczos,setsar=1,"
-                f"trim=end_frame={frames},setpts=PTS-STARTPTS[v{i}]"
-            )
+        filters.append(
+            f"[{i}:v]fps=24,scale=1080:1920:flags=lanczos,setsar=1,"
+            f"trim=end_frame={frames},setpts=PTS-STARTPTS[v{i}]"
+        )
     audio = Path("artifacts/full-book/source/full-kokoro.wav")
     inputs += ["-i", str(audio)]
     labels = "".join(f"[v{i}]" for i in range(len(clips)))
@@ -364,9 +349,13 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) 
         "fps": FPS,
         "source_audio_sha256": digest(audio.read_bytes()),
         "voice_profile": plan.get("voice"),
-        "scene_zero_picture_reused": True,
-        "scene_zero_original_audio_muted": True,
-        "scene_zero_new_voice_lip_sync": "REQUIRES_HUMAN_VISUAL_REVIEW",
+        "scene_zero_picture_reused": False,
+        "scene_zero_current_keyframe_sha256": digest(
+            (Path("artifacts/full-book/frames") / (plan["shots"][0]["keyframe_name"] + ".png")).read_bytes()
+        ),
+        "scene_zero_s2v_audio_sha256": plan["shots"][0]["audio_sha256"],
+        "scene_zero_wan_lip_sync_review": "PENDING_HUMAN_REVIEW",
+        "embedded_scene_audio_discarded_for_single_locked_full_narration": True,
         "book_cover_exact_text_review": "PENDING",
         "baked_in_subtitle_review": "PENDING",
         "captions_sha256": digest(captions.read_bytes()),
