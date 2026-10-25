@@ -37,7 +37,7 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: clipper-full-book-episode
+  group: clipper-full-book-${{ inputs.mode }}
   cancel-in-progress: false
 
 jobs:
