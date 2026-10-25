@@ -31,7 +31,9 @@ def test_cached_voice_reuses_exact_scene_narrations_without_loading_kokoro(tmp_p
     output.mkdir()
     plan = {
         "source_manifest_sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
-        "shots": [{"narration": row["narration"], "id": f"scene-{i:02d}"} for i, row in enumerate(rows)],
+        "shots": [
+            {"narration": row["narration"], "id": f"scene-{i:02d}"} for i, row in enumerate(rows)
+        ],
         "seconds": 38,
         "fingerprint": "original",
     }
