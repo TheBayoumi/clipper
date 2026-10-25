@@ -381,6 +381,32 @@ voiceover, remaining action shots and final montage have been reviewed.
   stays disabled.
 
 
+
+## Modal A100 authorization check — October 25, 2026
+
+The user reports that both backup workspaces were updated for A100 use.
+We ran **actual minimal A100-80GB GPU probes**, without loading or rendering
+Qwen or Wan models:
+
+- [#40209029353](https://github.com/TheBayoumi/clipper/actions/runs/40209029353):
+  Backup slot 2 (`mahmoud-bayoumi-mb`) failed **before GPU allocation**
+  with Modal: `Workspace ... has exceeded its spend limit`. This is a
+  workspace **spending-limit failure**, not a GPU quota exhaustion event,
+  and should not trigger quota-only account failover.
+- [#40209139919](https://github.com/TheBayoumi/clipper/actions/runs/40209139919):
+  Backup slot 3 (`thebayoumi`) **successfully allocated** A100-80GB:
+  `MODAL_A100_GPU_ACCESS_VERIFIED`,
+  `MODAL_A100_PROBE_PASSED slot=3`. The check was isolated to slot 3
+  and did not render scenes or install model weights.
+
+Primary workspace stays excluded from Clipper; no fallback is permitted on
+billing/spend-limit failures under the user's **quota-only switching policy**.
+Full episode production should remain paused until backup slot 2's spending
+limit is addressed, or the user explicitly authorizes a different initial
+backup selection. GPU eligibility on slot 3 must not be misrepresented as
+success of the entire 30–60 second finished video.
+
+
 ## Acceptance and regression policy
 
 - Preserve existing archived 15-second storyboard tests for backwards
