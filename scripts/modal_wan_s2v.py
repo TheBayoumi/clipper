@@ -93,7 +93,7 @@ def check_request(reference: bytes, wav: bytes, source_sha: str, audio_sha: str)
     gpu="A100-80GB",
     cpu=8,
     memory=65536,
-    timeout=7200,
+    timeout=24 * 60 * 60,  # Modal's platform maximum; not a Clipper-imposed 2h cap.
     volumes={"/model-cache": weights},
     secrets=[hf_secret],
     max_containers=2,
@@ -173,7 +173,8 @@ def generate_s2v(
             "--save_file",
             str(video_file),
         ]
-        subprocess.run(command, cwd="/opt/Wan2.2", check=True, timeout=4800)
+        # No custom subprocess deadline: the Modal platform owns the attempt limit.
+        subprocess.run(command, cwd="/opt/Wan2.2", check=True)
         if not video_file.is_file() or not 25_000 < video_file.stat().st_size <= MAX_MP4_BYTES:
             raise RuntimeError("Wan S2V produced no bounded video")
         result = video_file.read_bytes()
