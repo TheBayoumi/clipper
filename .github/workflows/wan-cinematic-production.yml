@@ -180,6 +180,27 @@ jobs:
             fi
             echo "MODAL_SDK_DEPLOYMENT_LOOKUP_OK expected_not_found=true gpu=false"
           fi
+      - name: Audit live Qwen and Wan function bindings in each backup workspace without GPU
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'credentials'
+        env:
+          MODAL_ENVIRONMENT: main
+        run: |
+          set -euo pipefail
+          for slot in 2 3; do
+            id_key="MODAL_TOKEN_ID_${slot}"
+            secret_key="MODAL_TOKEN_SECRET_${slot}"
+            id="${!id_key:-}"
+            secret="${!secret_key:-}"
+            if [[ -z "$id" || -z "$secret" ]]; then
+              echo "::error::Missing credential pair for backup ${slot}"
+              exit 2
+            fi
+            if [[ "$slot" == 2 ]]; then expected=mahmoud-bayoumi-bb
+            else expected=thebayoumi
+            fi
+            MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret" \
+              python scripts/modal_cinematic_binding_audit.py --expected "$expected"
+          done
       - name: Qualify A100-80GB allocation on backup Modal accounts without model inference
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'gpu_probe'
         env:
