@@ -156,7 +156,8 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
         assert "modal:secondary:deploy" in used
     if failure == "race":
         assert "MODAL_DEPLOY_REUSED_AFTER_RACE" in process.stdout
-        assert "infer:secondary:" not in used
+        assert "infer:secondary:scripts/modal_deployed_client.py" in used
+        assert "infer:tertiary:" not in used
 
 
 def test_wan_shared_cache_requires_every_input_hash_and_candidate_status(
