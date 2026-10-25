@@ -100,9 +100,7 @@ def restore(reference: Path, new_audio: Path, destination: Path) -> None:
                 ],
                 check=True,
             )
-            matches = [
-                path for path in frame_root.rglob("*.png") if sha(path) == IMAGE_SHA256
-            ]
+            matches = [path for path in frame_root.rglob("*.png") if sha(path) == IMAGE_SHA256]
             if len(matches) != 1:
                 raise ValueError(
                     "approved historical scene-zero keyframe absent or ambiguous; "
