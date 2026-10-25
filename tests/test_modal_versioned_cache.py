@@ -327,9 +327,7 @@ def test_full_book_deployment_precedes_parallel_render_and_avoids_custom_limits(
 
     import yaml
 
-    workflow = yaml.safe_load(
-        (ROOT / ".github/workflows/wan-full-book-production.yml").read_text()
-    )
+    workflow = yaml.safe_load((ROOT / ".github/workflows/wan-full-book-production.yml").read_text())
     jobs = workflow["jobs"]
     assert jobs["deploy_wan"]["needs"] == "prepare"
     assert jobs["render"]["needs"] == ["prepare", "deploy_wan"]
