@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -42,7 +43,11 @@ def render_keyframes(args: argparse.Namespace) -> None:
             print(json.dumps({"shot": shot, "cache": "REUSED_LOCAL_VERIFIED"}))
             continue
         if function is None:
-            function = modal.Function.from_name(args.app, QWEN_FUNCTION)
+            function = modal.Function.from_name(
+                args.app,
+                QWEN_FUNCTION,
+                environment_name=os.environ.get("MODAL_ENVIRONMENT", "main"),
+            )
         evidence: dict[str, Any] = {**request, "status": "INCOMPLETE"}
         try:
             response = function.remote(source, request)
@@ -99,7 +104,11 @@ def render_speaking(args: argparse.Namespace) -> None:
         "status": "INCOMPLETE",
     }
     try:
-        function = modal.Function.from_name(args.app, WAN_FUNCTION)
+        function = modal.Function.from_name(
+            args.app,
+            WAN_FUNCTION,
+            environment_name=os.environ.get("MODAL_ENVIRONMENT", "main"),
+        )
         response = function.remote(reference, audio, source_sha, audio_sha, args.prompt, args.seed)
         video = response.pop("video")
         if sha(video) != response["video_sha256"]:
