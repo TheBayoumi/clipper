@@ -8,7 +8,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [preflight, credentials, keyframes, speaking, full_book_prepare, full_book_visual, full_book]
+        options: [preflight, credentials, gpu_probe, keyframes, speaking, full_book_prepare, full_book_visual, full_book]
         default: preflight
         required: true
       shot_ids:
@@ -140,6 +140,25 @@ jobs:
             fi
             echo "MODAL_SDK_DEPLOYMENT_LOOKUP_OK expected_not_found=true gpu=false"
           fi
+      - name: Qualify A100-80GB allocation on backup Modal accounts without model inference
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'gpu_probe'
+        run: |
+          set -euo pipefail
+          python -m pip install 'modal==1.5.5'
+          for slot in 2 3; do
+            id_key="MODAL_TOKEN_ID_${slot}"
+            secret_key="MODAL_TOKEN_SECRET_${slot}"
+            id="${!id_key:-}"
+            secret="${!secret_key:-}"
+            if [[ -z "$id" || -z "$secret" ]]; then
+              echo "::error::Backup ${slot} credential pair incomplete"
+              exit 2
+            fi
+            echo "MODAL_A100_PROBE_START slot=${slot}"
+            MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret" \
+              modal run scripts/modal_a100_access_probe.py
+            echo "MODAL_A100_PROBE_PASSED slot=${slot}"
+          done
       - name: Decode one hash-locked identity and construct storyboard-derived shots
         if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'keyframes' || inputs.mode == 'speaking')
         env:
