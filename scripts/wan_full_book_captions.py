@@ -32,12 +32,7 @@ def ass_time(seconds: float) -> str:
 
 
 def escape_ass(value: str) -> str:
-    return (
-        value.replace("\\", r"\\")
-        .replace("{", "(")
-        .replace("}", ")")
-        .replace("\n", " ")
-    )
+    return value.replace("\\", r"\\").replace("{", "(").replace("}", ")").replace("\n", " ")
 
 
 def make_ass(words: list[dict[str, Any]], duration: float) -> str:
@@ -66,9 +61,7 @@ def make_ass(words: list[dict[str, Any]], duration: float) -> str:
         "[Events]\n"
         "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
     )
-    lines = [
-        "Dialogue: 0,0:00:00.00,0:00:03.00,Book,,0,0,0,,ATOMIC HABITS  /  JAMES CLEAR"
-    ]
+    lines = ["Dialogue: 0,0:00:00.00,0:00:03.00,Book,,0,0,0,,ATOMIC HABITS  /  JAMES CLEAR"]
     for start in range(0, len(words), 5):
         phrase = words[start : start + 5]
         for j, word in enumerate(phrase):
