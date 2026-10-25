@@ -49,8 +49,9 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def command_run(command: list[str], timeout: int = 180) -> str:
-    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=True)
+def command_run(command: list[str]) -> str:
+    # FFmpeg/ffprobe are governed by the GitHub platform job lifetime only.
+    result = subprocess.run(command, capture_output=True, text=True, check=True)
     return result.stdout
 
 
@@ -306,7 +307,6 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) 
             "-shortest",
             str(target),
         ],
-        timeout=1200,
     )
     decoded = json.loads(
         command_run(
@@ -331,7 +331,7 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) 
         raise EpisodeError("final audio/video mismatch: source speech was truncated or padded")
     if (visual[0]["width"], visual[0]["height"], visual[0]["r_frame_rate"]) != (1080, 1920, "24/1"):
         raise EpisodeError("final video geometry is not 1080x1920 24fps")
-    command_run(["ffmpeg", "-v", "error", "-i", str(target), "-f", "null", "-"], timeout=200)
+    command_run(["ffmpeg", "-v", "error", "-i", str(target), "-f", "null", "-"])
     qa = {
         "schema": "clipper-full-book-delivery-evidence-v1",
         "source_plan_sha256": plan["fingerprint"],
