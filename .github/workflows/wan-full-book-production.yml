@@ -44,8 +44,7 @@ jobs:
   prepare:
     runs-on: ubuntu-24.04
     env:
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ACCOUNT_SLOT: '2'
       MODAL_TOKEN_ID_2: ${{ secrets.MODAL_TOKEN_ID_2 }}
       MODAL_TOKEN_SECRET_2: ${{ secrets.MODAL_TOKEN_SECRET_2 }}
       MODAL_TOKEN_ID_3: ${{ secrets.MODAL_TOKEN_ID_3 }}
@@ -183,8 +182,7 @@ jobs:
     if: inputs.mode == 'full'
     runs-on: ubuntu-24.04
     env:
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ACCOUNT_SLOT: '2'
       MODAL_TOKEN_ID_2: ${{ secrets.MODAL_TOKEN_ID_2 }}
       MODAL_TOKEN_SECRET_2: ${{ secrets.MODAL_TOKEN_SECRET_2 }}
       MODAL_TOKEN_ID_3: ${{ secrets.MODAL_TOKEN_ID_3 }}
@@ -213,8 +211,7 @@ jobs:
       matrix:
         shot: [0, 1, 2, 3]
     env:
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ACCOUNT_SLOT: '2'
       MODAL_TOKEN_ID_2: ${{ secrets.MODAL_TOKEN_ID_2 }}
       MODAL_TOKEN_SECRET_2: ${{ secrets.MODAL_TOKEN_SECRET_2 }}
       MODAL_TOKEN_ID_3: ${{ secrets.MODAL_TOKEN_ID_3 }}
