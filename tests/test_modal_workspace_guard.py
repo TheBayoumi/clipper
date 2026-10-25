@@ -25,7 +25,9 @@ def _check(
         "modal",
         SimpleNamespace(
             Workspace=SimpleNamespace(
-                from_context=lambda: SimpleNamespace(name=lambda: active_workspace)
+                from_context=lambda: SimpleNamespace(
+                    name=lambda: active_workspace, hydrate=lambda: None
+                )
             )
         ),
     )
