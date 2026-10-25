@@ -21,7 +21,7 @@ def main() -> None:
         raise SystemExit("::error::Explicit Modal API token pair is required")
 
     workspace = modal.Workspace.from_context()
-    name_attribute = getattr(workspace, "name")
+    name_attribute = workspace.name
     name = name_attribute() if callable(name_attribute) else name_attribute
     if name != args.expected:
         raise SystemExit("::error::Modal active workspace differs from requested backup")
