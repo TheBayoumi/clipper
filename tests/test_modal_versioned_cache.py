@@ -77,6 +77,8 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
     python.write_text(
         "#!/usr/bin/env bash\n"
         'echo "infer:$MODAL_TOKEN_ID:$1:$2" >> "$CALLS"\n'
+        '[[ "$MODAL_ENVIRONMENT" == main ]] || exit 92\n'
+        'if [[ "$1" == "scripts/modal_workspace_guard.py" ]]; then exit 0; fi\n'
         'if [[ "$1" == "scripts/modal_deployment_probe.py" ]]; then\n'
         '  if [[ "$FAILURE" == "quota_probe" && "$MODAL_TOKEN_ID" == "secondary" ]]; then '
         'echo "quota exceeded in deployment probe" >&2; exit 17; fi\n'
@@ -138,6 +140,7 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
     )
     used = calls.read_text()
     assert "primary-UNUSABLE" not in used
+    assert "infer:secondary:scripts/modal_workspace_guard.py" in used
     if failure in ("success", "fresh_deploy", "race", "quota", "quota_twice"):
         assert process.returncode == 0, process.stderr + process.stdout
         winner = {"success": 2, "fresh_deploy": 2, "race": 2, "quota": 3, "quota_twice": 3}[failure]
@@ -283,6 +286,8 @@ def test_modal_predeployment_provisions_once_and_never_calls_inference(
     fake_python.write_text(
         "#!/usr/bin/env bash\n"
         'echo "python:$1" >> "$CALLS"\n'
+        '[[ "$MODAL_ENVIRONMENT" == main ]] || exit 92\n'
+        'if [[ "$1" == "scripts/modal_workspace_guard.py" ]]; then exit 0; fi\n'
         'if [[ "$1" != "scripts/modal_deployment_probe.py" ]]; then exit 97; fi\n'
         'test -f "$DEPLOYED" || exit 44\n'
         "exit 0\n"
