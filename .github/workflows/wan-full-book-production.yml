@@ -80,6 +80,15 @@ jobs:
           python scripts/wan_full_book_episode.py prepare \
             --video "$SOURCE_MP4" --manifest "$SOURCE_MANIFEST" \
             --output artifacts/full-book/source
+      - name: Align original Kokoro narration to word-level subtitles before GPU
+        run: |
+          set -euo pipefail
+          python -m pip install 'faster-whisper==1.2.1'
+          python scripts/wan_full_book_captions.py \
+            --audio artifacts/full-book/source/full-kokoro.wav \
+            --plan artifacts/full-book/source/plan.json \
+            --output artifacts/full-book/source/captions.ass
+          test -s artifacts/full-book/source/caption-evidence.json
       - name: Restore hash-locked approved character reference
         env:
           SOURCE: ${{ inputs.reference_path }}
@@ -220,7 +229,7 @@ jobs:
       - name: Install final media QA
         run: |
           set -euo pipefail
-          python -m pip install 'Pillow>=11,<13' 'faster-whisper==1.2.1'
+          python -m pip install 'Pillow>=11,<13'
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg
       - uses: actions/download-artifact@v4
@@ -232,14 +241,25 @@ jobs:
           pattern: full-book-shot-*
           path: artifacts/full-book/rendered
           merge-multiple: true
-      - name: Generate precise open-source Whisper word captions with Style-B background
+      - name: Verify and reuse cached open-source word-timed Style-B captions
         run: |
           set -euo pipefail
           mkdir -p artifacts/full-book/final
-          python scripts/wan_full_book_captions.py \
-            --audio artifacts/full-book/source/full-kokoro.wav \
-            --plan artifacts/full-book/source/plan.json \
-            --output artifacts/full-book/final/captions.ass
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,json,shutil
+          source=Path("artifacts/full-book/source")
+          dest=Path("artifacts/full-book/final")
+          plan=json.loads((source/"plan.json").read_text())
+          evidence=json.loads((source/"caption-evidence.json").read_text())
+          assert evidence["audio_sha256"]==plan["full_audio_sha256"]
+          assert evidence["source_episode_fingerprint"]==plan["fingerprint"]
+          assert evidence["subtitle_sha256"]==hashlib.sha256((source/"captions.ass").read_bytes()).hexdigest()
+          assert evidence["word_agreement"]>=0.77 and evidence["publish_eligible"] is False
+          shutil.copy2(source/"captions.ass",dest/"captions.ass")
+          shutil.copy2(source/"caption-evidence.json",dest/"caption-evidence.json")
+          print("FULL_BOOK_CAPTIONS_REUSED_FROM_LOCKED_SOURCE")
+          PY
       - name: Assemble exact narration with four distinct verified Wan scenes
         run: |
           set -euo pipefail
