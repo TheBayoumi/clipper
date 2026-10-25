@@ -8,6 +8,7 @@ Any other error: authentication, connectivity or API failure (must NOT fail over
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 import modal
@@ -20,7 +21,11 @@ def main() -> int:
     parser.add_argument("function_name")
     args = parser.parse_args()
     try:
-        fn = modal.Function.from_name(args.app_name, args.function_name)
+        fn = modal.Function.from_name(
+            args.app_name,
+            args.function_name,
+            environment_name=os.environ.get("MODAL_ENVIRONMENT", "main"),
+        )
         fn.hydrate()
     except NotFoundError:
         print("MODAL_DEPLOYMENT_NOT_FOUND", file=sys.stderr)
