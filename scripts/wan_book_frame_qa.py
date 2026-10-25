@@ -42,9 +42,7 @@ def main() -> None:
     parser.add_argument("--frame", type=Path, required=True)
     args = parser.parse_args()
     if contains_old_subtitle_panel(args.frame):
-        raise SystemExit(
-            "::error::Qwen book frame contains baked caption panel; reject before GPU"
-        )
+        raise SystemExit("::error::Qwen book frame contains baked caption panel; reject before GPU")
     print("BOOK_SOURCE_NO_OLD_BAKED_SUBTITLE_PANEL")
     print("BOOK_TITLE_SPELLING_AND_MOTION_REQUIRE_HUMAN_REVIEW")
 
