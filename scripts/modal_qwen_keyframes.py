@@ -81,7 +81,7 @@ def validate_request(reference: bytes, req: dict[str, Any]) -> None:
     gpu="A100-80GB",
     cpu=12,
     memory=131072,
-    timeout=7200,
+    timeout=24 * 60 * 60,  # Modal maximum; no custom two-hour deadline.
     volumes={"/model-cache": volume},
     secrets=[hf_secret],
     max_containers=1,
