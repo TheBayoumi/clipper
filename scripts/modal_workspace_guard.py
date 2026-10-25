@@ -24,6 +24,7 @@ def main() -> None:
     name_attribute = workspace.name
     name = name_attribute() if callable(name_attribute) else name_attribute
     if name != args.expected:
+        print(f"MODAL_WORKSPACE_MISMATCH actual={name} expected={args.expected}")
         raise SystemExit("::error::Modal active workspace differs from requested backup")
 
     environment = os.environ.get("MODAL_ENVIRONMENT")
