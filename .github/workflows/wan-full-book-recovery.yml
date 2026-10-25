@@ -1,0 +1,157 @@
+name: Clipper full-book targeted recovery (no GPU)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [recover_scene0, assemble_from_artifacts]
+        default: recover_scene0
+        required: true
+      source_run:
+        type: string
+        default: '40236460264'
+        required: true
+      scene0_recovery_run:
+        type: string
+        default: ''
+        required: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clipper-targeted-recovery-${{ github.ref_name }}-${{ inputs.mode }}-${{ inputs.source_run }}
+  cancel-in-progress: false
+
+jobs:
+  recover_scene0:
+    if: inputs.mode == 'recover_scene0'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate recovered scene-zero provenance without a GPU
+        run: |
+          set -euo pipefail
+          python -m pip install 'pytest>=9,<10' 'ruff>=0.15.22,<1'
+          python -m ruff check scripts/wan_full_book_scene_zero.py tests/test_wan_full_book_scene_zero.py
+          python -m ruff format --check scripts/wan_full_book_scene_zero.py tests/test_wan_full_book_scene_zero.py
+          PYTHONPATH=scripts python -m pytest -q -o addopts='' tests/test_wan_full_book_scene_zero.py
+      - name: Download source run preparation, preserving narration and new keyframes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.source_run }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
+          mkdir -p artifacts/full-book
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --pattern "full-book-prep-$SOURCE_RUN" --dir artifacts/full-book
+          test -s artifacts/full-book/source/plan.json
+          test -s artifacts/full-book/source/scene-00.wav
+      - name: Restore approved historical scene-zero video and original frame by immutable hashes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          IMAGE_NAME="$(python - <<'PY'
+          import json
+          plan = json.load(open("artifacts/full-book/source/plan.json"))
+          assert plan["shots"][0]["id"] == "scene-00"
+          print(plan["shots"][0]["keyframe_name"])
+          PY
+          )"
+          IMAGE="artifacts/full-book/frames/$IMAGE_NAME.png"
+          AUDIO="artifacts/full-book/source/scene-00.wav"
+          test -s "$IMAGE"
+          python scripts/wan_full_book_scene_zero.py \
+            --reference "$IMAGE" --audio "$AUDIO" \
+            --output artifacts/full-book/rendered/scene-00
+          PYTHONPATH=scripts python - "$IMAGE" "$AUDIO" <<'PY'
+          import sys
+          from pathlib import Path
+          from wan_full_book_scene_zero import verified_scene_zero_visual
+          folder = Path("artifacts/full-book/rendered/scene-00")
+          assert verified_scene_zero_visual(folder, Path(sys.argv[1]), Path(sys.argv[2]))
+          assert (folder / "wan-s2v-candidate.mp4").stat().st_size > 300_000
+          print("SCENE_ZERO_RESTORED_HASH_VERIFIED_GPU_FREE")
+          PY
+      - name: Archive independently recovered scene zero
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-book-shot-0-recovery-${{ github.run_id }}
+          path: artifacts/full-book/rendered/
+          retention-days: 14
+          if-no-files-found: warn
+
+  assemble:
+    if: inputs.mode == 'assemble_from_artifacts'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU-only assembly tools
+        run: |
+          set -euo pipefail
+          python -m pip install 'Pillow>=11,<13'
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Retrieve only source-prep and recovered shot artifacts without GPU
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.source_run }}
+          ZERO_RUN: ${{ inputs.scene0_recovery_run }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ && "$ZERO_RUN" =~ ^[0-9]+$ ]]
+          mkdir -p artifacts/full-book artifacts/previous
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --pattern "full-book-prep-$SOURCE_RUN" --dir artifacts/full-book
+          gh run download "$ZERO_RUN" --repo "$GITHUB_REPOSITORY" \
+            --pattern "full-book-shot-0-recovery-$ZERO_RUN" \
+            --dir artifacts/previous/scene-0
+          for index in 1 2 3; do
+            gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+              --pattern "full-book-shot-$index-$SOURCE_RUN" \
+              --dir "artifacts/previous/scene-$index"
+          done
+          for index in 0 1 2 3; do
+            source="artifacts/previous/scene-$index"
+            original="$(find "$source" -type f -name wan-s2v-candidate.mp4 -print -quit)"
+            test -s "$original" || { echo "::error::Missing scene $index; no final assembly"; exit 1; }
+            destination="artifacts/full-book/rendered/scene-$(printf '%02d' "$index")"
+            mkdir -p "$destination"
+            cp -a "$(dirname "$original")/." "$destination/"
+            test -s "$destination/model-evidence.json"
+          done
+          test -s artifacts/full-book/source/captions.ass
+          test -s artifacts/full-book/source/caption-evidence.json
+      - name: Assemble the original voice and four verified scenes
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/full-book/final
+          cp artifacts/full-book/source/captions.ass artifacts/full-book/final/captions.ass
+          cp artifacts/full-book/source/caption-evidence.json artifacts/full-book/final/caption-evidence.json
+          PYTHONPATH=scripts python scripts/wan_full_book_episode.py assemble \
+            --plan artifacts/full-book/source/plan.json \
+            --shots artifacts/full-book/rendered/scene-00 \
+                    artifacts/full-book/rendered/scene-01 \
+                    artifacts/full-book/rendered/scene-02 \
+                    artifacts/full-book/rendered/scene-03 \
+            --output artifacts/full-book/final \
+            --captions artifacts/full-book/final/captions.ass
+      - name: Archive complete 30-to-60-second candidate for human review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-book-video-recovery-${{ github.run_id }}
+          path: artifacts/full-book/final/
+          retention-days: 14
+          if-no-files-found: warn
