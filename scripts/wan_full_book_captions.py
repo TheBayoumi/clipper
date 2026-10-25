@@ -1,4 +1,4 @@
-"""Original-source, word-timed ASS captions for a validated 30–60s book episode.
+"""Original-source, word-timed ASS captions for a validated 30-60s book episode.
 
 Uses open-weight Whisper transcription on GitHub CPU. Text must reconcile with
 the original verified Qwen narration; no synthetic timing from word counts.
@@ -48,21 +48,24 @@ def make_ass(words: list[dict[str, Any]], duration: float) -> str:
             raise ValueError("invalid word timing")
         if i and word["start"] < words[i - 1]["start"]:
             raise ValueError("word timestamps are out of order")
-    header = """[Script Info]
-Title: Clipper original book lesson
-ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
-WrapStyle: 2
-
-[V4+ Styles]
-Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
-Style: Words,DejaVu Sans,65,&H00FFFFFF,&H000000FF,&H65000000,&HB0000000,1,0,0,0,100,100,0,0,3,2,0,2,85,85,230,1
-Style: Book,DejaVu Sans,42,&H00FFFFFF,&H000000FF,&H80000000,&H70000000,1,0,0,0,100,100,0,0,3,1,0,8,100,100,125,1
-
-[Events]
-Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
-"""
+    header = (
+        "[Script Info]\n"
+        "Title: Clipper original book lesson\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1080\n"
+        "PlayResY: 1920\n"
+        "WrapStyle: 2\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,"
+        "BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,"
+        "BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\n"
+        "Style: Words,DejaVu Sans,65,&H00FFFFFF,&H000000FF,&H65000000,"
+        "&HB0000000,1,0,0,0,100,100,0,0,3,2,0,2,85,85,230,1\n"
+        "Style: Book,DejaVu Sans,42,&H00FFFFFF,&H000000FF,&H80000000,"
+        "&H70000000,1,0,0,0,100,100,0,0,3,1,0,8,100,100,125,1\n\n"
+        "[Events]\n"
+        "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
+    )
     lines = [
         "Dialogue: 0,0:00:00.00,0:00:03.00,Book,,0,0,0,,ATOMIC HABITS  /  JAMES CLEAR"
     ]
