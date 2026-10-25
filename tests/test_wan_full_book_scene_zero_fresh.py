@@ -74,8 +74,10 @@ def test_scene_zero_rejects_old_audio_video_even_if_old_mp4_hash_is_valid(
 
     with pytest.raises(episode.EpisodeError, match="current-audio Wan shot scene-00"):
         episode.prepare_concat(
-            plan, [clip_dir, clip_dir, clip_dir, clip_dir],
-            tmp_path / "output", tmp_path / "captions.ass"
+            plan,
+            [clip_dir, clip_dir, clip_dir, clip_dir],
+            tmp_path / "output",
+            tmp_path / "captions.ass",
         )
 
     # Only when the S2V manifest is bound to the *new* audio should assembly
@@ -90,8 +92,10 @@ def test_scene_zero_rejects_old_audio_video_even_if_old_mp4_hash_is_valid(
     monkeypatch.setattr(episode, "command_run", stop_at_probe)
     with pytest.raises(RuntimeError, match="CURRENT_VOICE_SHOT_ACCEPTED_FOR_MEDIA_PROBE"):
         episode.prepare_concat(
-            plan, [clip_dir, clip_dir, clip_dir, clip_dir],
-            tmp_path / "output", tmp_path / "captions.ass"
+            plan,
+            [clip_dir, clip_dir, clip_dir, clip_dir],
+            tmp_path / "output",
+            tmp_path / "captions.ass",
         )
 
 
@@ -101,12 +105,12 @@ def test_scene_zero_separation_does_not_modify_scene_1_2_3_jobs() -> None:
     recovery = (ROOT / ".github/workflows/wan-full-book-recovery.yml").read_text()
     assert "matrix:\n        shot: [0, 1, 2, 3]" in full
     assert "fail-fast: false" in full
-    assert "python scripts/wan_full_book_shot_cache.py --shot \"$SHOT_INDEX\"" in full
+    assert 'python scripts/wan_full_book_shot_cache.py --shot "$SHOT_INDEX"' in full
     assert 'if [[ "$SHOT_INDEX" == "0" ]]; then' in full
-    assert 'bash scripts/wan_full_book_render_scene_zero.sh' in full
+    assert "bash scripts/wan_full_book_render_scene_zero.sh" in full
     assert "--shot 0" in only_zero
     assert "SCENE_ZERO_NEW_VOICE_GPU_SKIPPED_VERIFIED_CACHE" in only_zero
     assert "SCENE_ZERO_CURRENT_QWEN_CURRENT_BARITONE_WAN_VERIFIED" in only_zero
     assert "MODAL_ACCOUNT_SLOT: '3'" in recovery
     assert "full-book-shot-0-fresh-" in recovery
-    assert 'inputs.mode == \'render_fresh_scene0\'' in recovery
+    assert "inputs.mode == 'render_fresh_scene0'" in recovery
