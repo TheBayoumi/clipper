@@ -184,7 +184,7 @@ def restore(args: argparse.Namespace) -> None:
                 "--dir",
                 str(archive),
             ]
-            result = subprocess.run(command, capture_output=True, text=True, timeout=90)
+            result = subprocess.run(command, capture_output=True, text=True)
             if result.returncode:
                 print(f"SHOT_CACHE_ARTIFACT_UNAVAILABLE run={run_id}")
                 continue
