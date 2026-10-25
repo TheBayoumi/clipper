@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -29,7 +30,14 @@ def verified_scene_zero_visual(folder: Path, reference: Path, new_audio: Path) -
     video = folder / "wan-s2v-candidate.mp4"
     original = folder / "model-evidence.json"
     record = folder / "visual-reuse.json"
-    if not reference.is_file() or sha(reference) != IMAGE_SHA256:
+    historical_frame = folder / "locked-original-keyframe.png"
+    # The reusable MP4 is bound to the *historical* image, not to a later
+    # Qwen regeneration of the same storyboard slot.
+    if (
+        not reference.is_file()
+        or not historical_frame.is_file()
+        or sha(historical_frame) != IMAGE_SHA256
+    ):
         return False
     if not verified_wan_output(
         video, original, IMAGE_SHA256, OLD_AUDIO_SHA256, _original_prompt(), 735
@@ -45,6 +53,8 @@ def verified_scene_zero_visual(folder: Path, reference: Path, new_audio: Path) -
             data["source_run"] == SOURCE_RUN
             and data["visual_sha256"] == VIDEO_SHA256
             and data["original_voice_sha256"] == OLD_AUDIO_SHA256
+            and data["original_keyframe_sha256"] == IMAGE_SHA256
+            and data["current_keyframe_sha256"] == sha(reference)
             and data["current_voice_sha256"] == sha(new_audio)
             and data["reuse_type"] == "VIDEO_ONLY_ORIGINAL_NARRATION_MUTED"
             and data["publish_eligible"] is False
@@ -61,13 +71,48 @@ def _original_prompt() -> str:
 
 def restore(reference: Path, new_audio: Path, destination: Path) -> None:
     if verified_scene_zero_visual(destination, reference, new_audio):
-        print("SCENE_ZERO_VISUAL_PRESERVED_VERIFIED", VIDEO_SHA256)
+        if not verified_scene_zero_visual(destination, reference, new_audio):
+        raise ValueError("scene-zero visual provenance could not be verified after recovery")
+    print("SCENE_ZERO_VISUAL_PRESERVED_VERIFIED", VIDEO_SHA256)
+    print("SCENE_ZERO_HISTORICAL_KEYFRAME_LOCKED", IMAGE_SHA256)
         return
-    if sha(reference) != IMAGE_SHA256:
-        raise ValueError("scene zero Qwen keyframe differs; visual lock requires original frame")
+    if not reference.is_file() or not new_audio.is_file():
+        raise ValueError("scene-zero source keyframe or replacement narration missing")
     if not os.environ.get("GH_TOKEN"):
         raise RuntimeError("GitHub Actions read token missing")
     destination.mkdir(parents=True, exist_ok=True)
+    historical = destination / "locked-original-keyframe.png"
+    if not historical.is_file() or sha(historical) != IMAGE_SHA256:
+        if sha(reference) == IMAGE_SHA256:
+            shutil.copyfile(reference, historical)
+        else:
+            frame_root = destination.parent / "approved-scene-zero-frames"
+            subprocess.run(
+                [
+                    "gh",
+                    "run",
+                    "download",
+                    str(SOURCE_RUN),
+                    "--repo",
+                    os.environ["GITHUB_REPOSITORY"],
+                    "--pattern",
+                    f"full-book-prep-{SOURCE_RUN}",
+                    "--dir",
+                    str(frame_root),
+                ],
+                check=True,
+            )
+            matches = [
+                path for path in frame_root.rglob("*.png") if sha(path) == IMAGE_SHA256
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    "approved historical scene-zero keyframe absent or ambiguous; "
+                    "will not substitute the newly generated Qwen frame"
+                )
+            shutil.copyfile(matches[0], historical)
+    if sha(historical) != IMAGE_SHA256:
+        raise ValueError("historical scene-zero keyframe digest does not match approval")
     source_root = destination.parent / "approved-scene-zero"
     subprocess.run(
         [
@@ -96,14 +141,14 @@ def restore(reference: Path, new_audio: Path, destination: Path) -> None:
         or sha(source) != VIDEO_SHA256
     ):
         raise ValueError("approved original scene-zero clip failed provenance checks")
-    import shutil
-
     shutil.copyfile(source, destination / source.name)
     shutil.copyfile(evidence, destination / evidence.name)
     reuse = {
         "source_run": SOURCE_RUN,
         "visual_sha256": VIDEO_SHA256,
         "original_voice_sha256": OLD_AUDIO_SHA256,
+        "original_keyframe_sha256": IMAGE_SHA256,
+        "current_keyframe_sha256": sha(reference),
         "current_voice_sha256": sha(new_audio),
         "reuse_type": "VIDEO_ONLY_ORIGINAL_NARRATION_MUTED",
         "lip_sync_new_voice": "NOT_VERIFIED",
