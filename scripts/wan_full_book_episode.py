@@ -138,11 +138,26 @@ def make_prepare(source_video: Path, manifest_file: Path, output: Path) -> None:
     narrations = [s["narration"] for s in scenes]
     output.mkdir(parents=True, exist_ok=True)
     full_audio = output / "full-kokoro.wav"
-    command_run([
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source_video),
-        "-map", "0:a:0", "-ac", "1", "-ar", str(RATE), "-c:a", "pcm_s16le",
-        str(full_audio),
-    ])
+    command_run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(source_video),
+            "-map",
+            "0:a:0",
+            "-ac",
+            "1",
+            "-ar",
+            str(RATE),
+            "-c:a",
+            "pcm_s16le",
+            str(full_audio),
+        ]
+    )
     samples, data = inspect_audio(full_audio)
     duration = samples / RATE
     if not 30 <= duration <= 60:
@@ -159,22 +174,24 @@ def make_prepare(source_video: Path, manifest_file: Path, output: Path) -> None:
             wav.setframerate(RATE)
             wav.writeframes(data[first * 2 : last * 2])
         name = RENDERED_SHOT_NAMES[index]
-        shots.append({
-            "id": f"scene-{index:02d}",
-            "keyframe_name": name,
-            "narration": scene["narration"],
-            "headline": scene["headline"],
-            "audio": clip.name,
-            "audio_sha256": digest(clip.read_bytes()),
-            "duration_seconds": round((last - first) / RATE, 6),
-            "start_seconds": round(first / RATE, 6),
-            "end_seconds": round(last / RATE, 6),
-            "prompt": PROMPTS[index],
-            "seed": 735 + index,
-            "renderer": "wan2.2-s2v-14b",
-            "creative_review": "PENDING",
-            "publish_eligible": False,
-        })
+        shots.append(
+            {
+                "id": f"scene-{index:02d}",
+                "keyframe_name": name,
+                "narration": scene["narration"],
+                "headline": scene["headline"],
+                "audio": clip.name,
+                "audio_sha256": digest(clip.read_bytes()),
+                "duration_seconds": round((last - first) / RATE, 6),
+                "start_seconds": round(first / RATE, 6),
+                "end_seconds": round(last / RATE, 6),
+                "prompt": PROMPTS[index],
+                "seed": 735 + index,
+                "renderer": "wan2.2-s2v-14b",
+                "creative_review": "PENDING",
+                "publish_eligible": False,
+            }
+        )
     payload = {
         "schema": SCHEMA,
         "source_manifest_sha256": digest(manifest_file.read_bytes()),
@@ -212,14 +229,28 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path) -> None:
         ref = Path("artifacts/full-book/frames") / (shot["keyframe_name"] + ".png")
         voice = Path("artifacts/full-book/source") / shot["audio"]
         if not verified_wan_output(
-            video, manifest, digest(ref.read_bytes()), digest(voice.read_bytes()),
-            shot["prompt"], shot["seed"],
+            video,
+            manifest,
+            digest(ref.read_bytes()),
+            digest(voice.read_bytes()),
+            shot["prompt"],
+            shot["seed"],
         ):
             raise EpisodeError(f"invalid or missing Wan shot {name}")
-        probe = json.loads(command_run([
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "json", str(video),
-        ]))
+        probe = json.loads(
+            command_run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "json",
+                    str(video),
+                ]
+            )
+        )
         actual = float(probe["format"]["duration"])
         wanted = shot["duration_seconds"]
         if abs(actual - wanted) > 1.0:
@@ -239,27 +270,59 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path) -> None:
     labels = "".join(f"[v{i}]" for i in range(len(clips)))
     filters.append(f"{labels}concat=n={len(clips)}:v=1:a=0[vout]")
     target = output / "atomic-habits-full-candidate.mp4"
-    command_run([
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inputs,
-        "-filter_complex", ";".join(filters), "-map", "[vout]",
-        "-map", f"{len(clips)}:a:0", "-c:v", "libx264",
-        "-preset", "medium", "-crf", "18", "-r", str(FPS),
-        "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
-        "-shortest", str(target),
-    ], timeout=1200)
-    decoded = json.loads(command_run([
-        "ffprobe", "-v", "error", "-show_entries",
-        "format=duration:stream=codec_type,width,height,r_frame_rate",
-        "-of", "json", str(target),
-    ]))
+    command_run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            *inputs,
+            "-filter_complex",
+            ";".join(filters),
+            "-map",
+            "[vout]",
+            "-map",
+            f"{len(clips)}:a:0",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-r",
+            str(FPS),
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            "-shortest",
+            str(target),
+        ],
+        timeout=1200,
+    )
+    decoded = json.loads(
+        command_run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration:stream=codec_type,width,height,r_frame_rate",
+                "-of",
+                "json",
+                str(target),
+            ]
+        )
+    )
     duration = float(decoded["format"]["duration"])
     visual = [item for item in decoded["streams"] if item["codec_type"] == "video"]
     sound = [item for item in decoded["streams"] if item["codec_type"] == "audio"]
     if not 30 <= duration <= 60 or len(visual) != 1 or len(sound) != 1:
         raise EpisodeError("assembled video lacks production-length audio/video")
-    if (visual[0]["width"], visual[0]["height"], visual[0]["r_frame_rate"]) != (
-        1080, 1920, "24/1"
-    ):
+    if (visual[0]["width"], visual[0]["height"], visual[0]["r_frame_rate"]) != (1080, 1920, "24/1"):
         raise EpisodeError("final video geometry is not 1080x1920 24fps")
     command_run(["ffmpeg", "-v", "error", "-i", str(target), "-f", "null", "-"], timeout=200)
     qa = {
