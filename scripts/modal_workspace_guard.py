@@ -21,6 +21,7 @@ def main() -> None:
         raise SystemExit("::error::Explicit Modal API token pair is required")
 
     workspace = modal.Workspace.from_context()
+    workspace.hydrate()
     name_attribute = workspace.name
     name = name_attribute() if callable(name_attribute) else name_attribute
     if name != args.expected:
