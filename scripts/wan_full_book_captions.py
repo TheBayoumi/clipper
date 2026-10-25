@@ -86,7 +86,9 @@ def make_ass(words: list[dict[str, Any]], duration: float) -> str:
 
 
 
-def verified_whisper_word_timestamps(segments: Any, duration: float) -> tuple[list[dict[str, Any]], int]:
+def verified_whisper_word_timestamps(
+    segments: Any, duration: float
+) -> tuple[list[dict[str, Any]], int]:
     """Repair only subsecond alignment jitter, not arbitrary missing speech."""
     words: list[dict[str, Any]] = []
     adjustments = 0
@@ -116,11 +118,13 @@ def verified_whisper_word_timestamps(segments: Any, duration: float) -> tuple[li
                 raise ValueError("Whisper timestamp cannot fit source duration")
             if abs(start - raw_start) > 0.01 or abs(end - raw_end) > 0.01:
                 adjustments += 1
-            words.append({
-                "word": item.word.strip(),
-                "start": round(start, 3),
-                "end": round(end, 3),
-            })
+            words.append(
+                {
+                    "word": item.word.strip(),
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                }
+            )
     if words and adjustments > max(4, len(words) // 6):
         raise ValueError("too many Whisper timing corrections; manual audio review required")
     return words, adjustments
