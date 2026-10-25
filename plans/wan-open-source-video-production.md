@@ -288,6 +288,59 @@ if they exceed the GitHub job lifetime. No human creative approval or
 30–60-second finished video is implied by the infrastructure tests.
 
 
+
+## Current visual-and-narration corrections — October 25, 2026
+
+- **Preserve scene 0:** Original picture from [#40174311275](https://github.com/TheBayoumi/clipper/actions/runs/40174311275),
+  scene-00, video SHA256 `6ba8c31509d75a808d31f29af9f909f9dc04c76628346cf368b35d8ab4a286b1`,
+  Qwen input SHA256 `7f03c145af1c1c2f789aba11beadddccdc2649d8fc6bb613f454aa61ea778b67`.
+  This user's **visual** acceptance is handled by
+  `scripts/wan_full_book_scene_zero.py`. All original audio is muted.
+  New narration is separately sourced and a modest visual retime is permitted;
+  lip-sync with new narration is **not** claimed.
+- **Replace the defective book intro:** Cached `book_intro.png` from
+  [#40190367185](https://github.com/TheBayoumi/clipper/actions/runs/40190367185)
+  contains a Qwen-created black lower-third subtitle panel and gibberish
+  physical book-cover text. This is a defective **source keyframe**, not merely
+  unwanted ASS captions. Its Qwen prompt fingerprint is changed **only for
+  book_intro**, requiring a new image. The prompt requires on the **physical
+  cover** exactly `ATOMIC HABITS` and `JAMES CLEAR`, and forbids any
+  generated subtitle panel or stray text. A source-frame panel detector fails
+  before Wan GPU allocation if the same historical dark overlay is present.
+  Physical book lettering and potential new gibberish still need frame-by-frame
+  **human creative inspection**, not merely a passing FFmpeg audit.
+- **Original baritone voice:** Full book production regenerates narration
+  *only* from the cached four-scene Qwen script using Kokoro
+  `hexgrad/Kokoro-82M` voice `am_adam`. This is an original deep, warm
+  cinematic male narrator, **not** a Morgan Freeman clone/impersonation.
+  TTS has its own content-addressed cache. A new audio hash invalidates all
+  old synchronized Wan scene results except the explicitly video-only scene 0.
+  Word-timed Whisper captions are recomputed from the actual new voice.
+- **No unnecessary GPU:** Registered `full_book_prepare` validates
+  source audio, voice duration, word captions and hashes on GitHub CPU.
+  `full_book_visual` separately regenerates only the bad Qwen book shot so
+  source image quality can be evaluated before expensive Wan inference.
+  The full render restores completed verified scene artifacts; publishing
+  remains disabled.
+- **Known Modal blocker:** On [#40190367185](https://github.com/TheBayoumi/clipper/actions/runs/40190367185),
+  scene 1 and scene 3 were rejected by Modal with
+  `ConflictError: workspace ... is disabled` (not an explicit quota error).
+  The **quota-only fallback policy is unchanged**. Backup workspaces MUST NOT
+  be used for a disabled, unauthorized, authentication, budget or runtime-error
+  failure; primary entitlement or an explicit qualifying quota response must
+  be established before GPU renders resume.
+- **Kokoro environment recovery:** A fresh GitHub runner upgraded native
+  `murmurhash`, `cymem`, `preshed`, `srsly` wheels, causing a spaCy
+  English tokenizer integer overflow. We pinned the native versions to
+  the proven original draft job and added explicit `en_core_web_sm` loading
+  as a CPU qualification gate; GPU rendering is not attempted on CPU failures.
+
+Current target is an end-to-end **30–60s professionally edited portrait MP4**,
+not simply a technically valid single scene. Do not mark the full episode as
+complete until source book text, absence of baked subtitles, synchronized
+voiceover, remaining action shots and final montage have been reviewed.
+
+
 ## Acceptance and regression policy
 
 - Preserve existing archived 15-second storyboard tests for backwards
