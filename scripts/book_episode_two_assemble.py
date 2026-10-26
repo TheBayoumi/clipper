@@ -37,21 +37,27 @@ def build_assets(root: Path) -> dict[str, Any]:
             or not audio.is_file()
             or job["audio_sha256"] != timeline.file_sha(audio)
             or not verified_wan_output(
-                video, evidence, timeline.file_sha(frame),
-                timeline.file_sha(audio), job["prompt"], job["seed"],
+                video,
+                evidence,
+                timeline.file_sha(frame),
+                timeline.file_sha(audio),
+                job["prompt"],
+                job["seed"],
             )
         ):
             raise editor.AssemblyError(
                 f"shot {shot['id']} is not a verified current-input Wan asset"
             )
-        results.append({
-            "shot_id": shot["id"],
-            "path": str(video),
-            "sha256": timeline.file_sha(video),
-            "source_start_frame": 0,
-            "evidence_path": str(evidence),
-            "evidence_sha256": timeline.file_sha(evidence),
-        })
+        results.append(
+            {
+                "shot_id": shot["id"],
+                "path": str(video),
+                "sha256": timeline.file_sha(video),
+                "source_start_frame": 0,
+                "evidence_path": str(evidence),
+                "evidence_sha256": timeline.file_sha(evidence),
+            }
+        )
     return {
         "schema": editor.ASSETS_SCHEMA,
         "edl_fingerprint": edl["fingerprint"],
@@ -71,14 +77,18 @@ def main() -> None:
     manifest = out / "verified-shot-assets.json"
     manifest.write_text(json.dumps(assets, indent=2) + "\n", encoding="utf-8")
     result = editor.assemble(edl, source / "full-kokoro.wav", assets, out)
-    print(json.dumps({
-        "episode_id": result["episode_id"],
-        "mp4": str(out / "clean-master.mp4"),
-        "duration_seconds": result["duration_seconds"],
-        "shot_count": result["shot_count"],
-        "sha256": result["video_sha256"],
-        "publish_eligible": False,
-    }))
+    print(
+        json.dumps(
+            {
+                "episode_id": result["episode_id"],
+                "mp4": str(out / "clean-master.mp4"),
+                "duration_seconds": result["duration_seconds"],
+                "shot_count": result["shot_count"],
+                "sha256": result["video_sha256"],
+                "publish_eligible": False,
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

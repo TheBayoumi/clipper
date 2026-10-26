@@ -69,9 +69,8 @@ def build_contract(
     cursor = 0
     for index, spec in enumerate(specs):
         section_index = spec["scene_index"]
-        if (
-            type(section_index) is not int
-            or section_index not in range(len(request["narrative_sections"]))
+        if type(section_index) is not int or section_index not in range(
+            len(request["narrative_sections"])
         ):
             raise EpisodeTwoError("unknown narrative section")
         section = request["narrative_sections"][section_index]
@@ -123,13 +122,17 @@ def contract(brief: Path, catalog: Path, target: Path) -> None:
     write(target / "director-plan.json", plan)
     write(target / "script.json", root["script"])
     write(target / "brief.json", root)
-    print(json.dumps({
-        "episode_id": selection["episode_id"],
-        "shot_count": plan["shot_count"],
-        "words": request["total_words"],
-        "script_sha256": request["script_sha256"],
-        "no_gpu": True,
-    }))
+    print(
+        json.dumps(
+            {
+                "episode_id": selection["episode_id"],
+                "shot_count": plan["shot_count"],
+                "words": request["total_words"],
+                "script_sha256": request["script_sha256"],
+                "no_gpu": True,
+            }
+        )
+    )
 
 
 def synthesize(target: Path, cache: Path) -> None:
@@ -233,7 +236,9 @@ def align(target: Path) -> None:
         condition_on_previous_text=False,
     )
     recognized = [
-        word for segment in segments for word in segment.words or ()
+        word
+        for segment in segments
+        for word in segment.words or ()
         if word.start is not None and word.end is not None and normalize(word.word)
     ]
     if len(recognized) != len(script_words):
@@ -298,28 +303,37 @@ def seal(target: Path) -> None:
             "physical actions and synchronized narration; never change identity, "
             "outfit, or the warm studio layout. "
             + spec["character_action"]
-            + ". Camera: " + spec["camera"]
-            + ". Set: " + spec["setting"]
-            + ". Emotion: " + spec["emotion"]
+            + ". Camera: "
+            + spec["camera"]
+            + ". Set: "
+            + spec["setting"]
+            + ". Emotion: "
+            + spec["emotion"]
             + ". No added captions, floating text, overlays or new characters."
         )
-        render_jobs.append({
-            "id": shot["id"],
-            "index": index,
-            "frame": frame,
-            "audio": shot_audio.name,
-            "prompt": prompt,
-            "seed": 1842 + index,
-            "audio_sha256": timeline.file_sha(shot_audio),
-            "duration_seconds": round((end - start) / timeline.RATE, 6),
-        })
+        render_jobs.append(
+            {
+                "id": shot["id"],
+                "index": index,
+                "frame": frame,
+                "audio": shot_audio.name,
+                "prompt": prompt,
+                "seed": 1842 + index,
+                "audio_sha256": timeline.file_sha(shot_audio),
+                "duration_seconds": round((end - start) / timeline.RATE, 6),
+            }
+        )
     write(target / "render-jobs.json", {"jobs": render_jobs, "edl_fingerprint": edl["fingerprint"]})
-    print(json.dumps({
-        "episode_id": edl["episode_id"],
-        "shots": len(render_jobs),
-        "source_audio_sha256": edl["audio"]["sha256"],
-        "ready_for_cached_or_paid_visual_render": True,
-    }))
+    print(
+        json.dumps(
+            {
+                "episode_id": edl["episode_id"],
+                "shots": len(render_jobs),
+                "source_audio_sha256": edl["audio"]["sha256"],
+                "ready_for_cached_or_paid_visual_render": True,
+            }
+        )
+    )
 
 
 def main() -> None:

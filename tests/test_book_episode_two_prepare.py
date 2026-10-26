@@ -32,7 +32,10 @@ def test_second_lesson_is_verified_and_has_distinct_cinematic_shots() -> None:
     assert [item["scene_index"] for item in plan["shots"]] == [0, 1, 2, 2, 3]
     assert all(shot["renderer"] == "s2v" for shot in plan["shots"])
     assert all(shot["publish_eligible"] is False for shot in [plan])
-    assert sum(len(x.narration.split()) for x in niche_video.Episode.from_json(BRIEF["script"]).scenes) == 105
+    assert (
+        sum(len(x.narration.split()) for x in niche_video.Episode.from_json(BRIEF["script"]).scenes)
+        == 105
+    )
 
 
 @pytest.mark.parametrize("change", ["lesson", "source", "duplicate", "skip", "bad_voice"])
