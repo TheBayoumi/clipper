@@ -1,0 +1,263 @@
+name: Clipper Atomic Habits episode two
+
+on:
+  push:
+    branches: [feat/unified-niche-tts]
+    paths:
+      - .github/workflows/book-episode-two.yml
+      - niches/atomic-habits-episode-02.json
+      - scripts/book_episode_two_prepare.py
+      - scripts/book_episode_two_assemble.py
+      - tests/test_book_episode_two_prepare.py
+      - niches/episode-02-run-trigger.json
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [prepare, full]
+        required: true
+        default: prepare
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clipper-atomic-habits-episode-two-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      shot_matrix: ${{ steps.shots.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Enforce source and director contract on CPU
+        run: |
+          set -euo pipefail
+          python -m pip install 'pytest>=9,<10' 'ruff>=0.15.22,<1' 'PyYAML>=6,<7'
+          python -m ruff check scripts/book_episode_two_prepare.py scripts/book_episode_two_assemble.py tests/test_book_episode_two_prepare.py
+          python -m ruff format --check scripts/book_episode_two_prepare.py scripts/book_episode_two_assemble.py tests/test_book_episode_two_prepare.py
+          PYTHONPATH=scripts python -m pytest -q -o addopts='' tests/test_book_episode_two_prepare.py
+          PYTHONPATH=scripts python scripts/book_episode_two_prepare.py contract
+      - name: Restore Kokoro segment cache across reruns
+        uses: actions/cache@v4
+        with:
+          path: artifacts/episode-two/voice-cache
+          key: kokoro-episode-two-${{ hashFiles('niches/atomic-habits-episode-02.json', 'scripts/book_episode_two_prepare.py') }}
+      - name: Synthesize source-locked baritone using pinned Kokoro on CPU
+        run: |
+          set -euo pipefail
+          python -m pip install 'torch>=2.6,<3' --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install 'kokoro==0.9.4' 'soundfile>=0.13,<1' 'numpy>=2,<2.5' 'transformers==4.57.3' \
+            'murmurhash==1.0.15' 'srsly==2.5.4' 'cymem==2.0.13' 'preshed==3.0.13'
+          python -m spacy download en_core_web_sm
+          PYTHONPATH=scripts python scripts/book_episode_two_prepare.py voice
+      - name: Verify real word-level audio alignment before any GPU
+        run: |
+          set -euo pipefail
+          python -m pip install 'faster-whisper==1.2.1' 'av==18.1.0'
+          PYTHONPATH=scripts python scripts/book_episode_two_prepare.py align
+          PYTHONPATH=scripts python scripts/book_episode_two_prepare.py seal
+      - name: Reuse approved character keyframes without Qwen inference
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 40236460264 --repo "$GITHUB_REPOSITORY" \
+            --name full-book-prep-40236460264 --dir artifacts/episode-two/baseline
+          mkdir -p artifacts/episode-two/source/frames
+          for name in hook lesson_example book_intro; do
+            test -s "artifacts/episode-two/baseline/frames/$name.png"
+            cp "artifacts/episode-two/baseline/frames/$name.png" \
+              "artifacts/episode-two/source/frames/$name.png"
+          done
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+
+          root = Path("artifacts/episode-two/source")
+          jobs = json.loads((root / "render-jobs.json").read_text())["jobs"]
+          for job in jobs:
+              frame = root / "frames" / job["frame"]
+              audio = root / job["audio"]
+              assert frame.stat().st_size > 100_000
+              assert hashlib.sha256(audio.read_bytes()).hexdigest() == job["audio_sha256"]
+          print("EPISODE_TWO_CACHED_REFERENCES_LOCKED", len(jobs))
+          PY
+      - name: Export dynamic, non-hardcoded shot matrix
+        id: shots
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          jobs=json.loads(Path("artifacts/episode-two/source/render-jobs.json").read_text())["jobs"]
+          assert len(jobs) >= 3 and len(jobs) <= 18
+          print("matrix="+json.dumps([j["index"] for j in jobs],separators=(",",":")))
+          PY
+      - name: Archive director, full audio, acoustic alignment and reference frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atomic-habits-episode-two-source-${{ github.run_id }}
+          path: artifacts/episode-two/source/
+          retention-days: 21
+          if-no-files-found: warn
+
+  deploy_wan:
+    needs: prepare
+    if: ${{ needs.prepare.result == 'success' && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[episode-02-full]'))) }}
+    runs-on: ubuntu-24.04
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      MODAL_ACCOUNT_SLOT: '3'
+      MODAL_TOKEN_ID_2: ${{ secrets.MODAL_TOKEN_ID_2 }}
+      MODAL_TOKEN_SECRET_2: ${{ secrets.MODAL_TOKEN_SECRET_2 }}
+      MODAL_TOKEN_ID_3: ${{ secrets.MODAL_TOKEN_ID_3 }}
+      MODAL_TOKEN_SECRET_3: ${{ secrets.MODAL_TOKEN_SECRET_3 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Deploy or reuse versioned Wan function without inferring
+        run: |
+          set -euo pipefail
+          python -m pip install 'modal==1.5.5'
+          bash scripts/modal_versioned_dispatch.sh \
+            scripts/modal_wan_s2v.py generate_s2v speaking --deploy-only
+
+  render:
+    needs: [prepare, deploy_wan]
+    if: ${{ needs.deploy_wan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shot: ${{ fromJSON(needs.prepare.outputs.shot_matrix) }}
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      MODAL_ACCOUNT_SLOT: '3'
+      MODAL_TOKEN_ID_2: ${{ secrets.MODAL_TOKEN_ID_2 }}
+      MODAL_TOKEN_SECRET_2: ${{ secrets.MODAL_TOKEN_SECRET_2 }}
+      MODAL_TOKEN_ID_3: ${{ secrets.MODAL_TOKEN_ID_3 }}
+      MODAL_TOKEN_SECRET_3: ${{ secrets.MODAL_TOKEN_SECRET_3 }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Recover exact source from passed CPU gate
+        uses: actions/download-artifact@v4
+        with:
+          name: atomic-habits-episode-two-source-${{ github.run_id }}
+          path: artifacts/episode-two/source
+      - name: Restore exact-input cached completed shot
+        uses: actions/cache@v4
+        with:
+          path: artifacts/episode-two/rendered
+          key: atomic-habits-episode2-wan-${{ hashFiles('artifacts/episode-two/source/render-jobs.json') }}-${{ matrix.shot }}
+      - name: Render only when cached Wan video fails current hashes
+        env:
+          SHOT: ${{ matrix.shot }}
+        run: |
+          set -euo pipefail
+          python -m pip install 'modal==1.5.5'
+          INDEX="$(printf '%02d' "$SHOT")"
+          SOURCE="artifacts/episode-two/source"
+          OUT="artifacts/episode-two/rendered/shot-$INDEX"
+          mkdir -p "$OUT"
+          FRAME="$(python -c 'import json,os; print(json.load(open("artifacts/episode-two/source/render-jobs.json"))["jobs"][int(os.environ["SHOT"])]["frame"])')"
+          AUDIO="$(python -c 'import json,os; print(json.load(open("artifacts/episode-two/source/render-jobs.json"))["jobs"][int(os.environ["SHOT"])]["audio"])')"
+          PROMPT="$(python -c 'import json,os; print(json.load(open("artifacts/episode-two/source/render-jobs.json"))["jobs"][int(os.environ["SHOT"])]["prompt"])')"
+          SEED="$(python -c 'import json,os; print(json.load(open("artifacts/episode-two/source/render-jobs.json"))["jobs"][int(os.environ["SHOT"])]["seed"])')"
+          if PYTHONPATH=scripts python - "$OUT" "$SOURCE/frames/$FRAME" "$SOURCE/$AUDIO" "$PROMPT" "$SEED" <<'PY'
+          import hashlib,sys
+          from pathlib import Path
+          from wan_shared_shot_cache import verified_wan_output
+          out,image,audio,prompt,seed = sys.argv[1:]
+          sha=lambda p: hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          ok=verified_wan_output(Path(out)/"wan-s2v-candidate.mp4",
+              Path(out)/"model-evidence.json",sha(image),sha(audio),prompt,int(seed))
+          print("EXACT_SOURCE_WAN_CACHE", "HIT" if ok else "MISS")
+          sys.exit(0 if ok else 1)
+          PY
+          then
+            echo "WAN_GPU_SKIPPED_CACHED_EPISODE2_SHOT=$SHOT"
+          else
+            bash scripts/modal_versioned_dispatch.sh \
+              scripts/modal_wan_s2v.py generate_s2v speaking \
+              --reference "$SOURCE/frames/$FRAME" --audio "$SOURCE/$AUDIO" \
+              --output "$OUT" --prompt "$PROMPT" --seed "$SEED"
+          fi
+      - name: Retain each shot independently for fault recovery
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: episode2-shot-${{ matrix.shot }}-${{ github.run_id }}
+          path: artifacts/episode-two/rendered/
+          retention-days: 21
+          if-no-files-found: warn
+
+  assemble:
+    needs: [prepare, render]
+    if: ${{ needs.render.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU-only FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - uses: actions/download-artifact@v4
+        with:
+          name: atomic-habits-episode-two-source-${{ github.run_id }}
+          path: artifacts/episode-two/source
+      - name: Download only this run's individually completed Wan shots
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+
+          root=Path("artifacts/episode-two")
+          jobs=json.loads((root/"source/render-jobs.json").read_text())["jobs"]
+          for job in jobs:
+              subprocess.run([
+                  "gh","run","download",os.environ["GITHUB_RUN_ID"],
+                  "--repo",os.environ["GITHUB_REPOSITORY"],
+                  "--name",f"episode2-shot-{job['index']}-{os.environ['GITHUB_RUN_ID']}",
+                  "--dir",str(root/"rendered")
+              ],check=True)
+          PY
+      - name: Assemble immutable narration and verified Wan cuts without overlays
+        run: |
+          set -euo pipefail
+          PYTHONPATH=scripts python scripts/book_episode_two_assemble.py --root artifacts/episode-two
+          test -s artifacts/episode-two/final/clean-master.mp4
+          test -s artifacts/episode-two/final/clean-master-evidence.json
+          test ! -e artifacts/episode-two/final/captions.ass
+      - name: Preserve clean master for creative acceptance, never publish
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atomic-habits-episode-two-clean-master-${{ github.run_id }}
+          path: artifacts/episode-two/final/
+          retention-days: 21
+          if-no-files-found: warn
