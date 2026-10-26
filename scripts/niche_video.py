@@ -61,6 +61,14 @@ class NicheConfig:
     book_title: str = ""
     book_author: str = ""
     source_url: str = ""
+    book_id: str = ""
+    lesson_id: str = ""
+    angle_id: str = ""
+    episode_id: str = ""
+    script_version: str = ""
+    selection_fingerprint: str = ""
+    hook_angle: str = ""
+    visual_action: str = ""
 
     @classmethod
     def load(cls, path: Path, topic_override: str | None = None) -> NicheConfig:
@@ -79,6 +87,14 @@ class NicheConfig:
             "book_title",
             "book_author",
             "source_url",
+            "book_id",
+            "lesson_id",
+            "angle_id",
+            "episode_id",
+            "script_version",
+            "selection_fingerprint",
+            "hook_angle",
+            "visual_action",
         }
         if set(raw) - allowed:
             raise NicheVideoError(
@@ -117,6 +133,36 @@ class NicheConfig:
                 raise NicheVideoError("book lesson requires approved, sourced facts")
         elif any((pillar, title, author, source)):
             raise NicheVideoError("book metadata requires format: book_lesson")
+        identity_fields = (
+            "book_id",
+            "lesson_id",
+            "angle_id",
+            "episode_id",
+            "script_version",
+            "selection_fingerprint",
+            "hook_angle",
+            "visual_action",
+        )
+        if any(key in raw for key in identity_fields):
+            if story_format != "book_lesson" or not all(
+                isinstance(raw.get(key), str) and raw[key].strip() for key in identity_fields
+            ):
+                raise NicheVideoError("book episode identity must be complete")
+            identity = {key: raw[key] for key in identity_fields}
+            for key in ("book_id", "lesson_id", "angle_id"):
+                if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", identity[key]):
+                    raise NicheVideoError(f"invalid {key}")
+            expected = "--".join(identity[key] for key in (
+                "book_id", "lesson_id", "angle_id"
+            ))
+            if identity["episode_id"] != expected:
+                raise NicheVideoError("book episode identity mismatch")
+            if identity["script_version"] != BOOK_EDIT_CONTRACT:
+                raise NicheVideoError("unsupported book script version")
+            if not re.fullmatch(r"[0-9a-f]{64}", identity["selection_fingerprint"]):
+                raise NicheVideoError("selection fingerprint must be a SHA256")
+        else:
+            identity = {}
         return cls(
             niche=_text(raw.get("niche"), "niche", 150),
             audience=_text(raw.get("audience"), "audience", 200),
@@ -129,6 +175,7 @@ class NicheConfig:
             book_title=title,
             book_author=author,
             source_url=source,
+            **identity,
         )
 
 
@@ -229,6 +276,20 @@ def _script_request(config: NicheConfig) -> dict[str, object]:
                         "book_title": config.book_title,
                         "book_author": config.book_author,
                         "source_url": config.source_url,
+                        **(
+                            {
+                                "book_id": config.book_id,
+                                "lesson_id": config.lesson_id,
+                                "angle_id": config.angle_id,
+                                "episode_id": config.episode_id,
+                                "script_version": config.script_version,
+                                "selection_fingerprint": config.selection_fingerprint,
+                                "hook_angle": config.hook_angle,
+                                "visual_action": config.visual_action,
+                            }
+                            if config.episode_id
+                            else {}
+                        ),
                     },
                     ensure_ascii=False,
                 ),
