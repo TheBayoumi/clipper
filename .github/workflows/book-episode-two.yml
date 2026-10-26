@@ -43,7 +43,8 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install 'pytest>=9,<10' 'ruff>=0.15.22,<1' 'PyYAML>=6,<7'
-          python -m ruff format --diff scripts/book_episode_two_prepare.py scripts/book_episode_two_assemble.py tests/test_book_episode_two_prepare.py\n          python -m ruff check scripts/book_episode_two_prepare.py scripts/book_episode_two_assemble.py tests/test_book_episode_two_prepare.py
+          python -m ruff format --diff scripts/book_episode_two_prepare.py scripts/book_episode_two_assemble.py tests/test_book_episode_two_prepare.py
+          python -m ruff check scripts/book_episode_two_prepare.py scripts/book_episode_two_assemble.py tests/test_book_episode_two_prepare.py
           python -m ruff format --check scripts/book_episode_two_prepare.py scripts/book_episode_two_assemble.py tests/test_book_episode_two_prepare.py
           PYTHONPATH=scripts python -m pytest -q -o addopts='' tests/test_book_episode_two_prepare.py
           PYTHONPATH=scripts python scripts/book_episode_two_prepare.py contract
