@@ -41,7 +41,9 @@ def build_assets(root: Path) -> dict[str, Any]:
                 timeline.file_sha(audio), job["prompt"], job["seed"],
             )
         ):
-            raise editor.AssemblyError(\n                f"shot {shot['id']} is not a verified current-input Wan asset"\n            )
+            raise editor.AssemblyError(
+                f"shot {shot['id']} is not a verified current-input Wan asset"
+            )
         results.append({
             "shot_id": shot["id"],
             "path": str(video),
