@@ -215,7 +215,9 @@ def make_prepare(source_video: Path, manifest_file: Path, output: Path) -> None:
     print(f"EPISODE_AUDIO_LOCKED duration={duration:.3f}s cuts={cuts} shots={len(shots)}")
 
 
-def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) -> None:
+def prepare_concat(
+    plan: dict, paths: list[Path], output: Path, captions: Path | None, *, clean: bool = False
+) -> None:
     """Produce professional vertical 24fps picture, exact original Kokoro narration.
 
     Audio is not regenerated or retimed, each shot is required and hash-checked.
@@ -277,12 +279,19 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) 
     inputs += ["-i", str(audio)]
     labels = "".join(f"[v{i}]" for i in range(len(clips)))
     filters.append(f"{labels}concat=n={len(clips)}:v=1:a=0[vout]")
-    if not captions.is_file() or captions.stat().st_size < 3000:
-        raise EpisodeError("verified word-timed captions required for complete episode")
-    if not (captions.parent / "caption-evidence.json").is_file():
-        raise EpisodeError("caption transcript must be hash-verified")
-    filters.append(f"[vout]subtitles=filename={captions.as_posix()}[vcaptions]")
-    target = output / "atomic-habits-full-candidate.mp4"
+    if clean:
+        # Deliberately use the raw final video concatenation. Never overlay
+        # subtitles or headings and never require caption-generation artifacts.
+        video_map = "[vout]"
+        target = output / "atomic-habits-clean-master.mp4"
+    else:
+        if captions is None or not captions.is_file() or captions.stat().st_size < 3000:
+            raise EpisodeError("verified word-timed captions required for complete episode")
+        if not (captions.parent / "caption-evidence.json").is_file():
+            raise EpisodeError("caption transcript must be hash-verified")
+        filters.append(f"[vout]subtitles=filename={captions.as_posix()}[vcaptions]")
+        video_map = "[vcaptions]"
+        target = output / "atomic-habits-full-candidate.mp4"
     command_run(
         [
             "ffmpeg",
@@ -294,7 +303,7 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) 
             "-filter_complex",
             ";".join(filters),
             "-map",
-            "[vcaptions]",
+            video_map,
             "-map",
             f"{len(clips)}:a:0",
             "-c:v",
@@ -360,7 +369,10 @@ def prepare_concat(plan: dict, paths: list[Path], output: Path, captions: Path) 
         "embedded_scene_audio_discarded_for_single_locked_full_narration": True,
         "book_cover_exact_text_review": "PENDING",
         "baked_in_subtitle_review": "PENDING",
-        "captions_sha256": digest(captions.read_bytes()),
+        "captions_sha256": None if clean else digest(captions.read_bytes()),
+        "final_overlay_mode": "NONE" if clean else "WORD_TIMED_SUBTITLES",
+        "subtitle_overlay_applied": not clean,
+        "book_title_overlay_applied": False,
         "shots": [{"id": s["id"], "seed": s["seed"]} for s in plan["shots"]],
         "status": "COMPLETE_MP4_TECHNICAL_CANDIDATE_NEEDS_CREATIVE_REVIEW",
         "word_level_captions": "OPEN_SOURCE_WHISPER_ALIGNED_ASS",
@@ -382,12 +394,19 @@ def main() -> None:
     assembly.add_argument("--plan", type=Path, required=True)
     assembly.add_argument("--shots", type=Path, nargs=4, required=True)
     assembly.add_argument("--output", type=Path, required=True)
-    assembly.add_argument("--captions", type=Path, required=True)
+    assembly.add_argument("--captions", type=Path)
+    assembly.add_argument(
+        "--clean-master", action="store_true",
+        help="Compose a clean master with no subtitle or title overlay"
+    )
     args = parser.parse_args()
     if args.operation == "prepare":
         make_prepare(args.video, args.manifest, args.output)
     else:
-        prepare_concat(json.loads(args.plan.read_text()), args.shots, args.output, args.captions)
+        prepare_concat(
+            json.loads(args.plan.read_text()), args.shots, args.output, args.captions,
+            clean=args.clean_master
+        )
 
 
 if __name__ == "__main__":
