@@ -396,16 +396,20 @@ def main() -> None:
     assembly.add_argument("--output", type=Path, required=True)
     assembly.add_argument("--captions", type=Path)
     assembly.add_argument(
-        "--clean-master", action="store_true",
-        help="Compose a clean master with no subtitle or title overlay"
+        "--clean-master",
+        action="store_true",
+        help="Compose a clean master with no subtitle or title overlay",
     )
     args = parser.parse_args()
     if args.operation == "prepare":
         make_prepare(args.video, args.manifest, args.output)
     else:
         prepare_concat(
-            json.loads(args.plan.read_text()), args.shots, args.output, args.captions,
-            clean=args.clean_master
+            json.loads(args.plan.read_text()),
+            args.shots,
+            args.output,
+            args.captions,
+            clean=args.clean_master,
         )
 
 
