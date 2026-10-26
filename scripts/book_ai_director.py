@@ -125,7 +125,9 @@ def validate_plan(request: dict[str, Any], candidate: dict[str, Any]) -> dict[st
     if request.get("publish_eligible") is not False:
         raise DirectorContractError("director crossed publication boundary")
     if not isinstance(candidate, dict) or set(candidate) != {
-        "schema", "request_fingerprint", "shots"
+        "schema",
+        "request_fingerprint",
+        "shots",
     }:
         raise DirectorContractError("invalid candidate plan schema")
     if (
@@ -143,13 +145,22 @@ def validate_plan(request: dict[str, Any], candidate: dict[str, Any]) -> dict[st
     if len(words) != request["total_words"]:
         raise DirectorContractError("narration word count mismatch")
     required = {
-        "id", "role", "scene_index", "start_word", "end_word", "narration_text",
-        "renderer", "character_action", "camera", "setting", "emotion",
-        "required_objects", "source_evidence", "qa_criteria",
+        "id",
+        "role",
+        "scene_index",
+        "start_word",
+        "end_word",
+        "narration_text",
+        "renderer",
+        "character_action",
+        "camera",
+        "setting",
+        "emotion",
+        "required_objects",
+        "source_evidence",
+        "qa_criteria",
     }
-    allowed_claims = {
-        (item["claim"], item["source_url"]) for item in request["approved_claims"]
-    }
+    allowed_claims = {(item["claim"], item["source_url"]) for item in request["approved_claims"]}
     seen: set[str] = set()
     roles: list[str] = []
     covered = 0
@@ -250,9 +261,7 @@ def main() -> None:
         json.dumps(request, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     if args.candidate is not None and args.plan_output is not None:
-        plan = validate_plan(
-            request, json.loads(args.candidate.read_text(encoding="utf-8"))
-        )
+        plan = validate_plan(request, json.loads(args.candidate.read_text(encoding="utf-8")))
         args.plan_output.parent.mkdir(parents=True, exist_ok=True)
         args.plan_output.write_text(
             json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

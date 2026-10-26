@@ -152,9 +152,7 @@ class NicheConfig:
             for key in ("book_id", "lesson_id", "angle_id"):
                 if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", identity[key]):
                     raise NicheVideoError(f"invalid {key}")
-            expected = "--".join(identity[key] for key in (
-                "book_id", "lesson_id", "angle_id"
-            ))
+            expected = "--".join(identity[key] for key in ("book_id", "lesson_id", "angle_id"))
             if identity["episode_id"] != expected:
                 raise NicheVideoError("book episode identity mismatch")
             if identity["script_version"] != BOOK_EDIT_CONTRACT:

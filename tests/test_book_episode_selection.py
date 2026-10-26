@@ -121,15 +121,16 @@ def test_selected_lesson_builds_dynamic_source_led_storyboard_outline() -> None:
 
 def test_stable_episode_identity_is_distinct_across_lessons() -> None:
     first = CHOOSER.choose_lesson(CATALOG, book_id="atomic-habits", lesson_id="make-it-easy")
-    second = CHOOSER.choose_lesson(
-        CATALOG, book_id="atomic-habits", lesson_id="two-minute-rule"
-    )
+    second = CHOOSER.choose_lesson(CATALOG, book_id="atomic-habits", lesson_id="two-minute-rule")
     assert first["episode_id"] != second["episode_id"]
     assert first["angle_id"] == "primary"
     assert first["script_version"] == CHOOSER.SCRIPT_VERSION
-    assert CHOOSER.choose_lesson(
-        CATALOG, book_id="atomic-habits", lesson_id="make-it-easy"
-    )["episode_id"] == first["episode_id"]
+    assert (
+        CHOOSER.choose_lesson(CATALOG, book_id="atomic-habits", lesson_id="make-it-easy")[
+            "episode_id"
+        ]
+        == first["episode_id"]
+    )
     config = CHOOSER.to_niche_config(first)
     assert config["voice"] == "am_adam"
     assert config["selection_fingerprint"] == first["fingerprint"]
@@ -147,8 +148,13 @@ def test_angle_rotation_avoids_repeat_when_alternative_available() -> None:
     )
     selected = CHOOSER.choose_lesson(
         catalog,
-        [{"book_id": previous["book_id"], "lesson_id": previous["lesson_id"],
-          "angle_id": previous["angle_id"]}],
+        [
+            {
+                "book_id": previous["book_id"],
+                "lesson_id": previous["lesson_id"],
+                "angle_id": previous["angle_id"],
+            }
+        ],
         book_id="atomic-habits",
         lesson_id="make-it-easy",
     )

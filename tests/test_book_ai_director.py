@@ -57,15 +57,13 @@ def selection() -> dict:
 
 def make_plan(request: dict, shots_per_section: int = 1) -> dict:
     words = [
-        word for section in request["narrative_sections"]
-        for word in section["narration"].split()
+        word for section in request["narrative_sections"] for word in section["narration"].split()
     ]
     shots = []
     for section in request["narrative_sections"]:
         low, high = section["start_word"], section["end_word"]
         borders = [
-            low + (high - low) * i // shots_per_section
-            for i in range(shots_per_section + 1)
+            low + (high - low) * i // shots_per_section for i in range(shots_per_section + 1)
         ]
         for part in range(shots_per_section):
             start, end = borders[part], borders[part + 1]
@@ -92,7 +90,8 @@ def make_plan(request: dict, shots_per_section: int = 1) -> dict:
                     "emotion": "Thoughtful",
                     "required_objects": ["notebook"],
                     "source_evidence": [request["approved_claims"][0]]
-                    if section["index"] == 1 and part == 0 else [],
+                    if section["index"] == 1 and part == 0
+                    else [],
                     "qa_criteria": ["Coherent hand movement", "Character identity matches"],
                 }
             )
@@ -155,11 +154,17 @@ def test_rejects_tampered_selection_and_unsourced_script() -> None:
     with pytest.raises(director.DirectorContractError, match="fingerprint"):
         director.build_request(selected, EPISODE)
     with pytest.raises(director.DirectorContractError, match="word budget"):
-        director.build_request(selection(), {"title": "short", "scenes": [
-            {"headline": "a", "narration": "one"},
-            {"headline": "b", "narration": "two"},
-            {"headline": "c", "narration": "three"},
-        ]})
+        director.build_request(
+            selection(),
+            {
+                "title": "short",
+                "scenes": [
+                    {"headline": "a", "narration": "one"},
+                    {"headline": "b", "narration": "two"},
+                    {"headline": "c", "narration": "three"},
+                ],
+            },
+        )
 
 
 def test_qwen_selection_prompt_and_cache_are_episode_specific(tmp_path: Path) -> None:
@@ -175,9 +180,7 @@ def test_qwen_selection_prompt_and_cache_are_episode_specific(tmp_path: Path) ->
     assert prompt["hook_angle"] == selected["lesson"]["hook_angle"]
     current_digest = niche._script_fingerprint(config)
     config_data["angle_id"] = "alternative"
-    config_data["episode_id"] = (
-        f"{selected['book_id']}--{selected['lesson_id']}--alternative"
-    )
+    config_data["episode_id"] = f"{selected['book_id']}--{selected['lesson_id']}--alternative"
     path.write_text(json.dumps(config_data), encoding="utf-8")
     assert current_digest != niche._script_fingerprint(niche.NicheConfig.load(path))
     config_data["episode_id"] = "mismatch"

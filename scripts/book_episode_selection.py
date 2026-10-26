@@ -57,9 +57,7 @@ def _angles(idea: dict[str, Any]) -> list[dict[str, str]]:
         raise BookSelectionError("lesson angles must be a nonempty list")
     seen: set[str] = set()
     for angle in configured:
-        if not isinstance(angle, dict) or set(angle) != {
-            "id", "hook_angle", "visual_action"
-        }:
+        if not isinstance(angle, dict) or set(angle) != {"id", "hook_angle", "visual_action"}:
             raise BookSelectionError("invalid editorial angle")
         if (
             not isinstance(angle["id"], str)
@@ -135,8 +133,7 @@ def choose_lesson(
         or (
             "angle_id" in item
             and (
-                not isinstance(item["angle_id"], str)
-                or not IDENTIFIER.fullmatch(item["angle_id"])
+                not isinstance(item["angle_id"], str) or not IDENTIFIER.fullmatch(item["angle_id"])
             )
         )
         for item in history
@@ -148,9 +145,7 @@ def choose_lesson(
         raise BookSelectionError("angle override requires book_id and lesson_id")
     if book_id is not None and not any(book["id"] == book_id for book in books):
         raise BookSelectionError("requested book is not in source-backed catalog")
-    candidates: list[
-        tuple[int, int, dict[str, Any], dict[str, Any], dict[str, str]]
-    ] = []
+    candidates: list[tuple[int, int, dict[str, Any], dict[str, Any], dict[str, str]]] = []
     recent_books = {item["book_id"] for item in history[-RECENT_BOOK_WINDOW:]}
     recent_lessons = {
         item["book_id"] + "/" + item["lesson_id"] + "/" + item.get("angle_id", "primary")
@@ -177,14 +172,12 @@ def choose_lesson(
     if not candidates:
         raise BookSelectionError("no verified book/lesson matches selection filters")
     unused = [
-        item for item in candidates
-        if item[2]["id"] + "/" + item[3]["id"] + "/" + item[4]["id"]
-        not in recent_lessons
+        item
+        for item in candidates
+        if item[2]["id"] + "/" + item[3]["id"] + "/" + item[4]["id"] not in recent_lessons
     ]
     eligible = unused or candidates
-    _score, _order, selected, idea, angle = max(
-        eligible, key=lambda item: (item[0], item[1])
-    )
+    _score, _order, selected, idea, angle = max(eligible, key=lambda item: (item[0], item[1]))
     lesson_payload = {k: v for k, v in idea.items() if k != "angles"}
     lesson_payload["hook_angle"] = angle["hook_angle"]
     lesson_payload["visual_action"] = angle["visual_action"]
