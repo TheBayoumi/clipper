@@ -113,7 +113,7 @@ def test_clean_master_renders_only_raw_video_and_locked_narration(
     assert "drawtext=" not in graph
     assert "ass=" not in graph
     assert cmd[cmd.index("-map") + 1] == "[vout]"
-    assert str(full_audio) in cmd
+    assert str(full_audio.relative_to(tmp_path)) in cmd
     assert (folder / "atomic-habits-clean-master.mp4").is_file()
     assert not (folder / "atomic-habits-full-candidate.mp4").exists()
     evidence = json.loads((folder / "full-book-evidence.json").read_text())
