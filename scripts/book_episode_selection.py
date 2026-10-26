@@ -11,8 +11,8 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from urllib.parse import urlsplit
 from typing import Any
+from urllib.parse import urlsplit
 
 SCHEMA = "clipper-book-selection-v1"
 CATALOG_PATH = Path("niches/book-editorial-catalog.json")
