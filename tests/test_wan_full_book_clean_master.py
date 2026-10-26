@@ -123,8 +123,6 @@ def test_clean_master_renders_only_raw_video_and_locked_narration(
     assert evidence["captions_sha256"] is None
 
 
-def test_captions_still_required_for_original_subtitled_mode(
-    tmp_path: Path
-) -> None:
+def test_captions_still_required_for_original_subtitled_mode(tmp_path: Path) -> None:
     with pytest.raises(episode.EpisodeError, match="not a valid"):
         episode.prepare_concat({}, [], tmp_path, captions=None)
