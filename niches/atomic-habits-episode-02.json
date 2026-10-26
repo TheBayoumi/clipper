@@ -1,0 +1,125 @@
+{
+  "schema": "clipper-episode-brief-v1",
+  "book_id": "atomic-habits",
+  "lesson_id": "two-minute-rule",
+  "angle_id": "primary",
+  "episode_id": "atomic-habits--two-minute-rule--primary",
+  "source_url": "https://jamesclear.com/how-to-stop-procrastinating",
+  "script_origin": "AI_ASSISTED_EDITORIAL_DRAFT_AWAITING_HUMAN_CREATIVE_REVIEW",
+  "script": {
+    "title": "Atomic Habits: The Tiny Start",
+    "scenes": [
+      {
+        "headline": "Hook: The heavy promise",
+        "narration": "You promised yourself you would read thirty pages tonight. The book is right there, but your mind treats the goal like another impossible assignment."
+      },
+      {
+        "headline": "The Two Minute Rule",
+        "narration": "In Atomic Habits, James Clear explains the Two Minute Rule. Make the beginning of a new habit take less than two minutes. Forget the thirty pages for now."
+      },
+      {
+        "headline": "A physical demonstration",
+        "narration": "Watch this. Close the sprawling reading plan, put your phone face down, open the book, and read just one page. The first action is small, but real."
+      },
+      {
+        "headline": "Payoff: Show up tomorrow",
+        "narration": "Tomorrow, repeat that tiny start before deciding whether to continue. You are not trying to finish a book tonight. You are practicing becoming someone who begins."
+      }
+    ]
+  },
+  "shot_briefs": [
+    {
+      "scene_index": 0,
+      "role": "hook",
+      "cut_after_words": null,
+      "reference_name": "hook",
+      "character_action": "Host looks at an overwhelming stack of reading notes and holds a closed book, visibly hesitates",
+      "camera": "Warm medium shot, slow push in to a thoughtful face",
+      "setting": "Same lived in warm study as first episode",
+      "emotion": "Overwhelmed, reflective",
+      "required_objects": [
+        "closed book",
+        "stack of reading notes"
+      ],
+      "qa_criteria": [
+        "Same face and wardrobe",
+        "No accidental scene text",
+        "Visible believable hand contact"
+      ]
+    },
+    {
+      "scene_index": 1,
+      "role": "insight",
+      "cut_after_words": null,
+      "reference_name": "hook",
+      "character_action": "Host gently sets the intimidating reading plan down and gestures toward one attainable small start",
+      "camera": "Medium-close shot, steady and intimate",
+      "setting": "Identical warm study",
+      "emotion": "Reassuring",
+      "required_objects": [
+        "book",
+        "reading plan"
+      ],
+      "qa_criteria": [
+        "Natural speech sync",
+        "Preserve original character identity"
+      ]
+    },
+    {
+      "scene_index": 2,
+      "role": "demonstration",
+      "cut_after_words": 12,
+      "reference_name": "lesson_example",
+      "character_action": "Host physically closes a long reading checklist and turns the phone face down on the desk",
+      "camera": "Over the shoulder and desk close up",
+      "setting": "Same desk geography and warm lighting",
+      "emotion": "Focused and decisive",
+      "required_objects": [
+        "phone",
+        "reading checklist"
+      ],
+      "qa_criteria": [
+        "Phone clearly placed face down",
+        "Plausible hand action"
+      ]
+    },
+    {
+      "scene_index": 2,
+      "role": "demonstration",
+      "cut_after_words": null,
+      "reference_name": "book_intro",
+      "character_action": "Host opens a real book and turns to the first page, finger following a single line while speaking",
+      "camera": "Tight cinematic book and hands close up",
+      "setting": "Same study desk with practical amber light",
+      "emotion": "Curious and engaged",
+      "required_objects": [
+        "book with readable pages"
+      ],
+      "qa_criteria": [
+        "Hands anatomically coherent",
+        "Book physical shape stable",
+        "No floating subtitles"
+      ]
+    },
+    {
+      "scene_index": 3,
+      "role": "payoff",
+      "cut_after_words": null,
+      "reference_name": "hook",
+      "character_action": "Host closes the book softly with a satisfied small smile and places it ready for tomorrow",
+      "camera": "Slow pull back to a calm medium composition ending on deliberate gesture",
+      "setting": "Identical study",
+      "emotion": "Calm confidence",
+      "required_objects": [
+        "book"
+      ],
+      "qa_criteria": [
+        "Complete deliberate ending",
+        "Speech does not cut off",
+        "Same character and lighting"
+      ]
+    }
+  ],
+  "publish_eligible": false,
+  "creative_review": "PENDING"
+}
