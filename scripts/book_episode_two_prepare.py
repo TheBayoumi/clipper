@@ -7,7 +7,6 @@ GPU render is a separate workflow job gated by these artifacts.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import wave
@@ -42,8 +41,8 @@ def load(path: Path) -> dict[str, Any]:
     return result
 
 
-def build_contract(brief: dict[str, Any], catalog: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    if brief.get("schema") != "clipper-episode-brief-v1" or brief.get("publish_eligible") is not False:
+def build_contract(\n    brief: dict[str, Any], catalog: dict[str, Any]\n) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    if (\n        brief.get("schema") != "clipper-episode-brief-v1"\n        or brief.get("publish_eligible") is not False\n    ):
         raise EpisodeTwoError("unsupported editorial brief or publication gate")
     selection = chooser.choose_lesson(
         catalog,
@@ -65,7 +64,7 @@ def build_contract(brief: dict[str, Any], catalog: dict[str, Any]) -> tuple[dict
     cursor = 0
     for index, spec in enumerate(specs):
         section_index = spec["scene_index"]
-        if type(section_index) is not int or section_index not in range(len(request["narrative_sections"])):
+        if (\n            type(section_index) is not int\n            or section_index not in range(len(request["narrative_sections"]))\n        ):
             raise EpisodeTwoError("unknown narrative section")
         section = request["narrative_sections"][section_index]
         if cursor < section["start_word"] or cursor >= section["end_word"]:
@@ -194,7 +193,7 @@ def synthesize(target: Path, cache: Path) -> None:
         "wav_sha256": wav_sha,
     }
     write(target / "voice.json", voice)
-    print(json.dumps({"audio_locked": True, "seconds": duration_frames / timeline.RATE, "sha256": wav_sha}))
+    print(\n        json.dumps(\n            {"audio_locked": True, "seconds": duration_frames / timeline.RATE, "sha256": wav_sha}\n        )\n    )
 
 
 def normalize(value: str) -> str:
@@ -228,7 +227,7 @@ def align(target: Path) -> None:
     if len(recognized) != len(script_words):
         raise EpisodeTwoError(
             f"word alignment is not one-to-one: original={len(script_words)}, "
-            f"transcribed={len(recognized)}, probability={getattr(info, 'language_probability', None)}"
+            f"transcribed={len(recognized)}, "\n            f"probability={getattr(info, 'language_probability', None)}"
         )
     stamps = []
     previous = 0
