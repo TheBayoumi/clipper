@@ -29,9 +29,7 @@ def _wav(path: Path, duration: float = 37.27) -> None:
 
 def _source(tmp_path: Path) -> tuple[dict, dict, Path, dict, dict]:
     catalog = json.loads((ROOT / "niches/book-editorial-catalog.json").read_text())
-    choice = selection.choose_lesson(
-        catalog, book_id="atomic-habits", lesson_id="make-it-easy"
-    )
+    choice = selection.choose_lesson(catalog, book_id="atomic-habits", lesson_id="make-it-easy")
     episode = {
         "title": "Choose the small step",
         "scenes": [
@@ -54,9 +52,7 @@ def _source(tmp_path: Path) -> tuple[dict, dict, Path, dict, dict]:
     }
     request = director.build_request(choice, episode)
     words = [
-        word
-        for section in request["narrative_sections"]
-        for word in section["narration"].split()
+        word for section in request["narrative_sections"] for word in section["narration"].split()
     ]
     shots = []
     for index, section in enumerate(request["narrative_sections"]):
@@ -162,9 +158,10 @@ def test_audio_lock_uses_real_wav_samples_and_exact_word_boundaries(tmp_path: Pa
     request, plan, audio, voice, alignment = _source(tmp_path)
     locked = timeline.build_timeline(request, plan, audio, voice, alignment)
     assert locked["audio"]["sha256"] == timeline.file_sha(audio)
-    assert locked["voice_cache_key"] == timeline.build_timeline(
-        request, plan, audio, voice, alignment
-    )["voice_cache_key"]
+    assert (
+        locked["voice_cache_key"]
+        == timeline.build_timeline(request, plan, audio, voice, alignment)["voice_cache_key"]
+    )
     assert locked["output"]["frames"] == 895
     assert locked["shots"][0]["start_frame"] == 0
     assert locked["shots"][-1]["end_frame"] == 895
@@ -176,9 +173,9 @@ def test_audio_lock_uses_real_wav_samples_and_exact_word_boundaries(tmp_path: Pa
     assert locked["publish_eligible"] is False
 
 
-@pytest.mark.parametrize("defect", [
-    "audio", "voice", "word", "reorder", "alignment_hash", "model", "audio_format"
-])
+@pytest.mark.parametrize(
+    "defect", ["audio", "voice", "word", "reorder", "alignment_hash", "model", "audio_format"]
+)
 def test_audio_lock_rejects_stale_or_false_inputs(tmp_path: Path, defect: str) -> None:
     request, plan, audio, voice, alignment = _source(tmp_path)
     if defect == "audio":
@@ -227,10 +224,12 @@ def test_clean_assembler_maps_only_locked_audio_and_no_overlays(
                 }
             )
         if argv[0] == "ffprobe":
-            return json.dumps({
-                "format": {"duration": "37.30"},
-                "streams": [{"codec_type": "video"}],
-            })
+            return json.dumps(
+                {
+                    "format": {"duration": "37.30"},
+                    "streams": [{"codec_type": "video"}],
+                }
+            )
         if argv[0] == "ffmpeg" and "-filter_complex" in argv:
             Path(argv[-1]).write_bytes(b"technically-valid-fixture-output")
         return ""
@@ -249,9 +248,10 @@ def test_clean_assembler_maps_only_locked_audio_and_no_overlays(
     assert (tmp_path / "final/clean-master.mp4").is_file()
 
 
-@pytest.mark.parametrize("defect", [
-    "video_hash", "evidence_hash", "missing", "short", "gap", "wrong_audio", "asset_order"
-])
+@pytest.mark.parametrize(
+    "defect",
+    ["video_hash", "evidence_hash", "missing", "short", "gap", "wrong_audio", "asset_order"],
+)
 def test_assembler_rejects_invalid_cache_before_encoding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str
 ) -> None:
@@ -261,10 +261,12 @@ def test_assembler_rejects_invalid_cache_before_encoding(
     def command(argv: list[str]) -> str:
         nonlocal encoded
         if argv[0] == "ffprobe":
-            return json.dumps({
-                "format": {"duration": "0.1" if defect == "short" else "38.0"},
-                "streams": [{"codec_type": "video"}],
-            })
+            return json.dumps(
+                {
+                    "format": {"duration": "0.1" if defect == "short" else "38.0"},
+                    "streams": [{"codec_type": "video"}],
+                }
+            )
         encoded = True
         return ""
 
@@ -278,9 +280,7 @@ def test_assembler_rejects_invalid_cache_before_encoding(
     elif defect == "gap":
         old = copy.deepcopy(edl)
         edl["shots"][1]["start_frame"] += 1
-        edl["fingerprint"] = timeline.digest({
-            k: v for k, v in edl.items() if k != "fingerprint"
-        })
+        edl["fingerprint"] = timeline.digest({k: v for k, v in edl.items() if k != "fingerprint"})
         assets["edl_fingerprint"] = edl["fingerprint"]
         assert old["fingerprint"] != edl["fingerprint"]
     elif defect == "wrong_audio":

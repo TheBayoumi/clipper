@@ -26,9 +26,7 @@ class AssemblyError(ValueError):
 
 def run(command: list[str]) -> str:
     try:
-        completed = subprocess.run(
-            command, check=True, capture_output=True, text=True, timeout=900
-        )
+        completed = subprocess.run(command, check=True, capture_output=True, text=True, timeout=900)
     except (subprocess.CalledProcessError, OSError, subprocess.TimeoutExpired) as exc:
         raise AssemblyError(f"media command failed: {command[0]}") from exc
     return completed.stdout
@@ -37,11 +35,18 @@ def run(command: list[str]) -> str:
 def probe(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(
-            run([
-                "ffprobe", "-v", "error", "-show_entries",
-                "format=duration:stream=codec_type,width,height,r_frame_rate,duration",
-                "-of", "json", str(path),
-            ])
+            run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration:stream=codec_type,width,height,r_frame_rate,duration",
+                    "-of",
+                    "json",
+                    str(path),
+                ]
+            )
         )
         if not isinstance(payload, dict):
             raise ValueError("invalid ffprobe payload")
@@ -75,7 +80,9 @@ def _prepare(
         raise AssemblyError("locked narration hash or duration mismatch")
     output = plan["output"]
     if output != {
-        "width": 1080, "height": 1920, "fps": FPS,
+        "width": 1080,
+        "height": 1920,
+        "fps": FPS,
         "frames": math.ceil(frames * FPS / RATE),
     }:
         raise AssemblyError("video geometry or frame count disagrees with locked narration")
@@ -98,7 +105,11 @@ def _prepare(
         if not isinstance(shot, dict) or not isinstance(asset, dict):
             raise AssemblyError("invalid shot or cached asset record")
         if set(asset) != {
-            "shot_id", "path", "sha256", "source_start_frame", "evidence_path",
+            "shot_id",
+            "path",
+            "sha256",
+            "source_start_frame",
+            "evidence_path",
             "evidence_sha256",
         }:
             raise AssemblyError("incomplete cached video provenance")
@@ -195,14 +206,35 @@ def assemble(
         + f"concat=n={len(verified)}:v=1:a=0[vout]"
     )
     command = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inputs,
-        "-filter_complex", ";".join(graph), "-map", "[vout]",
-        "-map", f"{len(verified)}:a:0",
-        "-map_metadata", "-1",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-        "-r", str(FPS),
-        "-c:a", "aac", "-b:a", "192k",
-        "-movflags", "+faststart", str(temporary),
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        *inputs,
+        "-filter_complex",
+        ";".join(graph),
+        "-map",
+        "[vout]",
+        "-map",
+        f"{len(verified)}:a:0",
+        "-map_metadata",
+        "-1",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "18",
+        "-r",
+        str(FPS),
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-movflags",
+        "+faststart",
+        str(temporary),
     ]
     try:
         run(command)
@@ -214,9 +246,7 @@ def assemble(
             or len(sound) != 1
             or (video[0].get("width"), video[0].get("height")) != (1080, 1920)
             or video[0].get("r_frame_rate") != "24/1"
-            or not math.isclose(
-                float(media["format"]["duration"]), frames / RATE, abs_tol=0.12
-            )
+            or not math.isclose(float(media["format"]["duration"]), frames / RATE, abs_tol=0.12)
         ):
             raise AssemblyError("assembled master failed source duration/geometry QA")
         run(["ffmpeg", "-v", "error", "-i", str(temporary), "-f", "null", "-"])
@@ -255,9 +285,10 @@ def make_legacy_replay(
     if plan.get("schema") != "clipper-full-book-episode-v1":
         raise AssemblyError("unsupported historical Wan shot plan")
     original = {key: value for key, value in plan.items() if key != "fingerprint"}
-    if plan.get("fingerprint") != hashlib.sha256(
-        json.dumps(original, sort_keys=True).encode()
-    ).hexdigest():
+    if (
+        plan.get("fingerprint")
+        != hashlib.sha256(json.dumps(original, sort_keys=True).encode()).hexdigest()
+    ):
         raise AssemblyError("historical full-book plan fingerprint mismatch")
     frames, sha = inspect_audio(audio_path)
     if (
@@ -290,26 +321,27 @@ def make_legacy_replay(
             )
         ):
             raise AssemblyError(f"historical Wan shot {index} fails source hash checks")
-        end = (
-            total_frames if index == len(folders) - 1
-            else round(float(shot["end_seconds"]) * FPS)
-        )
+        end = total_frames if index == len(folders) - 1 else round(float(shot["end_seconds"]) * FPS)
         if end <= previous:
             raise AssemblyError("historical shot duration collapsed")
-        shots.append({
-            "id": shot["id"],
-            "start_frame": previous,
-            "end_frame": end,
-            "director_role": "LEGACY_APPROVED_SHOT",
-        })
-        assets.append({
-            "shot_id": shot["id"],
-            "path": str(video),
-            "sha256": file_sha(video),
-            "source_start_frame": 0,
-            "evidence_path": str(evidence),
-            "evidence_sha256": file_sha(evidence),
-        })
+        shots.append(
+            {
+                "id": shot["id"],
+                "start_frame": previous,
+                "end_frame": end,
+                "director_role": "LEGACY_APPROVED_SHOT",
+            }
+        )
+        assets.append(
+            {
+                "shot_id": shot["id"],
+                "path": str(video),
+                "sha256": file_sha(video),
+                "source_start_frame": 0,
+                "evidence_path": str(evidence),
+                "evidence_sha256": file_sha(evidence),
+            }
+        )
         previous = end
     edl = {
         "schema": SCHEMA,

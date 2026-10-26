@@ -88,8 +88,13 @@ def build_timeline(
         raise AudioTimelineError("director identity or publication gate mismatch")
     frames, audio_sha = inspect_audio(audio)
     if not isinstance(voice, dict) or set(voice) != {
-        "model", "revision", "voice_id", "style", "speed",
-        "text_sha256", "wav_sha256",
+        "model",
+        "revision",
+        "voice_id",
+        "style",
+        "speed",
+        "text_sha256",
+        "wav_sha256",
     }:
         raise AudioTimelineError("complete Kokoro voice provenance is required")
     sections = director_request["narrative_sections"]
@@ -107,8 +112,11 @@ def build_timeline(
     ):
         raise AudioTimelineError("narration voice, text, or audio hash changed")
     if not isinstance(alignment, dict) or set(alignment) != {
-        "audio_sha256", "script_sha256", "aligner_model",
-        "aligner_revision", "words",
+        "audio_sha256",
+        "script_sha256",
+        "aligner_model",
+        "aligner_revision",
+        "words",
     }:
         raise AudioTimelineError("complete forced alignment provenance required")
     if (
@@ -126,7 +134,9 @@ def build_timeline(
     last_end = 0
     for index, (position, word) in enumerate(zip(positions, words, strict=True)):
         if not isinstance(position, dict) or set(position) != {
-            "text", "start_sample", "end_sample"
+            "text",
+            "start_sample",
+            "end_sample",
         }:
             raise AudioTimelineError("alignment word schema mismatch")
         start, end = position["start_sample"], position["end_sample"]
@@ -138,6 +148,7 @@ def build_timeline(
         ):
             raise AudioTimelineError(f"unaligned or reordered word {index}")
         last_end = end
+
     def boundary(word_index: int) -> int:
         if word_index == 0:
             return 0
@@ -161,9 +172,7 @@ def build_timeline(
             raise AudioTimelineError("director shot violates authoritative word spans")
         start_sample, end_sample = boundary(start_word), boundary(end_word)
         start_frame = round(start_sample * FPS / RATE)
-        end_frame = (
-            output_frames if end_word == len(words) else round(end_sample * FPS / RATE)
-        )
+        end_frame = output_frames if end_word == len(words) else round(end_sample * FPS / RATE)
         if start_frame != previous_frame or end_frame <= start_frame:
             raise AudioTimelineError("director shots overlap or collapse after FPS quantization")
         locked.append(
@@ -186,14 +195,16 @@ def build_timeline(
         "director_plan_fingerprint": director_plan["fingerprint"],
         "script_sha256": director_request["script_sha256"],
         "voice": voice,
-        "voice_cache_key": digest({
-            "text": text,
-            "model": voice["model"],
-            "revision": voice["revision"],
-            "voice_id": voice["voice_id"],
-            "style": voice["style"],
-            "speed": voice["speed"],
-        }),
+        "voice_cache_key": digest(
+            {
+                "text": text,
+                "model": voice["model"],
+                "revision": voice["revision"],
+                "voice_id": voice["voice_id"],
+                "style": voice["style"],
+                "speed": voice["speed"],
+            }
+        ),
         "audio": {
             "sha256": audio_sha,
             "samples": frames,
@@ -229,12 +240,16 @@ def main() -> None:
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({
-        "episode_id": plan["episode_id"],
-        "shots": len(plan["shots"]),
-        "audio_sha256": plan["audio"]["sha256"],
-        "stage": "AUDIO_LOCKED_NO_GPU",
-    }))
+    print(
+        json.dumps(
+            {
+                "episode_id": plan["episode_id"],
+                "shots": len(plan["shots"]),
+                "audio_sha256": plan["audio"]["sha256"],
+                "stage": "AUDIO_LOCKED_NO_GPU",
+            }
+        )
+    )
 
 
 if __name__ == "__main__":
