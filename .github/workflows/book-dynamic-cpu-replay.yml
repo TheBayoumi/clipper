@@ -29,6 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install 'pytest>=9,<10' 'ruff>=0.15.22,<1' 'PyYAML>=6,<7'
+          ruff format --diff scripts/book_audio_timeline.py scripts/book_timeline_assemble.py tests/test_book_audio_timeline.py
           ruff check scripts/book_audio_timeline.py scripts/book_timeline_assemble.py tests/test_book_audio_timeline.py
           ruff format --check scripts/book_audio_timeline.py scripts/book_timeline_assemble.py tests/test_book_audio_timeline.py
           python -m pytest -q -o addopts='' tests/test_book_audio_timeline.py
