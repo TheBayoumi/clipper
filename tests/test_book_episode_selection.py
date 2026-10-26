@@ -117,3 +117,59 @@ def test_selected_lesson_builds_dynamic_source_led_storyboard_outline() -> None:
     assert all("start" not in beat and "end" not in beat for beat in outline["narrative_roles"])
     assert outline["timing"].startswith("WAIT_FOR_KOKORO")
     assert outline["publish_eligible"] is False
+
+
+def test_stable_episode_identity_is_distinct_across_lessons() -> None:
+    first = CHOOSER.choose_lesson(CATALOG, book_id="atomic-habits", lesson_id="make-it-easy")
+    second = CHOOSER.choose_lesson(
+        CATALOG, book_id="atomic-habits", lesson_id="two-minute-rule"
+    )
+    assert first["episode_id"] != second["episode_id"]
+    assert first["angle_id"] == "primary"
+    assert first["script_version"] == CHOOSER.SCRIPT_VERSION
+    assert CHOOSER.choose_lesson(
+        CATALOG, book_id="atomic-habits", lesson_id="make-it-easy"
+    )["episode_id"] == first["episode_id"]
+    config = CHOOSER.to_niche_config(first)
+    assert config["voice"] == "am_adam"
+    assert config["selection_fingerprint"] == first["fingerprint"]
+
+
+def test_angle_rotation_avoids_repeat_when_alternative_available() -> None:
+    catalog = json.loads(json.dumps(CATALOG))
+    lesson = catalog["books"][0]["lessons"][0]
+    lesson["angles"] = [
+        {"id": "friction", "hook_angle": "Remove resistance", "visual_action": "Move a pen"},
+        {"id": "setup", "hook_angle": "Prepare ahead", "visual_action": "Set a notebook"},
+    ]
+    previous = CHOOSER.choose_lesson(
+        catalog, book_id="atomic-habits", lesson_id="make-it-easy", angle_id="friction"
+    )
+    selected = CHOOSER.choose_lesson(
+        catalog,
+        [{"book_id": previous["book_id"], "lesson_id": previous["lesson_id"],
+          "angle_id": previous["angle_id"]}],
+        book_id="atomic-habits",
+        lesson_id="make-it-easy",
+    )
+    assert selected["angle_id"] == "setup"
+    assert selected["episode_id"] != previous["episode_id"]
+    assert selected["approved_facts"] == previous["approved_facts"]
+
+
+def test_invalid_angles_and_unsafe_source_urls_fail_closed() -> None:
+    catalog = json.loads(json.dumps(CATALOG))
+    catalog["books"][0]["lessons"][0]["angles"] = [
+        {"id": "same", "hook_angle": "One", "visual_action": "A"},
+        {"id": "same", "hook_angle": "Two", "visual_action": "B"},
+    ]
+    with pytest.raises(CHOOSER.BookSelectionError, match="duplicate"):
+        CHOOSER.choose_lesson(catalog)
+    catalog = json.loads(json.dumps(CATALOG))
+    catalog["books"][0]["lessons"][0]["claim_source_url"] = (
+        "https://attacker:secret@example.org/claim"
+    )
+    with pytest.raises(CHOOSER.BookSelectionError, match="HTTPS"):
+        CHOOSER.choose_lesson(catalog)
+    with pytest.raises(CHOOSER.BookSelectionError, match="angle override requires"):
+        CHOOSER.choose_lesson(CATALOG, angle_id="primary")

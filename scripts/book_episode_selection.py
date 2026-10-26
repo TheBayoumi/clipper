@@ -9,13 +9,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any
 
 SCHEMA = "clipper-book-selection-v1"
 CATALOG_PATH = Path("niches/book-editorial-catalog.json")
 RECENT_BOOK_WINDOW = 2
 RECENT_LESSON_WINDOW = 6
+SCRIPT_VERSION = "book-lesson-complete-sentences-v2"
+IDENTIFIER = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class BookSelectionError(ValueError):
@@ -26,6 +30,49 @@ def _digest(payload: Any) -> str:
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def _source_url(value: str) -> bool:
+    parts = urlsplit(value)
+    return (
+        parts.scheme == "https"
+        and bool(parts.hostname)
+        and parts.username is None
+        and parts.password is None
+    )
+
+
+def _angles(idea: dict[str, Any]) -> list[dict[str, str]]:
+    """Legacy catalog entries have one stable named editorial angle."""
+    configured = idea.get("angles")
+    if configured is None:
+        return [
+            {
+                "id": "primary",
+                "hook_angle": idea["hook_angle"],
+                "visual_action": idea["visual_action"],
+            }
+        ]
+    if not isinstance(configured, list) or not configured:
+        raise BookSelectionError("lesson angles must be a nonempty list")
+    seen: set[str] = set()
+    for angle in configured:
+        if not isinstance(angle, dict) or set(angle) != {
+            "id", "hook_angle", "visual_action"
+        }:
+            raise BookSelectionError("invalid editorial angle")
+        if (
+            not isinstance(angle["id"], str)
+            or not IDENTIFIER.fullmatch(angle["id"])
+            or angle["id"] in seen
+            or any(
+                not isinstance(angle[k], str) or not angle[k].strip()
+                for k in ("hook_angle", "visual_action")
+            )
+        ):
+            raise BookSelectionError("invalid or duplicate editorial angle")
+        seen.add(angle["id"])
+    return configured
 
 
 def _validate_catalog(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -42,10 +89,14 @@ def _validate_catalog(data: dict[str, Any]) -> list[dict[str, Any]]:
         fields = ("id", "title", "author", "pillar", "source_url")
         if any(not isinstance(book.get(k), str) or not book[k].strip() for k in fields):
             raise BookSelectionError("unattributed book or missing source")
-        if book["id"] in ids or book.get("status") != "source_verified_candidate":
+        if (
+            not IDENTIFIER.fullmatch(book["id"])
+            or book["id"] in ids
+            or book.get("status") != "source_verified_candidate"
+        ):
             raise BookSelectionError("duplicate or unverified book")
         ids.add(book["id"])
-        if not book["source_url"].startswith("https://"):
+        if not _source_url(book["source_url"]):
             raise BookSelectionError("book source URL must be HTTPS")
         if not isinstance(book.get("lessons"), list) or not book["lessons"]:
             raise BookSelectionError("book has no eligible lesson")
@@ -53,12 +104,15 @@ def _validate_catalog(data: dict[str, Any]) -> list[dict[str, Any]]:
             required = ("id", "topic", "claim", "claim_source_url", "visual_action", "hook_angle")
             if any(not isinstance(idea.get(k), str) or not idea[k].strip() for k in required):
                 raise BookSelectionError("idea missing evidence, hook, or visual action")
-            if not idea["claim_source_url"].startswith("https://"):
+            if not IDENTIFIER.fullmatch(idea["id"]):
+                raise BookSelectionError("invalid lesson ID")
+            if not _source_url(idea["claim_source_url"]):
                 raise BookSelectionError("idea claim source must be HTTPS")
             key = book["id"] + "/" + idea["id"]
             if key in lessons:
                 raise BookSelectionError("duplicate lesson")
             lessons.add(key)
+            _angles(idea)
     return books
 
 
@@ -68,6 +122,7 @@ def choose_lesson(
     *,
     book_id: str | None = None,
     lesson_id: str | None = None,
+    angle_id: str | None = None,
     pillar: str | None = None,
 ) -> dict[str, Any]:
     """Select a distinct evidence-backed lesson, never synthesize missing facts."""
@@ -77,17 +132,29 @@ def choose_lesson(
         not isinstance(item, dict)
         or not isinstance(item.get("book_id"), str)
         or not isinstance(item.get("lesson_id"), str)
+        or (
+            "angle_id" in item
+            and (
+                not isinstance(item["angle_id"], str)
+                or not IDENTIFIER.fullmatch(item["angle_id"])
+            )
+        )
         for item in history
     ):
         raise BookSelectionError("history requires book_id and lesson_id entries")
     if lesson_id is not None and book_id is None:
         raise BookSelectionError("lesson override also requires book_id")
+    if angle_id is not None and (book_id is None or lesson_id is None):
+        raise BookSelectionError("angle override requires book_id and lesson_id")
     if book_id is not None and not any(book["id"] == book_id for book in books):
         raise BookSelectionError("requested book is not in source-backed catalog")
-    candidates: list[tuple[int, int, dict[str, Any], dict[str, Any]]] = []
+    candidates: list[
+        tuple[int, int, dict[str, Any], dict[str, Any], dict[str, str]]
+    ] = []
     recent_books = {item["book_id"] for item in history[-RECENT_BOOK_WINDOW:]}
     recent_lessons = {
-        item["book_id"] + "/" + item["lesson_id"] for item in history[-RECENT_LESSON_WINDOW:]
+        item["book_id"] + "/" + item["lesson_id"] + "/" + item.get("angle_id", "primary")
+        for item in history[-RECENT_LESSON_WINDOW:]
     }
     for i, book in enumerate(books):
         if book_id is not None and book["id"] != book_id:
@@ -97,18 +164,37 @@ def choose_lesson(
         for k, lesson in enumerate(book["lessons"]):
             if lesson_id is not None and lesson["id"] != lesson_id:
                 continue
-            identity = book["id"] + "/" + lesson["id"]
-            # Rotate books first, then ideas. Reuse only once catalog is exhausted.
-            score = (
-                100
-                - (65 if book["id"] in recent_books else 0)
-                - (85 if identity in recent_lessons else 0)
-            )
-            candidates.append((score, -(i * 100 + k), book, lesson))
+            for a, angle in enumerate(_angles(lesson)):
+                if angle_id is not None and angle["id"] != angle_id:
+                    continue
+                identity = book["id"] + "/" + lesson["id"] + "/" + angle["id"]
+                score = (
+                    100
+                    - (65 if book["id"] in recent_books else 0)
+                    - (85 if identity in recent_lessons else 0)
+                )
+                candidates.append((score, -(i * 1000 + k * 10 + a), book, lesson, angle))
     if not candidates:
         raise BookSelectionError("no verified book/lesson matches selection filters")
-    _score, _order, selected, idea = max(candidates, key=lambda item: (item[0], item[1]))
+    unused = [
+        item for item in candidates
+        if item[2]["id"] + "/" + item[3]["id"] + "/" + item[4]["id"]
+        not in recent_lessons
+    ]
+    eligible = unused or candidates
+    _score, _order, selected, idea, angle = max(
+        eligible, key=lambda item: (item[0], item[1])
+    )
+    lesson_payload = {k: v for k, v in idea.items() if k != "angles"}
+    lesson_payload["hook_angle"] = angle["hook_angle"]
+    lesson_payload["visual_action"] = angle["visual_action"]
+    episode_id = f"{selected['id']}--{idea['id']}--{angle['id']}"
     payload = {
+        "book_id": selected["id"],
+        "lesson_id": idea["id"],
+        "angle_id": angle["id"],
+        "episode_id": episode_id,
+        "script_version": SCRIPT_VERSION,
         "schema": SCHEMA,
         "mode": "manual_override" if book_id is not None else "automatic_catalog_rotation",
         "book": {
@@ -118,7 +204,7 @@ def choose_lesson(
             "pillar": selected["pillar"],
             "source_url": selected["source_url"],
         },
-        "lesson": idea,
+        "lesson": lesson_payload,
         "approved_facts": [idea["claim"]],
         "sources": [selected["source_url"], idea["claim_source_url"]],
         "history_sha256": _digest(history),
@@ -142,7 +228,15 @@ def to_niche_config(selection: dict[str, Any]) -> dict[str, Any]:
         "niche": "Animated original lessons from books on growth, psychology, and business",
         "audience": "Curious adults looking for practical source-backed lessons",
         "brand": "PAGE TO LIFE",
-        "voice": "af_heart",
+        "voice": "am_adam",
+        "book_id": selection["book_id"],
+        "lesson_id": selection["lesson_id"],
+        "angle_id": selection["angle_id"],
+        "episode_id": selection["episode_id"],
+        "script_version": selection["script_version"],
+        "selection_fingerprint": selection["fingerprint"],
+        "hook_angle": idea["hook_angle"],
+        "visual_action": idea["visual_action"],
         "pillar": book["pillar"],
         "book_title": book["title"],
         "book_author": book["author"],
@@ -165,6 +259,11 @@ def to_storyboard_outline(
     result = {
         "schema": "clipper-book-story-outline-v1",
         "selection_fingerprint": selection["fingerprint"],
+        "episode_id": selection["episode_id"],
+        "book_id": selection["book_id"],
+        "lesson_id": selection["lesson_id"],
+        "angle_id": selection["angle_id"],
+        "script_version": selection["script_version"],
         "book": selection["book"],
         "lesson": selection["lesson"],
         "selected_hook_angle": selection["lesson"]["hook_angle"],
@@ -193,6 +292,7 @@ def main() -> None:
     parser.add_argument("--history", type=Path)
     parser.add_argument("--book-id")
     parser.add_argument("--lesson-id")
+    parser.add_argument("--angle-id")
     parser.add_argument("--pillar")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--niche-config-output", type=Path)
@@ -206,6 +306,7 @@ def main() -> None:
         history,
         book_id=args.book_id,
         lesson_id=args.lesson_id,
+        angle_id=args.angle_id,
         pillar=args.pillar,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
