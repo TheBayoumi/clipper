@@ -1,0 +1,167 @@
+name: Wan S2V original-book-video pilot
+
+on:
+  push:
+    branches: [feat/unified-niche-tts]
+    paths: [.github/workflows/wan-s2v-qualification.yml]
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [preflight, generate]
+        default: preflight
+        required: true
+      reference_path:
+        type: string
+        default: assets/character/page-to-life-host-approved-512.webp.b64
+        required: true
+      approved_reference_sha256:
+        type: string
+        required: true
+        default: c3bbc6395e47c04646ad3f0ad44f13873511e4ee3189046eafbc682225e746d2
+      voice_source_run:
+        type: string
+        default: '40047215101'
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clipper-wan-s2v
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 160
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      WAN_PROMPT: "Cinematic cartoon presenter with curly dark hair, black rectangular glasses and a charcoal hoodie, naturally speaking in a warm bedroom."
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test shot identity and honest low-resolution labeling
+        run: |
+          python -m pip install 'pytest>=9,<10' 'Pillow>=11,<13' 'ruff>=0.15.22,<1'
+          python -m ruff check scripts/wan_shot_contract.py scripts/modal_wan_s2v.py scripts/wan_storyboard_plan.py tests/test_wan_shot_contract.py tests/test_wan_storyboard_plan.py
+          python -m ruff format --check scripts/wan_shot_contract.py scripts/modal_wan_s2v.py scripts/wan_storyboard_plan.py tests/test_wan_shot_contract.py tests/test_wan_storyboard_plan.py
+          python -m pytest -q -o addopts='' tests/test_wan_shot_contract.py tests/test_wan_storyboard_plan.py
+      - name: Resolve official Wan model metadata without downloading weights
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -m pip install 'huggingface-hub>=0.35,<1'
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi, hf_hub_download
+          repo, rev = 'Wan-AI/Wan2.2-S2V-14B', 'dab4e9c55bbe4c8c4d03db1c2c98c7f0ac9c454b'
+          token = os.environ.get('HF_TOKEN') or None
+          info = HfApi().model_info(repo, revision=rev, token=token)
+          assert info.sha
+          assert hf_hub_download(repo_id=repo, revision=rev, filename='config.json', token=token)
+          print('WAN_S2V_PUBLIC_CHECKPOINT_VERIFIED', info.sha)
+          PY
+      - name: Install FFmpeg and ffprobe for archived narration and rendered media QA
+        if: inputs.mode == 'generate'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+      - name: Restore hash-locked approved character and cached Kokoro WAV for technical qualification
+        if: inputs.mode == 'generate'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REFERENCE: ${{ inputs.reference_path }}
+          SHA256: ${{ inputs.approved_reference_sha256 }}
+          VOICE_RUN: ${{ inputs.voice_source_run }}
+        run: |
+          set -euo pipefail
+          [[ "$REFERENCE" == assets/character/* && "$REFERENCE" != *..* ]]
+          [[ "$SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Approved reference hash required"; exit 1; }
+          [[ "$VOICE_RUN" =~ ^[0-9]+$ ]]
+          test -f "$REFERENCE" || { echo "::error::Approved source missing: $REFERENCE"; exit 1; }
+          mkdir -p artifacts/wan-s2v/source artifacts/wan-s2v/output
+          if [[ "$REFERENCE" == *.webp.b64 ]]; then
+            SOURCE_IMAGE="artifacts/wan-s2v/output/reference-source.webp"
+            base64 --decode "$REFERENCE" > "$SOURCE_IMAGE"
+          else
+            SOURCE_IMAGE="artifacts/wan-s2v/output/reference-source.png"
+            cp "$REFERENCE" "$SOURCE_IMAGE"
+          fi
+          echo "$SHA256  $SOURCE_IMAGE" | sha256sum --check -
+          WAN_REFERENCE_FILE="$SOURCE_IMAGE"
+          echo "WAN_REFERENCE_FILE=$WAN_REFERENCE_FILE" >> "$GITHUB_ENV"
+          echo "::notice::Source fidelity is independently reviewed; passing a 512px technical input is not creative approval."
+          gh run download "$VOICE_RUN" --pattern 'niche-draft-*' --dir artifacts/wan-s2v/source
+          SOURCE="$(find artifacts/wan-s2v/source -type f -name draft.mp4 -print -quit)"
+          test -n "$SOURCE" || { echo "::error::Cached Kokoro source unavailable"; exit 1; }
+          ffmpeg -hide_banner -loglevel error -y -i "$SOURCE" -map 0:a:0 \
+            -t 5 -ac 1 -ar 24000 -c:a pcm_s16le artifacts/wan-s2v/output/kokoro.wav
+          python scripts/wan_shot_contract.py \
+            --reference "$WAN_REFERENCE_FILE" --audio artifacts/wan-s2v/output/kokoro.wav \
+            --prompt "$WAN_PROMPT" \
+            --manifest artifacts/wan-s2v/output/shot-preflight.json
+          python scripts/wan_storyboard_plan.py \
+            --storyboard niches/atomic-habits-approved-storyboard.json \
+            --source-sha256 "$SHA256" \
+            --output artifacts/wan-s2v/output/three-shot-plan.json
+      - name: Deploy official Wan S2V Modal renderer
+        if: inputs.mode == 'generate'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$MODAL_TOKEN_ID" && test -n "$MODAL_TOKEN_SECRET" && test -n "$HF_TOKEN"
+          python -m pip install 'modal==1.5.5'
+          modal app list --json > /dev/null
+          modal secret create clipper-wan-hf HF_TOKEN="$HF_TOKEN" --force
+          modal deploy scripts/modal_wan_s2v.py
+      - name: Generate actual S2V candidate on A100
+        if: inputs.mode == 'generate'
+        env:
+          REFERENCE: ${{ inputs.reference_path }}
+        run: |
+          modal run scripts/modal_wan_s2v.py --reference "$WAN_REFERENCE_FILE" \
+            --audio artifacts/wan-s2v/output/kokoro.wav --output artifacts/wan-s2v/output \
+            --prompt "$WAN_PROMPT"
+      - name: Audit actual video without granting publication approval
+        if: inputs.mode == 'generate'
+        env:
+          REFERENCE: ${{ inputs.reference_path }}
+        run: |
+          set -euo pipefail
+          python scripts/wan_shot_contract.py \
+            --reference "$WAN_REFERENCE_FILE" --audio artifacts/wan-s2v/output/kokoro.wav \
+            --prompt "$WAN_PROMPT" \
+            --video artifacts/wan-s2v/output/wan-s2v-candidate.mp4 \
+            --manifest artifacts/wan-s2v/output/shot-qa.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('artifacts/wan-s2v/output')
+          actual = json.loads((root / 'model-evidence.json').read_text())
+          qa = json.loads((root / 'shot-qa.json').read_text())
+          import hashlib
+          assert actual['video_sha256'] == qa['video_sha256']
+          assert actual['model_revision'] == qa['model_revision']
+          assert actual['image_sha256'] == qa['image']['sha256']
+          assert actual['audio_sha256'] == qa['audio']['sha256']
+          assert actual['prompt_sha256'] == hashlib.sha256(qa['prompt'].encode('utf-8')).hexdigest()
+          assert actual['seed'] == qa['seed']
+          assert actual['publish_eligible'] is False and qa['publish_eligible'] is False
+          PY
+      - name: Preserve output and actual failure evidence
+        if: always() && inputs.mode == 'generate'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wan-s2v-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/wan-s2v/output/
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,15 @@
+# Working brand and mascot; user-approved niche, not a final channel name.
+format: book_lesson
+niche: Animated book lessons on self-improvement, psychology, and business
+audience: Curious adults seeking practical, evidence-aware lessons from books
+brand: PAGE TO LIFE
+voice: am_adam  # Original cinematic American baritone, not a celebrity clone
+pillar: self_improvement
+book_title: Atomic Habits
+book_author: James Clear
+source_url: https://jamesclear.com/three-steps-habit-change
+topic: Make a good habit easier to start today
+# The author directly discusses these principles in the cited source.
+facts:
+  - 'James Clear presents four laws for building good habits: make it obvious, attractive, easy, and satisfying.'
+  - James Clear describes making cues obvious and responses easy as ways to make a desired habit more likely.

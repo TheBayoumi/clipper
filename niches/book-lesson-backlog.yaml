@@ -1,0 +1,165 @@
+# Candidate book-lesson queue. Unresearched entries must NOT be generated automatically.
+# Each requires author/publisher/primary source verification and approved facts first.
+version: 1
+production_eligible: false
+episodes:
+  - id: book-001
+    pillar: self_improvement
+    book: "Atomic Habits"
+    author: "James Clear"
+    angle: "Why the easiest habit wins"
+    takeaway: "Make your next habit visible and easy"
+    source_status: research_required
+    status: candidate
+  - id: book-002
+    pillar: self_improvement
+    book: "Atomic Habits"
+    author: "James Clear"
+    angle: "Stop waiting to feel motivated"
+    takeaway: "Create an obvious trigger for action"
+    source_status: research_required
+    status: candidate
+  - id: book-003
+    pillar: self_improvement
+    book: "Deep Work"
+    author: "Cal Newport"
+    angle: "The hidden cost of constant switching"
+    takeaway: "Protect one uninterrupted focus block"
+    source_status: research_required
+    status: candidate
+  - id: book-004
+    pillar: self_improvement
+    book: "Deep Work"
+    author: "Cal Newport"
+    angle: "Build a ritual for your best work"
+    takeaway: "Choose a recurring distraction-free session"
+    source_status: research_required
+    status: candidate
+  - id: book-005
+    pillar: self_improvement
+    book: "Essentialism"
+    author: "Greg McKeown"
+    angle: "Being busy is not the same as progress"
+    takeaway: "Name the one priority worth protecting"
+    source_status: research_required
+    status: candidate
+  - id: book-006
+    pillar: self_improvement
+    book: "The ONE Thing"
+    author: "Gary Keller and Jay Papasan"
+    angle: "Why doing less can move you further"
+    takeaway: "Choose one important next action"
+    source_status: research_required
+    status: candidate
+  - id: book-007
+    pillar: self_improvement
+    book: "The Power of Habit"
+    author: "Charles Duhigg"
+    angle: "Spot the trigger behind a routine"
+    takeaway: "Identify a repeated cue before changing it"
+    source_status: research_required
+    status: candidate
+  - id: book-008
+    pillar: psychology
+    book: "Thinking, Fast and Slow"
+    author: "Daniel Kahneman"
+    angle: "Why your first guess feels so certain"
+    takeaway: "Deliberately challenge an intuitive answer"
+    source_status: research_required
+    status: candidate
+  - id: book-009
+    pillar: psychology
+    book: "Thinking, Fast and Slow"
+    author: "Daniel Kahneman"
+    angle: "The trap of easy-to-recall examples"
+    takeaway: "Look for broader evidence before deciding"
+    source_status: research_required
+    status: candidate
+  - id: book-010
+    pillar: psychology
+    book: "Influence"
+    author: "Robert Cialdini"
+    angle: "Why popularity can sway decisions"
+    takeaway: "Notice social proof before saying yes"
+    source_status: research_required
+    status: candidate
+  - id: book-011
+    pillar: psychology
+    book: "Influence"
+    author: "Robert Cialdini"
+    angle: "What makes a request feel persuasive"
+    takeaway: "Inspect the context of an ask"
+    source_status: research_required
+    status: candidate
+  - id: book-012
+    pillar: psychology
+    book: "Mindset"
+    author: "Carol S. Dweck"
+    angle: "A setback is not a permanent label"
+    takeaway: "Focus your next experiment on learning"
+    source_status: research_required
+    status: candidate
+  - id: book-013
+    pillar: psychology
+    book: "The Courage to Be Disliked"
+    author: "Ichiro Kishimi and Fumitake Koga"
+    angle: "Stop outsourcing every judgment"
+    takeaway: "Differentiate your actions from others' opinions"
+    source_status: research_required
+    status: candidate
+  - id: book-014
+    pillar: psychology
+    book: "Man's Search for Meaning"
+    author: "Viktor E. Frankl"
+    angle: "Finding meaning in hard moments"
+    takeaway: "Choose a purposeful small next step"
+    source_status: research_required
+    status: candidate
+  - id: book-015
+    pillar: business
+    book: "The Psychology of Money"
+    author: "Morgan Housel"
+    angle: "A smart plan you can't stick to still fails"
+    takeaway: "Choose repeatable money rules"
+    source_status: research_required
+    status: candidate
+  - id: book-016
+    pillar: business
+    book: "The Psychology of Money"
+    author: "Morgan Housel"
+    angle: "Why enough is an important decision"
+    takeaway: "Write down a personal stopping rule"
+    source_status: research_required
+    status: candidate
+  - id: book-017
+    pillar: business
+    book: "The Lean Startup"
+    author: "Eric Ries"
+    angle: "Test a business idea before overbuilding"
+    takeaway: "Design a small falsifiable experiment"
+    source_status: research_required
+    status: candidate
+  - id: book-018
+    pillar: business
+    book: "Good Strategy Bad Strategy"
+    author: "Richard Rumelt"
+    angle: "A goal is not a strategy"
+    takeaway: "Diagnose the actual challenge first"
+    source_status: research_required
+    status: candidate
+  - id: book-019
+    pillar: business
+    book: "Never Split the Difference"
+    author: "Chris Voss and Tahl Raz"
+    angle: "Ask better questions before negotiating"
+    takeaway: "Practice one calibrated question"
+    source_status: research_required
+    status: candidate
+  - id: book-020
+    pillar: business
+    book: "Zero to One"
+    author: "Peter Thiel with Blake Masters"
+    angle: "Why being different needs a specific answer"
+    takeaway: "Define an unmet customer need"
+    source_status: research_required
+    status: candidate

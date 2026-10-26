@@ -1,0 +1,101 @@
+{
+  "schema": "clipper-book-editorial-catalog-v1",
+  "selection_policy": {
+    "default_mode": "auto_from_sourced_catalog",
+    "manual_override": "book_id and optional lesson_id",
+    "episode_format": "one practical original story about one source-supported idea, not a full-book recap",
+    "approval": "source_supported_candidates_only; no unverified book claims",
+    "diversity": "prefer a different book than the most recent episode; never repeat same lesson until eligible pool exhausted",
+    "rank_factors": [
+      "topic relevance",
+      "hook clarity",
+      "real-world example and visual action",
+      "source credibility",
+      "lesson freshness"
+    ],
+    "full_video_seconds": [
+      30,
+      60
+    ]
+  },
+  "books": [
+    {
+      "id": "atomic-habits",
+      "title": "Atomic Habits",
+      "author": "James Clear",
+      "pillar": "self_improvement",
+      "source_url": "https://jamesclear.com/three-steps-habit-change",
+      "status": "source_verified_candidate",
+      "lessons": [
+        {
+          "id": "make-it-easy",
+          "topic": "Why making a habit easier beats waiting for motivation",
+          "claim": "James Clear describes making a desired response easy as one of the four laws of behavior change.",
+          "claim_source_url": "https://jamesclear.com/three-steps-habit-change",
+          "visual_action": "Host prepares a notebook on the desk and makes the first step simpler",
+          "hook_angle": "The reason you skip your habit might be the friction, not your willpower"
+        },
+        {
+          "id": "two-minute-rule",
+          "topic": "Shrink a new habit to its first two minutes",
+          "claim": "James Clear recommends scaling a new habit down to a version that takes less than two minutes to begin.",
+          "claim_source_url": "https://jamesclear.com/how-to-stop-procrastinating",
+          "visual_action": "Host changes a large reading goal to opening a book and reading one page",
+          "hook_angle": "Try making the first step laughably small"
+        },
+        {
+          "id": "make-cues-obvious",
+          "topic": "Change your environment to make your next good choice easier",
+          "claim": "Clear's four laws include making the cue for a desired behavior obvious.",
+          "claim_source_url": "https://jamesclear.com/three-steps-habit-change",
+          "visual_action": "Host moves a notebook into plain view and places a distracting phone away",
+          "hook_angle": "You can change a habit before you feel motivated"
+        }
+      ]
+    },
+    {
+      "id": "deep-work",
+      "title": "Deep Work",
+      "author": "Cal Newport",
+      "pillar": "business",
+      "source_url": "https://calnewport.com/deep-work-rules-for-focused-success-in-a-distracted-world/",
+      "status": "source_verified_candidate",
+      "lessons": [
+        {
+          "id": "focus-without-distraction",
+          "topic": "Why deep focus is more valuable than frantic multitasking",
+          "claim": "Cal Newport defines deep work as focusing without distraction on cognitively demanding tasks.",
+          "claim_source_url": "https://calnewport.com/deep-work-rules-for-focused-success-in-a-distracted-world/",
+          "visual_action": "Host silences phone, closes extra tabs and works on one demanding idea",
+          "hook_angle": "Busy is not the same as focused"
+        },
+        {
+          "id": "time-block-focus",
+          "topic": "Give deep work a protected time slot",
+          "claim": "Newport describes time blocking and depth rituals as strategies for making room for deep work.",
+          "claim_source_url": "https://calnewport.com/deep-work-rules-for-focused-success-in-a-distracted-world/",
+          "visual_action": "Host blocks out a focused work session in a calendar then starts work",
+          "hook_angle": "Don't wait for an empty calendar to find focus"
+        }
+      ]
+    },
+    {
+      "id": "psychology-of-money",
+      "title": "The Psychology of Money",
+      "author": "Morgan Housel",
+      "pillar": "psychology",
+      "source_url": "https://harriman.house/books/the-psychology-of-money/",
+      "status": "source_verified_candidate",
+      "lessons": [
+        {
+          "id": "behavior-before-math",
+          "topic": "Money decisions are emotional, not only mathematical",
+          "claim": "The publisher describes the book as exploring how behavior and personal history shape money decisions.",
+          "claim_source_url": "https://harriman.house/books/the-psychology-of-money/",
+          "visual_action": "Host compares two everyday spending decisions at a kitchen table without inventing financial results",
+          "hook_angle": "Two people can see the same numbers and decide differently"
+        }
+      ]
+    }
+  ]
+}

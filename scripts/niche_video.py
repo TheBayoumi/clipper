@@ -1,0 +1,996 @@
+"""Original niche-video production, independent of third-party clipping campaigns.
+
+Usage: python scripts/niche_video.py --config niches/ai-workflows.yaml --topic "..."
+All external calls are explicit; generated videos remain unpublished drafts.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import io
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import wave
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
+
+import yaml
+
+# Pin the script weights; keep TTS identity versioned to invalidate cache on upgrades.
+SCRIPT_MODEL = "Qwen/Qwen3-1.7B"
+SCRIPT_REVISION = "8d4744f9e13072f4920c326350fa81eedb74eae9"
+VOICE_MODEL = "hexgrad/Kokoro-82M"
+VOICE_REVISION = "v1.0"
+SCRIPT_CONTRACT = "niche-scenes-open-v3"
+BOOK_EDIT_CONTRACT = "book-lesson-complete-sentences-v2"
+MAX_SCRIPT_ATTEMPTS = 3
+VOICE_CONTRACT = "kokoro-24khz-wav-v1"
+VOICES = frozenset({"af_heart", "af_bella", "am_adam", "am_michael", "bf_emma"})
+
+
+class NicheVideoError(RuntimeError):
+    """A validation or production step failed closed."""
+
+
+def _text(value: object, field: str, limit: int = 500) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > limit:
+        raise NicheVideoError(f"{field} must be nonempty text of at most {limit} characters")
+    return value.strip()
+
+
+@dataclass(frozen=True)
+class NicheConfig:
+    niche: str
+    audience: str
+    brand: str
+    voice: str
+    facts: tuple[str, ...]
+    topic: str
+    format: str = "general"
+    pillar: str = ""
+    book_title: str = ""
+    book_author: str = ""
+    source_url: str = ""
+    book_id: str = ""
+    lesson_id: str = ""
+    angle_id: str = ""
+    episode_id: str = ""
+    script_version: str = ""
+    selection_fingerprint: str = ""
+    hook_angle: str = ""
+    visual_action: str = ""
+
+    @classmethod
+    def load(cls, path: Path, topic_override: str | None = None) -> NicheConfig:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise NicheVideoError("niche config must be an object")
+        allowed = {
+            "niche",
+            "audience",
+            "brand",
+            "voice",
+            "facts",
+            "topic",
+            "format",
+            "pillar",
+            "book_title",
+            "book_author",
+            "source_url",
+            "book_id",
+            "lesson_id",
+            "angle_id",
+            "episode_id",
+            "script_version",
+            "selection_fingerprint",
+            "hook_angle",
+            "visual_action",
+        }
+        if set(raw) - allowed:
+            raise NicheVideoError(
+                f"unsupported niche configuration keys: {sorted(set(raw) - allowed)}"
+            )
+        facts = raw.get("facts", [])
+        if not isinstance(facts, list) or len(facts) > 12:
+            raise NicheVideoError("facts must be a list of at most twelve verified statements")
+        if not all(isinstance(fact, str) and 1 <= len(fact.strip()) <= 400 for fact in facts):
+            raise NicheVideoError("every fact must be a nonempty string of at most 400 characters")
+        voice = _text(raw.get("voice", "af_heart"), "voice", 30).lower()
+        if voice not in VOICES:
+            raise NicheVideoError("unsupported Kokoro voice")
+        story_format = _text(raw.get("format", "general"), "format", 30)
+        if story_format not in {"general", "book_lesson"}:
+            raise NicheVideoError("unsupported niche video format")
+        pillar = str(raw.get("pillar", ""))
+        title = str(raw.get("book_title", ""))
+        author = str(raw.get("book_author", ""))
+        source = str(raw.get("source_url", ""))
+        if story_format == "book_lesson":
+            if pillar not in {"self_improvement", "psychology", "business"}:
+                raise NicheVideoError("book lesson requires a recognized pillar")
+            title = _text(title, "book_title", 100)
+            author = _text(author, "book_author", 100)
+            source = _text(source, "source_url", 500)
+            parts = urlsplit(source)
+            if (
+                parts.scheme != "https"
+                or not parts.hostname
+                or parts.username is not None
+                or parts.password is not None
+            ):
+                raise NicheVideoError("book lesson source must be an HTTPS URL")
+            if not facts:
+                raise NicheVideoError("book lesson requires approved, sourced facts")
+        elif any((pillar, title, author, source)):
+            raise NicheVideoError("book metadata requires format: book_lesson")
+        identity_fields = (
+            "book_id",
+            "lesson_id",
+            "angle_id",
+            "episode_id",
+            "script_version",
+            "selection_fingerprint",
+            "hook_angle",
+            "visual_action",
+        )
+        if any(key in raw for key in identity_fields):
+            if story_format != "book_lesson" or not all(
+                isinstance(raw.get(key), str) and raw[key].strip() for key in identity_fields
+            ):
+                raise NicheVideoError("book episode identity must be complete")
+            identity = {key: raw[key] for key in identity_fields}
+            for key in ("book_id", "lesson_id", "angle_id"):
+                if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", identity[key]):
+                    raise NicheVideoError(f"invalid {key}")
+            expected = "--".join(identity[key] for key in ("book_id", "lesson_id", "angle_id"))
+            if identity["episode_id"] != expected:
+                raise NicheVideoError("book episode identity mismatch")
+            if identity["script_version"] != BOOK_EDIT_CONTRACT:
+                raise NicheVideoError("unsupported book script version")
+            if not re.fullmatch(r"[0-9a-f]{64}", identity["selection_fingerprint"]):
+                raise NicheVideoError("selection fingerprint must be a SHA256")
+        else:
+            identity = {}
+        return cls(
+            niche=_text(raw.get("niche"), "niche", 150),
+            audience=_text(raw.get("audience"), "audience", 200),
+            brand=_text(raw.get("brand"), "brand", 60),
+            voice=voice,
+            facts=tuple(fact.strip() for fact in facts),
+            topic=_text(topic_override or raw.get("topic"), "topic", 200),
+            format=story_format,
+            pillar=pillar,
+            book_title=title,
+            book_author=author,
+            source_url=source,
+            **identity,
+        )
+
+
+@dataclass(frozen=True)
+class Scene:
+    headline: str
+    narration: str
+
+
+@dataclass(frozen=True)
+class Episode:
+    title: str
+    scenes: tuple[Scene, ...]
+
+    @classmethod
+    def from_json(cls, raw: object) -> Episode:
+        if not isinstance(raw, dict) or set(raw) != {"title", "scenes"}:
+            raise NicheVideoError("episode schema mismatch")
+        scenes_raw = raw["scenes"]
+        if not isinstance(scenes_raw, list) or not 3 <= len(scenes_raw) <= 5:
+            raise NicheVideoError("episode requires 3-5 distinct scenes")
+        scenes: list[Scene] = []
+        for item in scenes_raw:
+            if not isinstance(item, dict) or set(item) != {"headline", "narration"}:
+                raise NicheVideoError("scene schema mismatch")
+            headline = _text(item["headline"], "headline", 65)
+            narration = _text(item["narration"], "narration", 400)
+            if not 6 <= len(narration.split()) <= 45:
+                raise NicheVideoError("scene narration must contain 6-45 words")
+            scenes.append(Scene(headline=headline, narration=narration))
+        if not 45 <= sum(len(scene.narration.split()) for scene in scenes) <= 125:
+            raise NicheVideoError("episode narration must contain 45-125 words")
+        return cls(title=_text(raw["title"], "title", 100), scenes=tuple(scenes))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "title": self.title,
+            "scenes": [
+                {"headline": scene.headline, "narration": scene.narration} for scene in self.scenes
+            ],
+        }
+
+
+def _fingerprint(payload: object) -> str:
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+        temp = Path(handle.name)
+        try:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        except BaseException:
+            temp.unlink(missing_ok=True)
+            raise
+    temp.replace(path)
+
+
+def _script_request(config: NicheConfig) -> dict[str, object]:
+    return {
+        "model": SCRIPT_MODEL,
+        "revision": SCRIPT_REVISION,
+        "seed": 42,
+        "max_new_tokens": 960,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Write exactly one valid JSON object, no markdown or commentary. "
+                    'Schema: {"title": string, "scenes": '
+                    '[{"headline": string, "narration": string}]}. '
+                    "Write four distinct scenes, aiming for 80-100 narration words "
+                    "in total, around 20-25 words each. Hard limits: 3-5 scenes, "
+                    "45-125 total words, 6-45 per scene, headline <= 65 chars. "
+                    "Start with a clear honest hook, develop useful original "
+                    "ideas, finish with a complete payoff. Never invent statistics, "
+                    "quotes, or news. Concrete claims may use approved_facts only. "
+                    "With no facts, use general reproducible methods instead. "
+                    "For book lessons, attribute the author naturally, explain "
+                    "one precise idea, one relatable original example, and one "
+                    "actionable experiment. Do not quote or reproduce book prose."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "niche": config.niche,
+                        "audience": config.audience,
+                        "topic": config.topic,
+                        "approved_facts": config.facts,
+                        "format": config.format,
+                        "pillar": config.pillar,
+                        "book_title": config.book_title,
+                        "book_author": config.book_author,
+                        "source_url": config.source_url,
+                        **(
+                            {
+                                "book_id": config.book_id,
+                                "lesson_id": config.lesson_id,
+                                "angle_id": config.angle_id,
+                                "episode_id": config.episode_id,
+                                "script_version": config.script_version,
+                                "selection_fingerprint": config.selection_fingerprint,
+                                "hook_angle": config.hook_angle,
+                                "visual_action": config.visual_action,
+                            }
+                            if config.episode_id
+                            else {}
+                        ),
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+    }
+
+
+@lru_cache(maxsize=1)
+def _script_pipeline() -> tuple[Any, Any]:
+    """Load Qwen3 weights only once, even when a revision is required."""
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError as exc:
+        raise NicheVideoError(
+            "Install the [niche-models] runtime for open-weight inference"
+        ) from exc
+    torch.set_num_threads(min(4, os.cpu_count() or 1))
+    tokenizer = AutoTokenizer.from_pretrained(SCRIPT_MODEL, revision=SCRIPT_REVISION)
+    model = AutoModelForCausalLM.from_pretrained(
+        SCRIPT_MODEL, revision=SCRIPT_REVISION, dtype="auto"
+    ).eval()
+    return model, tokenizer
+
+
+def _local_script_completion(request: dict[str, object]) -> str:
+    """Generate locally; keep the weights resident for bounded repair attempts."""
+    import torch
+
+    model, tokenizer = _script_pipeline()
+    torch.manual_seed(int(request["seed"]))
+    inputs = tokenizer.apply_chat_template(
+        request["messages"],
+        tokenize=True,
+        add_generation_prompt=True,
+        enable_thinking=False,
+        return_dict=True,
+        return_tensors="pt",
+    )
+    with torch.inference_mode():
+        output = model.generate(
+            **inputs,
+            max_new_tokens=int(request["max_new_tokens"]),
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.8,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    output_ids = output[0][inputs["input_ids"].shape[-1] :]
+    result = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+    if result.startswith(chr(96) * 3):
+        result = "\n".join(result.splitlines()[1:-1]).strip()
+    return result
+
+
+def _script_feedback(raw: object, error: Exception) -> str:
+    """Give the local model measured word counts, not only a generic error."""
+    message = str(error)
+    if isinstance(raw, dict) and isinstance(raw.get("scenes"), list):
+        counts = [
+            len(scene["narration"].split())
+            if isinstance(scene, dict) and isinstance(scene.get("narration"), str)
+            else None
+            for scene in raw["scenes"]
+        ]
+        total = sum(count for count in counts if count is not None)
+        message += f"; total_narration_words={total}; scene_words={counts}"
+    return message[:900]
+
+
+def _revision_request(original: dict[str, object], previous: str, error: str) -> dict[str, object]:
+    messages = original["messages"]
+    if not isinstance(messages, list):
+        raise NicheVideoError("internal request lost original script context")
+    return {
+        **original,
+        "messages": [
+            *messages,
+            {"role": "assistant", "content": previous[:6000]},
+            {
+                "role": "user",
+                "content": (
+                    "Revise your previous JSON to resolve this exact violation: "
+                    f"{error}. Preserve the original niche, topic, approved facts, "
+                    "honest hook and complete payoff. Do not invent claims. "
+                    "Return JSON only; aim for four scenes of 20-25 narration "
+                    "words each, totalling 80-100 narration words."
+                ),
+            },
+        ],
+    }
+
+
+def _compact_book_sentences(candidate: object) -> tuple[object, bool]:
+    """Tighten a book lesson using ONLY complete, original model sentences.
+
+    No word truncation, invented facts, paraphrasing or changed scene order.
+    Source and creative-quality checks remain human approval gates.
+    """
+    if not isinstance(candidate, dict) or set(candidate) != {"title", "scenes"}:
+        return candidate, False
+    raw_scenes = candidate["scenes"]
+    if not isinstance(raw_scenes, list) or not 3 <= len(raw_scenes) <= 5:
+        return candidate, False
+    if not all(
+        isinstance(scene, dict)
+        and set(scene) == {"headline", "narration"}
+        and isinstance(scene["narration"], str)
+        for scene in raw_scenes
+    ):
+        return candidate, False
+    counts = [len(scene["narration"].split()) for scene in raw_scenes]
+    if sum(counts) <= 125 and all(6 <= count <= 45 for count in counts):
+        return candidate, False
+
+    # Mandatory content: each scene's opening and the closing scene's last
+    # complete sentence. Allow variable scene budgets, then select optional
+    # complete sentences without exceeding the strict episode word ceiling.
+    sentence_lists = [
+        re.split(r"(?<=[.!?])\s+", scene["narration"].strip()) for scene in raw_scenes
+    ]
+    chosen: list[set[int]] = []
+    lengths: list[int] = []
+    for index, sentences in enumerate(sentence_lists):
+        if not sentences or any(not sentence for sentence in sentences):
+            raise NicheVideoError("book script contains empty sentence boundaries")
+        required = {0}
+        if index == len(sentence_lists) - 1:
+            required.add(len(sentences) - 1)
+        word_count = sum(len(sentences[i].split()) for i in required)
+        if word_count > 45:
+            raise NicheVideoError("book opening or final payoff exceeds the per-scene limit")
+        chosen.append(required)
+        lengths.append(word_count)
+    total = sum(lengths)
+    if total > 125:
+        raise NicheVideoError("mandatory complete sentences exceed narration budget")
+
+    for index, sentences in enumerate(sentence_lists):
+        # Nonfinal scenes target 35 words; the finale may need the full 45 to
+        # preserve its spoken takeaway. Favor earlier contextual sentences.
+        scene_target = 45 if index == len(sentence_lists) - 1 else 35
+        for i in range(1, len(sentences)):
+            if i in chosen[index]:
+                continue
+            count = len(sentences[i].split())
+            if lengths[index] + count <= scene_target and total + count <= 120:
+                chosen[index].add(i)
+                lengths[index] += count
+                total += count
+
+    edited: list[dict[str, str]] = []
+    for index, scene in enumerate(raw_scenes):
+        if not 6 <= lengths[index] <= 45:
+            raise NicheVideoError("complete-sentence edit could not preserve scene length")
+        narration = " ".join(sentence_lists[index][i] for i in sorted(chosen[index]))
+        edited.append({"headline": scene["headline"], "narration": narration})
+    result = {"title": candidate["title"], "scenes": edited}
+    if sum(len(scene["narration"].split()) for scene in edited) < 45:
+        raise NicheVideoError("complete-sentence edit was too brief")
+    return result, result != candidate
+
+
+def _script_fingerprint(config: NicheConfig) -> str:
+    return _fingerprint(
+        {
+            "contract": BOOK_EDIT_CONTRACT if config.format == "book_lesson" else SCRIPT_CONTRACT,
+            "request": _script_request(config),
+        }
+    )
+
+
+def _recover_book_script(
+    config: NicheConfig, cache_root: Path, audit_path: Path, run_id: str
+) -> str:
+    """Validate and cache a genuine Qwen draft preserved by a failed GitHub run."""
+    if config.format != "book_lesson" or not run_id.isdecimal():
+        raise NicheVideoError("audit recovery requires a book lesson and numeric run ID")
+    records = json.loads(audit_path.read_text(encoding="utf-8"))
+    if not isinstance(records, list) or not records:
+        raise NicheVideoError("Qwen3 recovery audit must contain recorded attempts")
+    first = records[0]
+    if (
+        not isinstance(first, dict)
+        or first.get("accepted") is not False
+        or not isinstance(first.get("completion"), str)
+    ):
+        raise NicheVideoError("recovery requires the original rejected Qwen3 completion")
+    completion = first["completion"]
+    candidate = json.loads(completion)
+    edited_candidate, changed = _compact_book_sentences(candidate)
+    episode = Episode.from_json(edited_candidate)
+    digest = _script_fingerprint(config)
+    path = cache_root / "scripts" / f"{digest}.json"
+    if path.is_file():
+        if Episode.from_json(json.loads(path.read_text(encoding="utf-8"))) != episode:
+            raise NicheVideoError("recovery differs from the current validated script cache")
+    else:
+        _write_atomic(
+            path, json.dumps(episode.to_dict(), ensure_ascii=False, indent=2).encode("utf-8")
+        )
+    provenance = {
+        "source": "github_actions_rejected_qwen3_attempt",
+        "source_run_id": run_id,
+        "source_audit_sha256": hashlib.sha256(audit_path.read_bytes()).hexdigest(),
+        "original_completion_sha256": hashlib.sha256(completion.encode()).hexdigest(),
+        "editor_contract": BOOK_EDIT_CONTRACT,
+        "edited": changed,
+        "narration_words": sum(len(scene.narration.split()) for scene in episode.scenes),
+        "human_factual_review": "PENDING",
+    }
+    _write_atomic(
+        cache_root / "script_recoveries" / f"{digest}.json",
+        json.dumps(provenance, indent=2).encode("utf-8"),
+    )
+    print(f"Recovered authenticated Qwen script from Actions run {run_id}")
+    return digest
+
+
+def generate_episode(config: NicheConfig, cache_root: Path) -> tuple[Episode, str]:
+    original = _script_request(config)
+    digest = _script_fingerprint(config)
+    path = cache_root / "scripts" / f"{digest}.json"
+    if path.is_file():
+        return Episode.from_json(json.loads(path.read_text(encoding="utf-8"))), digest
+
+    request = original
+    audit_path = cache_root / "script_diagnostics" / f"{digest}.json"
+    attempts: list[dict[str, object]] = []
+    for attempt in range(1, MAX_SCRIPT_ATTEMPTS + 1):
+        response = _local_script_completion(request)
+        raw: object = None
+        try:
+            if not response:
+                raise NicheVideoError("local script model returned no content")
+            raw = json.loads(response)
+            edited = False
+            if config.format == "book_lesson":
+                raw, edited = _compact_book_sentences(raw)
+            episode = Episode.from_json(raw)
+        except (json.JSONDecodeError, NicheVideoError) as exc:
+            error = _script_feedback(raw, exc)
+            attempts.append(
+                {
+                    "attempt": attempt,
+                    "accepted": False,
+                    "feedback": error,
+                    "completion": response[:8000],
+                }
+            )
+            _write_atomic(
+                audit_path,
+                json.dumps(attempts, ensure_ascii=False, indent=2).encode("utf-8"),
+            )
+            print(
+                f"Qwen3 validation attempt {attempt}/{MAX_SCRIPT_ATTEMPTS}: {error}",
+                file=sys.stderr,
+            )
+            if attempt == MAX_SCRIPT_ATTEMPTS:
+                raise NicheVideoError(
+                    f"script rejected after {MAX_SCRIPT_ATTEMPTS} attempts: {error}"
+                ) from exc
+            request = _revision_request(original, response, error)
+            continue
+        attempts.append(
+            {
+                "attempt": attempt,
+                "accepted": True,
+                "complete_sentence_edit": edited if config.format == "book_lesson" else False,
+                "narration_words": sum(len(scene.narration.split()) for scene in episode.scenes),
+            }
+        )
+        _write_atomic(
+            audit_path,
+            json.dumps(attempts, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+        _write_atomic(
+            path,
+            json.dumps(episode.to_dict(), ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+        print(f"Qwen3 script accepted on attempt {attempt}/{MAX_SCRIPT_ATTEMPTS}")
+        return episode, digest
+
+    raise NicheVideoError("bounded script generation unexpectedly exhausted")
+
+
+@lru_cache(maxsize=1)
+def _kokoro_pipeline() -> Any:
+    try:
+        from kokoro import KPipeline
+    except ImportError as exc:
+        raise NicheVideoError("Install the [niche-models] runtime for Kokoro TTS") from exc
+    return KPipeline(lang_code="a", repo_id=VOICE_MODEL)
+
+
+def _wav_metadata(payload: bytes) -> tuple[int, int, int]:
+    try:
+        with wave.open(io.BytesIO(payload), "rb") as wav:
+            return wav.getnchannels(), wav.getframerate(), wav.getnframes()
+    except (wave.Error, EOFError) as exc:
+        raise NicheVideoError("Kokoro produced invalid WAV audio") from exc
+
+
+def _kokoro_wav(narration: str, voice: str) -> bytes:
+    try:
+        import numpy as np
+        import soundfile as sf
+    except ImportError as exc:
+        raise NicheVideoError("Install soundfile and numpy for open-source TTS") from exc
+    chunks = [
+        np.asarray(audio, dtype=np.float32).reshape(-1)
+        for _, _, audio in _kokoro_pipeline()(narration, voice=voice, speed=1.0)
+    ]
+    if not chunks:
+        raise NicheVideoError("Kokoro returned no audio segments")
+    speech = np.concatenate(chunks)
+    if len(speech) < 8000 or not np.isfinite(speech).all():
+        raise NicheVideoError("Kokoro returned empty or non-finite audio")
+    buffer = io.BytesIO()
+    sf.write(buffer, np.clip(speech, -1.0, 1.0), 24000, format="WAV", subtype="PCM_16")
+    return buffer.getvalue()
+
+
+def synthesize_scene(scene: Scene, config: NicheConfig, cache_root: Path) -> Path:
+    request = {
+        "contract": VOICE_CONTRACT,
+        "model": VOICE_MODEL,
+        "model_revision": VOICE_REVISION,
+        "voice": config.voice,
+        "language": "en-us",
+        "sample_rate": 24000,
+        "speed": 1.0,
+        "text": scene.narration,
+    }
+    digest = _fingerprint(request)
+    path = cache_root / "tts" / f"{digest}.wav"
+    if path.is_file():
+        nch, rate, frames = _wav_metadata(path.read_bytes())
+        if nch == 1 and rate == 24000 and frames >= 8000:
+            return path
+        raise NicheVideoError("Cached TTS WAV has invalid geometry or duration")
+    audio = _kokoro_wav(scene.narration, config.voice)
+    nch, rate, frames = _wav_metadata(audio)
+    if nch != 1 or rate != 24000 or frames < 8000:
+        raise NicheVideoError("Kokoro WAV must be mono 24 kHz with audible duration")
+    _write_atomic(path, audio)
+    return path
+
+
+def _process(command: list[str], *, timeout: int = 240) -> str:
+    try:
+        result = subprocess.run(
+            command, capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise NicheVideoError(f"media tool invocation failed: {command[0]}") from exc
+    if result.returncode:
+        raise NicheVideoError(
+            f"media tool {command[0]} failed ({result.returncode}): {result.stderr[-900:]}"
+        )
+    return result.stdout
+
+
+def _probe(path: Path) -> dict[str, Any]:
+    return json.loads(
+        _process(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration:stream=codec_type,codec_name,width,height",
+                "-of",
+                "json",
+                str(path),
+            ]
+        )
+    )
+
+
+def _duration(path: Path) -> float:
+    seconds = float(_probe(path).get("format", {}).get("duration", 0))
+    if not math.isfinite(seconds) or not 1.0 <= seconds <= 90.0:
+        raise NicheVideoError("TTS duration is outside accepted bounds")
+    return seconds
+
+
+@lru_cache(maxsize=1)
+def _book_artwork_creator() -> Any:
+    """Load a sibling artwork module without relying on cwd or sys.path."""
+    import importlib.util
+
+    source = Path(__file__).with_name("book_cartoon.py")
+    spec = importlib.util.spec_from_file_location("clipper_book_cartoon", source)
+    if spec is None or spec.loader is None:
+        raise NicheVideoError("book cartoon artwork module could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.create_assets
+
+
+def _render_scene(
+    scene: Scene,
+    audio: Path,
+    target: Path,
+    brand: str,
+    config: NicheConfig | None = None,
+    scene_index: int = 0,
+    total_scenes: int = 1,
+) -> float:
+    duration = math.ceil((_duration(audio) + 0.20) * 30) / 30.0
+    if config is not None and config.format == "book_lesson":
+        bg, talking, idle = _book_artwork_creator()(
+            target.parent,
+            config.brand,
+            config.book_title,
+            config.book_author,
+            scene.headline,
+            scene_index,
+            total_scenes,
+        )
+        # Rhythmic speaking-pose animation, not phoneme-accurate lip sync.
+        motion = "x='(W-w)/2+9*sin(t*1.4)':y='735+10*sin(t*2.2)'"
+        filters = (
+            rf"[0:v][2:v]overlay={motion}:enable='lt(mod(t\,0.44)\,0.23)'[a];"
+            rf"[a][3:v]overlay={motion}:enable='gte(mod(t\,0.44)\,0.23)'[v]"
+        )
+        _process(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-loop",
+                "1",
+                "-framerate",
+                "30",
+                "-i",
+                str(bg),
+                "-i",
+                str(audio),
+                "-loop",
+                "1",
+                "-framerate",
+                "30",
+                "-i",
+                str(talking),
+                "-loop",
+                "1",
+                "-framerate",
+                "30",
+                "-i",
+                str(idle),
+                "-filter_complex",
+                filters,
+                "-map",
+                "[v]",
+                "-map",
+                "1:a",
+                "-af",
+                "apad",
+                "-t",
+                f"{duration:.3f}",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "22",
+                "-pix_fmt",
+                "yuv420p",
+                "-r",
+                "30",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                str(target),
+            ],
+            timeout=360,
+        )
+        return duration
+    headline_path = target.with_suffix(".headline.txt")
+    brand_path = target.with_suffix(".brand.txt")
+    headline_path.write_text(scene.headline, encoding="utf-8")
+    brand_path.write_text(brand.upper(), encoding="utf-8")
+    # All text goes through drawtext textfile=, never through a shell or text= expression.
+    filters = (
+        "drawbox=x=72:y=315:w=936:h=10:color=0x55dbbf:t=fill,"
+        f"drawtext=font='DejaVu Sans':textfile='{brand_path.as_posix()}':"
+        "fontcolor=0x55dbbf:fontsize=46:x=80:y=215:expansion=none,"
+        f"drawtext=font='DejaVu Sans':textfile='{headline_path.as_posix()}':"
+        "fontcolor=white:fontsize=64:x=80:y=470:expansion=none,"
+        "drawbox=x=72:y=1540:w=936:h=4:color=0x55dbbf:t=fill"
+    )
+    _process(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=0x0d172c:s=1080x1920:r=30:d={duration:.3f}",
+            "-i",
+            str(audio),
+            "-vf",
+            filters,
+            "-af",
+            "apad",
+            "-t",
+            f"{duration:.3f}",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "21",
+            "-pix_fmt",
+            "yuv420p",
+            "-r",
+            "30",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            str(target),
+        ]
+    )
+    return duration
+
+
+def _verify_video(path: Path, expected: float) -> dict[str, object]:
+    probe = _probe(path)
+    streams = probe.get("streams", [])
+    video = [item for item in streams if item.get("codec_type") == "video"]
+    audio = [item for item in streams if item.get("codec_type") == "audio"]
+    if len(video) != 1 or len(audio) != 1:
+        raise NicheVideoError("video must have exactly one video and one audio stream")
+    if (
+        video[0].get("codec_name") != "h264"
+        or (video[0].get("width"), video[0].get("height")) != (1080, 1920)
+        or audio[0].get("codec_name") != "aac"
+    ):
+        raise NicheVideoError("media codecs or 9:16 geometry mismatch")
+    duration = float(probe.get("format", {}).get("duration", 0))
+    if abs(duration - expected) > 0.9:
+        raise NicheVideoError("output duration differs from the authored timeline")
+    _process(["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"], timeout=360)
+    return {"status": "PASS", "duration_seconds": duration, "full_decode": True}
+
+
+def _concat(clips: list[Path], output: Path) -> None:
+    # Resolve filenames into the same work directory; no user-provided concat directives.
+    listing = output.parent / "concat.txt"
+    listing.write_text(
+        "".join(f"file '{path.name}'\n" for path in clips),
+        encoding="utf-8",
+    )
+    _process(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(listing),
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(output),
+        ]
+    )
+
+
+def produce(
+    config: NicheConfig, output_root: Path, *, allow_prototype_visuals: bool = False
+) -> Path:
+    if config.format == "book_lesson" and not allow_prototype_visuals:
+        raise NicheVideoError(
+            "Book visual production is creatively BLOCKED: the two-pose Pillow "
+            "cartoon and title-card layout were rejected in editorial review. "
+            "Use --allow-prototype-visuals only for explicit archived technical "
+            "reproduction, never as publication-quality acceptance."
+        )
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        raise NicheVideoError("ffmpeg and ffprobe are required")
+    cache_root = output_root / "_cache"
+    episode, script_hash = generate_episode(config, cache_root)
+    run_dir = output_root / f"draft-{script_hash[:16]}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    clips: list[Path] = []
+    durations: list[float] = []
+    for i, scene in enumerate(episode.scenes):
+        audio = synthesize_scene(scene, config, cache_root)
+        clip = run_dir / f"scene-{i:02d}.mp4"
+        durations.append(
+            _render_scene(scene, audio, clip, config.brand, config, i, len(episode.scenes))
+        )
+        clips.append(clip)
+    draft = run_dir / "draft.mp4"
+    _concat(clips, draft)
+    qc = _verify_video(draft, sum(durations))
+    manifest = {
+        "status": "DRAFT_REQUIRES_HUMAN_REVIEW",
+        "published": False,
+        "publish_eligible": False,
+        "creative_review_status": (
+            "REJECTED_PROTOTYPE" if config.format == "book_lesson" else "NOT_REVIEWED"
+        ),
+        "source_revision": os.getenv("GITHUB_SHA", "untracked"),
+        "niche": config.niche,
+        "topic": config.topic,
+        "format": config.format,
+        "pillar": config.pillar,
+        "book": {
+            "title": config.book_title,
+            "author": config.book_author,
+            "source_url": config.source_url,
+        }
+        if config.format == "book_lesson"
+        else None,
+        "character": "Pip" if config.format == "book_lesson" else None,
+        "animation": (
+            "pip-cartoon-v1-approximate-mouth-motion" if config.format == "book_lesson" else None
+        ),
+        "title": episode.title,
+        "approved_facts": list(config.facts),
+        "script_fingerprint": script_hash,
+        "script_recovery": (
+            json.loads(
+                (cache_root / "script_recoveries" / f"{script_hash}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            if (cache_root / "script_recoveries" / f"{script_hash}.json").is_file()
+            else None
+        ),
+        "script_model": SCRIPT_MODEL,
+        "script_model_revision": SCRIPT_REVISION,
+        "tts_model": VOICE_MODEL,
+        "tts_model_revision": VOICE_REVISION,
+        "voice": config.voice,
+        "disclosure": "Includes AI-generated narration",
+        "editorial_review": "PENDING",
+        "visual_review": "PENDING",
+        "audio_listening_review": "PENDING",
+        "qc": qc,
+        "video_sha256": hashlib.sha256(draft.read_bytes()).hexdigest(),
+        "episode": episode.to_dict(),
+    }
+    _write_atomic(
+        run_dir / "manifest.json",
+        json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+    )
+    return draft
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Original niche video -> TTS -> draft MP4")
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--topic", default=None)
+    parser.add_argument("--output-root", type=Path, default=Path("artifacts/niche"))
+    parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--allow-prototype-visuals", action="store_true")
+    parser.add_argument("--recover-audit", type=Path, default=None)
+    parser.add_argument("--recover-run-id", default=None)
+    arguments = parser.parse_args(argv)
+    try:
+        config = NicheConfig.load(arguments.config, arguments.topic)
+        if arguments.validate_only:
+            print(json.dumps({"valid": True, "niche": config.niche, "topic": config.topic}))
+            return 0
+        if (arguments.recover_audit is None) != (arguments.recover_run_id is None):
+            raise NicheVideoError("--recover-audit requires --recover-run-id and vice versa")
+        if arguments.recover_audit is not None:
+            _recover_book_script(
+                config,
+                arguments.output_root / "_cache",
+                arguments.recover_audit,
+                arguments.recover_run_id,
+            )
+        draft = produce(
+            config,
+            arguments.output_root,
+            allow_prototype_visuals=arguments.allow_prototype_visuals,
+        )
+        print(f"Technical prototype generated: {draft}")
+        return 0
+    except (NicheVideoError, OSError, ValueError, json.JSONDecodeError) as exc:
+        parser.exit(1, f"niche-video failed: {exc}\n")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

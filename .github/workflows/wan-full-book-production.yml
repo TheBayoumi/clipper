@@ -1,0 +1,344 @@
+name: Clipper full book episode - original Wan multi-shot production
+on:
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        required: true
+      cached_draft_run:
+        type: string
+        default: '40047215101'
+      reference_path:
+        type: string
+        default: assets/character/page-to-life-host-approved-512.webp.b64
+      source_sha256:
+        type: string
+        default: c3bbc6395e47c04646ad3f0ad44f13873511e4ee3189046eafbc682225e746d2
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [prepare, visual, full]
+        default: prepare
+        required: true
+      cached_draft_run:
+        type: string
+        default: '40047215101'
+        required: true
+      reference_path:
+        type: string
+        default: assets/character/page-to-life-host-approved-512.webp.b64
+        required: true
+      source_sha256:
+        type: string
+        default: c3bbc6395e47c04646ad3f0ad44f13873511e4ee3189046eafbc682225e746d2
+        required: true
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: clipper-full-book-${{ inputs.mode }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    env:
+      MODAL_ACCOUNT_SLOT: '3'
+      MODAL_TOKEN_ID_2: ${{ secrets.MODAL_TOKEN_ID_2 }}
+      MODAL_TOKEN_SECRET_2: ${{ secrets.MODAL_TOKEN_SECRET_2 }}
+      MODAL_TOKEN_ID_3: ${{ secrets.MODAL_TOKEN_ID_3 }}
+      MODAL_TOKEN_SECRET_3: ${{ secrets.MODAL_TOKEN_SECRET_3 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install CPU validation and media tools
+        run: |
+          set -euo pipefail
+          python -m pip install 'pytest>=9,<10' 'Pillow>=11,<13' 'ruff>=0.15.22,<1'
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg espeak-ng
+          python -m ruff check scripts/wan_full_book_episode.py scripts/wan_full_book_shot_cache.py scripts/wan_full_book_captions.py scripts/wan_full_book_voice.py scripts/wan_full_book_scene_zero.py scripts/wan_book_frame_qa.py tests/test_wan_full_book_episode.py tests/test_wan_book_frame_qa.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
+          python -m ruff format --check scripts/wan_full_book_episode.py scripts/wan_full_book_shot_cache.py scripts/wan_full_book_captions.py scripts/wan_full_book_voice.py scripts/wan_full_book_scene_zero.py scripts/wan_book_frame_qa.py tests/test_wan_full_book_episode.py tests/test_wan_book_frame_qa.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
+          PYTHONPATH=scripts python -m pytest -q -o addopts='' tests/test_wan_full_book_episode.py tests/test_wan_full_book_captions.py tests/test_wan_full_book_voice.py
+      - name: Recover 38-second genuine Qwen3 Kokoro source and inspect original story
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRAFT_RUN: ${{ inputs.cached_draft_run }}
+        run: |
+          set -euo pipefail
+          [[ "$DRAFT_RUN" =~ ^[0-9]+$ ]]
+          mkdir -p artifacts/full-book/source
+          gh run download "$DRAFT_RUN" --pattern 'niche-draft-*' --dir artifacts/full-book/original-draft
+          SOURCE_MP4="$(find artifacts/full-book/original-draft -name draft.mp4 -type f -print -quit)"
+          SOURCE_MANIFEST="$(find artifacts/full-book/original-draft -name manifest.json -type f -print -quit)"
+          test -n "$SOURCE_MP4" && test -n "$SOURCE_MANIFEST"
+          python scripts/wan_full_book_episode.py prepare \
+            --video "$SOURCE_MP4" --manifest "$SOURCE_MANIFEST" \
+            --output artifacts/full-book/source
+      - name: Restore content-addressed original baritone voice cache
+        uses: actions/cache@v4
+        with:
+          path: artifacts/full-book/voice-cache
+          key: original-book-baritone-${{ hashFiles('scripts/wan_full_book_voice.py') }}-${{ inputs.cached_draft_run }}
+      - name: Generate original warm cinematic male narration from cached Qwen script
+        run: |
+          set -euo pipefail
+          python -m pip install 'torch>=2.6,<3' --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install 'kokoro==0.9.4' 'soundfile>=0.13,<1' 'numpy>=2,<2.5' 'transformers==4.57.3' \
+            'murmurhash==1.0.15' 'srsly==2.5.4' 'cymem==2.0.13' 'preshed==3.0.13'
+          # These four C-extension pins exactly reproduce the earlier successful
+          # Kokoro run. Newer releases cause tokenizer integer overflow here.
+          python -m spacy download en_core_web_sm
+          python - <<'PY'
+          import spacy
+          spacy.load("en_core_web_sm")
+          print("PINNED_KOKORO_G2P_TOKENIZER_OK")
+          PY
+          SOURCE_MANIFEST="$(find artifacts/full-book/original-draft -name manifest.json -type f -print -quit)"
+          test -s "$SOURCE_MANIFEST"
+          python scripts/wan_full_book_voice.py \
+            --manifest "$SOURCE_MANIFEST" \
+            --output artifacts/full-book/source \
+            --cache artifacts/full-book/voice-cache
+          python - <<'PY'
+          import json
+          p=json.load(open("artifacts/full-book/source/plan.json"))
+          assert p["voice"]["voice_id"] == "am_adam"
+          assert p["voice"]["celebrity_voice_clone"] is False
+          assert 30 <= p["seconds"] <= 60
+          print("ORIGINAL_BARITONE_VOICE_SOURCE_VERIFIED", p["seconds"])
+          PY
+      - name: Align original Kokoro narration to word-level subtitles before GPU
+        run: |
+          set -euo pipefail
+          # Pin PyAV to the exact revision that passed book caption QC on run 40190279159.
+          # PyAV 19 removed av.open(metadata_errors=...), required by faster-whisper 1.2.1.
+          python -m pip install 'faster-whisper==1.2.1' 'av==18.1.0'
+          python scripts/wan_full_book_captions.py \
+            --audio artifacts/full-book/source/full-kokoro.wav \
+            --plan artifacts/full-book/source/plan.json \
+            --output artifacts/full-book/source/captions.ass
+          test -s artifacts/full-book/source/caption-evidence.json
+      - name: Restore hash-locked approved character reference
+        env:
+          SOURCE: ${{ inputs.reference_path }}
+          SOURCE_SHA: ${{ inputs.source_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE" == assets/character/* && "$SOURCE" != *..* ]]
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{64}$ ]]
+          mkdir -p artifacts/full-book/frames artifacts/cinematic/keyframes
+          if [[ "$SOURCE" == *.webp.b64 ]]; then
+            base64 --decode "$SOURCE" > artifacts/full-book/source/host.webp
+          else
+            cp "$SOURCE" artifacts/full-book/source/host.webp
+          fi
+          echo "$SOURCE_SHA  artifacts/full-book/source/host.webp" | sha256sum -c -
+      - name: Restore verified full-book Qwen keyframe candidates
+        if: inputs.mode == 'full' || inputs.mode == 'visual'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          python -m pip install 'modal==1.5.5'
+          python scripts/wan_shared_shot_cache.py restore --stage keyframes \
+            --reference artifacts/full-book/source/host.webp \
+            --storyboard niches/atomic-habits-approved-storyboard.json \
+            --shot-ids hook,lesson_example,book_intro --output artifacts/cinematic
+          if python scripts/wan_shared_shot_cache.py check --stage keyframes \
+               --reference artifacts/full-book/source/host.webp \
+               --shot-ids hook,lesson_example,book_intro --output artifacts/cinematic; then
+            echo FULL_BOOK_QWEN_KEYFRAMES_ALL_CACHED
+          else
+            bash scripts/modal_versioned_dispatch.sh \
+              scripts/modal_qwen_keyframes.py generate_keyframe keyframes \
+              --reference artifacts/full-book/source/host.webp \
+              --storyboard niches/atomic-habits-approved-storyboard.json \
+              --shot-ids hook,lesson_example,book_intro \
+              --output artifacts/cinematic/keyframes
+          fi
+          cp artifacts/cinematic/keyframes/*.png artifacts/full-book/frames/
+          cp artifacts/cinematic/keyframes/*.json artifacts/full-book/frames/
+          test "$(find artifacts/full-book/frames -maxdepth 1 -name '*.png' | wc -l)" -eq 3
+          python scripts/wan_book_frame_qa.py \
+            --frame artifacts/full-book/frames/book_intro.png
+      - name: Archive immutable full-episode narration and production frame sources
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-book-prep-${{ github.run_id }}
+          path: |
+            artifacts/full-book/source/
+            artifacts/full-book/frames/
+          retention-days: 14
+          if-no-files-found: error
+
+  deploy_wan:
+    needs: prepare
+    if: inputs.mode == 'full'
+    runs-on: ubuntu-24.04
+    env:
+      MODAL_ACCOUNT_SLOT: '3'
+      MODAL_TOKEN_ID_2: ${{ secrets.MODAL_TOKEN_ID_2 }}
+      MODAL_TOKEN_SECRET_2: ${{ secrets.MODAL_TOKEN_SECRET_2 }}
+      MODAL_TOKEN_ID_3: ${{ secrets.MODAL_TOKEN_ID_3 }}
+      MODAL_TOKEN_SECRET_3: ${{ secrets.MODAL_TOKEN_SECRET_3 }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Ensure one immutable Wan application deployment before GPU matrix
+        run: |
+          set -euo pipefail
+          python -m pip install 'modal==1.5.5'
+          bash scripts/modal_versioned_dispatch.sh \
+            scripts/modal_wan_s2v.py generate_s2v speaking --deploy-only
+          echo "WAN_APP_DEPLOYMENT_READY_NO_GPU_INFERENCE"
+ 
+  render:
+    needs: [prepare, deploy_wan]
+    if: inputs.mode == 'full'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shot: [0, 1, 2, 3]
+    env:
+      MODAL_ACCOUNT_SLOT: '3'
+      MODAL_TOKEN_ID_2: ${{ secrets.MODAL_TOKEN_ID_2 }}
+      MODAL_TOKEN_SECRET_2: ${{ secrets.MODAL_TOKEN_SECRET_2 }}
+      MODAL_TOKEN_ID_3: ${{ secrets.MODAL_TOKEN_ID_3 }}
+      MODAL_TOKEN_SECRET_3: ${{ secrets.MODAL_TOKEN_SECRET_3 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Restore original narration and character-specific Qwen keyframes
+        uses: actions/download-artifact@v4
+        with:
+          name: full-book-prep-${{ github.run_id }}
+          path: artifacts/full-book
+      - name: Restore identical verified shot or render on pinned Wan Modal
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          SHOT_INDEX: ${{ matrix.shot }}
+        run: |
+          set -euo pipefail
+          python -m pip install 'modal==1.5.5' 'Pillow>=11,<13'
+          INDEX="$(printf '%02d' "$SHOT_INDEX")"
+          SHOT_DIR="artifacts/full-book/rendered/scene-$INDEX"
+          mkdir -p "$SHOT_DIR"
+          IMAGE_NAME="$(python -c 'import json,os; print(json.load(open("artifacts/full-book/source/plan.json"))["shots"][int(os.environ["SHOT_INDEX"])]["keyframe_name"])')"
+          PROMPT="$(python -c 'import json,os; print(json.load(open("artifacts/full-book/source/plan.json"))["shots"][int(os.environ["SHOT_INDEX"])]["prompt"])')"
+          SEED="$(python -c 'import json,os; print(json.load(open("artifacts/full-book/source/plan.json"))["shots"][int(os.environ["SHOT_INDEX"])]["seed"])')"
+          IMAGE="artifacts/full-book/frames/$IMAGE_NAME.png"
+          AUDIO="artifacts/full-book/source/scene-$INDEX.wav"
+          if [[ "$SHOT_INDEX" == "0" ]]; then
+            # Do not reuse an old talking-head clip against a new narrator WAV.
+            # This path is isolated; shots 1-3 retain their existing logic.
+            bash scripts/wan_full_book_render_scene_zero.sh \
+              artifacts/full-book/source/plan.json "$IMAGE" "$AUDIO" "$SHOT_DIR"
+          else
+          python scripts/wan_full_book_shot_cache.py --shot "$SHOT_INDEX" \
+            --plan artifacts/full-book/source/plan.json --output "$SHOT_DIR" \
+            --reference "$IMAGE" --audio "$AUDIO"
+          if PYTHONPATH=scripts python - "$SHOT_DIR" "$IMAGE" "$AUDIO" "$PROMPT" "$SEED" <<'PY'
+          import hashlib,sys
+          from pathlib import Path
+          from wan_shared_shot_cache import verified_wan_output
+          folder,image,audio,prompt,seed=sys.argv[1:]
+          sha=lambda p: hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          good=verified_wan_output(Path(folder)/"wan-s2v-candidate.mp4",
+              Path(folder)/"model-evidence.json",sha(image),sha(audio),prompt,int(seed))
+          print("FULL_BOOK_SHOT_CACHE", "HIT" if good else "MISS")
+          sys.exit(0 if good else 1)
+          PY
+          then
+            echo "FULL_BOOK_WAN_GPU_SKIPPED_VERIFIED_SHOT=$SHOT_INDEX"
+          else
+            bash scripts/modal_versioned_dispatch.sh \
+              scripts/modal_wan_s2v.py generate_s2v speaking \
+              --reference "$IMAGE" --audio "$AUDIO" \
+              --output "$SHOT_DIR" --prompt "$PROMPT" --seed "$SEED"
+          fi
+          fi
+      - name: Save each completed shot independently for recovery
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-book-shot-${{ matrix.shot }}-${{ github.run_id }}
+          path: artifacts/full-book/rendered/
+          retention-days: 14
+          if-no-files-found: warn
+
+  assemble:
+    needs: [prepare, render]
+    if: inputs.mode == 'full'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install final media QA
+        run: |
+          set -euo pipefail
+          python -m pip install 'Pillow>=11,<13'
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - uses: actions/download-artifact@v4
+        with:
+          name: full-book-prep-${{ github.run_id }}
+          path: artifacts/full-book
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: full-book-shot-*
+          path: artifacts/full-book/rendered
+          merge-multiple: true
+      - name: Verify and reuse cached open-source word-timed Style-B captions
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/full-book/final
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,json,shutil
+          source=Path("artifacts/full-book/source")
+          dest=Path("artifacts/full-book/final")
+          plan=json.loads((source/"plan.json").read_text())
+          evidence=json.loads((source/"caption-evidence.json").read_text())
+          assert evidence["audio_sha256"]==plan["full_audio_sha256"]
+          assert evidence["source_episode_fingerprint"]==plan["fingerprint"]
+          assert evidence["subtitle_sha256"]==hashlib.sha256((source/"captions.ass").read_bytes()).hexdigest()
+          assert evidence["word_agreement"]>=0.77 and evidence["publish_eligible"] is False
+          shutil.copy2(source/"captions.ass",dest/"captions.ass")
+          shutil.copy2(source/"caption-evidence.json",dest/"caption-evidence.json")
+          print("FULL_BOOK_CAPTIONS_REUSED_FROM_LOCKED_SOURCE")
+          PY
+      - name: Assemble exact narration with four distinct verified Wan scenes
+        run: |
+          set -euo pipefail
+          PYTHONPATH=scripts python scripts/wan_full_book_episode.py assemble \
+            --plan artifacts/full-book/source/plan.json \
+            --shots artifacts/full-book/rendered/scene-00 \
+                    artifacts/full-book/rendered/scene-01 \
+                    artifacts/full-book/rendered/scene-02 \
+                    artifacts/full-book/rendered/scene-03 \
+            --output artifacts/full-book/final \
+            --captions artifacts/full-book/final/captions.ass
+      - name: Retain complete MP4 and non-publication QA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-book-video-${{ github.run_id }}
+          path: artifacts/full-book/final/
+          retention-days: 14
+          if-no-files-found: warn

@@ -1,0 +1,61 @@
+name: Storyboard-locked cinematic book acceptance
+
+on:
+  push:
+    branches:
+      - feat/unified-niche-tts
+    paths:
+      - niches/atomic-habits-approved-storyboard.json
+      - scripts/storyboard_acceptance.py
+      - tests/test_storyboard_acceptance.py
+      - .github/workflows/storyboard-acceptance.yml
+  workflow_dispatch:
+    inputs:
+      verify_render:
+        description: "Audit actual full visual story video (no fallback stock rigs)"
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  story-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate storyboard identity and contiguous 3-shot narrative
+        run: |
+          set -euo pipefail
+          python scripts/storyboard_acceptance.py \
+            --contract niches/atomic-habits-approved-storyboard.json
+      - name: Test creative fail-closed guards
+        run: |
+          python -m pip install "pytest>=9,<10"
+          python -m pytest -q -o addopts='' tests/test_storyboard_acceptance.py
+
+  visual-production:
+    if: github.event_name == 'workflow_dispatch' && inputs.verify_render
+    runs-on: ubuntu-24.04
+    needs: story-contract
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require actual approved 3D master and three-action 15s output
+        run: |
+          set -euo pipefail
+          test -f artifacts/storyboard-pilot/approved-master.glb || {
+            echo "::error::No approved master rig GLB asset provided for geometry inspection."
+            exit 1
+          }
+          test -f artifacts/storyboard-pilot/render-manifest.json || {
+            echo "::error::No approved character rig and three enacted storyboard shots. Generic wave is rejected; do not re-run Qwen/TTS."
+            exit 1
+          }
+          python scripts/storyboard_acceptance.py \
+            --manifest artifacts/storyboard-pilot/render-manifest.json \
+            --master-glb artifacts/storyboard-pilot/approved-master.glb \
+            --video artifacts/storyboard-pilot/atomic-habits-15s.mp4

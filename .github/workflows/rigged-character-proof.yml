@@ -1,0 +1,146 @@
+name: Rigged human motion proof (CC0 character)
+
+on:
+  push:
+    branches:
+      - feat/unified-niche-tts
+    paths:
+      - .github/workflows/rigged-character-proof.yml
+  workflow_dispatch:
+    inputs:
+      frames:
+        description: Actual rigged frames to render, not camera-only animation
+        type: choice
+        options:
+          - "24"
+          - "48"
+        default: "24"
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  actual-skeletal-performance:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install pinned Blender from cached official archive
+        uses: bradyajohnston/setup-blender@9d0ba03aa0f7be59e09bdc70e08418a4298185f7
+        with:
+          version: '4.2'
+      - name: Install pinned, npm-hosted FFmpeg and FFprobe binaries
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/tools/bin
+          npm install --prefix artifacts/tools --no-save \
+            @ffmpeg-installer/linux-x64@4.1.0 \
+            @ffprobe-installer/linux-x64@5.2.0
+          install -m 755 artifacts/tools/node_modules/@ffmpeg-installer/linux-x64/ffmpeg artifacts/tools/bin/ffmpeg
+          install -m 755 artifacts/tools/node_modules/@ffprobe-installer/linux-x64/ffprobe artifacts/tools/bin/ffprobe
+          echo "$GITHUB_WORKSPACE/artifacts/tools/bin" >> "$GITHUB_PATH"
+      - name: Verify Blender and media encoders
+        run: |
+          set -euo pipefail
+          blender --version
+          ffmpeg -version
+          ffprobe -version
+      - name: Retrieve pinned MIT/CC0 rig-generator source
+        run: |
+          set -euo pipefail
+          git clone https://github.com/olatunde85/3d-gen.git _ara
+          git -C _ara checkout --detach 8aa993d7141b6f37e5d16f611264e6f1ab520f30
+          test "$(git -C _ara rev-parse HEAD)" = "8aa993d7141b6f37e5d16f611264e6f1ab520f30"
+          cd _ara
+          npm ci
+      - name: Restore CC0 MakeHuman character-data pack
+        id: asset-cache
+        uses: actions/cache@v4
+        with:
+          path: _ara/public/assets
+          key: ara-character-cc0-pack-8aa993d-v1
+      - name: Build public-domain human assets
+        if: steps.asset-cache.outputs.cache-hit != 'true'
+        working-directory: _ara
+        run: npm run setup-assets
+      - name: Export one real rigged and animated GLB
+        working-directory: _ara
+        run: |
+          set -euo pipefail
+          npm run export -- --params ../niches/character-host-v1.json --formats glb \
+            --detail medium --out ../artifacts/character-proof/rig
+          ls -lh ../artifacts/character-proof/rig
+          test "$(find ../artifacts/character-proof/rig -name '*.glb' -size +100k | wc -l)" -eq 1
+      - name: Reuse real Kokoro voice from completed original draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 40047215101 --pattern 'niche-draft-*' \
+            --dir artifacts/character-proof/audio-source
+          SOURCE="$(find artifacts/character-proof/audio-source -name draft.mp4 -print -quit)"
+          test -s "$SOURCE"
+          ffmpeg -hide_banner -loglevel error -y -i "$SOURCE" -t 5 -vn \
+            -ac 1 -ar 24000 -c:a pcm_s16le artifacts/character-proof/kokoro-source.wav
+      - name: Extract sound-derived timed mouth shapes with Rhubarb
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/tools/rhubarb
+          curl --fail --location --retry 2 --silent --show-error \
+            https://github.com/DanielSWolf/rhubarb-lip-sync/releases/download/v1.14.0/Rhubarb-Lip-Sync-1.14.0-Linux.zip \
+            -o artifacts/tools/rhubarb/archive.zip
+          unzip -q artifacts/tools/rhubarb/archive.zip -d artifacts/tools/rhubarb/unpacked
+          BIN="$(find artifacts/tools/rhubarb/unpacked -type f -name rhubarb -print -quit)"
+          test -n "$BIN"
+          chmod +x "$BIN"
+          "$BIN" --exportFormat json \
+            -o artifacts/character-proof/mouth-cues.json artifacts/character-proof/kokoro-source.wav
+          test -s artifacts/character-proof/mouth-cues.json
+      - name: Import into Blender and prove moving arm bones
+        env:
+          FRAMES: ${{ inputs.frames || '24' }}
+        run: |
+          set -euo pipefail
+          MODEL="$(find artifacts/character-proof/rig -name '*.glb' -print -quit)"
+          test -s "$MODEL"
+          blender -b --factory-startup --python scripts/blender_character_probe.py -- \
+            --glb "$MODEL" --output artifacts/character-proof --frames "$FRAMES" --samples 8 \
+            --mouth-cues artifacts/character-proof/mouth-cues.json
+          test "$(find artifacts/character-proof/frames -name 'frame_*.png' | wc -l)" -eq "$FRAMES"
+      - name: Produce genuine motion review video and check full decode
+        env:
+          FRAMES: ${{ inputs.frames || '24' }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/character-proof/review
+          ffmpeg -hide_banner -loglevel error -y \
+            -framerate 12 -start_number 0 \
+            -i artifacts/character-proof/frames/frame_%04d.png \
+            -i artifacts/character-proof/kokoro-source.wav \
+            -frames:v "$FRAMES" -c:v libx264 -pix_fmt yuv420p -crf 18 \
+            -r 12 -c:a aac -b:a 160k -shortest \
+            artifacts/character-proof/review/skinned-human-performance.mp4
+          ffmpeg -v error -i artifacts/character-proof/review/skinned-human-performance.mp4 -f null -
+          ffprobe -v error -show_entries stream=codec_type,width,height -of json \
+            artifacts/character-proof/review/skinned-human-performance.mp4 \
+            > artifacts/character-proof/review/media-check.json
+          ffmpeg -hide_banner -loglevel error -y \
+            -i artifacts/character-proof/review/skinned-human-performance.mp4 \
+            -frames:v 1 artifacts/character-proof/review/first-frame.png
+      - name: Upload real motion, model, rendered frames and provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-rigged-human-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            artifacts/character-proof/rig-proof.json
+            artifacts/character-proof/rig/*.glb
+            artifacts/character-proof/review/
+            artifacts/character-proof/kokoro-source.wav
+            artifacts/character-proof/mouth-cues.json
+          if-no-files-found: warn
+          retention-days: 14

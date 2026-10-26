@@ -214,6 +214,44 @@ Pytest enforces a repository-wide coverage floor of **95%**. CI runs the quality
 
 Production acceptance additionally requires exact-head deployment evidence, current model/schema smoke tests, a current end-to-end render, technical QC, multimodal final QC, and review of the actual MP4. Historical renders do not prove the current head.
 
+## Original niche video (open-weight prototype)
+
+**Editorial acceptance: REJECTED for production visuals (October 24, 2026).**
+The basic Pillow-designed Pip mascot, two-pose mouth animation, and static book
+title cards are technical proofs **not professional cartoon content**. Successful
+encoding or end-to-end Qwen3 + Kokoro generation must not be described as ready
+for publishing. Book drafts now stop before model inference unless
+`allow_rejected_prototype=true` is explicitly selected in Actions for archived
+technical reproduction. See `plans/professional-book-video-creative-rebuild.md`.
+
+
+Branch: `feat/unified-niche-tts`. This independent original-content workflow does not
+use a Reach/Whop campaign or another creator's podcast. Configure
+`niches/ai-workflows.yaml` (example English US Kokoro voice: `af_heart`).
+
+```bash
+python scripts/niche_video.py --config niches/ai-workflows.yaml --validate-only
+```
+
+Both the script generator (`Qwen/Qwen3-1.7B`, pinned revision) and the speech
+generator (`hexgrad/Kokoro-82M` v1.0, Apache 2.0) run from downloaded open
+weights, **without an OpenAI API key or a paid inference provider**.
+
+The GitHub Actions workflow `Original niche video draft (open models)`
+automatically checks the configuration and performs an FFmpeg smoke test. A
+manual dispatch with `voice_smoke=true` generates a **real narrated Kokoro
+MP4**, whereas `generate_draft=true` requests a full Qwen3-written, Kokoro
+narrated episode. All outputs remain private Actions draft artifacts awaiting
+human audio/visual and factual review.
+
+Initial cold run requires downloading approximately 4 GB for Qwen3 and
+approximately 360 MB for Kokoro, plus Python dependencies. GitHub's Ubuntu
+CPU runner handles model inference; these models are not claimed to match
+proprietary naturalness without an audio comparison. GPU acceleration and
+more expressive models (Chatterbox/Qwen3-TTS) are potential subsequent
+providers, not silently substituted for Kokoro. The content hash records
+model IDs, revisions, prompts and voice parameters. Publication stays off.
+
 ## Publication boundary
 
 Clipper stops at production artifacts and QC evidence. It does not automatically upload to TikTok, Instagram, YouTube Shorts, Whop, or another campaign platform. Publishing/submission is a separate explicitly authorized action after the final media and campaign/account requirements are reviewed.

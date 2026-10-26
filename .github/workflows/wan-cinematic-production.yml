@@ -1,0 +1,455 @@
+name: Clipper open-source cinematic shot generator
+
+on:
+  push:
+    branches: [feat/unified-niche-tts]
+    paths: [.github/workflows/wan-cinematic-production.yml]
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [preflight, credentials, gpu_probe, profile_backup_1, redeploy_backup_1, profile_backup_2, redeploy_backup_2, render_fresh_scene0, assemble_recovered, assemble_clean, keyframes, speaking, full_book_prepare, full_book_visual, full_book]
+        default: preflight
+        required: true
+      shot_ids:
+        type: string
+        default: hook
+        required: true
+      reference_path:
+        type: string
+        default: assets/character/page-to-life-host-approved-512.webp.b64
+        required: true
+      approved_reference_sha256:
+        type: string
+        default: c3bbc6395e47c04646ad3f0ad44f13873511e4ee3189046eafbc682225e746d2
+        required: true
+      voice_source_run:
+        type: string
+        default: '40047215101'
+        required: true
+      wan_seed:
+        type: number
+        default: 724
+        required: true
+      require_cached_video:
+        type: boolean
+        default: false
+        required: true
+      gpu_probe_slot:
+        type: choice
+        options: ['2', '3', both]
+        default: both
+        required: true
+      recovery_source_run:
+        type: string
+        default: '40236460264'
+        required: true
+      scene0_recovery_run:
+        type: string
+        default: ''
+        required: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clipper-open-source-cinematic-${{ github.ref_name }}-${{ inputs.mode || 'push' }}
+  cancel-in-progress: false
+
+jobs:
+  cinematic:
+    if: github.event_name != 'workflow_dispatch' || (inputs.mode != 'full_book_prepare' && inputs.mode != 'full_book_visual' && inputs.mode != 'full_book' && inputs.mode != 'render_fresh_scene0' && inputs.mode != 'assemble_recovered' && inputs.mode != 'assemble_clean')
+    runs-on: ubuntu-24.04
+    env:
+      MODAL_ACCOUNT_SLOT: '3'
+      MODAL_TOKEN_ID_2: ${{ secrets.MODAL_TOKEN_ID_2 }}
+      MODAL_TOKEN_SECRET_2: ${{ secrets.MODAL_TOKEN_SECRET_2 }}
+      MODAL_TOKEN_ID_3: ${{ secrets.MODAL_TOKEN_ID_3 }}
+      MODAL_TOKEN_SECRET_3: ${{ secrets.MODAL_TOKEN_SECRET_3 }}
+      WAN_PROMPT: "Exactly the same animated host as the input keyframe: dark brown curly hair, black rectangular glasses, charcoal hoodie, speaking naturally in the cinematic warm bedroom studio with subtle believable facial and hand motion. Preserve face and background without changing outfit or adding people."
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: CPU unit tests for autonomous keyframes and storyboard identity
+        run: |
+          set -euo pipefail
+          python -m pip install 'pytest>=9,<10' 'Pillow>=11,<13' 'ruff>=0.15.22,<1' 'huggingface-hub==0.36.2'
+          python -m ruff check scripts/wan_keyframe_contract.py scripts/modal_qwen_keyframes.py scripts/modal_deployed_client.py scripts/wan_shared_shot_cache.py tests/test_wan_keyframe_contract.py tests/test_modal_versioned_cache.py scripts/wan_episode_plan.py tests/test_wan_episode_plan.py
+          python -m ruff format --check scripts/wan_keyframe_contract.py scripts/modal_qwen_keyframes.py scripts/modal_deployed_client.py scripts/wan_shared_shot_cache.py tests/test_wan_keyframe_contract.py tests/test_modal_versioned_cache.py scripts/wan_episode_plan.py tests/test_wan_episode_plan.py
+          python -m pytest -q -o addopts='' tests/test_wan_keyframe_contract.py tests/test_modal_versioned_cache.py tests/test_wan_storyboard_plan.py tests/test_wan_shot_contract.py tests/test_wan_episode_plan.py
+      - name: Validate pinned Qwen and Wan public model metadata
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi, hf_hub_download
+          token = os.environ.get("HF_TOKEN") or None
+          for repo, rev, filename in (
+              ("Qwen/Qwen-Image-Edit-2511", "6f3ccc0b56e431dc6a0c2b2039706d7d26f22cb9", "model_index.json"),
+              ("Wan-AI/Wan2.2-S2V-14B", "dab4e9c55bbe4c8c4d03db1c2c98c7f0ac9c454b", "config.json"),
+          ):
+              info = HfApi().model_info(repo, revision=rev, token=token)
+              assert info.sha == rev
+              assert hf_hub_download(repo_id=repo, revision=rev, filename=filename, token=token)
+              print("PINNED_OPEN_MODEL_AVAILABLE", repo, info.sha)
+          PY
+      - name: Authenticate each Modal workspace without allocating a GPU
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'credentials'
+        run: |
+          set -euo pipefail
+          python -m pip install 'modal==1.5.5'
+          for slot in 2 3; do
+            id_key="MODAL_TOKEN_ID_${slot}"; secret_key="MODAL_TOKEN_SECRET_${slot}"
+            id="${!id_key:-}"; secret="${!secret_key:-}"
+            if [[ -z "$id" || -z "$secret" ]]; then
+              echo "::error::Modal workspace slot ${slot} lacks a complete token pair"; exit 2
+            fi
+            if MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret" modal app list --json > /dev/null; then
+              echo "MODAL_AUTHENTICATED_SLOT=${slot}"
+              # Read-only: Modal token metadata, never emit token ID or secret.
+              TOKEN_INFO="$(MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret" modal token info 2>&1)" || {
+                echo "::error::Cannot inspect Modal token metadata for slot ${slot}"
+                exit 1
+              }
+              MODAL_TOKEN_INFO="$TOKEN_INFO" python - "$slot" <<'PY'
+          import os
+          import re
+          import sys
+          slot = sys.argv[1]
+          raw = re.sub(r"\x1b\[[0-9;]*m", "", os.environ["MODAL_TOKEN_INFO"])
+          candidates = (
+              r"(?im)^\s*workspace(?:\s+name)?\s*[:=]\s*([a-zA-Z0-9_.-]+)",
+              r"(?im)authenticated\s+to\s+workspace\s+([a-zA-Z0-9_.-]+)",
+              r"(?im)workspace\s+[\x27\x22]([a-zA-Z0-9_.-]+)[\x27\x22]",
+          )
+          identity = next((m.group(1) for p in candidates if (m := re.search(p, raw))), None)
+          print(f"MODAL_SLOT_{slot}_WORKSPACE={identity or 'NOT_EXPOSED_BY_TOKEN_INFO'}")
+          PY
+              # Modal's SDK resolves the backing workspace from the same token
+              # pair; use its internal ID, not just the display name from CLI.
+              MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret" python - "$slot" <<'PY'
+          import sys
+          import modal
+
+          slot = sys.argv[1]
+          workspace = modal.Workspace.from_context()
+          workspace.hydrate()
+          internal_id = getattr(workspace, "object_id", None) or getattr(
+              workspace, "_object_id", None
+          )
+          if not internal_id:
+              # Modal SDK v1.5.5 exposes the workspace name, but does not
+              # promise a public object ID property; do not misreport this
+              # as an account failure or invent an ID.
+              internal_id = next(
+                  (
+                      value
+                      for key, value in vars(workspace).items()
+                      if "id" in key.lower()
+                      and isinstance(value, str)
+                      and value.startswith("ac-")
+                  ),
+                  None,
+              )
+          actual_name = getattr(workspace, "name", None)
+          if callable(actual_name):
+              actual_name = actual_name()
+          expected_name = {"2": "mahmoud-bayoumi-bb", "3": "thebayoumi"}[slot]
+          print(f"MODAL_SDK_WORKSPACE_SLOT_{slot}_NAME={actual_name}")
+          print(f"MODAL_SDK_WORKSPACE_SLOT_{slot}_ID={internal_id or 'NOT_EXPOSED_BY_SDK'}")
+          if actual_name != expected_name:
+              raise SystemExit("::error::Unexpected workspace identity; no deployment allowed")
+          PY
+            else
+              echo "::error::Modal authentication failed for workspace slot ${slot}"; exit 1
+            fi
+          done
+          echo 'Both backup Modal credentials authenticate. Primary remains disabled; quotas and GPUs require separate verification'
+      - name: Verify Modal SDK deployment lookup without GPU
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'credentials'
+        run: |
+          set -euo pipefail
+          # Each check targets a guaranteed non-deployed, per-run unique App.
+          # Exit 44 confirms missing deployment; other failures abort.
+          if MODAL_TOKEN_ID="$MODAL_TOKEN_ID_2" MODAL_TOKEN_SECRET="$MODAL_TOKEN_SECRET_2" \
+             python scripts/modal_deployment_probe.py "clipper-gpu-free-probe-$GITHUB_RUN_ID" "absent" > /tmp/modal-probe.log 2>&1; then
+            echo "::error::Unexpected deployed application for SDK probe"
+            exit 1
+          else
+            code="$?"
+            if [[ "$code" != 44 ]]; then
+              cat /tmp/modal-probe.log
+              echo "::error::Modal SDK deployment lookup failed"
+              exit 1
+            fi
+            echo "MODAL_SDK_DEPLOYMENT_LOOKUP_OK expected_not_found=true gpu=false"
+          fi
+      - name: Audit live Qwen and Wan function bindings in each backup workspace without GPU
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'credentials'
+        env:
+          MODAL_ENVIRONMENT: main
+        run: |
+          set -euo pipefail
+          for slot in 2 3; do
+            id_key="MODAL_TOKEN_ID_${slot}"
+            secret_key="MODAL_TOKEN_SECRET_${slot}"
+            id="${!id_key:-}"
+            secret="${!secret_key:-}"
+            if [[ -z "$id" || -z "$secret" ]]; then
+              echo "::error::Missing credential pair for backup ${slot}"
+              exit 2
+            fi
+            if [[ "$slot" == 2 ]]; then expected=mahmoud-bayoumi-bb
+            else expected=thebayoumi
+            fi
+            MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret" \
+              python scripts/modal_cinematic_binding_audit.py --expected "$expected"
+          done
+      - name: Qualify A100-80GB allocation on backup Modal accounts without model inference
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'gpu_probe'
+        env:
+          REQUESTED_GPU_PROBE_SLOT: ${{ inputs.gpu_probe_slot }}
+        run: |
+          set -euo pipefail
+          python -m pip install 'modal==1.5.5'
+          for slot in 2 3; do
+            if [[ "$REQUESTED_GPU_PROBE_SLOT" != "both" && "$slot" != "$REQUESTED_GPU_PROBE_SLOT" ]]; then
+              continue
+            fi
+            id_key="MODAL_TOKEN_ID_${slot}"
+            secret_key="MODAL_TOKEN_SECRET_${slot}"
+            id="${!id_key:-}"
+            secret="${!secret_key:-}"
+            if [[ -z "$id" || -z "$secret" ]]; then
+              echo "::error::Backup ${slot} credential pair incomplete"
+              exit 2
+            fi
+            echo "MODAL_A100_PROBE_START slot=${slot}"
+            MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret" \
+              modal run scripts/modal_a100_access_probe.py
+            echo "MODAL_A100_PROBE_PASSED slot=${slot}"
+          done
+      - name: Activate selected backup profile and optionally force Qwen/Wan deployment
+        if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'profile_backup_1' || inputs.mode == 'redeploy_backup_1' || inputs.mode == 'profile_backup_2' || inputs.mode == 'redeploy_backup_2')
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          MODAL_REDEPLOY_SLOT: ${{ (inputs.mode == 'profile_backup_2' || inputs.mode == 'redeploy_backup_2') && '3' || '2' }}
+          MODAL_PROFILE_ACTIVATION_ONLY: ${{ (inputs.mode == 'profile_backup_1' || inputs.mode == 'profile_backup_2') && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          python -m pip install 'modal==1.5.5'
+          bash scripts/modal_backup1_redeploy.sh
+      - name: Decode one hash-locked identity and construct storyboard-derived shots
+        if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'keyframes' || inputs.mode == 'speaking')
+        env:
+          REFERENCE: ${{ inputs.reference_path }}
+          SOURCE_SHA: ${{ inputs.approved_reference_sha256 }}
+          SHOT_IDS: ${{ inputs.shot_ids }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          [[ "$REFERENCE" == assets/character/* && "$REFERENCE" != *..* ]]
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{64}$ ]]
+          test -f "$REFERENCE"
+          mkdir -p artifacts/cinematic/keyframes artifacts/cinematic/evidence
+          if [[ "$REFERENCE" == *.webp.b64 ]]; then
+            base64 --decode "$REFERENCE" > artifacts/cinematic/approved-character.webp
+            REF=artifacts/cinematic/approved-character.webp
+          else
+            cp "$REFERENCE" artifacts/cinematic/approved-character.png
+            REF=artifacts/cinematic/approved-character.png
+          fi
+          echo "$SOURCE_SHA  $REF" | sha256sum --check -
+          echo "WAN_REFERENCE_FILE=$REF" >> "$GITHUB_ENV"
+          python scripts/wan_storyboard_plan.py --source-sha256 "$SOURCE_SHA" \
+            --output artifacts/cinematic/evidence/storyboard-plan.json
+          PYTHONPATH=scripts python - <<'PY'
+          import os
+          from pathlib import Path
+          from wan_keyframe_contract import SHOTS, prepare
+          ids = [s.strip() for s in os.environ["SHOT_IDS"].split(",")]
+          assert ids and len(set(ids)) == len(ids) and all(s in SHOTS for s in ids)
+          if os.environ["MODE"] == "speaking":
+              assert ids == ["hook"], "Speaking pilot generates just the hook."
+          for shot in ids:
+              print("AUTOMATED_FRAME_CONTRACT", shot, prepare(
+                  Path("artifacts/cinematic/approved-character.webp"
+                       if os.environ["REFERENCE"].endswith(".b64")
+                       else "artifacts/cinematic/approved-character.png"),
+                  Path("niches/atomic-habits-approved-storyboard.json"), shot
+              )["fingerprint"])
+          PY
+      - name: Install Modal client and validate credential-pair configuration
+        if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'keyframes' || inputs.mode == 'speaking')
+        run: |
+          set -euo pipefail
+          for slot in 2 3; do
+            id_key="MODAL_TOKEN_ID_${slot}"; secret_key="MODAL_TOKEN_SECRET_${slot}"
+            id="${!id_key:-}"; secret="${!secret_key:-}"
+            if [[ -z "$id" || -z "$secret" ]]; then
+              echo "::error::Backup Modal slot ${slot} requires both token ID and secret"; exit 2
+            fi
+          done
+          python -m pip install 'modal==1.5.5'
+      - name: Restore verified cross-run Qwen shot cache
+        if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'keyframes' || inputs.mode == 'speaking')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHOT_IDS: ${{ inputs.shot_ids }}
+        run: |
+          python scripts/wan_shared_shot_cache.py restore --stage keyframes \
+            --reference "$WAN_REFERENCE_FILE" \
+            --storyboard niches/atomic-habits-approved-storyboard.json \
+            --shot-ids "$SHOT_IDS" --output artifacts/cinematic
+      - name: Generate cinematic keyframes using versioned deployed Modal app
+        if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'keyframes' || inputs.mode == 'speaking')
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          SHOT_IDS: ${{ inputs.shot_ids }}
+        run: |
+          set -euo pipefail
+          if python scripts/wan_shared_shot_cache.py check --stage keyframes \
+             --reference "$WAN_REFERENCE_FILE" --shot-ids "$SHOT_IDS" \
+             --output artifacts/cinematic; then
+            echo "MODAL_KEYFRAMES_SKIPPED_ALL_VERIFIED"
+          else
+            bash scripts/modal_versioned_dispatch.sh \
+              scripts/modal_qwen_keyframes.py generate_keyframe keyframes \
+              --reference "$WAN_REFERENCE_FILE" \
+              --storyboard niches/atomic-habits-approved-storyboard.json \
+              --shot-ids "$SHOT_IDS" --output artifacts/cinematic/keyframes
+          fi
+      - name: Verify actual keyframe and original identity chain
+        if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'keyframes' || inputs.mode == 'speaking')
+        env:
+          SOURCE_SHA: ${{ inputs.approved_reference_sha256 }}
+          SHOT_IDS: ${{ inputs.shot_ids }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          from PIL import Image
+          for name in os.environ["SHOT_IDS"].split(","):
+              p = Path("artifacts/cinematic/keyframes") / (name.strip() + ".png")
+              e = json.loads(p.with_suffix(".json").read_text())
+              assert p.is_file() and e["status"] == "FRAME_GENERATED_TECHNICAL_CANDIDATE"
+              assert e["source_image_sha256"] == os.environ["SOURCE_SHA"]
+              assert hashlib.sha256(p.read_bytes()).hexdigest() == e["image_sha256"]
+              assert e["publish_eligible"] is False
+              with Image.open(p) as image:
+                  assert image.width >= 720 and image.height >= 1250
+                  assert abs(image.width / image.height - 9 / 16) < 0.035
+              print("KEYFRAME_READY_FOR_VIDEO_ONLY", name.strip(), e["image_sha256"], e["cache"])
+          PY
+      - name: Recover cached Kokoro voice without rerunning Qwen editorial
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'speaking'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VOICE_RUN: ${{ inputs.voice_source_run }}
+        run: |
+          set -euo pipefail
+          [[ "$VOICE_RUN" =~ ^[0-9]+$ ]]
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          mkdir -p artifacts/cinematic/voice-cache
+          gh run download "$VOICE_RUN" --pattern 'niche-draft-*' --dir artifacts/cinematic/voice-cache
+          SOURCE="$(find artifacts/cinematic/voice-cache -type f -name draft.mp4 -print -quit)"
+          test -n "$SOURCE" || { echo "::error::Cached Kokoro audio unavailable"; exit 1; }
+          ffmpeg -hide_banner -loglevel error -y -i "$SOURCE" -map 0:a:0 -t 5 \
+            -ac 1 -ar 24000 -c:a pcm_s16le artifacts/cinematic/kokoro.wav
+      - name: Restore verified cross-run Wan video shot cache
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'speaking'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WAN_SEED: ${{ inputs.wan_seed }}
+        run: |
+          python scripts/wan_shared_shot_cache.py restore --stage speaking \
+            --reference artifacts/cinematic/keyframes/hook.png \
+            --audio artifacts/cinematic/kokoro.wav --prompt "$WAN_PROMPT" \
+            --seed "$WAN_SEED" --output artifacts/cinematic
+      - name: Generate speaking video using versioned deployed Modal app
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'speaking'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          WAN_SEED: ${{ inputs.wan_seed }}
+          REQUIRE_CACHED_VIDEO: ${{ inputs.require_cached_video }}
+        run: |
+          set -euo pipefail
+          if python scripts/wan_shared_shot_cache.py check --stage speaking \
+             --reference artifacts/cinematic/keyframes/hook.png \
+             --audio artifacts/cinematic/kokoro.wav --prompt "$WAN_PROMPT" \
+             --seed "$WAN_SEED" --output artifacts/cinematic; then
+            echo "MODAL_S2V_SKIPPED_VERIFIED_MP4"
+          else
+            if [[ "$REQUIRE_CACHED_VIDEO" == "true" ]]; then
+              echo "::error::Cache-only qualification did not restore a matching MP4; GPU invocation forbidden"
+              exit 6
+            fi
+            bash scripts/modal_versioned_dispatch.sh \
+              scripts/modal_wan_s2v.py generate_s2v speaking \
+              --reference artifacts/cinematic/keyframes/hook.png \
+              --audio artifacts/cinematic/kokoro.wav \
+              --output artifacts/cinematic --prompt "$WAN_PROMPT" \
+              --seed "$WAN_SEED"
+          fi
+      - name: Audit actual MP4, keyframe provenance, and closed creative gate
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'speaking'
+        env:
+          WAN_SEED: ${{ inputs.wan_seed }}
+        run: |
+          set -euo pipefail
+          python scripts/wan_shot_contract.py \
+            --reference artifacts/cinematic/keyframes/hook.png \
+            --audio artifacts/cinematic/kokoro.wav \
+            --prompt "$WAN_PROMPT" --seed "$WAN_SEED" \
+            --video artifacts/cinematic/wan-s2v-candidate.mp4 \
+            --manifest artifacts/cinematic/evidence/shot-qa.json
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path("artifacts/cinematic")
+          key = json.loads((root / "keyframes/hook.json").read_text())
+          wan = json.loads((root / "model-evidence.json").read_text())
+          qa = json.loads((root / "evidence/shot-qa.json").read_text())
+          assert key["image_sha256"] == wan["image_sha256"] == qa["image"]["sha256"]
+          assert wan["video_sha256"] == qa["video_sha256"]
+          assert wan["seed"] == qa["seed"] == int(os.environ["WAN_SEED"])
+          assert wan["video_sha256"] == hashlib.sha256((root / "wan-s2v-candidate.mp4").read_bytes()).hexdigest()
+          assert qa["publish_eligible"] is False
+          print("VIDEO_TECHNICALLY_VALID_HUMAN_CREATIVE_REVIEW_PENDING")
+          PY
+      - name: Archive generated frames, video and QA evidence
+        if: always() && github.event_name == 'workflow_dispatch' && (inputs.mode == 'keyframes' || inputs.mode == 'speaking')
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipper-cinematic-${{ github.run_id }}
+          path: |
+            artifacts/cinematic/keyframes/
+            artifacts/cinematic/evidence/
+            artifacts/cinematic/wan-s2v-candidate.mp4
+            artifacts/cinematic/model-evidence.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  full_book:
+    if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'full_book_prepare' || inputs.mode == 'full_book_visual' || inputs.mode == 'full_book')
+    uses: ./.github/workflows/wan-full-book-production.yml
+    with:
+      mode: ${{ inputs.mode == 'full_book' && 'full' || inputs.mode == 'full_book_visual' && 'visual' || 'prepare' }}
+      cached_draft_run: '40047215101'
+      reference_path: ${{ inputs.reference_path }}
+      source_sha256: ${{ inputs.approved_reference_sha256 }}
+    secrets: inherit
+
+  targeted_recovery:
+    if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'render_fresh_scene0' || inputs.mode == 'assemble_recovered' || inputs.mode == 'assemble_clean')
+    uses: ./.github/workflows/wan-full-book-recovery.yml
+    with:
+      mode: ${{ inputs.mode == 'render_fresh_scene0' && 'render_fresh_scene0' || inputs.mode == 'assemble_clean' && 'assemble_clean' || 'assemble_from_artifacts' }}
+      source_run: ${{ inputs.recovery_source_run }}
+      scene0_recovery_run: ${{ inputs.scene0_recovery_run }}
+    secrets: inherit
