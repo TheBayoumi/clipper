@@ -17,7 +17,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [render_fresh_scene0, assemble_from_artifacts]
+        options: [render_fresh_scene0, assemble_from_artifacts, assemble_clean]
         default: render_fresh_scene0
         required: true
       source_run:
@@ -103,7 +103,7 @@ jobs:
           if-no-files-found: warn
 
   assemble:
-    if: inputs.mode == 'assemble_from_artifacts'
+    if: inputs.mode == 'assemble_from_artifacts' || inputs.mode == 'assemble_clean'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -121,6 +121,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_RUN: ${{ inputs.source_run }}
           ZERO_RUN: ${{ inputs.scene0_recovery_run }}
+          ASSEMBLY_MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
           [[ "$SOURCE_RUN" =~ ^[0-9]+$ && "$ZERO_RUN" =~ ^[0-9]+$ ]]
@@ -144,27 +145,41 @@ jobs:
             cp -a "$(dirname "$original")/." "$destination/"
             test -s "$destination/model-evidence.json"
           done
-          test -s artifacts/full-book/source/captions.ass
-          test -s artifacts/full-book/source/caption-evidence.json
+          if [[ "${ASSEMBLY_MODE}" == "assemble_from_artifacts" ]]; then
+            test -s artifacts/full-book/source/captions.ass
+            test -s artifacts/full-book/source/caption-evidence.json
+          fi
       - name: Assemble the original voice and four verified scenes
+        env:
+          ASSEMBLY_MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
           mkdir -p artifacts/full-book/final
-          cp artifacts/full-book/source/captions.ass artifacts/full-book/final/captions.ass
-          cp artifacts/full-book/source/caption-evidence.json artifacts/full-book/final/caption-evidence.json
+          ARGS=()
+          if [[ "$ASSEMBLY_MODE" == "assemble_clean" ]]; then
+            ARGS+=(--clean-master)
+          else
+            cp artifacts/full-book/source/captions.ass artifacts/full-book/final/captions.ass
+            cp artifacts/full-book/source/caption-evidence.json artifacts/full-book/final/caption-evidence.json
+            ARGS+=(--captions artifacts/full-book/final/captions.ass)
+          fi
           PYTHONPATH=scripts python scripts/wan_full_book_episode.py assemble \
             --plan artifacts/full-book/source/plan.json \
             --shots artifacts/full-book/rendered/scene-00 \
                     artifacts/full-book/rendered/scene-01 \
                     artifacts/full-book/rendered/scene-02 \
                     artifacts/full-book/rendered/scene-03 \
-            --output artifacts/full-book/final \
-            --captions artifacts/full-book/final/captions.ass
+            --output artifacts/full-book/final "${ARGS[@]}"
+          if [[ "$ASSEMBLY_MODE" == "assemble_clean" ]]; then
+            test -s artifacts/full-book/final/atomic-habits-clean-master.mp4
+            test ! -e artifacts/full-book/final/captions.ass
+            echo "CLEAN_MASTER_NO_SUBTITLE_OR_TOP_TITLE_OVERLAY"
+          fi
       - name: Archive complete 30-to-60-second candidate for human review
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: full-book-video-recovery-${{ github.run_id }}
+          name: ${{ inputs.mode == 'assemble_clean' && 'full-book-clean-master' || 'full-book-video-recovery' }}-${{ github.run_id }}
           path: artifacts/full-book/final/
           retention-days: 14
           if-no-files-found: warn
