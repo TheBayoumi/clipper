@@ -218,6 +218,7 @@ def test_clean_assembler_maps_only_locked_audio_and_no_overlays(
                             "width": 1080,
                             "height": 1920,
                             "r_frame_rate": "24/1",
+                            "nb_frames": str(edl["output"]["frames"]),
                         },
                         {"codec_type": "audio"},
                     ],
@@ -295,7 +296,7 @@ def test_assembler_rejects_invalid_cache_before_encoding(
 def test_legacy_adapter_refuses_fabricated_source_plan(tmp_path: Path) -> None:
     audio = tmp_path / "full-kokoro.wav"
     _wav(audio)
-    with pytest.raises(assembly.AssemblyError, match="historical full-book"):
+    with pytest.raises(assembly.AssemblyError, match="historical Wan shot"):
         assembly.make_legacy_replay({}, audio, tmp_path, [])
 
 

@@ -41,7 +41,7 @@ def probe(path: Path) -> dict[str, Any]:
                     "-v",
                     "error",
                     "-show_entries",
-                    "format=duration:stream=codec_type,width,height,r_frame_rate,duration",
+                    "format=duration:stream=codec_type,width,height,r_frame_rate,duration,nb_frames",
                     "-of",
                     "json",
                     str(path),
@@ -246,6 +246,7 @@ def assemble(
             or len(sound) != 1
             or (video[0].get("width"), video[0].get("height")) != (1080, 1920)
             or video[0].get("r_frame_rate") != "24/1"
+            or int(video[0].get("nb_frames", 0)) != plan["output"]["frames"]
             or not math.isclose(float(media["format"]["duration"]), frames / RATE, abs_tol=0.12)
         ):
             raise AssemblyError("assembled master failed source duration/geometry QA")
