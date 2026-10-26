@@ -71,7 +71,7 @@ jobs:
         with:
           name: MW4-qualification-source-catalog
           path: /tmp/source_catalog.json
-          retention-days: 3
+          retention-days: 30
           if-no-files-found: error
 
   independent-source-review:
@@ -198,7 +198,7 @@ jobs:
             analysis/${{ matrix.source }}/neural_checkpoints/*.json
             analysis/${{ matrix.source }}/neural_review_queue.json
             analysis/${{ matrix.source }}/neural_visual_evidence.json
-          retention-days: 14
+          retention-days: 30
           if-no-files-found: warn
       - name: Upload certified analysis source for isolated render workspaces
         uses: actions/upload-artifact@v4
@@ -207,7 +207,7 @@ jobs:
           path: |
             raw_sources/${{ matrix.source }}.mp4
             raw_sources/${{ matrix.source }}.source_qa.json
-          retention-days: 1
+          retention-days: 30
           compression-level: 0
           if-no-files-found: error
       - name: Upload analysis and transcript manifests
@@ -215,7 +215,7 @@ jobs:
         with:
           name: MW4-qualification-analysis-${{ matrix.source }}
           path: analysis/${{ matrix.source }}/*.json
-          retention-days: 3
+          retention-days: 30
           if-no-files-found: error
 
   allocate:
@@ -262,14 +262,14 @@ jobs:
         with:
           name: MW4-qualification-allocation-rejection
           path: allocation/mw4_allocation_rejection.json
-          retention-days: 3
+          retention-days: 30
           if-no-files-found: error
       - name: Upload approved global allocation
         uses: actions/upload-artifact@v4
         with:
           name: MW4-qualification-allocation
           path: allocation/mw4_allocation.json
-          retention-days: 3
+          retention-days: 30
           if-no-files-found: error
 
   render-one:
@@ -336,7 +336,7 @@ jobs:
             one/*.hook.txt
             one/*.hook.srt
             one/*.hook.json
-          retention-days: 3
+          retention-days: 30
           compression-level: 0
           if-no-files-found: error
       - name: Upload clip QA metadata
@@ -350,7 +350,7 @@ jobs:
             one/*.hook.srt
             one/*.hook.json
             one/contact_sheets/*.jpg
-          retention-days: 3
+          retention-days: 30
           compression-level: 0
           if-no-files-found: error
 
@@ -396,5 +396,5 @@ jobs:
         with:
           name: MW4-qualification-batch-contract
           path: batch/*.json
-          retention-days: 3
+          retention-days: 30
           if-no-files-found: error
