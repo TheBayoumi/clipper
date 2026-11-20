@@ -1,0 +1,153 @@
+name: Cleanup connection check
+
+# Manual only. Committing this file triggers nothing.
+# No video generation, no GPU, no Modal .remote() calls, no deploys, no publishing.
+# Connection checks are read-only metadata lookups. Secret values are never printed.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cleanup-connection-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Removed modules are gone and nothing imports them
+        run: |
+          test ! -e src/clipper/performance.py
+          test ! -e src/clipper/transcript.py
+          ! grep -rnE "clipper\.(performance|transcript)\b|from clipper import .*\b(performance|transcript)\b" src scripts tests
+      - name: Every clipper module imports
+        run: |
+          python - <<'PY'
+          import importlib, pkgutil, sys
+          import clipper
+          failed = []
+          for m in pkgutil.walk_packages(clipper.__path__, "clipper."):
+              try:
+                  importlib.import_module(m.name)
+              except Exception as exc:
+                  failed.append((m.name, type(exc).__name__))
+          for name, err in failed:
+              print(f"IMPORT_FAILED {name} {err}")
+          print(f"IMPORT_CHECK_DONE failed={len(failed)}")
+          sys.exit(1 if failed else 0)
+          PY
+      - name: CLI entry point loads
+        run: clipper --help
+      - name: Ruff lint
+        if: always()
+        run: ruff check .
+      - name: Strict mypy
+        if: always()
+        run: mypy
+      - name: Test suite (mocked, no network, no inference) with coverage floor
+        if: always()
+        run: pytest
+
+  service-connections:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: main
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      YT_COOKIES_PRESENT: ${{ secrets.CLIPPER_YOUTUBE_COOKIES_B64 != '' }}
+      CLIPPER_MODAL_APP: clipper-open-editor
+      CLIPPER_MODAL_PIPELINE_APP: clipper-production-pipeline
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install client libraries only
+        run: python -m pip install "modal==1.5.5" "huggingface-hub>=1.24,<2"
+      - name: Secrets present (names only)
+        run: |
+          python - <<'PY'
+          import os
+          for k in ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "HF_TOKEN"):
+              print(f"{k}: {'present' if os.environ.get(k) else 'MISSING'}")
+          print(f"CLIPPER_YOUTUBE_COOKIES_B64: {'present' if os.environ.get('YT_COOKIES_PRESENT') == 'true' else 'MISSING'}")
+          PY
+      - name: Modal authentication and workspace (read-only)
+        if: always()
+        run: |
+          python - <<'PY'
+          import sys
+          import modal
+          try:
+              ws = modal.Workspace.from_context()
+              ws.hydrate()
+              print("MODAL_AUTH_OK workspace_resolved=true")
+          except Exception as exc:
+              print(f"MODAL_AUTH_FAILED {type(exc).__name__}")
+              sys.exit(1)
+          PY
+      - name: Deployed Modal handles exist (hydrate only, no execution)
+        if: always()
+        run: |
+          python - <<'PY'
+          import os, sys
+          import modal
+          env = os.environ["MODAL_ENVIRONMENT"]
+          checks = [
+              (os.environ["CLIPPER_MODAL_APP"], "function", n)
+              for n in ("transcribe", "align", "diarize", "editorial_schema_smoke",
+                        "hf_access_smoke", "deployment_identity")
+          ] + [
+              (os.environ["CLIPPER_MODAL_APP"], "cls", n)
+              for n in ("EditorialModel", "VisionModel", "VisionModelLarge")
+          ] + [
+              (os.environ["CLIPPER_MODAL_PIPELINE_APP"], "function", n)
+              for n in ("acquire_source", "run_full_cycle", "deployment_identity")
+          ]
+          bad = 0
+          for app, kind, name in checks:
+              try:
+                  ns = modal.Function if kind == "function" else modal.Cls
+                  ns.from_name(app, name, environment_name=env).hydrate()
+                  print(f"FOUND {app}/{name}")
+              except Exception as exc:
+                  bad += 1
+                  print(f"NOT_AVAILABLE {app}/{name} {type(exc).__name__}")
+          print(f"MODAL_HANDLE_CHECK_DONE unavailable={bad}")
+          sys.exit(1 if bad else 0)
+          PY
+      - name: Hugging Face token and pyannote model access (metadata only, no download)
+        if: always()
+        run: |
+          python - <<'PY'
+          import os, sys
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ.get("HF_TOKEN") or None)
+          try:
+              api.whoami()
+              print("HF_TOKEN_VALID")
+          except Exception as exc:
+              print(f"HF_TOKEN_INVALID {type(exc).__name__}")
+              sys.exit(1)
+          try:
+              info = api.model_info("pyannote/speaker-diarization-community-1")
+              print(f"HF_MODEL_ACCESS_OK revision_resolved={bool(info.sha)}")
+          except Exception as exc:
+              print(f"HF_MODEL_ACCESS_FAILED {type(exc).__name__}")
+              sys.exit(1)
+          PY
