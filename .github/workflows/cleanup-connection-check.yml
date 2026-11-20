@@ -1,10 +1,15 @@
 name: Cleanup connection check
 
-# Manual only. Committing this file triggers nothing.
+# Runs on workflow_dispatch, and on pushes to this review branch that touch this file only.
+# A branch-only workflow cannot be dispatched from the UI until it is on the default branch,
+# so the push trigger is what lets it run here without changing main.
 # No video generation, no GPU, no Modal .remote() calls, no deploys, no publishing.
 # Connection checks are read-only metadata lookups. Secret values are never printed.
 on:
   workflow_dispatch:
+  push:
+    branches: [review/unified-tts-cleanup]
+    paths: [".github/workflows/cleanup-connection-check.yml"]
 
 permissions:
   contents: read
@@ -41,6 +46,8 @@ jobs:
           import clipper
           failed = []
           for m in pkgutil.walk_packages(clipper.__path__, "clipper."):
+              if m.name == "clipper.__main__":
+                  continue  # importing it would execute the CLI
               try:
                   importlib.import_module(m.name)
               except Exception as exc:
