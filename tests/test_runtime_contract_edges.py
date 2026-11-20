@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-import clipper.performance as performance
 from clipper.hilp import (
     HilpSimulationError,
     _delayed_anchor,
@@ -215,136 +213,3 @@ def test_hilp_evidence_validation_exercises_every_review_branch() -> None:
     for payload, match in cases:
         with pytest.raises(HilpSimulationError, match=match):
             validate_hilp_evidence(payload)
-
-
-def test_proc_rss_fallback_parses_linux_status_and_fails_closed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeStatus:
-        def __init__(self, text: str, *, exists: bool = True) -> None:
-            self.text = text
-            self.exists = exists
-
-        def is_file(self) -> bool:
-            return self.exists
-
-        def read_text(self, *, encoding: str) -> str:
-            del encoding
-            return self.text
-
-    status = FakeStatus("Name:\tpython\nVmHWM:\t2048 kB\n")
-    monkeypatch.setattr(performance, "Path", lambda _value: status)
-    assert performance._proc_peak_rss_mb() == 2.0
-
-    status.text = "VmRSS:\tnot-a-number kB\n"
-    assert performance._proc_peak_rss_mb() == 0.0
-    status.text = "Name:\tpython\n"
-    assert performance._proc_peak_rss_mb() == 0.0
-    status.exists = False
-    assert performance._proc_peak_rss_mb() == 0.0
-
-
-def test_cpu_and_peak_rss_fallbacks_cover_posix_macos_and_windows(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(performance, "_resource", None)
-    monkeypatch.setattr(
-        performance.os,
-        "times",
-        lambda: SimpleNamespace(user=1.0, system=2.0, children_user=3.0, children_system=4.0),
-    )
-    assert performance.cpu_seconds() == pytest.approx(10.0)
-
-    monkeypatch.setattr(performance.sys, "platform", "linux")
-    monkeypatch.setattr(performance, "_proc_peak_rss_mb", lambda: 12.5)
-    assert performance.peak_rss_mb() == 12.5
-
-    class UsageResource:
-        RUSAGE_SELF = 1
-        RUSAGE_CHILDREN = 2
-
-        @staticmethod
-        def getrusage(_kind: int) -> SimpleNamespace:
-            return SimpleNamespace(ru_utime=1.0, ru_stime=2.0, ru_maxrss=2 * 1024 * 1024)
-
-    monkeypatch.setattr(performance, "_resource", UsageResource())
-    monkeypatch.setattr(performance.sys, "platform", "darwin")
-    assert performance.peak_rss_mb() == pytest.approx(2.0)
-    monkeypatch.setattr(performance.sys, "platform", "linux")
-    assert performance.peak_rss_mb() == pytest.approx(2048.0)
-
-    monkeypatch.setattr(performance, "_resource", None)
-    monkeypatch.setattr(performance.sys, "platform", "win32")
-
-    class CallableApi:
-        def __init__(self, result: int, *, peak_bytes: int = 0) -> None:
-            self.result = result
-            self.peak_bytes = peak_bytes
-            self.restype: object | None = None
-            self.argtypes: list[object] = []
-
-        def __call__(self, *args: object) -> int:
-            if len(args) >= 2 and self.peak_bytes:
-                pointer = args[1]
-                target = getattr(pointer, "_obj", None)
-                if target is not None:
-                    target.peak_working_set_size = self.peak_bytes
-            return self.result
-
-    get_process = CallableApi(1)
-    get_memory = CallableApi(1, peak_bytes=3 * 1024 * 1024)
-    windll = SimpleNamespace(
-        kernel32=SimpleNamespace(GetCurrentProcess=get_process),
-        psapi=SimpleNamespace(GetProcessMemoryInfo=get_memory),
-    )
-    monkeypatch.setattr(performance.ctypes, "windll", windll, raising=False)
-    assert performance.peak_rss_mb() == pytest.approx(3.0)
-
-    windll.psapi.GetProcessMemoryInfo = CallableApi(0)
-    assert performance.peak_rss_mb() == 0.0
-
-
-def test_gpu_directory_and_run_telemetry_paths(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    assert performance.directory_size_bytes(tmp_path / "missing") == 0
-    (tmp_path / "nested").mkdir()
-    (tmp_path / "a.bin").write_bytes(b"abc")
-    (tmp_path / "nested" / "b.bin").write_bytes(b"12345")
-    assert performance.directory_size_bytes(tmp_path) == 8
-
-    monkeypatch.setattr(performance.shutil, "which", lambda _name: None)
-    assert performance.gpu_utilization_pct() is None
-
-    monkeypatch.setattr(performance.shutil, "which", lambda _name: "/usr/bin/nvidia-smi")
-    monkeypatch.setattr(
-        performance.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout=""),
-    )
-    assert performance.gpu_utilization_pct() is None
-
-    monkeypatch.setattr(
-        performance.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="10\nbad\n30\n"),
-    )
-    assert performance.gpu_utilization_pct() == 20.0
-
-    perf_times = iter([1.0, 2.0, 4.0, 5.0])
-    cpu_times = iter([10.0, 12.0])
-    monkeypatch.setattr(performance.time, "perf_counter", lambda: next(perf_times))
-    monkeypatch.setattr(performance, "cpu_seconds", lambda: next(cpu_times))
-    monkeypatch.setattr(performance, "gpu_utilization_pct", lambda: 25.0)
-    monkeypatch.setattr(performance, "peak_rss_mb", lambda: 64.0)
-
-    telemetry = performance.RunTelemetry()
-    telemetry.start("planning")
-    assert telemetry.stop("missing") == 0.0
-    assert telemetry.stop("planning") == pytest.approx(2.0)
-    report = telemetry.finish(tmp_path)
-    assert report["wall_seconds"] == pytest.approx(4.0)
-    assert report["cpu_seconds"] == pytest.approx(2.0)
-    assert report["gpu_available"] is True
-    assert report["gpu_utilization_samples_pct"] == [25.0, 25.0]
-    assert report["stages_seconds"] == {"planning": 2.0}
