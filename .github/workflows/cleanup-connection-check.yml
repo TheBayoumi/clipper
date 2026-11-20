@@ -270,3 +270,75 @@ jobs:
           record("No remote functions called, no containers/GPU allocated, no deployments or video generation.")
           finish(1 if failed or errors else 0)
           PY
+
+  modal-billing-readonly:
+    name: Modal billing ${{ matrix.slot }} encrypted
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - slot: primary
+            token_id: MODAL_TOKEN_ID
+            token_secret: MODAL_TOKEN_SECRET
+          - slot: backup-1
+            token_id: MODAL_TOKEN_ID_2
+            token_secret: MODAL_TOKEN_SECRET_2
+          - slot: backup-2
+            token_id: MODAL_TOKEN_ID_3
+            token_secret: MODAL_TOKEN_SECRET_3
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install read-only client and encryption library
+        run: python -m pip install "modal==1.5.5" "cryptography==46.0.3"
+      - name: Read billing summary and encrypt before output
+        env:
+          MODAL_TOKEN_ID: ${{ secrets[matrix.token_id] }}
+          MODAL_TOKEN_SECRET: ${{ secrets[matrix.token_secret] }}
+          MODAL_ENVIRONMENT: main
+          ACCOUNT_SLOT: ${{ matrix.slot }}
+        run: |
+          python - <<'PYCODE'
+          import base64, contextlib, dataclasses, datetime, io, json, logging, os, sys
+          from cryptography.hazmat.primitives import hashes, serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          # Only this public key is present. The private key is never uploaded.
+          public_key = serialization.load_der_public_key(base64.b64decode("MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAvK8OjUD+6vkggo0t6b5TnrbtSPH8oVdGiBrxXNrV9KWDRAeaZ27gGw5AlI7LaxTGQw9xhUTf8Sgj6mUTd87+esvNrdWYmB8qL9b+SSQtiFNIMvl5j18qBvwFrGZjGYJsyZpCfyhuahBGcfICecX9wPyFFbv1cubYqX0sBDR5znX0Tal3WQG8hgLiHRA4azYLlujxMCoVjUO3Lhpswh3GkGAdoo1bmgPBvIOqvvMIARe+JNKfPzR5Ipl3uNu5hdqRkSIbzGC0gm6epIZZerHJWvKWoANSRzBNBAWHf/EDdr/5iXo7XfFI2tmybbBGz3o4Dk//3g1EU8C4uY7gRVudzszQmo69gVcHurj5PXZpaZ6O1FkJ5GRxd84zEDGil6DE9Fkhf8KHLvIZee5+sji/tog8oKhUHlo5B7ZqjCrcdbN0tUCYsFN5rwbHHyn+nDUvSCe/W98hyNvcTBM8tdCPU3KbviiSAJe122GoEW8KWKyJt/+ZlVR2CXVMY3xpvOt7AgMBAAE="))
+          result = {"slot": os.environ["ACCOUNT_SLOT"], "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+          logging.disable(logging.CRITICAL)
+          # Capture all incidental client output; never print raw exceptions or responses.
+          with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+              try:
+                  import modal
+                  ws = modal.Workspace.from_context()
+                  ws.hydrate()
+                  name = ws.name
+                  result["workspace"] = name() if callable(name) else name
+                  result["summary"] = dataclasses.asdict(ws.billing.summary(cycle="2026-11"))
+                  result["status"] = "ok"
+              except BaseException as exc:
+                  result["status"] = "unavailable"
+                  result["error_type"] = type(exc).__name__
+          # Hybrid RSA-OAEP-SHA256 + AES-256-GCM authenticated encryption.
+          # No raw output is permitted even if encryption fails.
+          try:
+              payload = json.dumps(result, default=str, separators=(",", ":")).encode()
+              key = AESGCM.generate_key(bit_length=256)
+              nonce = os.urandom(12)
+              aad = b"clipper-modal-billing-2026-11-v1"
+              ciphertext = AESGCM(key).encrypt(nonce, payload, aad)
+              wrapped = public_key.encrypt(key, padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
+              envelope = {"v":1,"wrapped":base64.b64encode(wrapped).decode(),"nonce":base64.b64encode(nonce).decode(),"data":base64.b64encode(ciphertext).decode()}
+              encoded = base64.b64encode(json.dumps(envelope,separators=(",", ":")).encode()).decode()
+          except BaseException:
+              print("Protected billing output could not be encrypted; no data emitted.")
+              sys.exit(1)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("## Encrypted billing response\n\n```text\nBILLING_ENCRYPTED_V1:" + encoded + "\n```\n")
+          print("Protected billing response recorded. No GPU or Modal App was started.")
+          PYCODE
