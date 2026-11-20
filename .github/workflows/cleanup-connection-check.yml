@@ -158,3 +158,115 @@ jobs:
               print(f"HF_MODEL_ACCESS_FAILED {type(exc).__name__}")
               sys.exit(1)
           PY
+
+  modal-accounts:
+    name: Modal account ${{ matrix.slot }} metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slot: primary
+            token_id: MODAL_TOKEN_ID
+            token_secret: MODAL_TOKEN_SECRET
+            expected_workspace: ""
+          - slot: backup-1
+            token_id: MODAL_TOKEN_ID_2
+            token_secret: MODAL_TOKEN_SECRET_2
+            expected_workspace: mahmoud-bayoumi-bb
+          - slot: backup-2
+            token_id: MODAL_TOKEN_ID_3
+            token_secret: MODAL_TOKEN_SECRET_3
+            expected_workspace: thebayoumi
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install metadata client only
+        run: python -m pip install "modal==1.5.5"
+      - name: Authenticate and inspect deployments without execution
+        env:
+          MODAL_TOKEN_ID: ${{ secrets[matrix.token_id] }}
+          MODAL_TOKEN_SECRET: ${{ secrets[matrix.token_secret] }}
+          MODAL_ENVIRONMENT: main
+          ACCOUNT_SLOT: ${{ matrix.slot }}
+          EXPECTED_WORKSPACE: ${{ matrix.expected_workspace }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          import sys
+          from pathlib import Path
+          import modal
+          from modal.exception import NotFoundError
+
+          slot = os.environ["ACCOUNT_SLOT"]
+          rows = [f"## Modal {slot}: metadata only", ""]
+          failed = False
+          def record(message):
+              rows.append(message)
+              print(message)
+          def finish(code):
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                  f.write("\n".join(rows) + "\n")
+              sys.exit(code)
+          if not all(os.environ.get(k) for k in ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET")):
+              record("Authentication: NOT TESTED, credential pair missing or incomplete.")
+              finish(1)
+          record("Credentials: both configured (values never printed).")
+          try:
+              ws = modal.Workspace.from_context()
+              ws.hydrate()  # WorkspaceNameLookup only
+              name = ws.name
+              name = name() if callable(name) else name
+              record(f"Authentication: PASS. Workspace: `{name}`. Environment: `main`.")
+          except Exception as exc:
+              record(f"Authentication: FAILED ({type(exc).__name__}). No deployment checks attempted.")
+              finish(1)
+          expected = os.environ.get("EXPECTED_WORKSPACE")
+          if expected and name != expected:
+              record(f"Workspace identity: MISMATCH against configured `{expected}`.")
+              failed = True
+          elif expected:
+              record("Workspace identity: matches repository configuration.")
+          else:
+              record("Workspace identity: observed above; no primary-name assertion configured.")
+
+          checks = [("generic", "clipper-open-editor", "function", n)
+                    for n in ("transcribe", "align", "diarize", "editorial_schema_smoke",
+                              "hf_access_smoke", "deployment_identity")]
+          checks += [("generic", "clipper-open-editor", "class", n)
+                     for n in ("EditorialModel", "VisionModel", "VisionModelLarge")]
+          checks += [("generic", "clipper-production-pipeline", "function", n)
+                     for n in ("acquire_source", "run_full_cycle", "deployment_identity")]
+          for script, base, function in (
+              ("scripts/modal_qwen_keyframes.py", "clipper-qwen-cinematic-keyframes", "generate_keyframe"),
+              ("scripts/modal_wan_s2v.py", "clipper-wan-s2v", "generate_s2v"),
+          ):
+              digest = hashlib.sha256(Path(script).read_bytes()).hexdigest()[:16]
+              checks.append(("versioned", f"{base}-{digest}", "function", function))
+          rows += ["", "| Kind | App/object | Result |", "| --- | --- | --- |"]
+          found = missing = errors = 0
+          for group, app, kind, name in checks:
+              try:
+                  cls = modal.Function if kind == "function" else modal.Cls
+                  cls.from_name(app, name, environment_name="main").hydrate()
+                  # Hydration is FunctionGet/ClassGet metadata, never remote/spawn/map/deploy.
+                  status = "FOUND"
+                  found += 1
+              except NotFoundError:
+                  status = "NOT FOUND in this workspace/environment"
+                  missing += 1
+              except Exception as exc:
+                  status = f"UNVERIFIED ({type(exc).__name__})"
+                  errors += 1
+              record(f"| {group} {kind} | `{app}/{name}` | {status} |")
+          record(f"Metadata totals: found={found}, not_found={missing}, unverified={errors}.")
+          record("Missing objects are deployment inventory results, not authentication failures.")
+          record("No remote functions called, no containers/GPU allocated, no deployments or video generation.")
+          finish(1 if failed or errors else 0)
+          PY
