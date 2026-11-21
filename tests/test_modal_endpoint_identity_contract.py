@@ -85,7 +85,7 @@ def test_unverified_existing_endpoint_refused_without_mutation(
     runner = Mock(return_value=_metadata(model=model, revision=revision))
     with (
         patch.object(module, "_run", runner),
-        pytest.raises(RuntimeError, match="identity is missing or differs"),
+        pytest.raises(RuntimeError, match="metadata missing|identity differs"),
     ):
         module.ensure_endpoint("clipper-editorial", EDITORIAL_MODEL_ID)
     runner.assert_called_once_with("modal", "endpoint", "list", "--json")
@@ -100,3 +100,102 @@ def test_matching_metadata_allows_reuse_without_creating_endpoint() -> None:
     assert all(
         call.args == ("modal", "endpoint", "list", "--json") for call in runner.call_args_list
     )
+
+
+def test_synthetic_flat_missing_entry_has_distinct_absence_error() -> None:
+    module = _module()
+    with pytest.raises(RuntimeError, match="absent from the endpoint listing"):
+        module._assert_endpoint_identity([], "clipper-editorial")
+
+
+def test_synthetic_nested_model_metadata_with_revision_passes_exact_identity() -> None:
+    module = _module()
+    payload = [
+        {
+            "endpoint_name": "clipper-editorial",
+            "endpoint_url": "https://example.invalid/model",
+            "state": "ready",
+            "model": {"id": EDITORIAL_MODEL_ID, "revision": EDITORIAL_MODEL_REVISION},
+        }
+    ]
+    runner = Mock(return_value=json.dumps(payload))
+    with patch.object(module, "_run", runner):
+        assert module.ensure_endpoint("clipper-editorial", EDITORIAL_MODEL_ID) == (
+            "https://example.invalid/model"
+        )
+    assert all(call.args == ("modal", "endpoint", "list", "--json") for call in runner.call_args_list)
+
+
+def test_synthetic_missing_revision_exposes_key_names_only_not_values() -> None:
+    module = _module()
+    secret_value = "private-value-must-never-appear"
+    payload = [
+        {
+            "name": "clipper-editorial",
+            "url": "https://example.invalid/model",
+            "model": {"id": EDITORIAL_MODEL_ID, "unknown_version": secret_value},
+            "private_token": secret_value,
+        }
+    ]
+    with pytest.raises(RuntimeError, match="metadata missing or unrecognized") as exc:
+        module._assert_endpoint_identity(payload, "clipper-editorial")
+    error = str(exc.value)
+    assert "listing entry keys" in error and "nested model keys" in error
+    assert "private_token" in error and "unknown_version" in error
+    assert secret_value not in error and "example.invalid" not in error
+
+
+@pytest.mark.parametrize(
+    "model,revision",
+    [
+        ("synthetic-wrong-model", EDITORIAL_MODEL_REVISION),
+        (EDITORIAL_MODEL_ID, "synthetic-wrong-revision"),
+    ],
+)
+def test_synthetic_mismatching_identity_never_mutates_endpoint(
+    model: str, revision: str
+) -> None:
+    module = _module()
+    runner = Mock(return_value=_metadata(model=model, revision=revision))
+    with (
+        patch.object(module, "_run", runner),
+        pytest.raises(RuntimeError, match="identity differs"),
+    ):
+        module.ensure_endpoint("clipper-editorial", EDITORIAL_MODEL_ID)
+    runner.assert_called_once_with("modal", "endpoint", "list", "--json")
+
+
+def test_synthetic_created_endpoint_with_missing_revision_is_held_no_deletion() -> None:
+    module = _module()
+    runner = Mock(side_effect=["[]", "", _metadata(revision=None)])
+    with (
+        patch.object(module, "_run", runner),
+        pytest.raises(RuntimeError, match="just created but is unverified") as exc,
+    ):
+        module.ensure_endpoint("clipper-editorial", EDITORIAL_MODEL_ID)
+    assert "must not be used" in str(exc.value)
+    assert "owner decision required" in str(exc.value)
+    assert "metadata missing" in str(exc.value)
+    assert [call.args[:3] for call in runner.call_args_list] == [
+        ("modal", "endpoint", "list"),
+        ("modal", "endpoint", "create"),
+        ("modal", "endpoint", "list"),
+    ]
+    assert not any("delete" in call.args or "stop" in call.args for call in runner.call_args_list)
+
+
+def test_synthetic_created_endpoint_absent_on_poll_requires_owner_decision() -> None:
+    module = _module()
+    runner = Mock(side_effect=["[]", "", "[]"])
+    clock = iter([0.0, 0.0, 1.0])
+    with (
+        patch.object(module, "_run", runner),
+        patch.object(module.time, "monotonic", side_effect=lambda: next(clock)),
+        patch.object(module.time, "sleep") as sleep,
+        pytest.raises(RuntimeError, match="absent from the endpoint listing") as exc,
+    ):
+        module.ensure_endpoint("clipper-editorial", EDITORIAL_MODEL_ID, timeout=0.1)
+    sleep.assert_called_once_with(5)
+    assert "was just created" in str(exc.value)
+    assert "must not be used" in str(exc.value)
+    assert not any("delete" in call.args or "stop" in call.args for call in runner.call_args_list)

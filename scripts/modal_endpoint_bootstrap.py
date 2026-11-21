@@ -35,36 +35,50 @@ def _walk(value: Any) -> Iterable[dict[str, Any]]:
             yield from _walk(child)
 
 
+def _endpoint_entry(payload: Any, name: str) -> dict[str, Any] | None:
+    for item in _walk(payload):
+        if str(item.get("name") or item.get("endpoint_name") or "") == name:
+            return item
+    return None
+
+
 def _find_endpoint(value: Any, name: str) -> tuple[str, str] | None:
-    for item in _walk(value):
-        item_name = str(item.get("name") or item.get("endpoint_name") or "")
-        if item_name != name:
-            continue
-        url = str(item.get("url") or item.get("endpoint_url") or item.get("web_url") or "")
-        status = str(item.get("status") or item.get("state") or "").lower()
-        if url.startswith("http"):
-            return url.rstrip("/"), status
+    item = _endpoint_entry(value, name)
+    if item is None:
+        return None
+    url = str(item.get("url") or item.get("endpoint_url") or item.get("web_url") or "")
+    status = str(item.get("status") or item.get("state") or "").lower()
+    if url.startswith("http"):
+        return url.rstrip("/"), status
     return None
 
 
 def _assert_endpoint_identity(payload: Any, name: str) -> None:
-    """Refuse to trust an endpoint without verifiable pinned model metadata."""
-    for item in _walk(payload):
-        if str(item.get("name") or item.get("endpoint_name") or "") != name:
-            continue
-        raw_model = item.get("model_id") or item.get("model")
-        model_id = raw_model
-        revision = item.get("model_revision") or item.get("revision")
-        if isinstance(raw_model, dict):
-            model_id = raw_model.get("model_id") or raw_model.get("id")
-            revision = revision or raw_model.get("revision")
-        if model_id != EDITORIAL_MODEL_ID or revision != EDITORIAL_MODEL_REVISION:
-            raise RuntimeError(
-                f"endpoint {name} model identity is missing or differs from pinned editorial "
-                "contract; refuse to reuse an unverifiable endpoint"
-            )
-        return
-    raise RuntimeError(f"endpoint {name} identity metadata is missing")
+    """An endpoint URL is unusable without matching pinned ID and revision."""
+    item = _endpoint_entry(payload, name)
+    if item is None:
+        raise RuntimeError(f"endpoint {name} is absent from the endpoint listing")
+    raw_model = item.get("model_id") or item.get("model")
+    model_id = raw_model
+    revision = item.get("model_revision") or item.get("revision")
+    if isinstance(raw_model, dict):
+        model_id = raw_model.get("model_id") or raw_model.get("id")
+        revision = revision or raw_model.get("revision")
+    if (
+        not isinstance(model_id, str)
+        or not model_id.strip()
+        or not isinstance(revision, str)
+        or not revision.strip()
+    ):
+        entry_keys = sorted(str(key) for key in item)
+        model_keys = sorted(str(key) for key in raw_model) if isinstance(raw_model, dict) else []
+        raise RuntimeError(
+            f"endpoint {name} identity metadata missing or unrecognized (including revision); "
+            f"listing entry keys: {entry_keys}; nested model keys: {model_keys}. "
+            "The pinned model ID and revision must both be observable"
+        )
+    if model_id != EDITORIAL_MODEL_ID or revision != EDITORIAL_MODEL_REVISION:
+        raise RuntimeError(f"endpoint {name} identity differs from pinned editorial contract")
 
 
 def _proxy_token(value: Any) -> tuple[str, str]:
@@ -97,22 +111,45 @@ def ensure_endpoint(name: str, model: str, *, timeout: float = 900.0) -> str:
         return json.loads(_run("modal", "endpoint", "list", "--json") or "[]")
 
     endpoints = listing()
-    found = _find_endpoint(endpoints, name)
-    if found is None:
+    created_here = _endpoint_entry(endpoints, name) is None
+    if created_here:
+        # The public CLI does not document revision pinning for a base --model.
         _run("modal", "endpoint", "create", "--name", name, "--model", model)
     else:
         _assert_endpoint_identity(endpoints, name)
     deadline = time.monotonic() + timeout
+    found_in_poll = False
     while time.monotonic() < deadline:
         endpoints = listing()
+        if _endpoint_entry(endpoints, name) is None:
+            time.sleep(5)
+            continue
+        found_in_poll = True
+        try:
+            _assert_endpoint_identity(endpoints, name)
+        except RuntimeError as exc:
+            if created_here:
+                raise RuntimeError(
+                    f"endpoint {name} was just created but is unverified; must not be used; "
+                    f"owner decision required: {exc}"
+                ) from exc
+            raise
         found = _find_endpoint(endpoints, name)
         if found is not None:
-            _assert_endpoint_identity(endpoints, name)
             url, status = found
             if status not in {"failed", "error", "stopped"}:
                 return url
         time.sleep(5)
-    raise TimeoutError(f"Modal endpoint {name} did not become discoverable within {timeout}s")
+    if not found_in_poll:
+        detail = f"endpoint {name} is absent from the endpoint listing after {timeout}s"
+    else:
+        detail = f"endpoint {name} has no usable URL or ready status after {timeout}s"
+    if created_here:
+        raise RuntimeError(
+            f"{detail}; endpoint was just created but is unverified; must not be used; "
+            "owner decision required; no endpoint cleanup was attempted"
+        )
+    raise TimeoutError(detail)
 
 
 def create_proxy_token() -> tuple[str, str]:
