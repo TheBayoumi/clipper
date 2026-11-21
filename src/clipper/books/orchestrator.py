@@ -74,7 +74,7 @@ def _selected_cached(value: object) -> LessonSelection:
 
 
 def _script_cached(value: object) -> EpisodeScript:
-    if not isinstance(value, dict) or not isinstance(value.get("scenes"), list):
+    if not isinstance(value, dict) or not isinstance(value.get("scenes"), (list, tuple)):
         raise BookRunError("invalid cached book-script stage output")
     raw = cast(dict[str, Any], value)
     scenes = tuple(ScriptScene(**scene) for scene in raw["scenes"])
