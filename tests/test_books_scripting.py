@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -79,3 +81,65 @@ def test_qwen_invalid_cache_and_recovery_reject_source_mismatch(tmp_path: Path) 
     path.write_text("{}", encoding="utf-8")
     with pytest.raises(scripting.NicheVideoError, match="episode schema mismatch"):
         scripting.generate_episode(config, cache, completion=Mock())
+
+
+
+def test_fake_optional_qwen_loader_and_completion_preserve_pinned_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise the real adapter with synthetic module objects, never weights."""
+    tokenized = SimpleNamespace(shape=(1, 2))
+    tokenizer = SimpleNamespace(
+        apply_chat_template=Mock(return_value={"input_ids": tokenized}),
+        eos_token_id=0,
+        decode=Mock(return_value="```json\n" + json.dumps(_episode()) + "\n```"),
+    )
+    model = SimpleNamespace(generate=Mock(return_value=[[10, 20, 30, 40]]))
+    model.eval = Mock(return_value=model)
+    torch = SimpleNamespace(
+        set_num_threads=Mock(),
+        manual_seed=Mock(),
+        inference_mode=nullcontext,
+    )
+    transformers = SimpleNamespace(
+        AutoTokenizer=SimpleNamespace(from_pretrained=Mock(return_value=tokenizer)),
+        AutoModelForCausalLM=SimpleNamespace(from_pretrained=Mock(return_value=model)),
+    )
+    loaded: list[str] = []
+
+    def fake_import(name: str) -> object:
+        loaded.append(name)
+        return {"torch": torch, "transformers": transformers}[name]
+
+    monkeypatch.setattr(scripting, "importlib", SimpleNamespace(import_module=fake_import))
+    scripting._script_pipeline.cache_clear()
+    try:
+        config = _config(tmp_path)
+        result = scripting._local_script_completion(scripting._script_request(config))
+        assert json.loads(result) == _episode()
+        script_model, script_tokenizer = scripting._script_pipeline()
+        assert script_model is model and script_tokenizer is tokenizer
+        assert transformers.AutoModelForCausalLM.from_pretrained.call_count == 1
+        assert transformers.AutoTokenizer.from_pretrained.call_args.kwargs["revision"] == (
+            scripting.SCRIPT_REVISION
+        )
+        assert loaded.count("transformers") == 1
+        torch.manual_seed.assert_called_once_with(42)
+        assert model.generate.call_args.kwargs["max_new_tokens"] == 960
+    finally:
+        scripting._script_pipeline.cache_clear()
+
+
+def test_missing_optional_qwen_runtime_fails_without_loading_weights(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def missing(_name: str) -> object:
+        raise ImportError("synthetic missing optional dependency")
+
+    monkeypatch.setattr(scripting, "importlib", SimpleNamespace(import_module=missing))
+    scripting._script_pipeline.cache_clear()
+    try:
+        with pytest.raises(scripting.NicheVideoError, match="niche-models"):
+            scripting._script_pipeline()
+    finally:
+        scripting._script_pipeline.cache_clear()
