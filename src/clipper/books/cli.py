@@ -10,7 +10,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from . import ingest, mining, scripting, selection, storyboards
+from . import acquisition, faithful, ingest, mining, scripting, selection, storyboards
 from .contracts import SourceUnresolved
 from .orchestrator import BookOrchestrator, BookRunError
 
@@ -21,10 +21,35 @@ def configure_books_parser(subparsers: Any) -> None:
     books = subparsers.add_parser("books", help="source-backed book episode stage DAG")
     actions = books.add_subparsers(dest="books_action", required=True)
 
-    ingest_cmd = actions.add_parser("ingest", help="inspect an explicitly provided book source")
+    discover = actions.add_parser(
+        "candidates", help="resolve reviewed title/author/edition without network"
+    )
+    discover.add_argument("--title", required=True)
+    discover.add_argument("--author")
+    discover.add_argument("--edition")
+    discover.add_argument("--registry", type=Path, default=acquisition.REGISTRY)
+
+    acquire = actions.add_parser(
+        "acquire", help="bounded anonymous Archive acquisition; no mining"
+    )
+    acquire.add_argument("--title", required=True)
+    acquire.add_argument("--author")
+    acquire.add_argument("--edition")
+    acquire.add_argument("--registry", type=Path, default=acquisition.REGISTRY)
+    acquire.add_argument("--offline", action="store_true")
+    acquire.add_argument("--artifact-root", type=Path, default=Path("artifacts/books"))
+
+    ingest_cmd = actions.add_parser(
+        "ingest", help="title-only candidate acquire and faithful extract"
+    )
     ingest_cmd.add_argument("--title", required=True)
-    ingest_cmd.add_argument("--author", required=True)
-    ingest_cmd.add_argument("--source", type=Path)
+    ingest_cmd.add_argument("--author")
+    ingest_cmd.add_argument("--edition")
+    ingest_cmd.add_argument("--source", type=Path, help="explicit owner file (legacy mode)")
+    ingest_cmd.add_argument("--registry", type=Path, default=acquisition.REGISTRY)
+    ingest_cmd.add_argument("--offline", action="store_true")
+    ingest_cmd.add_argument("--overlay", type=Path, help="private reviewed image sidecar")
+    ingest_cmd.add_argument("--ocr", choices=("none", "tesseract"), default="none")
     ingest_cmd.add_argument("--artifact-root", type=Path, default=Path("artifacts/books"))
 
     mine_cmd = actions.add_parser("mine", help="mine recorded responses, never infer live")
@@ -80,24 +105,83 @@ def _write(path: Path, content: str) -> None:
 
 
 def dispatch_books(args: argparse.Namespace) -> int:
-    if args.books_action == "ingest":
-        runner = BookOrchestrator(args.artifact_root)
-        ingested = runner.ingest(args.title, args.author, ingest.LocalFileResolver(args.source))
-        if isinstance(ingested, SourceUnresolved):
-            print(json.dumps(asdict(ingested), ensure_ascii=False))
-            return 1
-        print(
-            json.dumps(
-                {
-                    "book_id": "-".join(re.findall(r"[a-z0-9]+", args.title.casefold())),
-                    "source_fingerprint": ingested.source_fingerprint,
-                    "content_sha256": ingested.content_sha256,
-                    "total_words": ingested.total_word_count,
-                    "authorization_status": ingested.source.authorization_status,
-                }
-            )
+    if args.books_action == "candidates":
+        resolved = acquisition.discover(
+            args.title, acquisition.load_registry(args.registry),
+            author=args.author, edition=args.edition,
         )
-        return 0
+        print(json.dumps(asdict(resolved), ensure_ascii=False))
+        return 1 if isinstance(resolved, SourceUnresolved) else 0
+
+    if args.books_action in {"acquire", "ingest"}:
+        runner = BookOrchestrator(args.artifact_root)
+        if args.books_action == "ingest" and args.source is not None:
+            if args.author is None:
+                raise BookRunError("explicit owner-file ingest requires --author")
+            book = runner.ingest(
+                args.title, args.author, ingest.LocalFileResolver(args.source)
+            )
+            if isinstance(book, SourceUnresolved):
+                print(json.dumps(asdict(book), ensure_ascii=False))
+                return 1
+            print(
+                json.dumps(
+                    {
+                        "book_id": "-".join(re.findall(r"[a-z0-9]+", args.title.casefold())),
+                        "source_fingerprint": book.source_fingerprint,
+                        "content_sha256": book.content_sha256,
+                        "total_words": book.total_word_count,
+                        "authorization_status": book.source.authorization_status,
+                    }
+                )
+            )
+            return 0
+
+        reviewed = acquisition.load_registry(args.registry)
+        if args.books_action == "acquire":
+            acquired = runner.acquire_candidate(
+                args.title, author=args.author, edition=args.edition,
+                registry=reviewed, offline=args.offline,
+            )
+            if isinstance(acquired, SourceUnresolved):
+                print(json.dumps(asdict(acquired), ensure_ascii=False))
+                return 1
+            print(json.dumps({
+                "book_id": acquired.candidate.book_id,
+                "record_url": acquired.record_url,
+                "actual_asset_url": acquired.asset_url,
+                "raw_sha256": acquired.observed_sha256,
+                "raw_bytes": acquired.observed_bytes,
+                "http_status": acquired.http_status,
+                "cache_hit": acquired.cache_hit,
+                "authorization_status": acquired.source.authorization_status,
+                "raw_path": str(acquired.raw_path),
+            }))
+            return 0
+
+        recovered = runner.ingest_candidate(
+            args.title, author=args.author, edition=args.edition,
+            registry=reviewed, offline=args.offline,
+            overlay_path=args.overlay,
+            ocr=faithful.cpu_tesseract if args.ocr == "tesseract" else None,
+        )
+        if isinstance(recovered, SourceUnresolved):
+            print(json.dumps(asdict(recovered), ensure_ascii=False))
+            return 1
+        dossier = json.loads(recovered.dossier_path.read_text(encoding="utf-8"))
+        print(json.dumps({
+            "book_id": recovered.candidate.book_id,
+            "raw_sha256": recovered.acquired.observed_sha256,
+            "stage_key": recovered.stage_key,
+            "recovery_status": recovered.book.recovery_status,
+            "dossier_path": str(recovered.dossier_path),
+            "unique_images": dossier["unique_images"],
+            "image_occurrences": dossier["image_occurrences"],
+            "excluded_pages": dossier["excluded_pages"],
+            "warnings": dossier["warnings"],
+            "authorization_status": recovered.book.source.authorization_status,
+        }))
+        return 2 if recovered.book.recovery_status == "incomplete_recovery" else 0
     if args.books_action == "mine":
         runner = BookOrchestrator(args.artifact_root)
         book = runner.load_text(args.book_id)
