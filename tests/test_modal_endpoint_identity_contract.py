@@ -48,7 +48,9 @@ def test_default_cli_model_is_imported_from_pinned_contract(
     monkeypatch.setattr(sys, "argv", ["bootstrap"])
     with (
         patch.object(module, "create_proxy_token", return_value=("wk-fake", "ws-fake")),
-        patch.object(module, "ensure_endpoint", return_value="https://example.invalid/model") as run,
+        patch.object(
+            module, "ensure_endpoint", return_value="https://example.invalid/model"
+        ) as run,
     ):
         module.main()
     run.assert_called_once_with("clipper-editorial", EDITORIAL_MODEL_ID)
@@ -95,4 +97,6 @@ def test_matching_metadata_allows_reuse_without_creating_endpoint() -> None:
     with patch.object(module, "_run", runner):
         result = module.ensure_endpoint("clipper-editorial", EDITORIAL_MODEL_ID)
     assert result == "https://example.invalid/model"
-    assert all(call.args == ("modal", "endpoint", "list", "--json") for call in runner.call_args_list)
+    assert all(
+        call.args == ("modal", "endpoint", "list", "--json") for call in runner.call_args_list
+    )
