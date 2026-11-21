@@ -349,7 +349,7 @@ def _mutate_epub(
 ) -> bytes:
     """Original synthetic archive rewrites only; never checked-in book bytes."""
     stream = io.BytesIO()
-    with zipfile.ZipFile(data) as source, zipfile.ZipFile(stream, "w") as target:
+    with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(stream, "w") as target:
         for item in source.infolist():
             if item.filename in deletions:
                 continue
@@ -514,7 +514,7 @@ def test_epub_zip_bomb_and_untrusted_members_are_bounded(
         faithful._zip(archive.getvalue())
     bomb = io.BytesIO()
     with zipfile.ZipFile(bomb, "w", compression=zipfile.ZIP_DEFLATED) as out:
-        out.writestr("highratio", b"\x00" * 500_000)
+        out.writestr("highratio", b"\x00" * 4_000_000)
     with pytest.raises(ExtractionError, match="compression ratio"):
         faithful._zip(bomb.getvalue())
 
@@ -591,17 +591,32 @@ def test_missing_ocr_does_not_imply_complete_transcription() -> None:
     assert "OCR absent/failed" in book.images[0].uncertainty
 
 
-def test_pdf_rejects_corrupted_bytes_zero_pages_and_invalid_exclusion() -> None:
+def test_pdf_rejects_corrupted_bytes_zero_pages_and_invalid_exclusion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     raw = b"%PDF-not-a-valid-document"
     candidate = _candidate(raw, DEEP, fmt="pdf")
     with pytest.raises(ExtractionError, match="cannot be opened"):
         extract_candidate(_source(raw, candidate), raw, candidate)
-    empty = pymupdf.open()
-    data = empty.tobytes()
-    empty.close()
+
+    class EmptyPDF:
+        needs_pass = False
+
+        def __enter__(self) -> EmptyPDF:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def __len__(self) -> int:
+            return 0
+
+    data = _pdf()
     candidate = replace(_candidate(data, DEEP, fmt="pdf"), expected_pages=None)
-    with pytest.raises(ExtractionError, match="page count unsupported"):
-        extract_candidate(_source(data, candidate), data, candidate)
+    with monkeypatch.context() as patch:
+        patch.setattr("pymupdf.open", lambda **_kwargs: EmptyPDF())
+        with pytest.raises(ExtractionError, match="page count unsupported"):
+            extract_candidate(_source(data, candidate), data, candidate)
     original = _pdf()
     candidate = replace(
         _candidate(original, DEEP, fmt="pdf"),
