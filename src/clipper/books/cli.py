@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import ingest, mining, scripting, selection, storyboards
+from .contracts import SourceUnresolved
 from .orchestrator import BookOrchestrator, BookRunError
 
 DEFAULT_CONFIG = Path("niches/book-lessons.yaml")
@@ -81,18 +82,18 @@ def _write(path: Path, content: str) -> None:
 def dispatch_books(args: argparse.Namespace) -> int:
     if args.books_action == "ingest":
         runner = BookOrchestrator(args.artifact_root)
-        result = runner.ingest(args.title, args.author, ingest.LocalFileResolver(args.source))
-        if isinstance(result, ingest.SourceUnresolved):
-            print(json.dumps(asdict(result), ensure_ascii=False))
+        ingested = runner.ingest(args.title, args.author, ingest.LocalFileResolver(args.source))
+        if isinstance(ingested, SourceUnresolved):
+            print(json.dumps(asdict(ingested), ensure_ascii=False))
             return 1
         print(
             json.dumps(
                 {
                     "book_id": "-".join(re.findall(r"[a-z0-9]+", args.title.casefold())),
-                    "source_fingerprint": result.source_fingerprint,
-                    "content_sha256": result.content_sha256,
-                    "total_words": result.total_word_count,
-                    "authorization_status": result.source.authorization_status,
+                    "source_fingerprint": ingested.source_fingerprint,
+                    "content_sha256": ingested.content_sha256,
+                    "total_words": ingested.total_word_count,
+                    "authorization_status": ingested.source.authorization_status,
                 }
             )
         )
@@ -114,15 +115,15 @@ def dispatch_books(args: argparse.Namespace) -> int:
                 raise mining.BookMiningError(f"recorded completion missing for {key}")
             return json.dumps(answer, ensure_ascii=False, sort_keys=True)
 
-        result = runner.mine(
+        mined = runner.mine(
             book, completion=recorded, response_sha256=hashlib.sha256(data).hexdigest()
         )
         print(
             json.dumps(
                 {
                     "book_id": args.book_id,
-                    "candidate_count": len(result["books"][0]["lessons"]),
-                    "review_status": result["review_status"],
+                    "candidate_count": len(mined["books"][0]["lessons"]),
+                    "review_status": mined["review_status"],
                 }
             )
         )

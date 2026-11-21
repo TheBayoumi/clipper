@@ -280,7 +280,7 @@ def _https_get(url: str) -> bytes:
         redirected = urllib.parse.urlsplit(response.geturl())
         if redirected.scheme != "https" or redirected.hostname != "www.gutenberg.org":
             raise BookIngestError("Gutenberg redirect must remain on official HTTPS host")
-        result = response.read(MAX_BYTES + 1)
+        result: bytes = response.read(MAX_BYTES + 1)
     if len(result) > MAX_BYTES:
         raise BookIngestError("Gutenberg transport byte limit exceeded")
     return result
