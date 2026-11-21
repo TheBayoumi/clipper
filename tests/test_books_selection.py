@@ -73,3 +73,63 @@ def test_selection_rejects_empty_catalog_and_invalid_storyboard() -> None:
         selection.to_storyboard_outline(
             {"fingerprint": "a", "episode_id": "b"}, {"production_storyboard": {}}
         )
+
+
+
+@pytest.mark.parametrize(
+    "defect,message",
+    [
+        ("schema", "unknown editorial"),
+        ("book_type", "invalid book entry"),
+        ("book_title", "unattributed book"),
+        ("book_url", "book source URL"),
+        ("book_lessons", "no eligible lesson"),
+        ("lesson_id", "invalid lesson ID"),
+        ("lesson_url", "claim source must be HTTPS"),
+        ("angles_empty", "nonempty list"),
+        ("angles_shape", "invalid editorial angle"),
+    ],
+)
+def test_catalog_invalid_contract_variants_fail_closed(defect: str, message: str) -> None:
+    catalog = json.loads((ROOT / "niches/book-editorial-catalog.json").read_text())
+    book = catalog["books"][0]
+    lesson = book["lessons"][0]
+    if defect == "schema":
+        catalog["schema"] = "unrecognized"
+    elif defect == "book_type":
+        catalog["books"][0] = None
+    elif defect == "book_title":
+        book["title"] = " "
+    elif defect == "book_url":
+        book["source_url"] = "http://example.net/book"
+    elif defect == "book_lessons":
+        book["lessons"] = []
+    elif defect == "lesson_id":
+        lesson["id"] = "Bad Lesson"
+    elif defect == "lesson_url":
+        lesson["claim_source_url"] = "http://example.net/claim"
+    elif defect == "angles_empty":
+        lesson["angles"] = []
+    else:
+        lesson["angles"] = [{"unknown": "shape"}]
+    with pytest.raises(selection.BookSelectionError, match=message):
+        selection.choose_lesson(catalog)
+
+
+def test_selection_history_and_storyboard_boundaries() -> None:
+    catalog = json.loads((ROOT / "niches/book-editorial-catalog.json").read_text())
+    with pytest.raises(selection.BookSelectionError, match="history requires"):
+        selection.choose_lesson(catalog, [{"book_id": "atomic-habits"}])
+    with pytest.raises(selection.BookSelectionError, match="no verified book"):
+        selection.choose_lesson(catalog, pillar="unknown")
+    picked = selection.choose_lesson(catalog)
+    with pytest.raises(selection.BookSelectionError, match="unqualified"):
+        selection.to_niche_config({"schema": "wrong"})
+    template = {
+        "production_storyboard": {
+            "schema": "clipper-production-storyboard-v2",
+            "editorial_sequence": [],
+        }
+    }
+    with pytest.raises(selection.BookSelectionError, match="missing narrative roles"):
+        selection.to_storyboard_outline(picked, template)
