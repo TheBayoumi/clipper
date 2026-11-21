@@ -46,7 +46,9 @@ def test_cross_book_override_is_not_accepted() -> None:
     picked = selection.choose_lesson(catalog, book_id="deep-work")
     with pytest.raises(selection.BookSelectionError, match="book mismatch"):
         storyboards.resolve_template(
-            catalog, picked, catalog_dir=NICHES,
+            catalog,
+            picked,
+            catalog_dir=NICHES,
             override=NICHES / "atomic-habits-approved-storyboard.json",
         )
 
