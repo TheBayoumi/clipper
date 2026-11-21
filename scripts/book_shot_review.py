@@ -1,8 +1,8 @@
 """Fail-closed creative review for generated book shots; no generation or publishing.
 
 VisionProvider observations are evidence, not human approval. Frame-only review
-cannot independently certify speech synchronization. Every accepted shot requires
-a separate human decision bound to the immutable video and shot contracts.
+cannot independently certify speech synchronization. A recorded approval entry
+binds to immutable content hashes; reviewer identity is not authenticated.
 """
 
 from __future__ import annotations
@@ -253,7 +253,7 @@ def verify_review(
     previous_video_sha256: str | None,
     review_sha256: str | None = None,
 ) -> None:
-    """Block assembly unless every criterion and the external human decision match."""
+    """Block assembly without content-bound, recorded approval (not identity proof)."""
     if not review.is_file():
         raise CreativeReviewError(f"shot {shot.get('id')} missing human-reviewed evidence")
     if review_sha256 is not None and file_sha(review) != review_sha256:

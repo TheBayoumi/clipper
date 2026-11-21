@@ -277,3 +277,17 @@ def test_creative_review_gate_contains_no_hardcoded_book_literature() -> None:
     assert "JAMES CLEAR" not in source
     assert "DEEP WORK" not in source
     assert "CAL NEWPORT" not in source
+
+
+def test_arbitrary_reviewer_label_is_recorded_not_authenticated(tmp_path: Path) -> None:
+    # Characterization: this gate protects content integrity, NOT reviewer identity.
+    path, video, shot, record = _review(tmp_path)
+    approval = _approve(record)
+    approval["human_approval"]["reviewer"] = "arbitrary-label-not-authenticated"
+    path.write_text(json.dumps(approval))
+    _require(path, video, shot)
+
+    # Changing reviewed bytes invalidates the same approval even with its label unchanged.
+    video.write_bytes(b"different-immutable-video")
+    with pytest.raises(creative.CreativeReviewError, match="stale or contradictory"):
+        _require(path, video, shot)
