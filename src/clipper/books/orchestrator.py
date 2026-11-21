@@ -4,22 +4,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
 from clipper.dag import DagStore
 from clipper.stage_contracts import content_fingerprint, stage_identity
 
-from . import narration, scripting, selection, storyboards
+from . import ingest, mining, narration, scripting, selection, storyboards
 from .contracts import (
     BOOK_STAGE_CONTRACTS,
     BookRef,
+    BookSection,
+    BookSource,
+    BookText,
     EpisodeScript,
     LessonSelection,
     NarrationTrack,
     ScriptScene,
+    SourceUnresolved,
 )
 from .storyboards import StoryboardProvenance
 
@@ -41,6 +46,35 @@ class BookPlan:
     niche_config_json: str
     outline_json: str
     storyboard_provenance: StoryboardProvenance
+
+
+def _book_text_cached(value: object) -> BookText:
+    if not isinstance(value, dict) or not isinstance(value.get("source"), dict):
+        raise BookRunError("invalid cached book-ingest stage output")
+    record = cast(dict[str, Any], value)
+    sections = tuple(
+        BookSection(
+            chapter_id=item["chapter_id"],
+            heading=item["heading"],
+            paragraphs=tuple(item["paragraphs"]),
+        )
+        for item in record["sections"]
+    )
+    return BookText(
+        source=BookSource(**record["source"]),
+        edition_identity=record["edition_identity"],
+        sections=sections,
+        total_word_count=record["total_word_count"],
+        content_sha256=record["content_sha256"],
+        source_fingerprint=record["source_fingerprint"],
+    )
+
+
+def _book_slug(title: str) -> str:
+    slug = "-".join(re.findall(r"[a-z0-9]+", title.casefold()))
+    if not selection.IDENTIFIER.fullmatch(slug):
+        raise BookRunError("book title cannot form a stable catalog identifier")
+    return slug
 
 
 def _selected_payload(raw: dict[str, Any]) -> LessonSelection:
@@ -127,8 +161,93 @@ class BookOrchestrator:
     """Reuse DagStore's exact stage identity, locking, evidence and cached resume."""
 
     def __init__(self, artifact_root: Path) -> None:
+        self.root = artifact_root
         self.dag = DagStore(artifact_root / "book-dag")
         self.script_cache_root = artifact_root / "book-script-cache"
+
+    def ingest(
+        self, title: str, author: str, resolver: ingest.SourceResolver
+    ) -> BookText | SourceUnresolved:
+        """Resolve exactly one source; parse inside the content-addressed ingest stage."""
+        matches = resolver.resolve(title, author)
+        if isinstance(matches, SourceUnresolved):
+            return matches
+        if len(matches) != 1:
+            raise ingest.BookIngestError(f"ambiguous source resolver results: {len(matches)}")
+        source = matches[0]
+        raw = resolver.read(source)
+        sha256 = hashlib.sha256(raw).hexdigest()
+        if source.source_kind == "public_domain":
+            source = replace(source, content_sha256=sha256)
+        elif source.content_sha256 != sha256:
+            raise ingest.BookIngestError("source changed between lookup and read: SHA-256 mismatch")
+        identity = stage_identity(
+            BOOK_STAGE_CONTRACTS["ingest"],
+            source_hash=content_fingerprint(
+                {"title": title, "author": author, "source": source.fingerprint, "bytes": sha256}
+            ),
+        )
+        stored, _reused = self.dag.execute(
+            identity, lambda: asdict(ingest.parse_book(source, raw))
+        )
+        book = _book_text_cached(stored)
+        if book.content_sha256 != sha256:
+            raise BookRunError("cached ingest content SHA-256 does not match source bytes")
+        if book.source.authorization_status != "unverified":
+            raise BookRunError("ingest must not upgrade source authorization")
+        snapshot = json.dumps(asdict(book), ensure_ascii=False, sort_keys=True).encode("utf-8")
+        scripting._write_atomic(self.root / "book-text" / f"{_book_slug(title)}.json", snapshot)
+        return book
+
+    def load_text(self, book_id: str) -> BookText:
+        if not selection.IDENTIFIER.fullmatch(book_id):
+            raise BookRunError("invalid book-id for source lookup")
+        path = self.root / "book-text" / f"{book_id}.json"
+        if not path.is_file():
+            raise BookRunError(f"ingested BookText missing for {book_id}; run books ingest first")
+        book = _book_text_cached(json.loads(path.read_text(encoding="utf-8")))
+        if book.source_fingerprint != book.source.fingerprint:
+            raise BookRunError("stored BookText source fingerprint mismatch")
+        if sum(
+            len(p.split()) for section in book.sections for p in section.paragraphs
+        ) != book.total_word_count:
+            raise BookRunError("stored BookText word-count mismatch")
+        if _book_slug(book.source.title) != book_id:
+            raise BookRunError("stored BookText book-id does not match source title")
+        return book
+
+    def mine(
+        self,
+        book: BookText,
+        *,
+        completion: Callable[[dict[str, object]], str],
+        response_sha256: str,
+    ) -> dict[str, Any]:
+        """Cache only explicitly recorded completion identities; never load model weights."""
+        if not re.fullmatch(r"[0-9a-f]{64}", response_sha256):
+            raise BookRunError("mining requires exact recorded-response SHA-256")
+        identity = stage_identity(
+            BOOK_STAGE_CONTRACTS["mining"],
+            source_hash=content_fingerprint(
+                {"book": book.fingerprint, "response_sha256": response_sha256}
+            ),
+            dependency_output_hashes=(book.fingerprint,),
+            model_revision=scripting.SCRIPT_REVISION,
+            decoding_parameters={"seed": 42, "max_new_tokens": 960, "chunk_words": mining.CHUNK_WORDS},
+        )
+        stored, _reused = self.dag.execute(
+            identity, lambda: mining.mine_book(book, completion)
+        )
+        if not isinstance(stored, dict) or stored.get("ingest_fingerprint") != book.fingerprint:
+            raise BookRunError("cached mined catalog is inconsistent with the ingested book")
+        if stored.get("review_status") != "MINED_UNREVIEWED":
+            raise BookRunError("mined catalog review gate missing")
+        selection._validate_catalog(stored)
+        snapshot = json.dumps(stored, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        scripting._write_atomic(
+            self.root / "mined" / f"{_book_slug(book.source.title)}.json", snapshot
+        )
+        return stored
 
     def plan(
         self,

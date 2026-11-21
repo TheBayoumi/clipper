@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from . import scripting, selection, storyboards
+from . import ingest, mining, scripting, selection, storyboards
 from .orchestrator import BookOrchestrator, BookRunError
 
 DEFAULT_CONFIG = Path("niches/book-lessons.yaml")
@@ -16,6 +19,17 @@ DEFAULT_CONFIG = Path("niches/book-lessons.yaml")
 def configure_books_parser(subparsers: Any) -> None:
     books = subparsers.add_parser("books", help="source-backed book episode stage DAG")
     actions = books.add_subparsers(dest="books_action", required=True)
+
+    ingest_cmd = actions.add_parser("ingest", help="inspect an explicitly provided book source")
+    ingest_cmd.add_argument("--title", required=True)
+    ingest_cmd.add_argument("--author", required=True)
+    ingest_cmd.add_argument("--source", type=Path)
+    ingest_cmd.add_argument("--artifact-root", type=Path, default=Path("artifacts/books"))
+
+    mine_cmd = actions.add_parser("mine", help="mine recorded responses, never infer live")
+    mine_cmd.add_argument("--book-id", required=True)
+    mine_cmd.add_argument("--responses", type=Path, required=True)
+    mine_cmd.add_argument("--artifact-root", type=Path, default=Path("artifacts/books"))
 
     validate = actions.add_parser("validate", help="validate catalog and niche configuration")
     validate.add_argument("--catalog", type=Path, default=selection.CATALOG_PATH)
@@ -65,6 +79,55 @@ def _write(path: Path, content: str) -> None:
 
 
 def dispatch_books(args: argparse.Namespace) -> int:
+    if args.books_action == "ingest":
+        runner = BookOrchestrator(args.artifact_root)
+        result = runner.ingest(
+            args.title, args.author, ingest.LocalFileResolver(args.source)
+        )
+        if isinstance(result, ingest.SourceUnresolved):
+            print(json.dumps(asdict(result), ensure_ascii=False))
+            return 1
+        print(
+            json.dumps(
+                {
+                    "book_id": "-".join(
+                        re.findall(r"[a-z0-9]+", args.title.casefold())
+                    ),
+                    "source_fingerprint": result.source_fingerprint,
+                    "content_sha256": result.content_sha256,
+                    "total_words": result.total_word_count,
+                    "authorization_status": result.source.authorization_status,
+                }
+            )
+        )
+        return 0
+    if args.books_action == "mine":
+        runner = BookOrchestrator(args.artifact_root)
+        book = runner.load_text(args.book_id)
+        data = args.responses.read_bytes()
+        replies: object = json.loads(data)
+        if not isinstance(replies, dict):
+            raise mining.BookMiningError("recorded mining responses must be a JSON mapping")
+        def recorded(request: dict[str, object]) -> str:
+            from clipper.stage_contracts import content_fingerprint
+            key = content_fingerprint(request)
+            answer = replies.get(key)
+            if not isinstance(answer, dict):
+                raise mining.BookMiningError(f"recorded completion missing for {key}")
+            return json.dumps(answer, ensure_ascii=False, sort_keys=True)
+        result = runner.mine(
+            book, completion=recorded, response_sha256=hashlib.sha256(data).hexdigest()
+        )
+        print(
+            json.dumps(
+                {
+                    "book_id": args.book_id,
+                    "candidate_count": len(result["books"][0]["lessons"]),
+                    "review_status": result["review_status"],
+                }
+            )
+        )
+        return 0
     catalog = _json(args.catalog)
     if not isinstance(catalog, dict):
         raise selection.BookSelectionError("unknown editorial book catalog schema")
