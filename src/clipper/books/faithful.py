@@ -16,8 +16,7 @@ import subprocess
 import urllib.parse
 import xml.etree.ElementTree as ET
 import zipfile
-from collections.abc import Callable
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, replace
 from io import BytesIO
 from typing import Any

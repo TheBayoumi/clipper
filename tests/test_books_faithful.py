@@ -19,8 +19,8 @@ from clipper.books.contracts import BookSource, OCRIdentity
 from clipper.books.faithful import (
     ExtractionError,
     _xml,
-    cpu_tesseract,
     convert_research_observations,
+    cpu_tesseract,
     extract_candidate,
     image_reconciliation,
     reading_blocks,
