@@ -13,8 +13,8 @@ from unittest.mock import Mock
 import pytest
 
 from clipper import cli
-from clipper.books import acquisition, faithful, mining
-from clipper.books.contracts import BookText, SourceUnresolved
+from clipper.books import acquisition
+from clipper.books.contracts import SourceUnresolved
 from clipper.books.orchestrator import BookOrchestrator, BookRunError
 
 
