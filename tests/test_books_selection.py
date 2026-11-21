@@ -15,9 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_selection_and_storyboard_retain_exact_serialized_contracts() -> None:
     catalog = json.loads((ROOT / "niches/book-editorial-catalog.json").read_text())
     board = json.loads((ROOT / "niches/atomic-habits-approved-storyboard.json").read_text())
-    picked = selection.choose_lesson(
-        catalog, book_id="atomic-habits", lesson_id="two-minute-rule"
-    )
+    picked = selection.choose_lesson(catalog, book_id="atomic-habits", lesson_id="two-minute-rule")
     assert picked["episode_id"] == "atomic-habits--two-minute-rule--primary"
     assert picked["book"]["author"] == "James Clear"
     assert picked["fingerprint"] == selection._digest(
