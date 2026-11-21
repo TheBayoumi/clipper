@@ -719,8 +719,7 @@ def test_ordered_reading_blocks_keep_source_and_reviewed_images_distinct() -> No
             {
                 "asset_sha256": asset.asset_sha256,
                 "occurrences": [
-                    {"anchor": x.anchor, "source_path": x.source_path}
-                    for x in asset.occurrences
+                    {"anchor": x.anchor, "source_path": x.source_path} for x in asset.occurrences
                 ],
                 "original_transcription": "40 10 60",
                 "normalized_transcription": "40, 10, 60",
@@ -767,5 +766,7 @@ def test_research_import_preserves_unmatched_image_uncertainty() -> None:
     assert report["assets"][0]["occurrences"][0]["source_path"]
     still_incomplete = extract_candidate(book.source, raw, candidate, overlay=overlay)
     assert still_incomplete.recovery_status == "incomplete_recovery"
-    assert all(x.origin == "unrecovered_image" or x.origin == "source"
-               for x in reading_blocks(still_incomplete))
+    assert all(
+        x.origin == "unrecovered_image" or x.origin == "source"
+        for x in reading_blocks(still_incomplete)
+    )

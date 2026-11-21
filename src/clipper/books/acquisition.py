@@ -320,7 +320,9 @@ class ArchiveAcquirer:
         key = candidate.fingerprint
         return (
             self.root / "manifests" / f"{key}.json",
-            self.root / "raw" / candidate.expected_sha256[:2]
+            self.root
+            / "raw"
+            / candidate.expected_sha256[:2]
             / f"{candidate.expected_sha256}.{candidate.format}",
         )
 

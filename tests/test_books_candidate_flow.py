@@ -329,7 +329,9 @@ def test_ocr_producer_change_rekeys_and_identical_contract_resumes(tmp_path: Pat
     assert not isinstance(changed, SourceUnresolved)
     changed_ocr.assert_called_once()
     assert changed.stage_key != first.stage_key
-    assert changed.book.images[0].original_transcription != first.book.images[0].original_transcription
+    assert (
+        changed.book.images[0].original_transcription != first.book.images[0].original_transcription
+    )
     resumed_ocr = Mock(side_effect=AssertionError("unchanged OCR must not execute"))
     resumed = runner.ingest_candidate(
         "Atomic Habits",
@@ -352,36 +354,50 @@ def test_cli_offline_private_observation_import_keeps_unreviewed_evidence(
     candidate, transport, registry = _fixture(tmp_path)
     root = tmp_path / "private"
     runner = BookOrchestrator(root)
-    extracted = runner.ingest_candidate(
-        "Atomic Habits", registry=(candidate,), transport=transport
-    )
+    extracted = runner.ingest_candidate("Atomic Habits", registry=(candidate,), transport=transport)
     assert not isinstance(extracted, SourceUnresolved)
     image = extracted.book.images[0]
     research = {
         "schema": "clipper-book-research-observations-v1",
         "source_sha256": extracted.book.content_sha256,
-        "entries": [{
-            "asset_sha256": image.asset_sha256,
-            "occurrences": [
-                {"anchor": occ.anchor, "source_path": occ.source_path}
-                for occ in image.occurrences
-            ],
-            "original_transcription": "40 10 60",
-            "normalized_transcription": "40 10 60",
-            "normalization_notes": None,
-            "reviewed_by": "fixture-reviewer",
-            "reviewed_at": None,
-            "review_status": "reviewed",
-        }],
+        "entries": [
+            {
+                "asset_sha256": image.asset_sha256,
+                "occurrences": [
+                    {"anchor": occ.anchor, "source_path": occ.source_path}
+                    for occ in image.occurrences
+                ],
+                "original_transcription": "40 10 60",
+                "normalized_transcription": "40 10 60",
+                "normalization_notes": None,
+                "reviewed_by": "fixture-reviewer",
+                "reviewed_at": None,
+                "review_status": "reviewed",
+            }
+        ],
     }
     input_file = tmp_path / "private-research.json"
     input_file.write_text(json.dumps(research))
     output_file = tmp_path / "private-reviewed.json"
-    assert cli.main([
-        "books", "overlay-import", "--title", "Atomic Habits", "--registry",
-        str(registry), "--artifact-root", str(root), "--research",
-        str(input_file), "--output", str(output_file),
-    ]) == 0
+    assert (
+        cli.main(
+            [
+                "books",
+                "overlay-import",
+                "--title",
+                "Atomic Habits",
+                "--registry",
+                str(registry),
+                "--artifact-root",
+                str(root),
+                "--research",
+                str(input_file),
+                "--output",
+                str(output_file),
+            ]
+        )
+        == 0
+    )
     reply = json.loads(capsys.readouterr().out)
     assert reply["unreviewed_assets"] == 0
     assert output_file.is_file()

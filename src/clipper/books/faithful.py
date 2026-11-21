@@ -504,10 +504,7 @@ def ocr_contract(ocr: OCR | None, identity: OCRIdentity | None) -> str | None:
         identity is None
         or not identity.adapter.strip()
         or not identity.version.strip()
-        or any(
-            not key.strip() or not isinstance(value, str)
-            for key, value in identity.settings
-        )
+        or any(not key.strip() or not isinstance(value, str) for key, value in identity.settings)
         or len({key for key, _ in identity.settings}) != len(identity.settings)
     ):
         raise ExtractionError("injected OCR producer requires deterministic identity/config")
@@ -527,9 +524,7 @@ def tesseract_identity() -> OCRIdentity:
                 check=False,
             )
             if process.returncode == 0:
-                version = hashlib.sha256(
-                    process.stdout + b"\n" + process.stderr
-                ).hexdigest()
+                version = hashlib.sha256(process.stdout + b"\n" + process.stderr).hexdigest()
             else:
                 version = f"version-probe-exit-{process.returncode}"
         except (OSError, subprocess.TimeoutExpired):
@@ -618,10 +613,7 @@ def _overlay(
             or not entry["reviewed_by"].strip()
             or not (
                 entry["reviewed_at"] is None
-                or (
-                    isinstance(entry["reviewed_at"], str)
-                    and bool(entry["reviewed_at"].strip())
-                )
+                or (isinstance(entry["reviewed_at"], str) and bool(entry["reviewed_at"].strip()))
             )
             or entry["review_status"] != "reviewed"
         ):
@@ -802,9 +794,7 @@ def image_reconciliation(book: BookText) -> dict[str, Any]:
     }
 
 
-def convert_research_observations(
-    book: BookText, payload: bytes
-) -> tuple[bytes, dict[str, Any]]:
+def convert_research_observations(book: BookText, payload: bytes) -> tuple[bytes, dict[str, Any]]:
     """Convert explicit private research observations; never synthesize missing review."""
     if len(payload) > 2_000_000:
         raise ExtractionError("private research observations exceed bounded import size")
@@ -845,8 +835,7 @@ def convert_research_observations(
             raise ExtractionError("private research asset hash is unknown or duplicated")
         observed_occurrences = entry["occurrences"]
         expected = [
-            {"anchor": x.anchor, "source_path": x.source_path}
-            for x in images[digest].occurrences
+            {"anchor": x.anchor, "source_path": x.source_path} for x in images[digest].occurrences
         ]
         if not isinstance(observed_occurrences, list) or observed_occurrences != expected:
             raise ExtractionError("private research occurrence path/order/hash mismatch")

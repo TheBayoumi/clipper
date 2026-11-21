@@ -156,8 +156,15 @@ def dispatch_books(args: argparse.Namespace) -> int:
         acquisition._private_write(
             report_path, (json.dumps(report, sort_keys=True, indent=2) + "\n").encode()
         )
-        print(json.dumps({"overlay_path": str(args.output), "report_path": str(report_path),
-                          "unreviewed_assets": report["unreviewed_assets"]}))
+        print(
+            json.dumps(
+                {
+                    "overlay_path": str(args.output),
+                    "report_path": str(report_path),
+                    "unreviewed_assets": report["unreviewed_assets"],
+                }
+            )
+        )
         return 2 if report["unreviewed_assets"] else 0
 
     if args.books_action in {"acquire", "ingest"}:

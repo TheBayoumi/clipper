@@ -36,7 +36,14 @@ schema-validated candidate registry. The owner-placed
 `books ingest --title ... --author ... --source /path/book.epub` legacy form
 is preserved and distinct from anonymous acquisition.
 
-An unchanged normal acquisition reuses the pinned, verified private cache without a network\nrequest. Use `--refresh` to explicitly revalidate the remote record and asset; a new\nimmutable refresh event is saved, while the first acquisition remains immutable.\nChanged metadata, restricted listings and changed pinned bytes fail closed with an\nimmutable incident; no automatic edition substitution takes place. `--refresh` and\n`--offline` cannot be combined.\n\nFor deterministic offline resume after a prior successful acquisition:
+An unchanged normal acquisition reuses the pinned, verified private cache without a network
+request. Use `--refresh` to explicitly revalidate the remote record and asset; a new
+immutable refresh event is saved, while the first acquisition remains immutable.
+Changed metadata, restricted listings and changed pinned bytes fail closed with an
+immutable incident; no automatic edition substitution takes place. `--refresh` and
+`--offline` cannot be combined.
+
+For deterministic offline resume after a prior successful acquisition:
 
 ```bash
 clipper books ingest --title "Atomic Habits" --offline \
@@ -51,7 +58,14 @@ read, executed, altered or reconstructed. Until those sidecars are available
 on the authorized execution machine, their actual image recovery coverage
 remains **unverified**.
 
-Any injected OCR producer now requires a deterministic `OCRIdentity` containing the\nadapter/version/settings; extraction cache keys bind to its fingerprint. The optional\nlocal Tesseract mode records its resolved executable, version-probe digest,\nexplicit English language and PSM 6. OCR outputs remain unreviewed, with a\nseparate output-evidence fingerprint in the private dossier. An unchanged identity\nreuses the extraction cache; changing it invalidates the extraction.\n\nThe `--ocr tesseract` option runs only an explicitly installed local CPU
+Any injected OCR producer now requires a deterministic `OCRIdentity` containing the
+adapter/version/settings; extraction cache keys bind to its fingerprint. The optional
+local Tesseract mode records its resolved executable, version-probe digest,
+explicit English language and PSM 6. OCR outputs remain unreviewed, with a
+separate output-evidence fingerprint in the private dossier. An unchanged identity
+reuses the extraction cache; changing it invalidates the extraction.
+
+The `--ocr tesseract` option runs only an explicitly installed local CPU
 Tesseract executable; the default is no OCR. Machine text stays separately
 labeled `machine_unreviewed` and never replaces source prose or reviewed
 overlay transcriptions. A missing/failed OCR path produces
