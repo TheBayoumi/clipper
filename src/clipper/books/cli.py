@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from . import scripting, selection
-from .orchestrator import BookOrchestrator
+from .orchestrator import BookOrchestrator, BookRunError
 
 DEFAULT_BOARD = Path("niches/atomic-habits-approved-storyboard.json")
 DEFAULT_CONFIG = Path("niches/book-lessons.yaml")
@@ -48,6 +48,11 @@ def configure_books_parser(subparsers: Any) -> None:
         "--script-brief",
         type=Path,
         help="recorded, validated script; avoids invoking the pinned Qwen provider",
+    )
+    run.add_argument(
+        "--narration-dir",
+        type=Path,
+        help="recorded scene-NN.wav files; no live Kokoro inference or model download",
     )
 
 
@@ -107,11 +112,17 @@ def dispatch_books(args: argparse.Namespace) -> int:
         return 0
 
     if args.books_action == "run":
+        if args.narration_dir is None:
+            raise BookRunError(
+                "books run requires --narration-dir for CPU-only recorded narration; "
+                "implicit live Kokoro synthesis is not authorized by this CLI"
+            )
         orchestrator.run(
             catalog,
             board,
             history,
             source=args.script_brief,
+            narration_dir=args.narration_dir,
             **kwargs,
         )
         raise AssertionError("book run unexpectedly completed unported stages")

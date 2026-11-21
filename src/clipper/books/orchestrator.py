@@ -12,12 +12,13 @@ from typing import Any, NoReturn, cast
 from clipper.dag import DagStore
 from clipper.stage_contracts import content_fingerprint, stage_identity
 
-from . import scripting, selection
+from . import narration, scripting, selection
 from .contracts import (
     BOOK_STAGE_CONTRACTS,
     BookRef,
     EpisodeScript,
     LessonSelection,
+    NarrationTrack,
     ScriptScene,
 )
 
@@ -85,6 +86,14 @@ def _script_cached(value: object) -> EpisodeScript:
         title=raw["title"],
         scenes=scenes,
     )
+
+
+def _narration_cached(value: object, count: int) -> tuple[NarrationTrack, ...]:
+    if not isinstance(value, list) or len(value) != count:
+        raise BookRunError("invalid cached book-narration stage output")
+    if any(not isinstance(item, dict) for item in value):
+        raise BookRunError("invalid cached book-narration stage output")
+    return tuple(NarrationTrack(**cast(dict[str, Any], item)) for item in value)
 
 
 def _niche_config(plan: BookPlan) -> scripting.NicheConfig:
@@ -215,10 +224,87 @@ class BookOrchestrator:
         stored, _reused = self.dag.execute(identity, compose)
         return _script_cached(stored)
 
+    def narrate(
+        self,
+        plan: BookPlan,
+        script: EpisodeScript,
+        *,
+        recorded_dir: Path | None = None,
+        producer: Callable[[str, str], bytes] | None = None,
+    ) -> tuple[NarrationTrack, ...]:
+        """Run the complete scene narration stage, or hash owner-recorded WAV fixtures."""
+        if script.episode_id != plan.selected.episode_id:
+            raise BookRunError("narration script episode does not match selection")
+        if script.selection_fingerprint != plan.selected.legacy_fingerprint:
+            raise BookRunError("narration script fingerprint does not match selection")
+        config = _niche_config(plan)
+        scenes = tuple(scripting.Scene(item.headline, item.narration) for item in script.scenes)
+        recordings: tuple[bytes, ...] | None = None
+        if recorded_dir is not None:
+            if not recorded_dir.is_dir():
+                raise BookRunError("recorded narration directory is missing")
+            expected = {f"scene-{index:02d}.wav" for index in range(len(scenes))}
+            found = {item.name for item in recorded_dir.glob("scene-*.wav")}
+            if found != expected:
+                raise BookRunError("recorded narration requires exactly one scene-NN.wav per scene")
+            recordings = tuple(
+                (recorded_dir / f"scene-{index:02d}.wav").read_bytes()
+                for index in range(len(scenes))
+            )
+        recorded_hashes = (
+            [hashlib.sha256(payload).hexdigest() for payload in recordings]
+            if recordings is not None
+            else None
+        )
+        identity = stage_identity(
+            BOOK_STAGE_CONTRACTS["narration"],
+            source_hash=content_fingerprint(
+                {
+                    "script": script.fingerprint,
+                    "requests": [narration.tts_request(scene, config) for scene in scenes],
+                    "recorded_sha256": recorded_hashes,
+                    "mode": "recorded_wav" if recordings is not None else "kokoro",
+                }
+            ),
+            dependency_output_hashes=(script.fingerprint,),
+            model_revision=narration.VOICE_REVISION,
+            decoding_parameters={
+                "model": narration.VOICE_MODEL,
+                "voice": config.voice,
+                "contract": narration.VOICE_CONTRACT,
+                "language": "en-us",
+                "sample_rate": 24000,
+                "speed": 1.0,
+            },
+        )
+
+        def synthesize() -> object:
+            tracks: list[dict[str, object]] = []
+            for index, scene in enumerate(scenes):
+                if recordings is not None:
+                    payload = recordings[index]
+                else:
+                    path = narration.synthesize_scene(
+                        scene, config, self.script_cache_root, producer=producer
+                    )
+                    payload = path.read_bytes()
+                _channels, rate, _frames = narration.validated_wav(payload)
+                track = NarrationTrack(
+                    episode_id=script.episode_id,
+                    voice_id=config.voice,
+                    audio_sha256=hashlib.sha256(payload).hexdigest(),
+                    sample_rate=rate,
+                )
+                tracks.append(asdict(track))
+            return tracks
+
+        stored, _reused = self.dag.execute(identity, synthesize)
+        return _narration_cached(stored, len(scenes))
+
     def require_unported(
         self, stage: str, *, source_hash: str, dependency_hashes: tuple[str, ...]
     ) -> NoReturn:
-        if stage not in BOOK_STAGE_CONTRACTS or stage in {"selection", "scripting"}:
+        if stage not in BOOK_STAGE_CONTRACTS or stage in {"selection", "scripting", "narration"}:
             raise BookRunError(f"unknown or implemented book stage: {stage}")
         identity = stage_identity(
             BOOK_STAGE_CONTRACTS[stage],
@@ -240,6 +326,8 @@ class BookOrchestrator:
         *,
         source: Path | None = None,
         completion: Callable[[dict[str, object]], str] | None = None,
+        narration_dir: Path | None = None,
+        narration_producer: Callable[[str, str], bytes] | None = None,
         book_id: str | None = None,
         lesson_id: str | None = None,
         angle_id: str | None = None,
@@ -255,8 +343,12 @@ class BookOrchestrator:
             pillar=pillar,
         )
         script = self.script(plan, source=source, completion=completion)
+        tracks = self.narrate(
+            plan, script, recorded_dir=narration_dir, producer=narration_producer
+        )
+        narrated_hash = content_fingerprint([asdict(track) for track in tracks])
         self.require_unported(
-            "narration",
-            source_hash=script.fingerprint,
-            dependency_hashes=(script.fingerprint,),
+            "direction",
+            source_hash=narrated_hash,
+            dependency_hashes=(narrated_hash,),
         )

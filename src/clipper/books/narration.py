@@ -60,6 +60,16 @@ def _kokoro_wav(narration: str, voice: str, *, pipeline: Callable[[], Any] | Non
     return buffer.getvalue()
 
 
+def validated_wav(payload: bytes, *, cached: bool = False) -> tuple[int, int, int]:
+    """Retain the legacy cached-versus-generated error messages exactly."""
+    nch, rate, frames = _wav_metadata(payload)
+    if nch != 1 or rate != 24000 or frames < 8000:
+        if cached:
+            raise NicheVideoError("Cached TTS WAV has invalid geometry or duration")
+        raise NicheVideoError("Kokoro WAV must be mono 24 kHz with audible duration")
+    return nch, rate, frames
+
+
 def tts_request(scene: Scene, config: NicheConfig) -> dict[str, object]:
     """Keep the exact original mapping and hash inputs for existing WAV caches."""
     return {
@@ -87,13 +97,9 @@ def synthesize_scene(
 ) -> Path:
     path = tts_cache_path(scene, config, cache_root)
     if path.is_file():
-        nch, rate, frames = _wav_metadata(path.read_bytes())
-        if nch == 1 and rate == 24000 and frames >= 8000:
-            return path
-        raise NicheVideoError("Cached TTS WAV has invalid geometry or duration")
+        validated_wav(path.read_bytes(), cached=True)
+        return path
     audio = (producer or _kokoro_wav)(scene.narration, config.voice)
-    nch, rate, frames = _wav_metadata(audio)
-    if nch != 1 or rate != 24000 or frames < 8000:
-        raise NicheVideoError("Kokoro WAV must be mono 24 kHz with audible duration")
+    validated_wav(audio)
     _write_atomic(path, audio)
     return path

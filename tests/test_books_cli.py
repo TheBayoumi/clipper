@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import wave
 from pathlib import Path
 
 import pytest
@@ -82,13 +83,21 @@ def test_books_validate_catalog_and_book_config(
     assert cli.main(["books", "validate", "--catalog", str(invalid), "--config", str(CONFIG)]) == 1
 
 
-def test_books_run_uses_recorded_script_and_fails_at_not_ported_narration(
+def test_books_run_uses_recorded_script_and_fails_at_not_ported_direction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     def forbidden(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("live model inference forbidden in test")
 
     monkeypatch.setattr(scripting, "generate_episode", forbidden)
+    recordings = tmp_path / "recorded"
+    recordings.mkdir()
+    for index in range(4):
+        with wave.open(str(recordings / f"scene-{index:02d}.wav"), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(24000)
+            output.writeframes(bytes((index, 0)) * 24000)
     code = cli.main(
         [
             "books",
@@ -99,6 +108,8 @@ def test_books_run_uses_recorded_script_and_fails_at_not_ported_narration(
             str(BOARD),
             "--script-brief",
             str(BRIEF),
+            "--narration-dir",
+            str(recordings),
             "--book-id",
             "atomic-habits",
             "--lesson-id",
@@ -108,9 +119,11 @@ def test_books_run_uses_recorded_script_and_fails_at_not_ported_narration(
         ]
     )
     assert code == 1
-    assert "NOT_PORTED: books.narration" in caplog.text
-    records = list((tmp_path / "book-dag/books-narration").glob("*/stage.json"))
-    assert len(records) == 1
+    assert "NOT_PORTED: books.direction" in caplog.text
+    passed = list((tmp_path / "book-dag/books-narration").glob("*/stage.json"))
+    records = list((tmp_path / "book-dag/books-direction").glob("*/stage.json"))
+    assert len(passed) == len(records) == 1
+    assert json.loads(passed[0].read_text())["status"] == "PASS"
     assert json.loads(records[0].read_text())["status"] == "FAILED"
 
 
@@ -146,3 +159,26 @@ def test_books_validate_requires_actual_book_lesson_config(
     )
     assert cli.main(["books", "validate", "--catalog", str(CATALOG), "--config", str(config)]) == 1
     assert "format: book_lesson" in caplog.text
+
+
+
+def test_books_run_requires_recorded_audio_before_any_inference(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    assert (
+        cli.main(
+            [
+                "books",
+                "run",
+                "--catalog",
+                str(CATALOG),
+                "--script-brief",
+                str(BRIEF),
+                "--artifact-root",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
+    assert "requires --narration-dir" in caplog.text
+    assert not (tmp_path / "book-dag").exists()
