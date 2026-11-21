@@ -307,9 +307,7 @@ def test_mining_refuses_unrecorded_response_and_bad_catalog_snapshot(tmp_path: P
 def test_mining_chunk_fingerprint_and_output_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    book = ingest.ingest_book(
-        TITLE, AUTHOR, ingest.GutenbergResolver(_transport(_complete_book()))
-    )
+    book = ingest.ingest_book(TITLE, AUTHOR, ingest.GutenbergResolver(_transport(_complete_book())))
     assert isinstance(book, BookText)
     chunk = mining.chunks_for(book)[0]
     assert len(chunk.fingerprint) == 64
