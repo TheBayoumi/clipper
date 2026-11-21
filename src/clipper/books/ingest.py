@@ -110,6 +110,7 @@ def _epub(raw: bytes) -> tuple[str, str, str | None, tuple[BookSection, ...]]:
                     ),
                     "",
                 )
+
             manifest = {
                 node.attrib["id"]: node.attrib["href"]
                 for node in package.iter()
