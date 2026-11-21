@@ -128,7 +128,8 @@ def test_invalid_stage_and_mismatched_recorded_episode_never_start_model(
     runner = BookOrchestrator(tmp_path)
     with pytest.raises(BookRunError, match="unknown or implemented"):
         runner.require_unported("selection", source_hash="a", dependency_hashes=())
-    plan = runner.plan(catalog, board, book_id="deep-work")
+    deep_board = json.loads((ROOT / "niches/deep-work-approved-storyboard.json").read_text())
+    plan = runner.plan(catalog, deep_board, book_id="deep-work")
     with pytest.raises(BookRunError, match="does not match selection"):
         runner.script(plan, source=ROOT / "niches/atomic-habits-episode-02.json")
 

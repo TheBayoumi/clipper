@@ -12,7 +12,7 @@ from typing import Any, NoReturn, cast
 from clipper.dag import DagStore
 from clipper.stage_contracts import content_fingerprint, stage_identity
 
-from . import narration, scripting, selection
+from . import narration, scripting, selection, storyboards
 from .contracts import (
     BOOK_STAGE_CONTRACTS,
     BookRef,
@@ -21,6 +21,7 @@ from .contracts import (
     NarrationTrack,
     ScriptScene,
 )
+from .storyboards import StoryboardProvenance
 
 
 class BookRunError(ValueError):
@@ -39,6 +40,7 @@ class BookPlan:
     selection_json: str
     niche_config_json: str
     outline_json: str
+    storyboard_provenance: StoryboardProvenance
 
 
 def _selected_payload(raw: dict[str, Any]) -> LessonSelection:
@@ -131,9 +133,11 @@ class BookOrchestrator:
     def plan(
         self,
         catalog: dict[str, Any],
-        storyboard: dict[str, Any],
+        storyboard: dict[str, Any] | None = None,
         history: list[dict[str, str]] | None = None,
         *,
+        catalog_dir: Path = selection.CATALOG_PATH.parent,
+        storyboard_path: Path | None = None,
         book_id: str | None = None,
         lesson_id: str | None = None,
         angle_id: str | None = None,
@@ -146,29 +150,62 @@ class BookOrchestrator:
             "angle_id": angle_id,
             "pillar": pillar,
         }
+        original = selection.choose_lesson(catalog, history, **options)
+        if storyboard is None:
+            board, provenance = storyboards.resolve_template(
+                catalog,
+                original,
+                catalog_dir=catalog_dir,
+                override=storyboard_path,
+            )
+        else:
+            storyboards.declared_filename(catalog, original["book_id"])
+            storyboards.validate_template(storyboard, original)
+            board = storyboard
+            provenance = StoryboardProvenance(
+                book_id=original["book_id"],
+                template_path=str(storyboard_path) if storyboard_path else "<in-memory>",
+                template_sha256=content_fingerprint(storyboard),
+                schema=storyboards.SCHEMA,
+            )
+        evidence = asdict(provenance)
         identity = stage_identity(
             BOOK_STAGE_CONTRACTS["selection"],
             source_hash=content_fingerprint(
-                {"catalog": catalog, "history": history, "options": options}
+                {
+                    "catalog": catalog,
+                    "history": history,
+                    "options": options,
+                    "storyboard": evidence,
+                }
             ),
         )
 
         def select() -> object:
-            original = selection.choose_lesson(catalog, history, **options)
-            return asdict(_selected_payload(original))
+            return {
+                "selection": asdict(_selected_payload(original)),
+                "storyboard": evidence,
+            }
 
         stored, _reused = self.dag.execute(identity, select)
-        selected = _selected_cached(stored)
-        original = selection.choose_lesson(catalog, history, **options)
+        if not isinstance(stored, dict) or stored.get("storyboard") != evidence:
+            raise BookRunError("cached storyboard provenance differs from verified template")
+        selected = _selected_cached(stored.get("selection"))
         if original["fingerprint"] != selected.legacy_fingerprint:
             raise BookRunError("cached selection disagrees with current verified catalog")
         niche = selection.to_niche_config(original)
-        outline = selection.to_storyboard_outline(original, storyboard)
+        outline = selection.to_storyboard_outline(original, board)
 
         def encode(value: object) -> str:
             return json.dumps(value, indent=2, ensure_ascii=False) + "\n"
 
-        return BookPlan(selected, encode(original), encode(niche), encode(outline))
+        return BookPlan(
+            selected,
+            encode(original),
+            encode(niche),
+            encode(outline),
+            provenance,
+        )
 
     def script(
         self,
@@ -331,9 +368,11 @@ class BookOrchestrator:
     def run(
         self,
         catalog: dict[str, Any],
-        storyboard: dict[str, Any],
+        storyboard: dict[str, Any] | None = None,
         history: list[dict[str, str]] | None = None,
         *,
+        catalog_dir: Path = selection.CATALOG_PATH.parent,
+        storyboard_path: Path | None = None,
         source: Path | None = None,
         completion: Callable[[dict[str, object]], str] | None = None,
         narration_dir: Path | None = None,
@@ -347,6 +386,8 @@ class BookOrchestrator:
             catalog,
             storyboard,
             history,
+            catalog_dir=catalog_dir,
+            storyboard_path=storyboard_path,
             book_id=book_id,
             lesson_id=lesson_id,
             angle_id=angle_id,

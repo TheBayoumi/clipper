@@ -7,10 +7,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from . import scripting, selection
+from . import scripting, selection, storyboards
 from .orchestrator import BookOrchestrator, BookRunError
 
-DEFAULT_BOARD = Path("niches/atomic-habits-approved-storyboard.json")
 DEFAULT_CONFIG = Path("niches/book-lessons.yaml")
 
 
@@ -29,7 +28,7 @@ def configure_books_parser(subparsers: Any) -> None:
     plan.add_argument("--lesson-id")
     plan.add_argument("--angle-id")
     plan.add_argument("--pillar")
-    plan.add_argument("--storyboard-template", type=Path, default=DEFAULT_BOARD)
+    plan.add_argument("--storyboard-template", type=Path)
     plan.add_argument("--artifact-root", type=Path, default=Path("artifacts/books"))
     plan.add_argument("--output", type=Path, required=True)
     plan.add_argument("--niche-config-output", type=Path)
@@ -42,7 +41,7 @@ def configure_books_parser(subparsers: Any) -> None:
     run.add_argument("--lesson-id")
     run.add_argument("--angle-id")
     run.add_argument("--pillar")
-    run.add_argument("--storyboard-template", type=Path, default=DEFAULT_BOARD)
+    run.add_argument("--storyboard-template", type=Path)
     run.add_argument("--artifact-root", type=Path, default=Path("artifacts/books"))
     run.add_argument(
         "--script-brief",
@@ -75,15 +74,15 @@ def dispatch_books(args: argparse.Namespace) -> int:
         config = scripting.NicheConfig.load(args.config)
         if config.format != "book_lesson":
             raise scripting.NicheVideoError("book pipeline requires format: book_lesson")
+        for book in catalog["books"]:
+            selected = selection.choose_lesson(catalog, book_id=book["id"])
+            storyboards.resolve_template(catalog, selected, catalog_dir=args.catalog.parent)
         print(json.dumps({"valid": True, "catalog": str(args.catalog), "config": str(args.config)}))
         return 0
 
     history = _json(args.history) if args.history else []
     if not isinstance(history, list):
         raise selection.BookSelectionError("history requires a list of selection entries")
-    board = _json(args.storyboard_template)
-    if not isinstance(board, dict):
-        raise selection.BookSelectionError("unsupported 30-60 second production storyboard")
     orchestrator = BookOrchestrator(args.artifact_root)
     kwargs = {
         "book_id": args.book_id,
@@ -92,7 +91,13 @@ def dispatch_books(args: argparse.Namespace) -> int:
         "pillar": args.pillar,
     }
     if args.books_action == "plan":
-        planned = orchestrator.plan(catalog, board, history, **kwargs)
+        planned = orchestrator.plan(
+            catalog,
+            history=history,
+            catalog_dir=args.catalog.parent,
+            storyboard_path=args.storyboard_template,
+            **kwargs,
+        )
         _write(args.output, planned.selection_json)
         if args.niche_config_output:
             _write(args.niche_config_output, planned.niche_config_json)
@@ -119,8 +124,9 @@ def dispatch_books(args: argparse.Namespace) -> int:
             )
         orchestrator.run(
             catalog,
-            board,
-            history,
+            history=history,
+            catalog_dir=args.catalog.parent,
+            storyboard_path=args.storyboard_template,
             source=args.script_brief,
             narration_dir=args.narration_dir,
             **kwargs,
