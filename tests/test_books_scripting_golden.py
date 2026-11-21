@@ -54,9 +54,7 @@ def test_committed_atomic_habits_produces_identical_script_cache_and_audit(
         separators=(",", ":"),
     )
     assert canonical_key == hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()
-    expected_bytes = json.dumps(
-        expected.to_dict(), ensure_ascii=False, indent=2
-    ).encode("utf-8")
+    expected_bytes = json.dumps(expected.to_dict(), ensure_ascii=False, indent=2).encode("utf-8")
     for relative in (
         Path("scripts") / f"{canonical_key}.json",
         Path("script_diagnostics") / f"{canonical_key}.json",
