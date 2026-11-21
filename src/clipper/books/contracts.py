@@ -11,7 +11,7 @@ from clipper.stage_contracts import (
     structural_contract_fingerprint,
 )
 
-SourceKind = Literal["owner_file", "public_domain", "unresolved"]
+SourceKind = Literal["owner_file", "public_domain", "archive_candidate", "unresolved"]
 
 
 @dataclass(frozen=True, slots=True)

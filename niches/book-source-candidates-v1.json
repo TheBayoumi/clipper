@@ -1,0 +1,63 @@
+{
+  "schema": "clipper-reviewed-book-candidates-v1",
+  "status": "reviewed_candidates_not_authenticated_editions",
+  "books": [
+    {
+      "book_id": "atomic-habits",
+      "title": "Atomic Habits",
+      "author": "James Clear",
+      "record_url": "https://archive.org/metadata/atomic-habits-by-james-clear_202601",
+      "filename": "Atomic Habits by James Clear.epub",
+      "format": "epub",
+      "expected_bytes": 4753022,
+      "expected_sha256": "4f7249b4cecfcf400d36b461e8a49632b041b139a7ce560b40dede43018afdd3",
+      "isbn": "9780735211308",
+      "edition_identity": "ebook-isbn-9780735211308",
+      "title_aliases": [
+        "Atomic Habits: An Easy & Proven Way to Build Good Habits & Break Bad Ones"
+      ],
+      "exclusions": []
+    },
+    {
+      "book_id": "psychology-of-money",
+      "title": "The Psychology of Money",
+      "author": "Morgan Housel",
+      "record_url": "https://archive.org/metadata/the-psychology-of-money_202512",
+      "filename": "The psychology of Money.epub",
+      "format": "epub",
+      "expected_bytes": 1912971,
+      "expected_sha256": "13f8143a3f9a75a0beceba653dac9da21ec91eab5bd41384bc3171990e962c0f",
+      "isbn": "9780857197696",
+      "edition_identity": "ebook-isbn-9780857197696",
+      "title_aliases": [
+        "The Psychology of Money: Timeless Lessons on Wealth, Greed, and Happiness",
+        "The Psychology of Money: Timeless Lessons on Wealth, Greed and Happiness"
+      ],
+      "exclusions": []
+    },
+    {
+      "book_id": "deep-work",
+      "title": "Deep Work",
+      "author": "Cal Newport",
+      "record_url": "https://archive.org/metadata/deep-work-rules-for-focused-success-in-a-distracted-world_202608",
+      "filename": "Deep Work - Rules for Focused Success in a Distracted World.pdf",
+      "format": "pdf",
+      "expected_bytes": 1498415,
+      "expected_sha256": "1df665c62d154777a4db06c3600a568930d7fc79157dcf44a63f9836342fef4b",
+      "isbn": "9780349411910",
+      "edition_identity": "UK-Piatkus-ISBN-9780349411910",
+      "title_aliases": [
+        "Deep Work: Rules for Focused Success in a Distracted World"
+      ],
+      "expected_pages": 230,
+      "exclusions": [
+        {
+          "page": 230,
+          "reason": "Appended third-party distribution page; reviewed as outside authored UK Piatkus book",
+          "evidence": "Owner-reviewed page-count and appended distribution-page observation",
+          "keep_frontmatter_notes_index": true
+        }
+      ]
+    }
+  ]
+}
