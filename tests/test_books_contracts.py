@@ -9,6 +9,10 @@ import pytest
 from clipper.books.contracts import (
     BOOK_STAGE_CONTRACTS,
     BookRef,
+    BookSection,
+    BookSource,
+    BookText,
+    SourceUnresolved,
     EpisodeDraft,
     EpisodeScript,
     LessonSelection,
@@ -68,6 +72,8 @@ def test_book_contracts_are_immutable_and_hash_their_serialized_content() -> Non
 
 def test_every_book_stage_is_registered_with_versioned_identity() -> None:
     assert tuple(BOOK_STAGE_CONTRACTS) == (
+        "ingest",
+        "mining",
         "selection",
         "scripting",
         "narration",
@@ -81,3 +87,18 @@ def test_every_book_stage_is_registered_with_versioned_identity() -> None:
         assert identity.stage_name == f"books.{key}"
         assert len(identity.cache_key) == 64
         assert contract.contract_hash == BOOK_STAGE_CONTRACTS[key].contract_hash
+
+
+def test_book_ingest_contracts_are_immutable_and_unverified() -> None:
+    source = BookSource(
+        "A Book", "A Writer", None, "file:///owner/book.txt", "owner_file",
+        "owner", "", "a" * 64, "txt",
+    )
+    assert source.authorization_status == "unverified"
+    section = BookSection("chapter-01", "Beginning", ("One first paragraph.",))
+    text = BookText(source, None, (section,), 3, source.content_sha256, source.fingerprint)
+    assert text.fingerprint == content_fingerprint(asdict(text))
+    unresolved = SourceUnresolved("A Book", "A Writer", "supply source file", "none supplied")
+    assert unresolved.required_owner_decision == "supply source file"
+    with pytest.raises(FrozenInstanceError):
+        source.title = "changed"  # type: ignore[misc]

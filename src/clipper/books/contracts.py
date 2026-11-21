@@ -3,12 +3,64 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from typing import Literal
 
 from clipper.stage_contracts import (
     StageContract,
     content_fingerprint,
     structural_contract_fingerprint,
 )
+
+
+SourceKind = Literal["owner_file", "public_domain", "unresolved"]
+
+
+@dataclass(frozen=True, slots=True)
+class BookSource:
+    title: str
+    author: str
+    edition_identity: str | None
+    source_uri: str
+    source_kind: SourceKind
+    declared_by: str
+    declared_at: str
+    content_sha256: str
+    format: str
+    authorization_status: str = "unverified"
+    authorization_basis: str | None = None
+
+    @property
+    def fingerprint(self) -> str:
+        return content_fingerprint(asdict(self))
+
+
+@dataclass(frozen=True, slots=True)
+class BookSection:
+    chapter_id: str
+    heading: str
+    paragraphs: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BookText:
+    source: BookSource
+    edition_identity: str | None
+    sections: tuple[BookSection, ...]
+    total_word_count: int
+    content_sha256: str
+    source_fingerprint: str
+
+    @property
+    def fingerprint(self) -> str:
+        return content_fingerprint(asdict(self))
+
+
+@dataclass(frozen=True, slots=True)
+class SourceUnresolved:
+    title: str
+    author: str
+    required_owner_decision: str
+    reason: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +172,15 @@ class ReviewDossier:
 
 
 BOOK_STAGE_CONTRACTS: dict[str, StageContract] = {
+    "ingest": StageContract(
+        "books.ingest",
+        {"structure": structural_contract_fingerprint("books.ingest", BookSource, BookSection, BookText)},
+    ),
+    "mining": StageContract(
+        "books.mining",
+        {"schema": "clipper-book-editorial-catalog-v1",
+         "structure": structural_contract_fingerprint("books.mining", BookText)},
+    ),
     "selection": StageContract(
         "books.selection",
         {
