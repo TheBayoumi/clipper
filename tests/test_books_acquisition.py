@@ -233,3 +233,39 @@ def test_redirect_hosts_and_private_dns_are_rejected(monkeypatch: pytest.MonkeyP
     )
     with pytest.raises(AcquisitionError, match="unsafe/private address"):
         _check_public_dns("archive.org")
+
+
+def test_real_transport_adapter_only_uses_mocked_opener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise transport and redirect policies without a socket or live HTTP."""
+
+    class FakeReply:
+        status = 200
+
+        def __enter__(self) -> FakeReply:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return "https://ia801234.us.archive.org/download/test"
+
+        headers = {"Content-Type": "application/epub+zip", "Content-Length": "5"}
+
+        def read(self, count: int) -> bytes:
+            return b"PK\x03\x04X"[:count]
+
+    class FakeOpener:
+        def open(self, request: object, *, timeout: int) -> FakeReply:
+            assert getattr(request, "full_url") == "https://archive.org/download/test"
+            assert timeout == 20
+            return FakeReply()
+
+    monkeypatch.setattr("clipper.books.acquisition._check_public_dns", lambda _host: None)
+    monkeypatch.setattr("urllib.request.build_opener", lambda *_handlers: FakeOpener())
+    result = ArchiveHTTPTransport().get("https://archive.org/download/test", limit=16)
+    assert result.status == 200
+    assert result.body == b"PK\x03\x04X"
+    assert result.final_url.startswith("https://ia801234.us.archive.org/")
