@@ -16,7 +16,6 @@ from clipper.books.ingest import (
     BookIngestError,
     GutenbergResolver,
     LocalFileResolver,
-    _https_get,
     ingest_book,
     parse_book,
 )
@@ -34,7 +33,8 @@ def make_txt(
     gutenberg: bool = False,
     rights: bool = False,
 ) -> bytes:
-    header = f"Title: {title}\nAuthor: {author}\nEdition: test-edition\n"
+    edition = "gutenberg-1342" if gutenberg else "test-edition"
+    header = f"Title: {title}\nAuthor: {author}\nEdition: {edition}\n"
     if gutenberg:
         header += "EBook #1342\n"
         if rights:
@@ -121,7 +121,6 @@ def test_unresolved_missing_and_unsupported_local_book(tmp_path: Path) -> None:
         (make_txt(author="Another Author"), "author mismatch"),
         (make_txt(chapters=1), "section completeness"),
         (make_txt(words=10), "word-count completeness"),
-        (make_txt(words=90), "chapter completeness"),
         (b"\xff", "UTF-8"),
     ],
 )
@@ -155,10 +154,10 @@ def test_gutenberg_fixture_transport_e2e_authorization_metadata_is_not_approval(
     monkeypatch.setattr("urllib.request.urlopen", forbidden)
     monkeypatch.setattr("clipper.books.ingest._https_get", forbidden)
     html = (
-        '<li class="booklink"><a href="/ebooks/1342">'
-        '<span class="title">Synthetic Complete Book</span>'
-        '<span class="subtitle">by Fixture Author</span></a></li>'
-    ).encode()
+        b'<li class="booklink"><a href="/ebooks/1342">'
+        b'<span class="title">Synthetic Complete Book</span>'
+        b'<span class="subtitle">by Fixture Author</span></a></li>'
+    )
     full_book = make_txt(gutenberg=True, rights=True)
     transport = Mock(side_effect=[html, full_book])
     book = ingest_book(
@@ -198,7 +197,7 @@ def test_gutenberg_missing_and_ambiguous_matches_no_fetch() -> None:
     )
     assert isinstance(resolved, SourceUnresolved)
     assert missing.call_count == 1
-    multiple = Mock(return_value=(item + item).encode())
+    multiple = Mock(return_value=(item + item).encode("utf-8"))
     with pytest.raises(BookIngestError, match="ambiguous Gutenberg edition"):
         ingest_book("Synthetic Complete Book", "Fixture Author", GutenbergResolver(multiple))
     assert multiple.call_count == 1
@@ -227,3 +226,21 @@ def test_recorded_public_domain_excerpt_is_incomplete_by_full_book_rules() -> No
     )
     with pytest.raises(BookIngestError, match="completeness"):
         parse_book(source, excerpt)
+
+
+def test_chapter_completeness_after_global_word_count_passes() -> None:
+    raw = make_txt()
+    prefix, later = raw.split(b"CHAPTER 2", 1)
+    header = prefix.split(b"CHAPTER 1", 1)[0]
+    damaged = header + b"CHAPTER 1\nshort\nCHAPTER 2" + later
+    with pytest.raises(BookIngestError, match="chapter completeness"):
+        parse_book(source_for(damaged), damaged)
+
+
+def test_https_transport_denies_nonofficial_host_without_network() -> None:
+    from clipper.books.ingest import _https_get
+
+    with pytest.raises(BookIngestError, match="official HTTPS"):
+        _https_get("file:///etc/passwd")
+    with pytest.raises(BookIngestError, match="official HTTPS"):
+        _https_get("https://other.example/ebooks/1")
