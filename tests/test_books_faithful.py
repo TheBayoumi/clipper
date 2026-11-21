@@ -21,6 +21,8 @@ from clipper.books.faithful import (
     _xml,
     convert_research_observations,
     cpu_tesseract,
+    ocr_contract,
+    tesseract_identity,
     extract_candidate,
     image_reconciliation,
     reading_blocks,
@@ -301,7 +303,10 @@ def test_pdf_raster_image_and_sparse_text_require_review() -> None:
     assert "sparse or raster" in " ".join(original.warnings)
     assert original.recovery_status == "incomplete_recovery"
     ocr = Mock(return_value="source-visible label")
-    recovered = extract_candidate(_source(raw, selected), raw, selected, ocr=ocr)
+    recovered = extract_candidate(
+        _source(raw, selected), raw, selected,
+        ocr=ocr, ocr_identity=OCRIdentity("fixture-pdf-ocr", "v1"),
+    )
     assert recovered.images[0].review_status == "machine_unreviewed"
     assert ocr.call_count >= 1
 
@@ -770,3 +775,51 @@ def test_research_import_preserves_unmatched_image_uncertainty() -> None:
         x.origin == "unrecovered_image" or x.origin == "source"
         for x in reading_blocks(still_incomplete)
     )
+
+
+def test_local_ocr_contract_includes_version_and_cpu_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("shutil.which", lambda _command: "/installed/tesseract")
+    recorded = Mock()
+    recorded.returncode = 0
+    recorded.stdout = b"synthetic-tesseract-v1"
+    recorded.stderr = b"synthetic-dependencies"
+    run = Mock(return_value=recorded)
+    monkeypatch.setattr("subprocess.run", run)
+    identity = tesseract_identity()
+    assert identity.adapter == "local-tesseract"
+    assert identity.version == hashlib.sha256(
+        recorded.stdout + b"\\n" + recorded.stderr
+    ).hexdigest()
+    assert identity.settings == (
+        ("executable", "/installed/tesseract"),
+        ("language", "eng"),
+        ("psm", "6"),
+    )
+    run.assert_called_once_with(
+        ["/installed/tesseract", "--version"],
+        capture_output=True,
+        timeout=5,
+        check=False,
+    )
+    assert ocr_contract(lambda _p, _m: "source-image-words", identity) is not None
+    changed = replace(identity, settings=(("language", "deu"),))
+    assert ocr_contract(lambda _p, _m: "changed", changed) != ocr_contract(
+        lambda _p, _m: "source-image-words", identity
+    )
+    monkeypatch.setattr("shutil.which", lambda _command: None)
+    unavailable = tesseract_identity()
+    assert unavailable.version == "not-installed"
+    assert unavailable.settings[0] == ("executable", "missing")
+
+
+def test_invalid_ocr_identity_rejected_before_processing() -> None:
+    for identity in (
+        OCRIdentity("", "1"),
+        OCRIdentity("producer", ""),
+        OCRIdentity("producer", "1", (("", "value"),)),
+        OCRIdentity("producer", "1", (("lang", "eng"), ("lang", "deu"))),
+    ):
+        with pytest.raises(ExtractionError, match="requires deterministic identity"):
+            ocr_contract(lambda _p, _m: "source words", identity)
