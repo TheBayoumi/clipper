@@ -39,9 +39,7 @@ def _wav_metadata(payload: bytes) -> tuple[int, int, int]:
         raise NicheVideoError("Kokoro produced invalid WAV audio") from exc
 
 
-def _kokoro_wav(
-    narration: str, voice: str, *, pipeline: Callable[[], Any] | None = None
-) -> bytes:
+def _kokoro_wav(narration: str, voice: str, *, pipeline: Callable[[], Any] | None = None) -> bytes:
     try:
         np = importlib.import_module("numpy")
         sf = importlib.import_module("soundfile")

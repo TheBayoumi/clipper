@@ -68,7 +68,10 @@ def test_kokoro_golden_request_fingerprint_and_legacy_cache_bytes(tmp_path: Path
     assert canonical_path.name == legacy_path.name == f"{digest}.wav"
     assert canonical_path.read_bytes() == legacy_path.read_bytes() == audio
     assert narration._wav_metadata(audio) == (1, 24000, 24000)
-    assert narration.synthesize_scene(scene, config, package_root, producer=canonical) == canonical_path
+    assert (
+        narration.synthesize_scene(scene, config, package_root, producer=canonical)
+        == canonical_path
+    )
     assert original.synthesize_scene(scene, config, legacy_root) == legacy_path
     canonical.assert_called_once_with(scene.narration, config.voice)
     legacy_producer.assert_called_once_with(scene.narration, config.voice)
@@ -114,7 +117,9 @@ def test_corrupt_existing_cache_never_regenerated(tmp_path: Path) -> None:
     producer.assert_not_called()
 
 
-def test_optional_kokoro_import_missing_raises_legacy_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_optional_kokoro_import_missing_raises_legacy_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def missing(_name: str) -> object:
         raise ImportError("synthetic optional dependency")
 
