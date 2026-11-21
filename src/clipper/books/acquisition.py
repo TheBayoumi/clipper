@@ -119,6 +119,11 @@ def load_registry(path: Path = REGISTRY) -> tuple[ReviewedCandidate, ...]:
     for row in books:
         if not isinstance(row, dict):
             raise AcquisitionError("invalid reviewed candidate record")
+        if (
+            not isinstance(row.get("title_aliases"), list)
+            or not isinstance(row.get("exclusions"), list)
+        ):
+            raise AcquisitionError("reviewed candidate aliases/exclusions must be arrays")
         try:
             candidate = ReviewedCandidate(
                 **{
@@ -312,6 +317,8 @@ class ArchiveAcquirer:
             if not manifest_path.is_file() or not raw_path.is_file():
                 raise AcquisitionError("offline candidate cache is absent; no network allowed")
             saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(saved, dict) or saved.get("schema") != "clipper-book-acquisition-v1":
+                raise AcquisitionError("offline acquisition manifest schema mismatch")
             data = raw_path.read_bytes()
             if len(data) != candidate.expected_bytes or (
                 hashlib.sha256(data).hexdigest() != candidate.expected_sha256
@@ -344,10 +351,13 @@ class ArchiveAcquirer:
                 raise AcquisitionError("Archive metadata object malformed")
             if record.get("is_dark") or record.get("is_restricted"):
                 raise AcquisitionError("Archive item is restricted or unavailable")
+            details = record.get("metadata")
+            if not isinstance(details, dict):
+                raise AcquisitionError("Archive metadata edition record is malformed")
             identifier = candidate.record_url.rsplit("/", 1)[-1]
-            if record.get("is_dark") or record.get("metadata", {}).get("is_restricted"):
+            if details.get("is_restricted"):
                 raise AcquisitionError("Archive record is restricted")
-            if record.get("metadata", {}).get("identifier") not in (None, identifier):
+            if details.get("identifier") not in (None, identifier):
                 raise AcquisitionError("Archive record identifier mismatch")
             files = record.get("files")
             if not isinstance(files, list):
@@ -439,22 +449,20 @@ class ArchiveAcquirer:
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-            error_path = self.root / "errors" / f"{key}.json"
-            _private_write(
-                error_path,
-                (
-                    json.dumps(
-                        {
-                            "candidate": candidate.book_id,
-                            "expected_sha256": candidate.expected_sha256,
-                            "error_type": type(exc).__name__,
-                            "reason": str(exc),
-                        },
-                        sort_keys=True,
-                    )
-                    + "\n"
-                ).encode(),
-            )
+            report = (
+                json.dumps(
+                    {
+                        "candidate": candidate.book_id,
+                        "expected_sha256": candidate.expected_sha256,
+                        "error_type": type(exc).__name__,
+                        "reason": str(exc),
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode()
+            incident = hashlib.sha256(report).hexdigest()
+            _private_write(self.root / "errors" / f"{key}-{incident}.json", report)
             if isinstance(exc, AcquisitionError):
                 raise
             raise AcquisitionError(f"Archive candidate metadata/acquisition failed: {exc}") from exc
