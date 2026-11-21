@@ -19,7 +19,7 @@ import zipfile
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, replace
 from io import BytesIO
-from typing import Any
+from typing import Any, Literal
 
 from clipper.stage_contracts import content_fingerprint
 
@@ -746,6 +746,7 @@ def reading_blocks(book: BookText) -> Iterator[ReadingBlock]:
         if digest is None or digest not in images or (digest, block.anchor) not in occurrences:
             raise ExtractionError("ordered image block is missing source occurrence evidence")
         evidence = images[digest]
+        origin: Literal["reviewed_image", "machine_ocr", "unrecovered_image"]
         if evidence.review_status == "reviewed":
             origin = "reviewed_image"
         elif evidence.review_status == "machine_unreviewed":
