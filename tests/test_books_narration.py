@@ -9,6 +9,7 @@ import json
 import sys
 import wave
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -130,5 +131,74 @@ def test_optional_kokoro_import_missing_raises_legacy_error(
             narration._kokoro_pipeline()
         with pytest.raises(scripting.NicheVideoError, match="soundfile and numpy"):
             narration._kokoro_wav("Test", "af_heart")
+    finally:
+        narration._kokoro_pipeline.cache_clear()
+
+
+def test_synthetic_kokoro_pipeline_and_wave_conversion_without_model_weights(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise optional module boundaries with synthetic arrays and PCM writing."""
+    class FakeArray(list[float]):
+        def reshape(self, _length: int) -> FakeArray:
+            return self
+
+    voice_pipeline = Mock(return_value=[(None, None, [0.25] * 9000)])
+    loader = Mock(return_value=voice_pipeline)
+
+    def write_pcm(
+        target: io.BytesIO,
+        audio: FakeArray,
+        rate: int,
+        *,
+        format: str,
+        subtype: str,
+    ) -> None:
+        assert (rate, format, subtype) == (24000, "WAV", "PCM_16")
+        with wave.open(target, "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(rate)
+            output.writeframes(b"\\x01\\x00" * len(audio))
+
+    numpy = SimpleNamespace(
+        float32=object(),
+        asarray=lambda audio, dtype: FakeArray(audio),
+        concatenate=lambda arrays: FakeArray(value for array in arrays for value in array),
+        isfinite=lambda _array: SimpleNamespace(all=lambda: True),
+        clip=lambda array, _minimum, _maximum: array,
+    )
+    modules = {
+        "kokoro": SimpleNamespace(KPipeline=loader),
+        "numpy": numpy,
+        "soundfile": SimpleNamespace(write=write_pcm),
+    }
+    imported: list[str] = []
+
+    def fake_import(name: str) -> object:
+        imported.append(name)
+        return modules[name]
+
+    monkeypatch.setattr(narration.importlib, "import_module", fake_import)
+    narration._kokoro_pipeline.cache_clear()
+    try:
+        wav = narration._kokoro_wav("Original narration", "af_heart")
+        assert narration._wav_metadata(wav) == (1, 24000, 9000)
+        loader.assert_called_once_with(lang_code="a", repo_id=narration.VOICE_MODEL)
+        voice_pipeline.assert_called_once_with("Original narration", voice="af_heart", speed=1.0)
+        narration._kokoro_wav("Another narration", "af_heart")
+        loader.assert_called_once()
+        assert imported.count("kokoro") == 1
+
+        with pytest.raises(scripting.NicheVideoError, match="no audio segments"):
+            narration._kokoro_wav(
+                "Empty", "af_heart", pipeline=lambda: lambda *_args, **_kwargs: []
+            )
+        with pytest.raises(scripting.NicheVideoError, match="empty or non-finite audio"):
+            narration._kokoro_wav(
+                "Short",
+                "af_heart",
+                pipeline=lambda: lambda *_args, **_kwargs: [(None, None, [0.2] * 30)],
+            )
     finally:
         narration._kokoro_pipeline.cache_clear()
