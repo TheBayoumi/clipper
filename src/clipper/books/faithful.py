@@ -8,17 +8,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import posixpath
 import re
 import subprocess
+import urllib.parse
 import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import Callable
-from dataclasses import asdict, replace
+from dataclasses import replace
 from io import BytesIO
-from pathlib import Path
-from typing import Any
 
 from clipper.stage_contracts import content_fingerprint
 
@@ -74,7 +72,9 @@ def _relative(base: str, path: str) -> str:
         or "?" in path
     ):
         raise ExtractionError("unsafe EPUB external or absolute asset reference")
-    normalized = posixpath.normpath(posixpath.join(posixpath.dirname(base), path))
+    normalized = posixpath.normpath(
+        posixpath.join(posixpath.dirname(base), urllib.parse.unquote(path))
+    )
     if normalized in {".", ".."} or normalized.startswith("../"):
         raise ExtractionError("EPUB archive path traversal blocked")
     return normalized
@@ -93,7 +93,7 @@ def _zip(raw: bytes) -> zipfile.ZipFile:
                 not path
                 or path.startswith(("/", "\\"))
                 or "\\" in path
-                or posixpath.normpath(path) != path
+                or posixpath.normpath(path.rstrip("/")) != path.rstrip("/")
                 or path.startswith("../")
                 or (info.external_attr >> 16) & 0o170000 == 0o120000
             ):
@@ -145,8 +145,16 @@ def _verify_epub_metadata(
     ]
     allowed = {_equal(candidate.title), *(_equal(x) for x in candidate.title_aliases)}
     if not titles or not any(_equal(x) in allowed for x in titles):
-        raise ExtractionError(f"EPUB title mismatch: expected {candidate.title!r}, found {titles!r}")
-    if any(_equal(x) not in allowed for x in titles):
+        raise ExtractionError(
+            f"EPUB title mismatch: expected {candidate.title!r}, found {titles!r}"
+        )
+    if any(
+        _equal(x) not in allowed
+        and not any(
+            len(_equal(x)) >= 10 and _equal(x) in name for name in allowed
+        )
+        for x in titles
+    ):
         raise ExtractionError(f"ambiguous EPUB title/edition metadata: {titles!r}")
     if not authors or _equal(candidate.author) not in {_equal(x) for x in authors}:
         raise ExtractionError(
@@ -178,8 +186,10 @@ def _asset_evidence(
     anchor: str,
     alt: str,
     current: dict[str, ImageEvidence],
+    payloads: dict[str, bytes],
 ) -> str:
     digest = hashlib.sha256(data).hexdigest()
+    payloads[digest] = data
     occurrence = ImageOccurrence(anchor, path, alt)
     old = current.get(digest)
     if old is None:
@@ -189,15 +199,108 @@ def _asset_evidence(
     return digest
 
 
+class _SpineWalker:
+    """Walk a single spine item without duplicate nested text or late-bound closures."""
+
+    def __init__(
+        self,
+        archive: zipfile.ZipFile,
+        chapter_path: str,
+        section_id: str,
+        ref: str,
+        manifest: dict[str, tuple[str, str]],
+        blocks: list[SourceBlock],
+        assets: dict[str, ImageEvidence],
+        payloads: dict[str, bytes],
+    ) -> None:
+        self.archive = archive
+        self.chapter_path = chapter_path
+        self.section_id = section_id
+        self.heading = ref
+        self.ref = ref
+        self.manifest = manifest
+        self.blocks = blocks
+        self.assets = assets
+        self.payloads = payloads
+        self.before = len(blocks)
+        self.buffer: list[str] = []
+
+    def emit(self, kind: str) -> None:
+        text = "".join(self.buffer)
+        self.buffer.clear()
+        if not text.strip():
+            return
+        anchor = self.anchor()
+        self.blocks.append(SourceBlock(anchor, self.section_id, self.chapter_path, kind, text))
+        if kind.startswith("h") and self.heading == self.ref:
+            self.heading = text.strip()
+
+    def anchor(self) -> str:
+        return f"{self.section_id}:b{len(self.blocks) - self.before + 1:04d}"
+
+    def walk(self, node: ET.Element, parent_kind: str = "text") -> None:
+        tag = _tag(node.tag)
+        kind = tag if tag in BLOCK_TAGS else parent_kind
+        if tag in IMAGE_TAGS:
+            self.emit(parent_kind)
+            path = (
+                node.attrib.get("src")
+                or node.attrib.get("href")
+                or node.attrib.get("{http://www.w3.org/1999/xlink}href")
+                or ""
+            )
+            target = _relative(self.chapter_path, path)
+            media = next(
+                (mime for value, mime in self.manifest.values() if value == target), None
+            )
+            if media is None:
+                raise ExtractionError(f"EPUB image not declared in manifest: {target}")
+            data = _read(self.archive, target)
+            alt = node.attrib.get("alt", "")
+            anchor = self.anchor()
+            digest = _asset_evidence(
+                data, media, target, anchor, alt, self.assets, self.payloads
+            )
+            self.blocks.append(
+                SourceBlock(
+                    anchor, self.section_id, self.chapter_path, "image", "",
+                    asset_sha256=digest,
+                )
+            )
+            return
+        if tag in BLOCK_TAGS:
+            self.emit(parent_kind)
+        if node.text:
+            self.buffer.append(node.text)
+        for child in node:
+            self.walk(child, kind)
+            if child.tail:
+                self.buffer.append(child.tail)
+        if tag in BLOCK_TAGS:
+            self.emit(kind)
+
+    def finish(self) -> BookSection:
+        self.emit("text")
+        selected = self.blocks[self.before:]
+        paragraphs = tuple(
+            block.text for block in selected if block.kind != "image" and block.text.strip()
+        )
+        return BookSection(self.section_id, self.heading, paragraphs)
+
+
 def _epub(
     source: BookSource, raw: bytes, candidate: ReviewedCandidate
 ) -> tuple[
-    tuple[BookSection, ...], tuple[SourceBlock, ...], tuple[ImageEvidence, ...],
+    tuple[BookSection, ...],
+    tuple[SourceBlock, ...],
+    tuple[ImageEvidence, ...],
     tuple[str, ...],
+    dict[str, bytes],
 ]:
     chapters: list[BookSection] = []
     blocks: list[SourceBlock] = []
     assets: dict[str, ImageEvidence] = {}
+    payloads: dict[str, bytes] = {}
     warnings: list[str] = []
     with _zip(raw) as archive:
         container = _xml(_read(archive, "META-INF/container.xml"))
@@ -206,30 +309,28 @@ def _epub(
         ]
         if len(roots) != 1 or not roots[0]:
             raise ExtractionError("EPUB must declare exactly one package rootfile")
-        package_name = _relative("META-INF/container.xml", "../" + roots[0])
-        # The OPF rootfile is archive-root relative, not META-INF relative.
         package_name = roots[0]
-        if package_name.startswith("/") or posixpath.normpath(package_name) != package_name:
+        if (
+            package_name.startswith(("/", "\\"))
+            or posixpath.normpath(package_name) != package_name
+            or package_name.startswith("../")
+        ):
             raise ExtractionError("EPUB package path is unsafe")
         package = _xml(_read(archive, package_name))
         _verify_epub_metadata(package, candidate)
-        items = [
-            node for node in package.iter() if _tag(node.tag) == "item"
-        ]
-        manifest = {
+        manifest: dict[str, tuple[str, str]] = {
             item.attrib["id"]: (
                 _relative(package_name, item.attrib["href"]),
                 item.attrib.get("media-type", ""),
             )
-            for item in items
+            for item in package.iter() if _tag(item.tag) == "item"
         }
         ordered = [
-            item.attrib.get("idref", "") for item in package.iter()
-            if _tag(item.tag) == "itemref"
+            item.attrib.get("idref", "")
+            for item in package.iter() if _tag(item.tag) == "itemref"
         ]
         if not ordered or len(ordered) != len(set(ordered)):
             raise ExtractionError("EPUB spine missing or duplicates reading-order entries")
-        known_assets = {path for path, _media in manifest.values()}
         for index, ref in enumerate(ordered, start=1):
             if ref not in manifest:
                 raise ExtractionError(f"EPUB spine idref missing from manifest: {ref}")
@@ -241,77 +342,25 @@ def _epub(
             if body is None:
                 raise ExtractionError(f"EPUB XHTML body missing: {chapter_path}")
             section_id = f"spine-{index:04d}"
-            before = len(blocks)
-            heading = ref
-            buffer: list[str] = []
-
-            def emit(kind: str) -> None:
-                nonlocal heading
-                raw_text = "".join(buffer)
-                buffer.clear()
-                if not raw_text.strip():
-                    return
-                anchor = f"{section_id}:b{len(blocks) - before + 1:04d}"
-                blocks.append(SourceBlock(anchor, section_id, chapter_path, kind, raw_text))
-                if kind.startswith("h") and heading == ref:
-                    heading = raw_text.strip()
-
-            def walk(node: ET.Element, parent_kind: str = "text") -> None:
-                tag = _tag(node.tag)
-                kind = tag if tag in BLOCK_TAGS else parent_kind
-                if tag in IMAGE_TAGS:
-                    emit(parent_kind)
-                    target = node.attrib.get("src") or node.attrib.get("href") or ""
-                    asset_path = _relative(chapter_path, target)
-                    if asset_path not in known_assets:
-                        raise ExtractionError(
-                            f"EPUB image not declared in manifest: {asset_path}"
-                        )
-                    data = _read(archive, asset_path)
-                    asset_type = next(
-                        mime for ref_path, mime in manifest.values() if ref_path == asset_path
-                    )
-                    alt = node.attrib.get("alt", "")
-                    anchor = f"{section_id}:b{len(blocks) - before + 1:04d}"
-                    digest = _asset_evidence(
-                        data, asset_type, asset_path, anchor, alt, assets
-                    )
-                    blocks.append(
-                        SourceBlock(anchor, section_id, chapter_path, "image", "",
-                                    asset_sha256=digest)
-                    )
-                    return
-                if tag in BLOCK_TAGS:
-                    emit(parent_kind)
-                if node.text:
-                    buffer.append(node.text)
-                for child in node:
-                    walk(child, kind)
-                    if child.tail:
-                        buffer.append(child.tail)
-                if tag in BLOCK_TAGS:
-                    emit(kind)
-
-            walk(body)
-            emit("text")
-            selected_blocks = blocks[before:]
-            paragraphs = tuple(
-                block.text for block in selected_blocks
-                if block.kind != "image" and block.text.strip()
+            reader = _SpineWalker(
+                archive, chapter_path, section_id, ref, manifest, blocks, assets, payloads
             )
-            if not paragraphs and not any(block.kind == "image" for block in selected_blocks):
+            reader.walk(body)
+            section = reader.finish()
+            if not section.paragraphs and not any(
+                block.kind == "image" for block in blocks[reader.before:]
+            ):
                 warnings.append(f"spine item {section_id} contains no source-visible blocks")
-            chapters.append(BookSection(section_id, heading, paragraphs))
+            chapters.append(section)
     if len(chapters) < 3:
         warnings.append(f"only {len(chapters)} spine items recovered; completeness uncertain")
-    return tuple(chapters), tuple(blocks), tuple(assets.values()), tuple(warnings)
-
+    return tuple(chapters), tuple(blocks), tuple(assets.values()), tuple(warnings), payloads
 
 def _pdf(
     source: BookSource, raw: bytes, candidate: ReviewedCandidate
 ) -> tuple[
     tuple[BookSection, ...], tuple[SourceBlock, ...], tuple[ImageEvidence, ...],
-    tuple[ExcludedPage, ...], tuple[str, ...],
+    tuple[ExcludedPage, ...], tuple[str, ...], dict[str, bytes],
 ]:
     try:
         import pymupdf
@@ -322,6 +371,7 @@ def _pdf(
     chapters: list[BookSection] = []
     blocks: list[SourceBlock] = []
     assets: dict[str, ImageEvidence] = {}
+    payloads: dict[str, bytes] = {}
     excluded: list[ExcludedPage] = []
     warnings: list[str] = []
     try:
@@ -384,7 +434,8 @@ def _pdf(
                 elif item.get("type") == 1 and item.get("image"):
                     data = item["image"]
                     digest = _asset_evidence(
-                        data, str(item.get("ext", "image")), section_id, anchor, "", assets
+                        data, str(item.get("ext", "image")), section_id, anchor, "",
+                        assets, payloads,
                     )
                     blocks.append(
                         SourceBlock(anchor, section_id, section_id, "image", "",
@@ -411,7 +462,7 @@ def _pdf(
             )
     return (
         tuple(chapters), tuple(blocks), tuple(assets.values()), tuple(excluded),
-        tuple(warnings),
+        tuple(warnings), payloads,
     )
 
 
@@ -420,8 +471,7 @@ def cpu_tesseract(image: bytes, _media_type: str) -> str | None:
     try:
         process = subprocess.run(
             ["tesseract", "stdin", "stdout", "--psm", "6"],
-            input=image, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=30, check=False,
+            input=image, capture_output=True, timeout=30, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -516,10 +566,10 @@ def extract_candidate(
     if source.authorization_status != "unverified":
         raise ExtractionError("candidate source authorization cannot be auto-upgraded")
     if candidate.format == "epub" and raw[:4] == b"PK\x03\x04":
-        sections, blocks, images, warnings = _epub(source, raw, candidate)
+        sections, blocks, images, warnings, payloads = _epub(source, raw, candidate)
         excluded: tuple[ExcludedPage, ...] = ()
     elif candidate.format == "pdf" and raw[:5] == b"%PDF-":
-        sections, blocks, images, excluded, warnings = _pdf(source, raw, candidate)
+        sections, blocks, images, excluded, warnings, payloads = _pdf(source, raw, candidate)
     else:
         raise ExtractionError("candidate file signature/format mismatch")
     if overlay is not None:
@@ -532,7 +582,7 @@ def extract_candidate(
                 continue
             # OCR is never source truth and is kept separately as unreviewed evidence.
             warning = "OCR absent/failed; source image words not recovered"
-            value = ocr(b"", image.media_type)
+            value = ocr(payloads[image.asset_sha256], image.media_type)
             if value and value.strip():
                 resolved.append(
                     replace(
