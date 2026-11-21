@@ -23,30 +23,45 @@ def test_books_plan_matches_legacy_atomic_selection_byte_for_byte(
     legacy = tmp_path / "legacy"
     target = tmp_path / "books"
     common = [
-        "--catalog", str(CATALOG),
-        "--book-id", "atomic-habits",
-        "--lesson-id", "two-minute-rule",
+        "--catalog",
+        str(CATALOG),
+        "--book-id",
+        "atomic-habits",
+        "--lesson-id",
+        "two-minute-rule",
     ]
     monkeypatch.setattr(
         "sys.argv",
         [
-            "book_episode_selection.py", *common,
-            "--output", str(legacy / "selection.json"),
-            "--niche-config-output", str(legacy / "niche.json"),
-            "--storyboard-template", str(BOARD),
-            "--storyboard-output", str(legacy / "outline.json"),
+            "book_episode_selection.py",
+            *common,
+            "--output",
+            str(legacy / "selection.json"),
+            "--niche-config-output",
+            str(legacy / "niche.json"),
+            "--storyboard-template",
+            str(BOARD),
+            "--storyboard-output",
+            str(legacy / "outline.json"),
         ],
     )
     selection.main()
     original_stdout = capsys.readouterr().out
     result = cli.main(
         [
-            "books", "plan", *common,
-            "--storyboard-template", str(BOARD),
-            "--artifact-root", str(tmp_path / "dag"),
-            "--output", str(target / "selection.json"),
-            "--niche-config-output", str(target / "niche.json"),
-            "--storyboard-output", str(target / "outline.json"),
+            "books",
+            "plan",
+            *common,
+            "--storyboard-template",
+            str(BOARD),
+            "--artifact-root",
+            str(tmp_path / "dag"),
+            "--output",
+            str(target / "selection.json"),
+            "--niche-config-output",
+            str(target / "niche.json"),
+            "--storyboard-output",
+            str(target / "outline.json"),
         ]
     )
     assert result == 0
@@ -57,7 +72,9 @@ def test_books_plan_matches_legacy_atomic_selection_byte_for_byte(
     assert selected["episode_id"] == json.loads(BRIEF.read_text())["episode_id"]
 
 
-def test_books_validate_catalog_and_book_config(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_books_validate_catalog_and_book_config(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     assert cli.main(["books", "validate", "--catalog", str(CATALOG), "--config", str(CONFIG)]) == 0
     assert json.loads(capsys.readouterr().out)["valid"] is True
     invalid = tmp_path / "invalid.json"
@@ -74,12 +91,20 @@ def test_books_run_uses_recorded_script_and_fails_at_not_ported_narration(
     monkeypatch.setattr(scripting, "generate_episode", forbidden)
     code = cli.main(
         [
-            "books", "run", "--catalog", str(CATALOG),
-            "--storyboard-template", str(BOARD),
-            "--script-brief", str(BRIEF),
-            "--book-id", "atomic-habits",
-            "--lesson-id", "two-minute-rule",
-            "--artifact-root", str(tmp_path),
+            "books",
+            "run",
+            "--catalog",
+            str(CATALOG),
+            "--storyboard-template",
+            str(BOARD),
+            "--script-brief",
+            str(BRIEF),
+            "--book-id",
+            "atomic-habits",
+            "--lesson-id",
+            "two-minute-rule",
+            "--artifact-root",
+            str(tmp_path),
         ]
     )
     assert code == 1
@@ -95,10 +120,18 @@ def test_books_plan_rejects_bad_history_without_model_inference(
     history = tmp_path / "history.json"
     history.write_text('{"invalid":"dict"}', encoding="utf-8")
     assert (
-        cli.main([
-            "books", "plan", "--catalog", str(CATALOG), "--history", str(history),
-            "--output", str(tmp_path / "selection.json"),
-        ])
+        cli.main(
+            [
+                "books",
+                "plan",
+                "--catalog",
+                str(CATALOG),
+                "--history",
+                str(history),
+                "--output",
+                str(tmp_path / "selection.json"),
+            ]
+        )
         == 1
     )
     assert "history requires a list" in caplog.text
@@ -111,8 +144,5 @@ def test_books_validate_requires_actual_book_lesson_config(
     config.write_text(
         "niche: AI\naudience: Builders\nbrand: LAB\ntopic: Example\n", encoding="utf-8"
     )
-    assert (
-        cli.main(["books", "validate", "--catalog", str(CATALOG), "--config", str(config)])
-        == 1
-    )
+    assert cli.main(["books", "validate", "--catalog", str(CATALOG), "--config", str(config)]) == 1
     assert "format: book_lesson" in caplog.text
