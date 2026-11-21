@@ -40,6 +40,48 @@ class BookSection:
     paragraphs: tuple[str, ...]
 
 
+
+@dataclass(frozen=True, slots=True)
+class SourceBlock:
+    anchor: str
+    section_id: str
+    source_path: str
+    kind: str
+    text: str
+    asset_sha256: str | None = None
+    method: str = "source"
+    review_status: str = "source_unverified"
+
+
+@dataclass(frozen=True, slots=True)
+class ImageOccurrence:
+    anchor: str
+    source_path: str
+    alt_text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ImageEvidence:
+    asset_sha256: str
+    media_type: str
+    byte_count: int
+    occurrences: tuple[ImageOccurrence, ...]
+    original_transcription: str | None = None
+    normalized_transcription: str | None = None
+    normalization_notes: str | None = None
+    method: str = "none"
+    uncertainty: str = "image words not recovered"
+    review_status: str = "needs_review"
+
+
+@dataclass(frozen=True, slots=True)
+class ExcludedPage:
+    page_number: int
+    reason: str
+    evidence: str
+    observed_text_sha256: str
+
+
 @dataclass(frozen=True, slots=True)
 class BookText:
     source: BookSource
@@ -48,6 +90,13 @@ class BookText:
     total_word_count: int
     content_sha256: str
     source_fingerprint: str
+    blocks: tuple[SourceBlock, ...] = ()
+    images: tuple[ImageEvidence, ...] = ()
+    excluded_pages: tuple[ExcludedPage, ...] = ()
+    warnings: tuple[str, ...] = ()
+    recovery_status: str = "legacy_unassessed"
+    parser_version: str = "legacy-v1"
+    parser_config_sha256: str = ""
 
     @property
     def fingerprint(self) -> str:
