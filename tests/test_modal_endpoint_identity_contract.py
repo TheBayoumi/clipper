@@ -101,6 +101,7 @@ def test_matching_metadata_allows_reuse_without_creating_endpoint() -> None:
         call.args == ("modal", "endpoint", "list", "--json") for call in runner.call_args_list
     )
 
+
 def test_synthetic_flat_missing_entry_has_distinct_absence_error() -> None:
     module = _module()
     with pytest.raises(RuntimeError, match="absent from the endpoint listing"):
@@ -153,9 +154,7 @@ def test_synthetic_missing_revision_exposes_key_names_only_not_values() -> None:
         (EDITORIAL_MODEL_ID, "synthetic-wrong-revision"),
     ],
 )
-def test_synthetic_mismatching_identity_never_mutates_endpoint(
-    model: str, revision: str
-) -> None:
+def test_synthetic_mismatching_identity_never_mutates_endpoint(model: str, revision: str) -> None:
     module = _module()
     runner = Mock(return_value=_metadata(model=model, revision=revision))
     with (
