@@ -565,8 +565,9 @@ def _overlay(
             or not isinstance(notes, (str, type(None)))
             or (normalized is not None and normalized != original and not notes)
             or not isinstance(anchors, list)
-            or set(anchors) != {x.anchor for x in source_image.occurrences}
             or not all(isinstance(x, str) for x in anchors)
+            or len(anchors) != len(source_image.occurrences)
+            or set(anchors) != {x.anchor for x in source_image.occurrences}
             or not isinstance(entry["reviewed_by"], str)
             or not entry["reviewed_by"].strip()
             or not isinstance(entry["reviewed_at"], str)
@@ -582,6 +583,8 @@ def _overlay(
             method="reviewed_overlay",
             uncertainty="transcription still requires edition review",
             review_status="reviewed",
+            reviewed_by=entry["reviewed_by"],
+            reviewed_at=entry["reviewed_at"],
         )
         seen.add(digest)
     reordered = tuple(updated.get(x.asset_sha256, x) for x in images)

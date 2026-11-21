@@ -71,6 +71,8 @@ class ImageEvidence:
     method: str = "none"
     uncertainty: str = "image words not recovered"
     review_status: str = "needs_review"
+    reviewed_by: str | None = None
+    reviewed_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

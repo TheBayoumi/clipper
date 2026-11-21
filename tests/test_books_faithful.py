@@ -214,6 +214,8 @@ def test_reviewed_overlay_import_preserves_raw_transcription_and_rekeys() -> Non
     assert verified.images[0].original_transcription == "40 10 60"
     assert verified.images[0].method == "reviewed_overlay"
     assert verified.images[0].review_status == "reviewed"
+    assert verified.images[0].reviewed_by == "fixture-reviewer"
+    assert verified.images[0].reviewed_at == "2026-11-21"
     assert verified.parser_config_sha256 != original.parser_config_sha256
     assert verified.images[0].occurrences == asset.occurrences
     assert not any(x.kind == "image_transcription" for x in verified.blocks)
