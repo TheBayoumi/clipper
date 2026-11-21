@@ -21,11 +21,11 @@ from clipper.books.faithful import (
     _xml,
     convert_research_observations,
     cpu_tesseract,
-    ocr_contract,
-    tesseract_identity,
     extract_candidate,
     image_reconciliation,
+    ocr_contract,
     reading_blocks,
+    tesseract_identity,
 )
 
 ROOT = Path(__file__).resolve().parents[1]

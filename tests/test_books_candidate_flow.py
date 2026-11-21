@@ -405,3 +405,23 @@ def test_cli_offline_private_observation_import_keeps_unreviewed_evidence(
     report = json.loads(Path(reply["report_path"]).read_text())
     assert report["total_occurrences"] == 1
     assert report["assets"][0]["occurrences"][0]["source_path"]
+
+
+def test_second_normal_candidate_ingest_reuses_pinned_extracted_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, transport, _registry = _fixture(tmp_path)
+    runner = BookOrchestrator(tmp_path / "private")
+    first = runner.ingest_candidate("Atomic Habits", registry=(candidate,), transport=transport)
+    assert not isinstance(first, SourceUnresolved)
+    monkeypatch.setattr(transport, "fail", True)
+    second = runner.ingest_candidate("Atomic Habits", registry=(candidate,), transport=transport)
+    assert not isinstance(second, SourceUnresolved)
+    assert second.acquired.cache_hit is True
+    assert second.stage_key == first.stage_key
+    assert second.book == first.book
+    assert second.extracted_path == first.extracted_path
+    assert second.dossier_path == first.dossier_path
+    assert len(list((tmp_path / "private/book-candidates/raw").glob("**/*.epub"))) == 1
+    assert len(list((tmp_path / "private/book-candidates/extracted").glob("**/*.json"))) == 1
