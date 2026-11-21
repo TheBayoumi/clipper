@@ -233,7 +233,11 @@ class BookOrchestrator:
             ),
             dependency_output_hashes=(book.fingerprint,),
             model_revision=scripting.SCRIPT_REVISION,
-            decoding_parameters={"seed": 42, "max_new_tokens": 960, "chunk_words": mining.CHUNK_WORDS},
+            decoding_parameters={
+                "seed": 42,
+                "max_new_tokens": 960,
+                "chunk_words": mining.CHUNK_WORDS,
+            },
         )
         stored, _reused = self.dag.execute(
             identity, lambda: mining.mine_book(book, completion)

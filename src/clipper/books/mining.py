@@ -48,7 +48,12 @@ def chunks_for(text: BookText) -> tuple[BookChunk, ...]:
             words = paragraph.split()
             for offset in range(0, len(words), CHUNK_WORDS):
                 chunks.append(
-                    BookChunk(chapter.chapter_id, index, offset, " ".join(words[offset:offset + CHUNK_WORDS]))
+                    BookChunk(
+                        chapter.chapter_id,
+                        index,
+                        offset,
+                        " ".join(words[offset : offset + CHUNK_WORDS]),
+                    )
                 )
                 if len(chunks) > MAX_CHUNKS:
                     raise BookMiningError(
@@ -184,7 +189,7 @@ def mine_book(
                 "id": book_id,
                 "title": source.title,
                 "author": source.author,
-                "pillar": "self_improvement",
+                "pillar": "unreviewed",
                 "source_url": source.source_uri,
                 "status": "source_verified_candidate",
                 "review_status": "MINED_UNREVIEWED",
