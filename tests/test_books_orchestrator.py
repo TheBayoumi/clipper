@@ -25,19 +25,16 @@ def _inputs() -> tuple[dict, dict]:
 def test_plan_matches_legacy_output_and_reuses_exact_dag_stage(tmp_path: Path) -> None:
     catalog, board = _inputs()
     orchestrator = BookOrchestrator(tmp_path)
-    first = orchestrator.plan(
-        catalog, board, book_id="atomic-habits", lesson_id="two-minute-rule"
-    )
-    second = orchestrator.plan(
-        catalog, board, book_id="atomic-habits", lesson_id="two-minute-rule"
-    )
+    first = orchestrator.plan(catalog, board, book_id="atomic-habits", lesson_id="two-minute-rule")
+    second = orchestrator.plan(catalog, board, book_id="atomic-habits", lesson_id="two-minute-rule")
     assert first == second
     expected = selection.choose_lesson(
         catalog, book_id="atomic-habits", lesson_id="two-minute-rule"
     )
-    assert first.selection_json.encode() == (
-        json.dumps(expected, indent=2, ensure_ascii=False) + "\n"
-    ).encode()
+    assert (
+        first.selection_json.encode()
+        == (json.dumps(expected, indent=2, ensure_ascii=False) + "\n").encode()
+    )
     assert first.selected.legacy_fingerprint == expected["fingerprint"]
     assert json.loads(first.outline_json)["selection_fingerprint"] == expected["fingerprint"]
     assert json.loads(first.niche_config_json)["selection_fingerprint"] == expected["fingerprint"]

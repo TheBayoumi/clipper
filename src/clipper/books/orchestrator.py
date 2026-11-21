@@ -67,9 +67,10 @@ def _selected_cached(value: object) -> LessonSelection:
     if not isinstance(value, dict) or not isinstance(value.get("book"), dict):
         raise BookRunError("invalid cached book-selection stage output")
     record = cast(dict[str, Any], value)
-    return LessonSelection(book=BookRef(**record["book"]), **{
-        key: item for key, item in record.items() if key != "book"
-    })
+    return LessonSelection(
+        book=BookRef(**record["book"]),
+        **{key: item for key, item in record.items() if key != "book"},
+    )
 
 
 def _script_cached(value: object) -> EpisodeScript:
@@ -154,6 +155,7 @@ class BookOrchestrator:
             raise BookRunError("cached selection disagrees with current verified catalog")
         niche = selection.to_niche_config(original)
         outline = selection.to_storyboard_outline(original, storyboard)
+
         def encode(value: object) -> str:
             return json.dumps(value, indent=2, ensure_ascii=False) + "\n"
 
@@ -244,8 +246,13 @@ class BookOrchestrator:
         pillar: str | None = None,
     ) -> NoReturn:
         plan = self.plan(
-            catalog, storyboard, history,
-            book_id=book_id, lesson_id=lesson_id, angle_id=angle_id, pillar=pillar,
+            catalog,
+            storyboard,
+            history,
+            book_id=book_id,
+            lesson_id=lesson_id,
+            angle_id=angle_id,
+            pillar=pillar,
         )
         script = self.script(plan, source=source, completion=completion)
         self.require_unported(
