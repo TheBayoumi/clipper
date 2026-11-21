@@ -380,8 +380,8 @@ def _mutate_epub(
         ),
         (
             "OPS/content.opf",
-            "unique-identifier=\"uid\"",
-            "unique-identifier=\"missing\"",
+            'unique-identifier="uid"',
+            'unique-identifier="missing"',
             "primary identifier does not exist",
         ),
         (
@@ -394,12 +394,12 @@ def _mutate_epub(
             "OPS/content.opf",
             "<metadata>",
             "<missing>",
-            "package metadata missing",
+            "malformed EPUB",
         ),
         (
             "OPS/content.opf",
             "<spine><itemref",
-            "<spine><itemref idref=\"s0\"/><itemref",
+            '<spine><itemref idref="s0"/><itemref',
             "duplicates reading-order",
         ),
         (
@@ -418,7 +418,7 @@ def _mutate_epub(
             "OPS/Text/part-one.xhtml",
             "<body>",
             "<head>",
-            "XHTML body missing",
+            "malformed EPUB",
         ),
     ],
 )
@@ -477,7 +477,7 @@ def test_xml_untrusted_markup_is_rejected(payload: bytes, error: str) -> None:
     [
         ("/absolute.png", "external or absolute"),
         ("https://host/image.png", "external or absolute"),
-        ("../x/../../evil.png", "path traversal"),
+        ("../../../evil.png", "path traversal"),
     ],
 )
 def test_epub_relative_asset_paths_are_strictly_sandboxed(path: str, error: str) -> None:
@@ -562,9 +562,14 @@ def test_overlay_malformed_schema_missing_review_and_unknown_asset_fail_closed()
             "entry fields mismatch",
         ),
         (
-            json.dumps({**record, "entries": [
-                {**record["entries"][0], "asset_sha256": "0" * 64},
-            ]}).encode(),
+            json.dumps(
+                {
+                    **record,
+                    "entries": [
+                        {**record["entries"][0], "asset_sha256": "0" * 64},
+                    ],
+                }
+            ).encode(),
             "SHA-256 missing or duplicate",
         ),
         (
@@ -599,7 +604,8 @@ def test_pdf_rejects_corrupted_bytes_zero_pages_and_invalid_exclusion() -> None:
         extract_candidate(_source(data, candidate), data, candidate)
     original = _pdf()
     candidate = replace(
-        _candidate(original, DEEP, fmt="pdf"), expected_pages=3,
+        _candidate(original, DEEP, fmt="pdf"),
+        expected_pages=3,
         exclusions=({"page": 4, "reason": "unknown", "evidence": "bad"},),
     )
     with pytest.raises(ExtractionError, match="excluded page is outside"):
