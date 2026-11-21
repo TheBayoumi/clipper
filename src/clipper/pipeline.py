@@ -60,6 +60,10 @@ from .youtube import YouTubeClient
 from .yield_policy import accepted_quality_plans, group_quality_plans, quality_render_queue
 
 LOGGER = logging.getLogger("clipper")
+# run_pipeline runs synchronously within each invocation context. These values are
+# set immediately before _visual_timeline and reset in finally, so concurrent
+# threads/tasks have isolated checkpoints. Do not reuse a context across
+# interleaved runs or spawn a visual scout without explicitly copying its context.
 _VISUAL_CHECKPOINT_DIR: ContextVar[Path | None] = ContextVar(
     "clipper_visual_checkpoint_dir", default=None
 )
