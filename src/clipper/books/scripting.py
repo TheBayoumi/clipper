@@ -6,6 +6,7 @@ This is the canonical script stage; no TTS or video rendering runs here.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -15,7 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import yaml
@@ -294,15 +295,17 @@ def _script_request(config: NicheConfig) -> dict[str, object]:
 def _script_pipeline() -> tuple[Any, Any]:
     """Load Qwen3 weights only once, even when a revision is required."""
     try:
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        torch = importlib.import_module("torch")
+        transformers = importlib.import_module("transformers")
     except ImportError as exc:
         raise NicheVideoError(
             "Install the [niche-models] runtime for open-weight inference"
         ) from exc
     torch.set_num_threads(min(4, os.cpu_count() or 1))
-    tokenizer = AutoTokenizer.from_pretrained(SCRIPT_MODEL, revision=SCRIPT_REVISION)
-    model = AutoModelForCausalLM.from_pretrained(
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        SCRIPT_MODEL, revision=SCRIPT_REVISION
+    )
+    model = transformers.AutoModelForCausalLM.from_pretrained(
         SCRIPT_MODEL, revision=SCRIPT_REVISION, dtype="auto"
     ).eval()
     return model, tokenizer
@@ -310,10 +313,10 @@ def _script_pipeline() -> tuple[Any, Any]:
 
 def _local_script_completion(request: dict[str, object]) -> str:
     """Generate locally; keep the weights resident for bounded repair attempts."""
-    import torch
+    torch = importlib.import_module("torch")
 
     model, tokenizer = _script_pipeline()
-    torch.manual_seed(int(request["seed"]))
+    torch.manual_seed(int(cast(int, request["seed"])))
     inputs = tokenizer.apply_chat_template(
         request["messages"],
         tokenize=True,
@@ -325,14 +328,14 @@ def _local_script_completion(request: dict[str, object]) -> str:
     with torch.inference_mode():
         output = model.generate(
             **inputs,
-            max_new_tokens=int(request["max_new_tokens"]),
+            max_new_tokens=int(cast(int, request["max_new_tokens"])),
             do_sample=True,
             temperature=0.7,
             top_p=0.8,
             pad_token_id=tokenizer.eos_token_id,
         )
     output_ids = output[0][inputs["input_ids"].shape[-1] :]
-    result = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+    result: str = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
     if result.startswith(chr(96) * 3):
         result = "\n".join(result.splitlines()[1:-1]).strip()
     return result
