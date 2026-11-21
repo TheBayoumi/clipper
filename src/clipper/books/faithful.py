@@ -168,7 +168,6 @@ def _verify_epub_metadata(
         )
     if any(
         _equal(x) not in allowed
-        and not any(len(_equal(x)) >= 10 and _equal(x) in name for name in allowed)
         for x in titles
     ):
         raise ExtractionError(f"ambiguous EPUB title/edition metadata: {titles!r}")

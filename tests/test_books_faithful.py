@@ -647,3 +647,31 @@ def test_pdf_frontmatter_identity_and_isbn_gap_are_diagnostic() -> None:
     book = extract_candidate(_source(raw, candidate), raw, candidate)
     assert any("ISBN" in warning and "uncertain" in warning for warning in book.warnings)
     assert book.recovery_status == "incomplete_recovery"
+
+
+def test_atomic_reviewed_two_title_metadata_exactly_matches_same_isbn() -> None:
+    raw = _epub(title="Atomic Habits: Tiny Changes, Remarkable Results")
+    raw = _mutate_epub(
+        raw,
+        replacements={
+            "OPS/content.opf": (
+                "<dc:title>Atomic Habits: An Easy &amp; Proven",
+                "<dc:title>An Easy &amp; Proven",
+            )
+        },
+    )
+    selected = _candidate(raw)
+    book = extract_candidate(_source(raw, selected), raw, selected)
+    assert book.sections
+    assert book.source.content_sha256 == hashlib.sha256(raw).hexdigest()
+    with pytest.raises(ExtractionError, match="ambiguous EPUB title"):
+        bad = _mutate_epub(
+            raw,
+            replacements={
+                "OPS/content.opf": (
+                    "An Easy &amp; Proven Way to Build Good Habits",
+                    "An Easy &amp; Proven Way to Build Different Habits",
+                )
+            },
+        )
+        extract_candidate(_source(bad, _candidate(bad)), bad, _candidate(bad))

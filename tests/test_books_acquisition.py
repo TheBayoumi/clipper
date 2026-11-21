@@ -244,10 +244,18 @@ def test_archive_https_allowlist_rejects_unsafe_input(url: str) -> None:
 
 def test_redirect_hosts_and_private_dns_are_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _validate_url("https://ia800123.us.archive.org/download/item", redirect=True)
+    for host in ("dn720609", "dn721503", "dn710906"):
+        assert _validate_url(f"https://{host}.ca.archive.org/0/items/x", redirect=True)
     for url in (
         "https://assets.evil.org/x",
         "https://ia800123.evil.archive.org/x",
         "http://ia800123.us.archive.org/x",
+        "https://dn720609.ca.archive.org.evil.org/x",
+        "https://dn720609.eu.archive.org/x",
+        "https://dn72060.ca.archive.org/x",
+        "https://dn720609.ca.archive.org:444/x",
+        "https://user@dn720609.ca.archive.org/x",
+        "https://dn720609.ca.archive.org/../private",
     ):
         with pytest.raises(AcquisitionError):
             _validate_url(url, redirect=True)

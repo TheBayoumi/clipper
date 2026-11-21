@@ -30,7 +30,7 @@ REGISTRY_SCHEMA = "clipper-reviewed-book-candidates-v1"
 MAX_METADATA_BYTES = 2_000_000
 MAX_ASSET_BYTES = 12_000_000
 _HEX = re.compile(r"^[0-9a-f]{64}$")
-_CDN = re.compile(r"^ia[0-9]{2,7}\.(?:us|eu)\.archive\.org$")
+_CDN = re.compile(r"^(?:ia[0-9]{2,7}\.(?:us|eu)|dn[0-9]{6}\.ca)\.archive\.org$")
 
 
 class AcquisitionError(ValueError):
