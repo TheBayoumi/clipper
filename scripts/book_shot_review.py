@@ -40,8 +40,10 @@ def file_sha(path: Path) -> str:
 
 
 def _hash(value: object) -> bool:
-    return isinstance(value, str) and len(value) == 64 and all(
-        char in "0123456789abcdef" for char in value
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
     )
 
 
@@ -53,9 +55,8 @@ def expected_text(shot: dict[str, Any]) -> list[str]:
     requested = shot.get("required_on_screen_text")
     if requested is None:
         return ["ATOMIC HABITS", "JAMES CLEAR"] if shot.get("keyframe_name") == "book_intro" else []
-    if (
-        not isinstance(requested, list)
-        or not all(isinstance(value, str) and value.strip() for value in requested)
+    if not isinstance(requested, list) or not all(
+        isinstance(value, str) and value.strip() for value in requested
     ):
         raise CreativeReviewError("invalid required on-screen text contract")
     return requested

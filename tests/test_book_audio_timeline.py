@@ -350,6 +350,7 @@ def test_alignment_cannot_be_replaced_with_proportional_word_timings(
     with pytest.raises(timeline.AudioTimelineError, match="every spoken word"):
         timeline.build_timeline(request, plan, audio, voice, alignment)
 
+
 def test_mixed_shot_review_rejects_assembly_before_ffmpeg(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
