@@ -40,7 +40,6 @@ class BookSection:
     paragraphs: tuple[str, ...]
 
 
-
 @dataclass(frozen=True, slots=True)
 class SourceBlock:
     anchor: str

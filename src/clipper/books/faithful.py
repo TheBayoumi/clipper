@@ -370,6 +370,7 @@ def _epub(
         warnings.append(f"only {len(chapters)} spine items recovered; completeness uncertain")
     return tuple(chapters), tuple(blocks), tuple(assets.values()), tuple(warnings), payloads
 
+
 def _pdf(
     source: BookSource, raw: bytes, candidate: ReviewedCandidate
 ) -> tuple[
