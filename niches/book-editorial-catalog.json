@@ -51,7 +51,8 @@
           "visual_action": "Host moves a notebook into plain view and places a distracting phone away",
           "hook_angle": "You can change a habit before you feel motivated"
         }
-      ]
+      ],
+      "storyboard_template": "atomic-habits-approved-storyboard.json"
     },
     {
       "id": "deep-work",
@@ -77,7 +78,8 @@
           "visual_action": "Host blocks out a focused work session in a calendar then starts work",
           "hook_angle": "Don't wait for an empty calendar to find focus"
         }
-      ]
+      ],
+      "storyboard_template": "deep-work-approved-storyboard.json"
     },
     {
       "id": "psychology-of-money",
@@ -95,7 +97,8 @@
           "visual_action": "Host compares two everyday spending decisions at a kitchen table without inventing financial results",
           "hook_angle": "Two people can see the same numbers and decide differently"
         }
-      ]
+      ],
+      "storyboard_template": "psychology-of-money-approved-storyboard.json"
     }
   ]
 }
