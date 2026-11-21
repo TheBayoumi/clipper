@@ -11,6 +11,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import book_shot_review as creative  # noqa: E402
 import wan_full_book_episode as episode  # noqa: E402
 from wan_shared_shot_cache import WAN_MODEL_ID, WAN_REVISION  # noqa: E402
 
@@ -71,6 +72,7 @@ def test_scene_zero_rejects_old_audio_video_even_if_old_mp4_hash_is_valid(
         for i in (1, 2, 3)
     )
     plan = {"schema": episode.SCHEMA, "seconds": 36, "shots": shots}
+    plan["fingerprint"] = creative.digest(plan)
 
     with pytest.raises(episode.EpisodeError, match="current-audio Wan shot scene-00"):
         episode.prepare_concat(
@@ -80,8 +82,8 @@ def test_scene_zero_rejects_old_audio_video_even_if_old_mp4_hash_is_valid(
             tmp_path / "captions.ass",
         )
 
-    # Only when the S2V manifest is bound to the *new* audio should assembly
-    # advance to probing the rendered footage.
+    # Updating the source manifest alone is insufficient: creative review must
+    # also pass before FFprobe, and an old audio hash always fails earlier.
     manifest["audio_sha256"] = digest(audio.read_bytes())
     (clip_dir / "model-evidence.json").write_text(json.dumps(manifest))
 
@@ -90,6 +92,54 @@ def test_scene_zero_rejects_old_audio_video_even_if_old_mp4_hash_is_valid(
         raise RuntimeError("CURRENT_VOICE_SHOT_ACCEPTED_FOR_MEDIA_PROBE")
 
     monkeypatch.setattr(episode, "command_run", stop_at_probe)
+    with pytest.raises(episode.EpisodeError, match="creative review rejected"):
+        episode.prepare_concat(
+            plan,
+            [clip_dir, clip_dir, clip_dir, clip_dir],
+            tmp_path / "output",
+            tmp_path / "captions.ass",
+        )
+
+    base_review = creative.contract(
+        shots[0],
+        plan["fingerprint"],
+        digest(video.read_bytes()),
+        digest(image.read_bytes()),
+        None,
+    )
+    assessment = {
+        **base_review,
+        "sampled_frame_sha256": ["a" * 64, "b" * 64, "c" * 64],
+        "previous_sampled_frame_sha256": [],
+        "provider": {"name": "MockVision", "model_id": "fixture-vlm", "model_revision": "v1"},
+        "automated_criteria": {
+            name: {
+                "status": "PENDING_HUMAN" if name == "speech_synchronization" else "PASS",
+                "confidence": 0.0 if name == "speech_synchronization" else 0.99,
+                "evidence": "mocked frame evidence",
+            }
+            for name in creative.CRITERION_VERSIONS
+        },
+        "status": "PENDING_HUMAN",
+        "human_approval": None,
+    }
+    assessment["human_approval"] = {
+        "status": "APPROVED",
+        "reviewer": "fixture-human-reviewer",
+        "approved_at": "2026-11-21T00:00:00Z",
+        "video_sha256": base_review["video_sha256"],
+        "shot_fingerprint": base_review["shot_fingerprint"],
+        "criterion_versions": base_review["criterion_versions"],
+        "observation_sha256": creative.digest(
+            {key: value for key, value in assessment.items() if key != "human_approval"}
+        ),
+        "criteria": {
+            name: {"status": "PASS", "evidence": "manually inspected test fixture"}
+            for name in creative.CRITERION_VERSIONS
+        },
+    }
+    (clip_dir / "creative-review.json").write_text(json.dumps(assessment))
+
     with pytest.raises(RuntimeError, match="CURRENT_VOICE_SHOT_ACCEPTED_FOR_MEDIA_PROBE"):
         episode.prepare_concat(
             plan,

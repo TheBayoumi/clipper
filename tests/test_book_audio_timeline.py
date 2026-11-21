@@ -358,11 +358,23 @@ def test_mixed_shot_review_rejects_assembly_before_ffmpeg(
     second = assets["assets"][1]
     review_path = Path(second["review_path"])
     review = json.loads(review_path.read_text(encoding="utf-8"))
-    review["human_approval"]["criteria"]["action_to_narration"]["status"] = "FAIL"
+    review["automated_criteria"]["action_to_narration"]["status"] = "FAIL"
     review_path.write_text(json.dumps(review), encoding="utf-8")
     second["review_sha256"] = timeline.file_sha(review_path)
     invoked: list[list[str]] = []
-    monkeypatch.setattr(assembly, "run", lambda argv: invoked.append(argv) or "")
+
+    def command(argv: list[str]) -> str:
+        invoked.append(argv)
+        if argv[0] == "ffprobe":
+            return json.dumps(
+                {
+                    "format": {"duration": "38.0"},
+                    "streams": [{"codec_type": "video"}],
+                }
+            )
+        raise AssertionError("ffmpeg must not run for mixed pass/fail creative reviews")
+
+    monkeypatch.setattr(assembly, "run", command)
     with pytest.raises(assembly.AssemblyError, match="creative review rejected"):
         assembly.assemble(edl, audio, assets, tmp_path / "blocked")
     assert not any(argv[0] == "ffmpeg" for argv in invoked)
