@@ -302,3 +302,17 @@ def test_mining_refuses_unrecorded_response_and_bad_catalog_snapshot(tmp_path: P
     path.write_text(json.dumps(document))
     with pytest.raises(BookRunError, match="word-count mismatch"):
         runner.load_text("synthetic-complete-book")
+
+
+def test_mining_chunk_fingerprint_and_output_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    book = ingest.ingest_book(
+        TITLE, AUTHOR, ingest.GutenbergResolver(_transport(_complete_book()))
+    )
+    assert isinstance(book, BookText)
+    chunk = mining.chunks_for(book)[0]
+    assert len(chunk.fingerprint) == 64
+    monkeypatch.setattr(mining, "MAX_LESSONS", 2)
+    with pytest.raises(mining.BookMiningError, match="mined lesson limit exceeded"):
+        mining.mine_book(book, _completion)

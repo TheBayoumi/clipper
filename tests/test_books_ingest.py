@@ -254,3 +254,45 @@ def test_https_transport_denies_nonofficial_host_without_network() -> None:
         _https_get("file:///etc/passwd")
     with pytest.raises(BookIngestError, match="official HTTPS"):
         _https_get("https://other.example/ebooks/1")
+
+
+def test_https_transport_uses_only_mocked_official_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clipper.books.ingest import MAX_BYTES, _https_get
+
+    class FakeResponse:
+        def __init__(self, final_url: str, payload: bytes) -> None:
+            self.final_url = final_url
+            self.payload = payload
+
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return self.final_url
+
+        def read(self, count: int) -> bytes:
+            return self.payload[:count]
+
+    url = "https://www.gutenberg.org/ebooks/1342.txt.utf-8"
+    responder = Mock(return_value=FakeResponse(url, b"synthetic mocked bytes"))
+    monkeypatch.setattr("urllib.request.urlopen", responder)
+    assert _https_get(url) == b"synthetic mocked bytes"
+    responder.assert_called_once_with(url, timeout=15)
+    responder.return_value = FakeResponse("http://www.gutenberg.org/ebooks/1342", b"bad")
+    with pytest.raises(BookIngestError, match="redirect must remain"):
+        _https_get(url)
+    responder.return_value = FakeResponse(url, b"x" * (MAX_BYTES + 1))
+    with pytest.raises(BookIngestError, match="transport byte limit"):
+        _https_get(url)
+
+
+def test_epub_parser_rejects_xml_dtd_before_parse() -> None:
+    from clipper.books.ingest import _parse_xml
+
+    with pytest.raises(BookIngestError, match="DTD and external entities forbidden"):
+        _parse_xml(b"<!DOCTYPE malicious [<!ENTITY x SYSTEM 'file:///etc/passwd'>]><root/>")
