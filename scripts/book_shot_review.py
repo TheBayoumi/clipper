@@ -52,14 +52,41 @@ def shot_fingerprint(shot: dict[str, Any], plan_fingerprint: str) -> str:
 
 
 def expected_text(shot: dict[str, Any]) -> list[str]:
+    """Only plan-declared text is reviewable; absent intro text is not a pass."""
     requested = shot.get("required_on_screen_text")
     if requested is None:
-        return ["ATOMIC HABITS", "JAMES CLEAR"] if shot.get("keyframe_name") == "book_intro" else []
+        if shot.get("keyframe_name") == "book_intro" or shot.get("id") == "book_intro":
+            raise CreativeReviewError(
+                f"shot {shot.get('id')} is book_intro: plan must declare "
+                "required_on_screen_text (use [] if no text is required)"
+            )
+        return []
     if not isinstance(requested, list) or not all(
         isinstance(value, str) and value.strip() for value in requested
     ):
         raise CreativeReviewError("invalid required on-screen text contract")
-    return requested
+    cleaned = [value.strip() for value in requested]
+    if len(cleaned) != len(set(cleaned)):
+        raise CreativeReviewError("invalid required on-screen text contract: duplicate entries")
+    return cleaned
+
+
+def intro_text_from_book_metadata(book: dict[str, Any]) -> list[str]:
+    """Derive a plan's printed title and author from the source-backed book metadata."""
+    if not isinstance(book, dict):
+        raise CreativeReviewError("book intro requires source-backed title and author metadata")
+    title, author = book.get("title"), book.get("author")
+    if (
+        not isinstance(title, str)
+        or not title.strip()
+        or not isinstance(author, str)
+        or not author.strip()
+    ):
+        raise CreativeReviewError("book intro requires source-backed title and author metadata")
+    text = [title.strip().upper(), author.strip().upper()]
+    if len(set(text)) != len(text):
+        raise CreativeReviewError("invalid required on-screen text contract: duplicate entries")
+    return text
 
 
 def contract(

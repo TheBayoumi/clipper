@@ -62,6 +62,11 @@ def test_clean_master_renders_only_raw_video_and_locked_narration(
             {
                 "id": f"scene-{i:02d}",
                 "keyframe_name": name,
+                **(
+                    {"required_on_screen_text": ["ATOMIC HABITS", "JAMES CLEAR"]}
+                    if name == "book_intro"
+                    else {}
+                ),
                 "audio": audio.name,
                 "audio_sha256": sha(audio.read_bytes()),
                 "prompt": prompt,
@@ -163,6 +168,12 @@ def test_clean_master_renders_only_raw_video_and_locked_narration(
     assert evidence["book_title_overlay_applied"] is False
     assert evidence["captions_sha256"] is None
 
+    shots[2].pop("required_on_screen_text")
+    with pytest.raises(episode.EpisodeError, match="plan must declare"):
+        episode.prepare_concat(plan, folders, tmp_path / "undeclared", captions=None, clean=True)
+    assert len(video_commands) == 1
+
+    shots[2]["required_on_screen_text"] = ["ATOMIC HABITS", "JAMES CLEAR"]
     (folders[1] / "creative-review.json").unlink()
     with pytest.raises(episode.EpisodeError, match="creative review rejected"):
         episode.prepare_concat(plan, folders, tmp_path / "blocked", captions=None, clean=True)

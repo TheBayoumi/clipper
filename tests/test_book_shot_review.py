@@ -212,3 +212,66 @@ def test_required_book_title_is_not_exempt_and_no_text_is_explicit(tmp_path: Pat
         plan_fingerprint="c" * 64,
     )
     assert with_text["automated_criteria"]["on_screen_titles"]["status"] == "FAIL"
+
+
+
+@pytest.mark.parametrize(
+    "book,expected",
+    [
+        ({"title": "Atomic Habits", "author": "James Clear"}, ["ATOMIC HABITS", "JAMES CLEAR"]),
+        ({"title": "Deep Work", "author": "Cal Newport"}, ["DEEP WORK", "CAL NEWPORT"]),
+    ],
+)
+def test_two_books_receive_only_their_own_declared_intro_text(
+    book: dict[str, str], expected: list[str]
+) -> None:
+    shot = {
+        "id": "scene-02",
+        "keyframe_name": "book_intro",
+        "required_on_screen_text": creative.intro_text_from_book_metadata(book),
+    }
+    assert creative.expected_text(shot) == expected
+
+
+@pytest.mark.parametrize("explicit_none", [False, True])
+def test_book_intro_without_text_declaration_fails_closed(explicit_none: bool) -> None:
+    shot: dict = {"id": "scene-02", "keyframe_name": "book_intro"}
+    if explicit_none:
+        shot["required_on_screen_text"] = None
+    with pytest.raises(creative.CreativeReviewError, match="scene-02.*plan must declare"):
+        creative.expected_text(shot)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["not a list", [""], ["   "], [None], [5], ["TITLE", " TITLE "], ["one", " one"]],
+)
+def test_book_intro_rejects_blank_wrong_type_and_duplicate_contracts(value: object) -> None:
+    with pytest.raises(creative.CreativeReviewError, match="invalid required on-screen"):
+        creative.expected_text(
+            {"id": "scene-02", "keyframe_name": "book_intro", "required_on_screen_text": value}
+        )
+
+
+def test_explicit_no_text_intro_and_undeclared_other_shot() -> None:
+    assert creative.expected_text(
+        {"id": "scene-02", "keyframe_name": "book_intro", "required_on_screen_text": []}
+    ) == []
+    assert creative.expected_text({"id": "other", "role": "hook"}) == []
+
+
+def test_bound_review_rejects_changed_plan_text_even_when_human_approved(tmp_path: Path) -> None:
+    path, video, shot, record = _review(tmp_path)
+    path.write_text(json.dumps(_approve(record)))
+    _require(path, video, shot)
+    shot["required_on_screen_text"] = ["OTHER BOOK", "OTHER AUTHOR"]
+    with pytest.raises(creative.CreativeReviewError, match="stale or contradictory"):
+        _require(path, video, shot)
+
+
+def test_creative_review_gate_contains_no_hardcoded_book_literature() -> None:
+    source = (ROOT / "scripts/book_shot_review.py").read_text(encoding="utf-8")
+    assert "ATOMIC HABITS" not in source
+    assert "JAMES CLEAR" not in source
+    assert "DEEP WORK" not in source
+    assert "CAL NEWPORT" not in source

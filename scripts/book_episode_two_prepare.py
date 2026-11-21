@@ -16,6 +16,7 @@ from typing import Any
 import book_ai_director as director
 import book_audio_timeline as timeline
 import book_episode_selection as chooser
+from book_shot_review import intro_text_from_book_metadata
 
 MODEL = "hexgrad/Kokoro-82M"
 REVISION = "v1.0"
@@ -283,10 +284,21 @@ def seal(target: Path) -> None:
         load(target / "voice.json"),
         load(target / "alignment.json"),
     )
+    briefs = load(target / "brief.json")["shot_briefs"]
+    if len(briefs) != len(edl["shots"]):
+        raise EpisodeTwoError("sealed shot count differs from approved director briefs")
+    for shot, spec in zip(edl["shots"], briefs, strict=True):
+        if spec["reference_name"] == "book_intro":
+            shot["keyframe_name"] = "book_intro"
+            shot["required_on_screen_text"] = intro_text_from_book_metadata(
+                {"title": request["book_title"], "author": request["book_author"]}
+            )
+    edl["fingerprint"] = timeline.digest(
+        {key: value for key, value in edl.items() if key != "fingerprint"}
+    )
     write(target / "audio-locked-edl.json", edl)
     with wave.open(str(audio), "rb") as recording:
         pcm = recording.readframes(recording.getnframes())
-    briefs = load(target / "brief.json")["shot_briefs"]
     render_jobs: list[dict[str, Any]] = []
     for index, (shot, spec) in enumerate(zip(edl["shots"], briefs, strict=True)):
         start, end = shot["start_sample"], shot["end_sample"]

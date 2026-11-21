@@ -378,3 +378,20 @@ def test_mixed_shot_review_rejects_assembly_before_ffmpeg(
     with pytest.raises(assembly.AssemblyError, match="creative review rejected"):
         assembly.assemble(edl, audio, assets, tmp_path / "blocked")
     assert not any(argv[0] == "ffmpeg" for argv in invoked)
+
+
+
+def test_undeclared_book_intro_blocks_general_assembly_before_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    edl, audio, assets = _lock(tmp_path)
+    edl["shots"][0]["keyframe_name"] = "book_intro"
+    edl["fingerprint"] = timeline.digest(
+        {key: value for key, value in edl.items() if key != "fingerprint"}
+    )
+    assets["edl_fingerprint"] = edl["fingerprint"]
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(assembly, "run", lambda argv: invoked.append(argv) or "")
+    with pytest.raises(assembly.AssemblyError, match="plan must declare"):
+        assembly.assemble(edl, audio, assets, tmp_path / "blocked")
+    assert invoked == []

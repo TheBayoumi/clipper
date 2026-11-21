@@ -16,7 +16,11 @@ import subprocess
 import wave
 from pathlib import Path
 
-from book_shot_review import CreativeReviewError, verify_review
+from book_shot_review import (
+    CreativeReviewError,
+    intro_text_from_book_metadata,
+    verify_review,
+)
 
 FPS = 24
 RATE = 24000
@@ -185,6 +189,11 @@ def make_prepare(source_video: Path, manifest_file: Path, output: Path) -> None:
             {
                 "id": f"scene-{index:02d}",
                 "keyframe_name": name,
+                **(
+                    {"required_on_screen_text": intro_text_from_book_metadata(manifest["book"])}
+                    if name == "book_intro"
+                    else {}
+                ),
                 "narration": scene["narration"],
                 "headline": scene["headline"],
                 "audio": clip.name,
