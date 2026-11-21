@@ -24,9 +24,9 @@ from .contracts import (
     ExcludedPage,
     ImageEvidence,
     ImageOccurrence,
-    OCRIdentity,
     LessonSelection,
     NarrationTrack,
+    OCRIdentity,
     ScriptScene,
     SourceBlock,
     SourceUnresolved,
@@ -352,6 +352,19 @@ class BookOrchestrator:
             "editorial_approved": False,
             "publish_eligible": False,
         }
+        reconciliation = faithful.image_reconciliation(book)
+        reconciliation_path = (
+            self.root
+            / "book-candidates"
+            / "reconciliation"
+            / acquired.candidate.book_id
+            / f"{identity.cache_key}.json"
+        )
+        acquisition._private_write(
+            reconciliation_path,
+            (json.dumps(reconciliation, sort_keys=True, indent=2) + "\n").encode(),
+        )
+        dossier["reconciliation_path"] = str(reconciliation_path)
         acquisition._private_write(
             dossier_path, (json.dumps(dossier, sort_keys=True, indent=2) + "\n").encode()
         )

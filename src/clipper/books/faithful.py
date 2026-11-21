@@ -17,6 +17,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import Callable
+from collections.abc import Iterator
 from dataclasses import asdict, replace
 from io import BytesIO
 from typing import Any
@@ -32,6 +33,7 @@ from .contracts import (
     ImageEvidence,
     ImageOccurrence,
     OCRIdentity,
+    ReadingBlock,
     SourceBlock,
 )
 
@@ -527,7 +529,7 @@ def tesseract_identity() -> OCRIdentity:
             )
             if process.returncode == 0:
                 version = hashlib.sha256(
-                    process.stdout + b"\\n" + process.stderr
+                    process.stdout + b"\n" + process.stderr
                 ).hexdigest()
             else:
                 version = f"version-probe-exit-{process.returncode}"
@@ -615,8 +617,13 @@ def _overlay(
             or set(anchors) != {x.anchor for x in source_image.occurrences}
             or not isinstance(entry["reviewed_by"], str)
             or not entry["reviewed_by"].strip()
-            or not isinstance(entry["reviewed_at"], str)
-            or not entry["reviewed_at"].strip()
+            or not (
+                entry["reviewed_at"] is None
+                or (
+                    isinstance(entry["reviewed_at"], str)
+                    and bool(entry["reviewed_at"].strip())
+                )
+            )
             or entry["review_status"] != "reviewed"
         ):
             raise ExtractionError("reviewed image overlay text, anchors or review state invalid")
@@ -723,3 +730,147 @@ def extract_candidate(
         parser_version=PARSER_VERSION,
         parser_config_sha256=content_fingerprint(config),
     )
+
+
+def reading_blocks(book: BookText) -> Iterator[ReadingBlock]:
+    """Yield source and recovered-image text in original block order, without changing raw data."""
+    images = {item.asset_sha256: item for item in book.images}
+    occurrences = {
+        (image.asset_sha256, occurrence.anchor): occurrence
+        for image in book.images
+        for occurrence in image.occurrences
+    }
+    for block in book.blocks:
+        if block.kind != "image":
+            yield ReadingBlock(
+                block.anchor,
+                block.section_id,
+                block.source_path,
+                block.text,
+                "source",
+                review_status=block.review_status,
+            )
+            continue
+        digest = block.asset_sha256
+        if digest is None or digest not in images or (digest, block.anchor) not in occurrences:
+            raise ExtractionError("ordered image block is missing source occurrence evidence")
+        evidence = images[digest]
+        if evidence.review_status == "reviewed":
+            origin = "reviewed_image"
+        elif evidence.review_status == "machine_unreviewed":
+            origin = "machine_ocr"
+        else:
+            origin = "unrecovered_image"
+        yield ReadingBlock(
+            block.anchor,
+            block.section_id,
+            block.source_path,
+            evidence.normalized_transcription or evidence.original_transcription or "",
+            origin,
+            asset_sha256=digest,
+            original_image_text=evidence.original_transcription,
+            normalization_notes=evidence.normalization_notes,
+            review_status=evidence.review_status,
+        )
+
+
+def image_reconciliation(book: BookText) -> dict[str, Any]:
+    """Non-content inventory, keyed by actual asset digests and source-order occurrences."""
+    records = [
+        {
+            "asset_sha256": image.asset_sha256,
+            "byte_count": image.byte_count,
+            "review_status": image.review_status,
+            "method": image.method,
+            "occurrences": [
+                {"anchor": item.anchor, "source_path": item.source_path}
+                for item in image.occurrences
+            ],
+        }
+        for image in book.images
+    ]
+    return {
+        "schema": "clipper-book-image-reconciliation-v1",
+        "source_sha256": book.content_sha256,
+        "parser_version": book.parser_version,
+        "unique_assets": len(book.images),
+        "total_occurrences": sum(len(x.occurrences) for x in book.images),
+        "unreviewed_assets": sum(x.review_status != "reviewed" for x in book.images),
+        "unreviewed_occurrences": sum(
+            len(x.occurrences) for x in book.images if x.review_status != "reviewed"
+        ),
+        "assets": records,
+    }
+
+
+def convert_research_observations(
+    book: BookText, payload: bytes
+) -> tuple[bytes, dict[str, Any]]:
+    """Convert explicit private research observations; never synthesize missing review."""
+    if len(payload) > 2_000_000:
+        raise ExtractionError("private research observations exceed bounded import size")
+    try:
+        document: object = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ExtractionError("private research observations are invalid JSON") from exc
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"schema", "source_sha256", "entries"}
+        or document["schema"] != "clipper-book-research-observations-v1"
+    ):
+        raise ExtractionError("private research observation schema mismatch")
+    if document["source_sha256"] != book.content_sha256:
+        raise ExtractionError("private research source SHA-256 mismatch")
+    if book.source.source_kind != "archive_candidate":
+        raise ExtractionError("private research import is only for a pinned Archive candidate")
+    observed = document["entries"]
+    if not isinstance(observed, list):
+        raise ExtractionError("private research entries must be an array")
+    images = {x.asset_sha256: x for x in book.images}
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in observed:
+        if not isinstance(entry, dict) or set(entry) != {
+            "asset_sha256",
+            "occurrences",
+            "original_transcription",
+            "normalized_transcription",
+            "normalization_notes",
+            "reviewed_by",
+            "reviewed_at",
+            "review_status",
+        }:
+            raise ExtractionError("private research entry schema mismatch")
+        digest = entry["asset_sha256"]
+        if not isinstance(digest, str) or digest not in images or digest in seen:
+            raise ExtractionError("private research asset hash is unknown or duplicated")
+        observed_occurrences = entry["occurrences"]
+        expected = [
+            {"anchor": x.anchor, "source_path": x.source_path}
+            for x in images[digest].occurrences
+        ]
+        if not isinstance(observed_occurrences, list) or observed_occurrences != expected:
+            raise ExtractionError("private research occurrence path/order/hash mismatch")
+        seen.add(digest)
+        entries.append(
+            {
+                "asset_sha256": digest,
+                "anchors": [x["anchor"] for x in expected],
+                "original_transcription": entry["original_transcription"],
+                "normalized_transcription": entry["normalized_transcription"],
+                "normalization_notes": entry["normalization_notes"],
+                "reviewed_by": entry["reviewed_by"],
+                "reviewed_at": entry["reviewed_at"],
+                "review_status": entry["review_status"],
+            }
+        )
+    overlay = {
+        "schema": "clipper-book-image-overlay-v1",
+        "source_sha256": book.content_sha256,
+        "entries": entries,
+    }
+    serialized = (
+        json.dumps(overlay, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    _, evidence = _overlay(book.content_sha256, book.blocks, book.images, serialized)
+    return serialized, image_reconciliation(replace(book, images=evidence))

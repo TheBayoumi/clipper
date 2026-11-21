@@ -62,6 +62,21 @@ class SourceBlock:
 
 
 @dataclass(frozen=True, slots=True)
+class ReadingBlock:
+    """Non-mutating, source-ordered reading projection with explicit recovery origin."""
+
+    anchor: str
+    section_id: str
+    source_path: str
+    text: str
+    origin: Literal["source", "reviewed_image", "machine_ocr", "unrecovered_image"]
+    asset_sha256: str | None = None
+    original_image_text: str | None = None
+    normalization_notes: str | None = None
+    review_status: str = "source_unverified"
+
+
+@dataclass(frozen=True, slots=True)
 class ImageOccurrence:
     anchor: str
     source_path: str

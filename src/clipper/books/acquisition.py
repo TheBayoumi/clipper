@@ -299,11 +299,11 @@ def _private_write(path: Path, data: bytes) -> None:
     try:
         try:
             os.link(temporary, path)
-        except FileExistsError:
+        except FileExistsError as exc:
             if path.read_bytes() != data:
                 raise AcquisitionError(
                     f"immutable artifact conflicts with recorded bytes: {path.name}"
-                )
+                ) from exc
         os.chmod(path, 0o600)
     finally:
         temporary.unlink(missing_ok=True)
@@ -479,7 +479,10 @@ class ArchiveAcquirer:
                 try:
                     _private_write(
                         manifest_path,
-                        (json.dumps(manifest, sort_keys=True, ensure_ascii=False, indent=2) + "\n").encode(),
+                        (
+                            json.dumps(manifest, sort_keys=True, ensure_ascii=False, indent=2)
+                            + "\n"
+                        ).encode(),
                     )
                 except AcquisitionError:
                     # A concurrent identical fetch may have committed its own first timestamp.

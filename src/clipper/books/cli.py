@@ -35,7 +35,9 @@ def configure_books_parser(subparsers: Any) -> None:
     acquire.add_argument("--edition")
     acquire.add_argument("--registry", type=Path, default=acquisition.REGISTRY)
     acquire.add_argument("--offline", action="store_true")
-    acquire.add_argument("--refresh", action="store_true", help="explicitly revalidate remote source")
+    acquire.add_argument(
+        "--refresh", action="store_true", help="explicitly revalidate remote source"
+    )
     acquire.add_argument("--artifact-root", type=Path, default=Path("artifacts/books"))
 
     ingest_cmd = actions.add_parser(
@@ -47,10 +49,23 @@ def configure_books_parser(subparsers: Any) -> None:
     ingest_cmd.add_argument("--source", type=Path, help="explicit owner file (legacy mode)")
     ingest_cmd.add_argument("--registry", type=Path, default=acquisition.REGISTRY)
     ingest_cmd.add_argument("--offline", action="store_true")
-    ingest_cmd.add_argument("--refresh", action="store_true", help="explicitly revalidate remote source")
+    ingest_cmd.add_argument(
+        "--refresh", action="store_true", help="explicitly revalidate remote source"
+    )
     ingest_cmd.add_argument("--overlay", type=Path, help="private reviewed image sidecar")
     ingest_cmd.add_argument("--ocr", choices=("none", "tesseract"), default="none")
     ingest_cmd.add_argument("--artifact-root", type=Path, default=Path("artifacts/books"))
+
+    private_import = actions.add_parser(
+        "overlay-import", help="convert local research observations using pinned offline source"
+    )
+    private_import.add_argument("--title", required=True)
+    private_import.add_argument("--author")
+    private_import.add_argument("--edition")
+    private_import.add_argument("--registry", type=Path, default=acquisition.REGISTRY)
+    private_import.add_argument("--artifact-root", type=Path, default=Path("artifacts/books"))
+    private_import.add_argument("--research", type=Path, required=True)
+    private_import.add_argument("--output", type=Path, required=True)
 
     mine_cmd = actions.add_parser("mine", help="mine recorded responses, never infer live")
     mine_cmd.add_argument("--book-id", required=True)
@@ -114,6 +129,36 @@ def dispatch_books(args: argparse.Namespace) -> int:
         )
         print(json.dumps(asdict(resolved), ensure_ascii=False))
         return 1 if isinstance(resolved, SourceUnresolved) else 0
+
+    if args.books_action == "overlay-import":
+        runner = BookOrchestrator(args.artifact_root)
+        recovered = runner.ingest_candidate(
+            args.title,
+            author=args.author,
+            edition=args.edition,
+            registry=acquisition.load_registry(args.registry),
+            offline=True,
+        )
+        if isinstance(recovered, SourceUnresolved):
+            print(json.dumps(asdict(recovered), ensure_ascii=False))
+            return 1
+        overlay_bytes, report = faithful.convert_research_observations(
+            recovered.book, args.research.read_bytes()
+        )
+        acquisition._private_write(args.output, overlay_bytes)
+        report_path = (
+            args.artifact_root
+            / "book-candidates"
+            / "research-import"
+            / recovered.candidate.book_id
+            / f"{hashlib.sha256(overlay_bytes).hexdigest()}.json"
+        )
+        acquisition._private_write(
+            report_path, (json.dumps(report, sort_keys=True, indent=2) + "\n").encode()
+        )
+        print(json.dumps({"overlay_path": str(args.output), "report_path": str(report_path),
+                          "unreviewed_assets": report["unreviewed_assets"]}))
+        return 2 if report["unreviewed_assets"] else 0
 
     if args.books_action in {"acquire", "ingest"}:
         runner = BookOrchestrator(args.artifact_root)

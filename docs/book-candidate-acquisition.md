@@ -152,3 +152,25 @@ every claimed lesson. No production acceptance is claimed. Full
 candidate fidelity, checked human image overlays, any live mining,
 source authorization, and the unported direction, visuals, assembly and
 review stages require separate evidence and authorization.
+
+
+## Deterministic private research import (repair boundary)
+
+After an authorized local acquisition/extraction, import locally exported image
+observations with `clipper books overlay-import --title "Atomic Habits" --research
+/private/observations.json --output /private/reviewed-overlay.json --artifact-root
+artifacts/books`. This command is offline-only. The input schema
+`clipper-book-research-observations-v1` binds the raw book SHA-256 and each
+reviewed asset SHA-256 to the exact ordered list of `{anchor, source_path}`
+occurrences. Observations retain original transcription, separate normalized
+transcription, normalization notes, reviewer label, and an optional actual
+review timestamp; null means unknown, not a fabricated date. Partial inventories
+leave their unmatched assets/occurrences unreviewed. Output is an immutable
+private overlay and a non-content source/path/hash/occurrence reconciliation
+report. No private sidecar is committed. This is an interface test boundary:
+actual private research files are not available in this environment.
+
+The observed Psychology discrepancy is a missing cover.jpeg in the earlier
+reviewed occurrence inventory (36 reviewed observations versus 37 extraction
+occurrences); this report is computed from the exact source, never from a
+hardcoded count. The Deep UK final physical page exclusion stays source-bound.

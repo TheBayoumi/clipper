@@ -20,7 +20,10 @@ from clipper.books.faithful import (
     ExtractionError,
     _xml,
     cpu_tesseract,
+    convert_research_observations,
     extract_candidate,
+    image_reconciliation,
+    reading_blocks,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -702,3 +705,67 @@ def test_injected_ocr_requires_explicit_producer_identity() -> None:
             candidate,
             ocr_identity=OCRIdentity("invalid", "v1"),
         )
+
+
+def test_ordered_reading_blocks_keep_source_and_reviewed_images_distinct() -> None:
+    raw = _epub()
+    candidate = _candidate(raw)
+    book = extract_candidate(_source(raw, candidate), raw, candidate)
+    asset = book.images[0]
+    observation = {
+        "schema": "clipper-book-research-observations-v1",
+        "source_sha256": candidate.expected_sha256,
+        "entries": [
+            {
+                "asset_sha256": asset.asset_sha256,
+                "occurrences": [
+                    {"anchor": x.anchor, "source_path": x.source_path}
+                    for x in asset.occurrences
+                ],
+                "original_transcription": "40 10 60",
+                "normalized_transcription": "40, 10, 60",
+                "normalization_notes": "Editorial punctuation grouping only",
+                "reviewed_by": "fixture-human",
+                "reviewed_at": None,
+                "review_status": "reviewed",
+            }
+        ],
+    }
+    overlay, report = convert_research_observations(book, json.dumps(observation).encode())
+    assert report["unreviewed_assets"] == 0
+    assert report["total_occurrences"] == 3
+    converted = extract_candidate(_source(raw, candidate), raw, candidate, overlay=overlay)
+    assert converted.images[0].reviewed_at is None
+    assert converted.images[0].normalization_notes == "Editorial punctuation grouping only"
+    view = list(reading_blocks(converted))
+    assert len(view) == len(converted.blocks)
+    assert [x.anchor for x in view] == [x.anchor for x in converted.blocks]
+    image_items = [x for x in view if x.origin == "reviewed_image"]
+    assert len(image_items) == 3
+    assert all(x.original_image_text == "40 10 60" for x in image_items)
+    assert all(x.text == "40, 10, 60" for x in image_items)
+    assert not any(x.text == "Automaticity 40 10 60" for x in view)
+    assert len(converted.blocks) == len(book.blocks)
+    assert image_reconciliation(book)["unreviewed_occurrences"] == 3
+    observation["entries"][0]["occurrences"][0]["source_path"] = "other.xhtml"
+    with pytest.raises(ExtractionError, match="occurrence path/order/hash mismatch"):
+        convert_research_observations(book, json.dumps(observation).encode())
+
+
+def test_research_import_preserves_unmatched_image_uncertainty() -> None:
+    raw = _epub()
+    candidate = _candidate(raw)
+    book = extract_candidate(_source(raw, candidate), raw, candidate)
+    payload = {
+        "schema": "clipper-book-research-observations-v1",
+        "source_sha256": book.content_sha256,
+        "entries": [],
+    }
+    overlay, report = convert_research_observations(book, json.dumps(payload).encode())
+    assert report["unreviewed_assets"] == 1
+    assert report["unreviewed_occurrences"] == 3
+    assert report["assets"][0]["occurrences"][0]["source_path"]
+    still_incomplete = extract_candidate(book.source, raw, candidate, overlay=overlay)
+    assert still_incomplete.recovery_status == "incomplete_recovery"
+    assert all(x.origin == "unrecovered_image" or x.origin == "source"
+               for x in reading_blocks(still_incomplete))
