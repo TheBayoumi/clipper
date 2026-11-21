@@ -302,9 +302,7 @@ def _script_pipeline() -> tuple[Any, Any]:
             "Install the [niche-models] runtime for open-weight inference"
         ) from exc
     torch.set_num_threads(min(4, os.cpu_count() or 1))
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        SCRIPT_MODEL, revision=SCRIPT_REVISION
-    )
+    tokenizer = transformers.AutoTokenizer.from_pretrained(SCRIPT_MODEL, revision=SCRIPT_REVISION)
     model = transformers.AutoModelForCausalLM.from_pretrained(
         SCRIPT_MODEL, revision=SCRIPT_REVISION, dtype="auto"
     ).eval()
