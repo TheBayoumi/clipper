@@ -223,5 +223,5 @@ def test_recorded_narration_sha_change_creates_distinct_dag_identity(
     assert all(json.loads(path.read_text())["status"] == "PASS" for path in records)
 
     (recorded_dir / "scene-01.wav").unlink()
-    with pytest.raises(BookRunError, match="exactly one scene-NN.wav"):
+    with pytest.raises(BookRunError, match=r"exactly one scene-NN.wav"):
         runner.narrate(plan, script, recorded_dir=recorded_dir)
