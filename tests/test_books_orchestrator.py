@@ -8,9 +8,9 @@ from unittest.mock import Mock
 
 import pytest
 
+from clipper.books import selection
 from clipper.books.contracts import BOOK_STAGE_CONTRACTS
 from clipper.books.orchestrator import BookOrchestrator, BookRunError, NotPortedStage
-from clipper.books import selection
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -51,7 +51,7 @@ def test_recorded_episode_runs_selection_and_script_then_fails_at_narration(
 ) -> None:
     catalog, board = _inputs()
     runner = BookOrchestrator(tmp_path)
-    with pytest.raises(NotPortedStage, match="NOT_PORTED: books.narration"):
+    with pytest.raises(NotPortedStage, match=r"NOT_PORTED: books.narration"):
         runner.run(
             catalog,
             board,
