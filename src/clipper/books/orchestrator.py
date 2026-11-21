@@ -298,8 +298,18 @@ class BookOrchestrator:
                 tracks.append(asdict(track))
             return tracks
 
-        stored, _reused = self.dag.execute(identity, synthesize)
-        return _narration_cached(stored, len(scenes))
+        stored, reused = self.dag.execute(identity, synthesize)
+        tracks = _narration_cached(stored, len(scenes))
+        if reused and recordings is None:
+            for scene, track in zip(scenes, tracks, strict=True):
+                path = narration.tts_cache_path(scene, config, self.script_cache_root)
+                if not path.is_file():
+                    raise BookRunError("cached narration WAV missing on DAG resume")
+                audio = path.read_bytes()
+                if hashlib.sha256(audio).hexdigest() != track.audio_sha256:
+                    raise BookRunError("cached narration WAV hash mismatch on DAG resume")
+                narration.validated_wav(audio, cached=True)
+        return tracks
 
     def require_unported(
         self, stage: str, *, source_hash: str, dependency_hashes: tuple[str, ...]

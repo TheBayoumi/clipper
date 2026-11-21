@@ -175,3 +175,53 @@ def test_recorded_narration_rejects_bad_geometry_with_dag_failure_evidence(
     assert len(records) == 1
     assert json.loads(records[0].read_text())["status"] == "FAILED"
     assert not list((tmp_path / "book-script-cache/tts").glob("*.wav"))
+
+
+
+def test_narration_resume_fails_closed_if_audio_cache_file_changes(
+    tmp_path: Path,
+) -> None:
+    catalog, board = _inputs()
+    runner = BookOrchestrator(tmp_path)
+    plan = runner.plan(catalog, board, book_id="atomic-habits", lesson_id="two-minute-rule")
+    script = runner.script(plan, source=ROOT / "niches/atomic-habits-episode-02.json")
+    recorded_dir = _recorded_wavs(tmp_path, count=len(script.scenes))
+    wav = (recorded_dir / "scene-00.wav").read_bytes()
+    producer = Mock(return_value=wav)
+    runner.narrate(plan, script, producer=producer)
+    producer.assert_called()
+    broken = next((tmp_path / "book-script-cache/tts").glob("*.wav"))
+    broken.write_bytes(b"corrupt")
+    fail_producer = Mock(side_effect=AssertionError("cached WAV may not regenerate silently"))
+    with pytest.raises(BookRunError, match="hash mismatch"):
+        runner.narrate(plan, script, producer=fail_producer)
+    broken.unlink()
+    with pytest.raises(BookRunError, match="missing on DAG resume"):
+        runner.narrate(plan, script, producer=fail_producer)
+    fail_producer.assert_not_called()
+
+
+def test_recorded_narration_sha_change_creates_distinct_dag_identity(
+    tmp_path: Path,
+) -> None:
+    catalog, board = _inputs()
+    runner = BookOrchestrator(tmp_path)
+    plan = runner.plan(catalog, board, book_id="atomic-habits", lesson_id="two-minute-rule")
+    script = runner.script(plan, source=ROOT / "niches/atomic-habits-episode-02.json")
+    recorded_dir = _recorded_wavs(tmp_path, count=len(script.scenes))
+    first = runner.narrate(plan, script, recorded_dir=recorded_dir)
+    with wave.open(str(recorded_dir / "scene-00.wav"), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(24000)
+        output.writeframes(bytes((9, 0)) * 24000)
+    second = runner.narrate(plan, script, recorded_dir=recorded_dir)
+    assert first[0].audio_sha256 != second[0].audio_sha256
+    assert first[1:] == second[1:]
+    records = list((tmp_path / "book-dag/books-narration").glob("*/stage.json"))
+    assert len(records) == 2
+    assert all(json.loads(path.read_text())["status"] == "PASS" for path in records)
+
+    (recorded_dir / "scene-01.wav").unlink()
+    with pytest.raises(BookRunError, match="exactly one scene-NN.wav"):
+        runner.narrate(plan, script, recorded_dir=recorded_dir)
