@@ -208,6 +208,7 @@ def test_generalized_last_invalid_review_blocks_every_media_process(
     edl, audio, assets, folders = _generalized(tmp_path)
     (folders[-1] / "creative-review.json").unlink()
     calls: list[list[str]] = []
+
     def fake_probe(argv: list[str]) -> str:
         calls.append(argv)
         return json.dumps({"format": {"duration": "9.0"}, "streams": [{"codec_type": "video"}]})
@@ -242,7 +243,9 @@ def test_generalized_valid_reviews_preserve_probes_and_encoding(
             }
             return json.dumps(data)
         if argv[0] == "ffprobe":
-            return json.dumps({"format": {"duration": "9.25"}, "streams": [{"codec_type": "video"}]})
+            return json.dumps(
+                {"format": {"duration": "9.25"}, "streams": [{"codec_type": "video"}]}
+            )
         if "-filter_complex" in argv:
             Path(argv[-1]).write_bytes(b"synthetic-assembled-video")
         return ""
@@ -262,6 +265,7 @@ def test_episode_last_invalid_review_blocks_every_media_process(
     (folders[-1] / "creative-review.json").unlink()
     monkeypatch.chdir(tmp_path)
     calls: list[list[str]] = []
+
     def fake_probe(argv: list[str]) -> str:
         calls.append(argv)
         return json.dumps({"format": {"duration": "9.0"}})
