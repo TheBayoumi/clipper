@@ -24,6 +24,7 @@ from .contracts import (
     ExcludedPage,
     ImageEvidence,
     ImageOccurrence,
+    OCRIdentity,
     LessonSelection,
     NarrationTrack,
     ScriptScene,
@@ -225,8 +226,10 @@ class BookOrchestrator:
         refresh: bool = False,
         overlay_path: Path | None = None,
         ocr: faithful.OCR | None = None,
+        ocr_identity: OCRIdentity | None = None,
     ) -> CandidateIngestResult | SourceUnresolved:
         """Preserve separate immutable raw, extracted and evidence dossier identities."""
+        producer_fingerprint = faithful.ocr_contract(ocr, ocr_identity)
         acquired = self.acquire_candidate(
             title,
             author=author,
@@ -255,7 +258,7 @@ class BookOrchestrator:
             "raw_sha256": acquired.observed_sha256,
             "acquisition_fingerprint": acquired.fingerprint,
             "overlay_sha256": hashlib.sha256(overlay).hexdigest() if overlay else None,
-            "ocr_method": "local_injected" if ocr is not None else "none",
+            "ocr_producer": producer_fingerprint,
         }
         identity = stage_identity(
             BOOK_STAGE_CONTRACTS["ingest"],
@@ -263,7 +266,7 @@ class BookOrchestrator:
             dependency_output_hashes=(acquired.fingerprint,),
             decoding_parameters={
                 "parser": faithful.PARSER_VERSION,
-                "ocr": configuration["ocr_method"],
+                "ocr": producer_fingerprint or "none",
             },
         )
 
@@ -275,6 +278,7 @@ class BookOrchestrator:
                     acquired.candidate,
                     overlay=overlay,
                     ocr=ocr,
+                    ocr_identity=ocr_identity,
                 )
             )
 
@@ -324,6 +328,18 @@ class BookOrchestrator:
             "extracted_sha256": hashlib.sha256(extracted_path.read_bytes()).hexdigest(),
             "parser_version": book.parser_version,
             "parser_config_sha256": book.parser_config_sha256,
+            "ocr_producer_fingerprint": producer_fingerprint,
+            "ocr_evidence_sha256": content_fingerprint(
+                [
+                    {
+                        "asset_sha256": x.asset_sha256,
+                        "method": x.method,
+                        "review_status": x.review_status,
+                        "original_transcription": x.original_transcription,
+                    }
+                    for x in book.images
+                ]
+            ),
             "text_blocks": len(book.blocks),
             "sections": len(book.sections),
             "extracted_words": book.total_word_count,

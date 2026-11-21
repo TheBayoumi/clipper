@@ -51,7 +51,7 @@ read, executed, altered or reconstructed. Until those sidecars are available
 on the authorized execution machine, their actual image recovery coverage
 remains **unverified**.
 
-The `--ocr tesseract` option runs only an explicitly installed local CPU
+Any injected OCR producer now requires a deterministic `OCRIdentity` containing the\nadapter/version/settings; extraction cache keys bind to its fingerprint. The optional\nlocal Tesseract mode records its resolved executable, version-probe digest,\nexplicit English language and PSM 6. OCR outputs remain unreviewed, with a\nseparate output-evidence fingerprint in the private dossier. An unchanged identity\nreuses the extraction cache; changing it invalidates the extraction.\n\nThe `--ocr tesseract` option runs only an explicitly installed local CPU
 Tesseract executable; the default is no OCR. Machine text stays separately
 labeled `machine_unreviewed` and never replaces source prose or reviewed
 overlay transcriptions. A missing/failed OCR path produces

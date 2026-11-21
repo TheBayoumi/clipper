@@ -11,12 +11,13 @@ import hashlib
 import json
 import posixpath
 import re
+import shutil
 import subprocess
 import urllib.parse
 import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import asdict, replace
 from io import BytesIO
 from typing import Any
 
@@ -30,6 +31,7 @@ from .contracts import (
     ExcludedPage,
     ImageEvidence,
     ImageOccurrence,
+    OCRIdentity,
     SourceBlock,
 )
 
@@ -166,10 +168,7 @@ def _verify_epub_metadata(
         raise ExtractionError(
             f"EPUB title mismatch: expected {candidate.title!r}, found {titles!r}"
         )
-    if any(
-        _equal(x) not in allowed
-        for x in titles
-    ):
+    if any(_equal(x) not in allowed for x in titles):
         raise ExtractionError(f"ambiguous EPUB title/edition metadata: {titles!r}")
     if not authors or _equal(candidate.author) not in {_equal(x) for x in authors}:
         raise ExtractionError(
@@ -494,11 +493,58 @@ def _pdf(
     )
 
 
+def ocr_contract(ocr: OCR | None, identity: OCRIdentity | None) -> str | None:
+    """Require a declared, fully serializable identity for any injected OCR producer."""
+    if ocr is None:
+        if identity is not None:
+            raise ExtractionError("OCR identity supplied without a producer")
+        return None
+    if (
+        identity is None
+        or not identity.adapter.strip()
+        or not identity.version.strip()
+        or any(
+            not key.strip() or not isinstance(value, str)
+            for key, value in identity.settings
+        )
+        or len({key for key, _ in identity.settings}) != len(identity.settings)
+    ):
+        raise ExtractionError("injected OCR producer requires deterministic identity/config")
+    return content_fingerprint(asdict(identity))
+
+
+def tesseract_identity() -> OCRIdentity:
+    """Bind local executable/version, language and page segmentation without a download."""
+    executable = shutil.which("tesseract")
+    version = "not-installed"
+    if executable is not None:
+        try:
+            process = subprocess.run(
+                [executable, "--version"],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            if process.returncode == 0:
+                version = hashlib.sha256(
+                    process.stdout + b"\\n" + process.stderr
+                ).hexdigest()
+            else:
+                version = f"version-probe-exit-{process.returncode}"
+        except (OSError, subprocess.TimeoutExpired):
+            version = "version-probe-failed"
+    return OCRIdentity(
+        "local-tesseract",
+        version,
+        (("executable", executable or "missing"), ("language", "eng"), ("psm", "6")),
+    )
+
+
 def cpu_tesseract(image: bytes, _media_type: str) -> str | None:
     """Explicit opt-in local installed binary; never downloads models or calls a provider."""
     try:
         process = subprocess.run(
-            ["tesseract", "stdin", "stdout", "--psm", "6"],
+            ["tesseract", "stdin", "stdout", "-l", "eng", "--psm", "6"],
             input=image,
             capture_output=True,
             timeout=30,
@@ -598,7 +644,9 @@ def extract_candidate(
     *,
     overlay: bytes | None = None,
     ocr: OCR | None = None,
+    ocr_identity: OCRIdentity | None = None,
 ) -> BookText:
+    producer_fingerprint = ocr_contract(ocr, ocr_identity)
     if source.source_kind != "archive_candidate":
         raise ExtractionError("faithful extraction requires an explicit Archive candidate")
     digest = hashlib.sha256(raw).hexdigest()
@@ -657,7 +705,7 @@ def extract_candidate(
         "parser": PARSER_VERSION,
         "candidate": candidate.fingerprint,
         "format": candidate.format,
-        "ocr": ocr is not None,
+        "ocr": producer_fingerprint,
         "overlay_sha256": hashlib.sha256(overlay).hexdigest() if overlay else None,
     }
     return BookText(

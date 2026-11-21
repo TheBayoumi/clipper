@@ -176,6 +176,7 @@ def dispatch_books(args: argparse.Namespace) -> int:
             refresh=args.refresh,
             overlay_path=args.overlay,
             ocr=faithful.cpu_tesseract if args.ocr == "tesseract" else None,
+            ocr_identity=faithful.tesseract_identity() if args.ocr == "tesseract" else None,
         )
         if isinstance(recovered, SourceUnresolved):
             print(json.dumps(asdict(recovered), ensure_ascii=False))

@@ -15,6 +15,15 @@ SourceKind = Literal["owner_file", "public_domain", "archive_candidate", "unreso
 
 
 @dataclass(frozen=True, slots=True)
+class OCRIdentity:
+    """Caller-declared deterministic identity of the local OCR producer and settings."""
+
+    adapter: str
+    version: str
+    settings: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class BookSource:
     title: str
     author: str

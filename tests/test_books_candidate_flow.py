@@ -14,7 +14,7 @@ import pytest
 
 from clipper import cli
 from clipper.books import acquisition
-from clipper.books.contracts import SourceUnresolved
+from clipper.books.contracts import OCRIdentity, SourceUnresolved
 from clipper.books.orchestrator import BookOrchestrator, BookRunError
 
 
@@ -303,3 +303,43 @@ def test_missing_sidecar_fails_after_raw_acquisition_without_forging_review(
         )
     assert list((tmp_path / "book-candidates/raw").glob("**/*.epub"))
     assert not list((tmp_path / "book-candidates/dossiers").glob("**/*.json"))
+
+
+def test_ocr_producer_change_rekeys_and_identical_contract_resumes(tmp_path: Path) -> None:
+    candidate, transport, _registry = _fixture(tmp_path)
+    runner = BookOrchestrator(tmp_path / "private")
+    first_ocr = Mock(return_value="synthetic original chart label")
+    first = runner.ingest_candidate(
+        "Atomic Habits",
+        registry=(candidate,),
+        transport=transport,
+        ocr=first_ocr,
+        ocr_identity=OCRIdentity("fixture-ocr", "1", (("language", "eng"),)),
+    )
+    assert not isinstance(first, SourceUnresolved)
+    first_ocr.assert_called_once()
+    changed_ocr = Mock(return_value="different synthetic observation")
+    changed = runner.ingest_candidate(
+        "Atomic Habits",
+        registry=(candidate,),
+        offline=True,
+        ocr=changed_ocr,
+        ocr_identity=OCRIdentity("fixture-ocr", "1", (("language", "deu"),)),
+    )
+    assert not isinstance(changed, SourceUnresolved)
+    changed_ocr.assert_called_once()
+    assert changed.stage_key != first.stage_key
+    assert changed.book.images[0].original_transcription != first.book.images[0].original_transcription
+    resumed_ocr = Mock(side_effect=AssertionError("unchanged OCR must not execute"))
+    resumed = runner.ingest_candidate(
+        "Atomic Habits",
+        registry=(candidate,),
+        offline=True,
+        ocr=resumed_ocr,
+        ocr_identity=OCRIdentity("fixture-ocr", "1", (("language", "deu"),)),
+    )
+    assert not isinstance(resumed, SourceUnresolved)
+    assert resumed.stage_key == changed.stage_key
+    resumed_ocr.assert_not_called()
+    with pytest.raises(Exception, match="requires deterministic identity"):
+        runner.ingest_candidate("Atomic Habits", registry=(candidate,), ocr=first_ocr)

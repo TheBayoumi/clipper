@@ -15,7 +15,7 @@ import pytest
 from PIL import Image
 
 from clipper.books.acquisition import ReviewedCandidate, load_registry
-from clipper.books.contracts import BookSource
+from clipper.books.contracts import BookSource, OCRIdentity
 from clipper.books.faithful import (
     ExtractionError,
     _xml,
@@ -173,7 +173,13 @@ def test_epub_source_order_and_text_image_separation() -> None:
 def test_epub_reuses_image_bytes_for_one_injected_cpu_ocr() -> None:
     raw = _epub()
     completion = Mock(return_value="40 10 60, do not autocorrect")
-    book = extract_candidate(_source(raw, _candidate(raw)), raw, _candidate(raw), ocr=completion)
+    book = extract_candidate(
+        _source(raw, _candidate(raw)),
+        raw,
+        _candidate(raw),
+        ocr=completion,
+        ocr_identity=OCRIdentity("test-ocr", "v1"),
+    )
     completion.assert_called_once_with(IMAGE, "image/png")
     assert len(book.images[0].occurrences) == 3
     assert book.images[0].original_transcription == "40 10 60, do not autocorrect"
@@ -210,6 +216,7 @@ def test_reviewed_overlay_import_preserves_raw_transcription_and_rekeys() -> Non
         selected,
         overlay=payload,
         ocr=Mock(side_effect=AssertionError("reviewed image must not be re-OCRed")),
+        ocr_identity=OCRIdentity("test-ocr", "v1"),
     )
     assert verified.images[0].original_transcription == "40 10 60"
     assert verified.images[0].method == "reviewed_overlay"
@@ -587,7 +594,13 @@ def test_overlay_malformed_schema_missing_review_and_unknown_asset_fail_closed()
 def test_missing_ocr_does_not_imply_complete_transcription() -> None:
     raw = _epub()
     candidate = _candidate(raw)
-    book = extract_candidate(_source(raw, candidate), raw, candidate, ocr=lambda _p, _m: None)
+    book = extract_candidate(
+        _source(raw, candidate),
+        raw,
+        candidate,
+        ocr=lambda _p, _m: None,
+        ocr_identity=OCRIdentity("test-no-words", "v1"),
+    )
     assert book.recovery_status == "incomplete_recovery"
     assert all(image.original_transcription is None for image in book.images)
     assert "OCR absent/failed" in book.images[0].uncertainty
@@ -675,3 +688,17 @@ def test_atomic_reviewed_two_title_metadata_exactly_matches_same_isbn() -> None:
             },
         )
         extract_candidate(_source(bad, _candidate(bad)), bad, _candidate(bad))
+
+
+def test_injected_ocr_requires_explicit_producer_identity() -> None:
+    raw = _epub()
+    candidate = _candidate(raw)
+    with pytest.raises(ExtractionError, match="requires deterministic identity"):
+        extract_candidate(_source(raw, candidate), raw, candidate, ocr=lambda _a, _m: "X")
+    with pytest.raises(ExtractionError, match="without a producer"):
+        extract_candidate(
+            _source(raw, candidate),
+            raw,
+            candidate,
+            ocr_identity=OCRIdentity("invalid", "v1"),
+        )
