@@ -12,7 +12,6 @@ from clipper.books.contracts import (
     BookSection,
     BookSource,
     BookText,
-    SourceUnresolved,
     EpisodeDraft,
     EpisodeScript,
     LessonSelection,
@@ -21,6 +20,7 @@ from clipper.books.contracts import (
     ScriptScene,
     ShotPlan,
     ShotSet,
+    SourceUnresolved,
 )
 from clipper.stage_contracts import content_fingerprint, stage_identity
 
