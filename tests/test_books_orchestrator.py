@@ -124,7 +124,7 @@ def test_every_unported_stage_records_an_explicit_failure(tmp_path: Path, stage:
 def test_invalid_stage_and_mismatched_recorded_episode_never_start_model(
     tmp_path: Path,
 ) -> None:
-    catalog, board = _inputs()
+    catalog, _board = _inputs()
     runner = BookOrchestrator(tmp_path)
     with pytest.raises(BookRunError, match="unknown or implemented"):
         runner.require_unported("selection", source_hash="a", dependency_hashes=())
