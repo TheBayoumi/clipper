@@ -44,5 +44,6 @@ jobs:
             tests/test_modal_endpoint_identity_contract.py \
             tests/test_modal_endpoint_bootstrap.py \
             tests/test_wan_shot_contract.py \
-            tests/test_wan_keyframe_contract.py
+            tests/test_wan_keyframe_contract.py \
+            tests/test_book_assembly_trust_boundary.py
           coverage report --rcfile=.coveragerc.scripts --fail-under=60.84
