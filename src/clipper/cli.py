@@ -12,6 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .benchmark import evaluate_corpus_manifest
+from .books.cli import configure_books_parser, dispatch_books
 from .brief import load_brief
 from .modal_execution import ensure_modal_runtime, run_modal_pipeline
 from .pipeline import PipelineSettings, run_pipeline
@@ -38,6 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--verbose", action="store_true")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    configure_books_parser(subparsers)
 
     validate = subparsers.add_parser("validate", help="validate a campaign brief")
     validate.add_argument("--brief", required=True, type=Path)
@@ -459,6 +461,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     _configure_logging(args.verbose)
     try:
+        if args.command == "books":
+            return dispatch_books(args)
         if args.command == "validate":
             brief = load_brief(args.brief)
             assert_campaign_authorized(brief)
