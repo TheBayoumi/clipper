@@ -20,14 +20,14 @@ from .contracts import (
     BookSection,
     BookSource,
     BookText,
+    EpisodeScript,
     ExcludedPage,
     ImageEvidence,
     ImageOccurrence,
-    SourceBlock,
-    EpisodeScript,
     LessonSelection,
     NarrationTrack,
     ScriptScene,
+    SourceBlock,
     SourceUnresolved,
 )
 from .storyboards import StoryboardProvenance
