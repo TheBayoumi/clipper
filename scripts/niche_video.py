@@ -13,7 +13,6 @@ import math
 import os
 import shutil
 import subprocess
-import sys
 import wave
 from functools import lru_cache
 from pathlib import Path
