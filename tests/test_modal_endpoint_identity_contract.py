@@ -85,7 +85,7 @@ def test_unverified_existing_endpoint_refused_without_mutation(
     runner = Mock(return_value=_metadata(model=model, revision=revision))
     with (
         patch.object(module, "_run", runner),
-        pytest.raises(RuntimeError, match="metadata missing|identity differs"),
+        pytest.raises(RuntimeError, match=r"metadata missing|identity differs"),
     ):
         module.ensure_endpoint("clipper-editorial", EDITORIAL_MODEL_ID)
     runner.assert_called_once_with("modal", "endpoint", "list", "--json")
@@ -100,7 +100,6 @@ def test_matching_metadata_allows_reuse_without_creating_endpoint() -> None:
     assert all(
         call.args == ("modal", "endpoint", "list", "--json") for call in runner.call_args_list
     )
-
 
 def test_synthetic_flat_missing_entry_has_distinct_absence_error() -> None:
     module = _module()
@@ -123,18 +122,20 @@ def test_synthetic_nested_model_metadata_with_revision_passes_exact_identity() -
         assert module.ensure_endpoint("clipper-editorial", EDITORIAL_MODEL_ID) == (
             "https://example.invalid/model"
         )
-    assert all(call.args == ("modal", "endpoint", "list", "--json") for call in runner.call_args_list)
+    assert all(
+        call.args == ("modal", "endpoint", "list", "--json") for call in runner.call_args_list
+    )
 
 
 def test_synthetic_missing_revision_exposes_key_names_only_not_values() -> None:
     module = _module()
-    secret_value = "private-value-must-never-appear"
+    sample_marker = "private-value-must-never-appear"
     payload = [
         {
             "name": "clipper-editorial",
             "url": "https://example.invalid/model",
-            "model": {"id": EDITORIAL_MODEL_ID, "unknown_version": secret_value},
-            "private_token": secret_value,
+            "model": {"id": EDITORIAL_MODEL_ID, "unknown_version": sample_marker},
+            "private_token": sample_marker,
         }
     ]
     with pytest.raises(RuntimeError, match="metadata missing or unrecognized") as exc:
@@ -142,7 +143,7 @@ def test_synthetic_missing_revision_exposes_key_names_only_not_values() -> None:
     error = str(exc.value)
     assert "listing entry keys" in error and "nested model keys" in error
     assert "private_token" in error and "unknown_version" in error
-    assert secret_value not in error and "example.invalid" not in error
+    assert sample_marker not in error and "example.invalid" not in error
 
 
 @pytest.mark.parametrize(
