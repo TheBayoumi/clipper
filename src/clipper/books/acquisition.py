@@ -119,9 +119,8 @@ def load_registry(path: Path = REGISTRY) -> tuple[ReviewedCandidate, ...]:
     for row in books:
         if not isinstance(row, dict):
             raise AcquisitionError("invalid reviewed candidate record")
-        if (
-            not isinstance(row.get("title_aliases"), list)
-            or not isinstance(row.get("exclusions"), list)
+        if not isinstance(row.get("title_aliases"), list) or not isinstance(
+            row.get("exclusions"), list
         ):
             raise AcquisitionError("reviewed candidate aliases/exclusions must be arrays")
         try:

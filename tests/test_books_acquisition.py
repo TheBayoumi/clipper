@@ -316,7 +316,9 @@ def test_acquisition_metadata_schema_and_restrictions_fail_closed(tmp_path: Path
     for index, result in enumerate(invalid):
         transport = FixtureTransport(metadata, raw)
         transport.get = Mock(return_value=result)
-        with pytest.raises(AcquisitionError, match=r"not JSON|object malformed|metadata/acquisition"):
+        with pytest.raises(
+            AcquisitionError, match=r"not JSON|object malformed|metadata/acquisition"
+        ):
             ArchiveAcquirer(tmp_path / f"invalid-{index}", transport).acquire(candidate)
         transport.get.assert_called_once()
 
@@ -343,7 +345,9 @@ def test_archive_metadata_response_size_and_offline_manifest_cannot_be_trusted(
     ):
         changed = {**original, **patch}
         manifest.write_text(json.dumps(changed))
-        with pytest.raises(AcquisitionError, match=r"manifest schema mismatch|manifest identity mismatch"):
+        with pytest.raises(
+            AcquisitionError, match=r"manifest schema mismatch|manifest identity mismatch"
+        ):
             ArchiveAcquirer(tmp_path, Mock()).acquire(candidate, offline=True)
     manifest.write_text(json.dumps(original))
 
@@ -359,9 +363,7 @@ def test_candidate_registry_rejects_missing_identity_and_scalar_aliases(tmp_path
         ]
     ):
         path = tmp_path / f"bad-registry-{index}.json"
-        path.write_text(
-            json.dumps({"schema": registry["schema"], "books": [mutation]})
-        )
+        path.write_text(json.dumps({"schema": registry["schema"], "books": [mutation]}))
         with pytest.raises(AcquisitionError, match=r"incomplete reviewed|must be arrays"):
             load_registry(path)
 
@@ -433,15 +435,17 @@ def test_archive_redirect_and_dns_resolution_fail_without_network(
     )
     handler = _StrictRedirect()
     rewritten = handler.redirect_request(
-        request, None, 302, "Found", {},
+        request,
+        None,
+        302,
+        "Found",
+        {},
         "https://ia801234.us.archive.org/download/synthetic",
     )
     assert rewritten is not None
     assert "ia801234.us.archive.org" in checked
     with pytest.raises(AcquisitionError, match="unsafe Archive HTTPS"):
-        handler.redirect_request(
-            request, None, 302, "Found", {}, "http://localhost/private"
-        )
+        handler.redirect_request(request, None, 302, "Found", {}, "http://localhost/private")
 
     def fail_dns(*_args: object, **_kwargs: object) -> object:
         raise OSError("recorded resolver timeout")
