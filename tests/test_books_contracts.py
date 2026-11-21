@@ -22,13 +22,29 @@ from clipper.stage_contracts import content_fingerprint, stage_identity
 
 
 def test_book_contracts_are_immutable_and_hash_their_serialized_content() -> None:
-    book = BookRef("atomic-habits", "Atomic Habits", "James Clear", "self_improvement",
-                   "https://jamesclear.com/")
-    lesson = LessonSelection(book, "two-minute-rule", "primary", "episode", "Start small",
-                             "Use simple steps", "https://jamesclear.com/rule", "Hook",
-                             "Move a notebook", "book-lesson-complete-sentences-v2", "f" * 64)
-    episode = EpisodeScript("episode", lesson.fingerprint, "a" * 64, "Small starts",
-                            (ScriptScene("Hook", "An original introduction."),))
+    book = BookRef(
+        "atomic-habits", "Atomic Habits", "James Clear", "self_improvement", "https://jamesclear.com/"
+    )
+    lesson = LessonSelection(
+        book,
+        "two-minute-rule",
+        "primary",
+        "episode",
+        "Start small",
+        "Use simple steps",
+        "https://jamesclear.com/rule",
+        "Hook",
+        "Move a notebook",
+        "book-lesson-complete-sentences-v2",
+        "f" * 64,
+    )
+    episode = EpisodeScript(
+        "episode",
+        lesson.fingerprint,
+        "a" * 64,
+        "Small starts",
+        (ScriptScene("Hook", "An original introduction."),),
+    )
     stages = [
         book,
         lesson,
@@ -48,7 +64,13 @@ def test_book_contracts_are_immutable_and_hash_their_serialized_content() -> Non
 
 def test_every_book_stage_is_registered_with_versioned_identity() -> None:
     assert tuple(BOOK_STAGE_CONTRACTS) == (
-        "selection", "scripting", "narration", "direction", "visuals", "assembly", "review"
+        "selection",
+        "scripting",
+        "narration",
+        "direction",
+        "visuals",
+        "assembly",
+        "review",
     )
     for key, contract in BOOK_STAGE_CONTRACTS.items():
         identity = stage_identity(contract, source_hash="f" * 64)

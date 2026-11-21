@@ -122,13 +122,21 @@ class ReviewDossier:
 BOOK_STAGE_CONTRACTS: dict[str, StageContract] = {
     "selection": StageContract(
         "books.selection",
-        {"schema": "clipper-book-selection-v1",
-         "structure": structural_contract_fingerprint("books.selection", BookRef, LessonSelection)},
+        {
+            "schema": "clipper-book-selection-v1",
+            "structure": structural_contract_fingerprint(
+                "books.selection", BookRef, LessonSelection
+            ),
+        },
     ),
     "scripting": StageContract(
         "books.scripting",
-        {"schema": "niche-scenes-open-v3",
-         "structure": structural_contract_fingerprint("books.scripting", EpisodeScript, ScriptScene)},
+        {
+            "schema": "niche-scenes-open-v3",
+            "structure": structural_contract_fingerprint(
+                "books.scripting", EpisodeScript, ScriptScene
+            ),
+        },
     ),
     "narration": StageContract(
         "books.narration",
