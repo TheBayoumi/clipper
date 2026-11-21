@@ -45,9 +45,10 @@ def _kokoro_wav(narration: str, voice: str, *, pipeline: Callable[[], Any] | Non
         sf = importlib.import_module("soundfile")
     except ImportError as exc:
         raise NicheVideoError("Install soundfile and numpy for open-source TTS") from exc
+    voice_pipeline = (pipeline or _kokoro_pipeline)()
     chunks = [
         np.asarray(audio, dtype=np.float32).reshape(-1)
-        for _, _, audio in (pipeline or _kokoro_pipeline)(narration, voice=voice, speed=1.0)
+        for _, _, audio in voice_pipeline(narration, voice=voice, speed=1.0)
     ]
     if not chunks:
         raise NicheVideoError("Kokoro returned no audio segments")
