@@ -46,7 +46,9 @@ def _text_sections(text: str) -> tuple[BookSection, ...]:
         line = line.strip()
         if re.match(r"^CHAPTER\s+\w+", line, re.IGNORECASE):
             if heading:
-                chapters.append(BookSection(f"chapter-{len(chapters) + 1:02d}", heading, tuple(paragraphs)))
+                chapters.append(
+                    BookSection(f"chapter-{len(chapters) + 1:02d}", heading, tuple(paragraphs))
+                )
             heading, paragraphs = line, []
         elif heading and line:
             paragraphs.append(line)
@@ -73,19 +75,26 @@ def _txt(raw: bytes, source: BookSource) -> tuple[str, str, str | None, tuple[Bo
     return field("Title"), field("Author"), field("Edition") or None, _text_sections(body)
 
 
+def _parse_xml(data: bytes) -> ET.Element:
+    """Reject DTD and entity declarations before bounded stdlib XML parsing."""
+    if b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
+        raise BookIngestError("EPUB XML DTD and external entities forbidden")
+    return ET.fromstring(data)  # noqa: S314 - DTD/entity blocked and archive bounded
+
+
 def _epub(raw: bytes) -> tuple[str, str, str | None, tuple[BookSection, ...]]:
     try:
         with zipfile.ZipFile(BytesIO(raw)) as archive:
             if sum(item.file_size for item in archive.infolist()) > MAX_BYTES:
                 raise BookIngestError("EPUB uncompressed byte limit exceeded")
-            container = ET.fromstring(archive.read("META-INF/container.xml"))
+            container = _parse_xml(archive.read("META-INF/container.xml"))
             opf = next(
                 node.attrib["full-path"] for node in container.iter()
                 if node.tag.endswith("rootfile")
             )
             if ".." in Path(opf).parts or opf.startswith("/"):
                 raise BookIngestError("unsafe EPUB package path")
-            package = ET.fromstring(archive.read(opf))
+            package = _parse_xml(archive.read(opf))
             metadata = next(node for node in package if node.tag.endswith("metadata"))
             def field(name: str) -> str:
                 return next(
@@ -104,7 +113,7 @@ def _epub(raw: bytes) -> tuple[str, str, str | None, tuple[BookSection, ...]]:
                 href = manifest[item]
                 if ".." in Path(href).parts or href.startswith("/"):
                     raise BookIngestError("unsafe EPUB chapter path")
-                page = ET.fromstring(archive.read(str(Path(opf).parent / href)))
+                page = _parse_xml(archive.read(str(Path(opf).parent / href)))
                 body = next(node for node in page.iter() if node.tag.endswith("body"))
                 paragraphs = tuple(
                     " ".join("".join(p.itertext()).split())
@@ -114,7 +123,9 @@ def _epub(raw: bytes) -> tuple[str, str, str | None, tuple[BookSection, ...]]:
                     (" ".join("".join(p.itertext()).split())
                      for p in body.iter() if p.tag.endswith("h1")), item
                 )
-                chapters.append(BookSection(f"chapter-{len(chapters) + 1:02d}", heading, paragraphs))
+                chapters.append(
+                    BookSection(f"chapter-{len(chapters) + 1:02d}", heading, paragraphs)
+                )
             return field("title"), field("creator"), field("identifier") or None, tuple(chapters)
     except (zipfile.BadZipFile, KeyError, ET.ParseError, StopIteration) as exc:
         raise BookIngestError("invalid EPUB ZIP, package, metadata or chapter XML") from exc
@@ -175,7 +186,9 @@ class LocalFileResolver:
 
     def resolve(self, title: str, author: str) -> tuple[BookSource, ...] | SourceUnresolved:
         if self.path is None:
-            return SourceUnresolved(title, author, "supply owner-placed book file", "no source declared")
+            return SourceUnresolved(
+                title, author, "supply owner-placed book file", "no source declared"
+            )
         if not self.path.is_file():
             raise BookIngestError(f"owner source file missing: {self.path}")
         if self.path.suffix.lower() not in {".txt", ".epub"}:
@@ -237,6 +250,9 @@ class _BookIndex(HTMLParser):
 
 def _https_get(url: str) -> bytes:
     """Production opt-in transport; never used by test or CLI default paths."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or parsed.hostname != "www.gutenberg.org":
+        raise BookIngestError("Gutenberg transport accepts only official HTTPS URLs")
     with urllib.request.urlopen(url, timeout=15) as response:
         redirected = urllib.parse.urlsplit(response.geturl())
         if redirected.scheme != "https" or redirected.hostname != "www.gutenberg.org":
