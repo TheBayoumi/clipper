@@ -16,6 +16,8 @@ import subprocess
 import wave
 from pathlib import Path
 
+from book_shot_review import CreativeReviewError, verify_review
+
 FPS = 24
 RATE = 24000
 RENDERED_SHOT_NAMES = ("hook", "lesson_example", "book_intro", "hook")
@@ -229,6 +231,7 @@ def prepare_concat(
     if plan.get("schema") != SCHEMA or not 30 <= plan["seconds"] <= 60:
         raise EpisodeError("not a valid 30-60 second source-backed episode")
     clips = []
+    previous_video_sha256: str | None = None
     for shot, folder in zip(plan["shots"], paths, strict=True):
         name = shot["id"]
         video = folder / "wan-s2v-candidate.mp4"
@@ -247,6 +250,18 @@ def prepare_concat(
             shot["seed"],
         ):
             raise EpisodeError(f"invalid or missing current-audio Wan shot {name}")
+        try:
+            verify_review(
+                folder / "creative-review.json",
+                video=video,
+                reference_sha256=digest(ref.read_bytes()),
+                shot=shot,
+                plan_fingerprint=plan["fingerprint"],
+                previous_video_sha256=previous_video_sha256,
+            )
+        except CreativeReviewError as exc:
+            raise EpisodeError(f"shot {name} creative review rejected: {exc}") from exc
+        previous_video_sha256 = digest(video.read_bytes())
         probe = json.loads(
             command_run(
                 [

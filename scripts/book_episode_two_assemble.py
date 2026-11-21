@@ -48,6 +48,7 @@ def build_assets(root: Path) -> dict[str, Any]:
             raise editor.AssemblyError(
                 f"shot {shot['id']} is not a verified current-input Wan asset"
             )
+        review_path = folder / "creative-review.json"
         results.append(
             {
                 "shot_id": shot["id"],
@@ -56,6 +57,9 @@ def build_assets(root: Path) -> dict[str, Any]:
                 "source_start_frame": 0,
                 "evidence_path": str(evidence),
                 "evidence_sha256": timeline.file_sha(evidence),
+                "reference_sha256": timeline.file_sha(frame),
+                "review_path": str(review_path),
+                "review_sha256": timeline.file_sha(review_path) if review_path.is_file() else "",
             }
         )
     return {

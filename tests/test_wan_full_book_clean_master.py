@@ -12,6 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import wan_full_book_episode as episode  # noqa: E402
+import book_shot_review as creative  # noqa: E402
 from wan_shared_shot_cache import WAN_MODEL_ID, WAN_REVISION  # noqa: E402
 
 
@@ -78,6 +79,44 @@ def test_clean_master_renders_only_raw_video_and_locked_narration(
         "voice": {"style": "original_warm_low_cinematic_baritone"},
         "shots": shots,
     }
+    previous: str | None = None
+    for shot, rendered in zip(shots, folders, strict=True):
+        video = rendered / "wan-s2v-candidate.mp4"
+        reference_sha = sha((frames / (shot["keyframe_name"] + ".png")).read_bytes())
+        base = creative.contract(shot, plan["fingerprint"], sha(video.read_bytes()), reference_sha, previous)
+        review = {
+            **base,
+            "sampled_frame_sha256": ["a" * 64, "b" * 64, "c" * 64],
+            "previous_sampled_frame_sha256": ["d" * 64] if previous else [],
+            "provider": {"name": "MockVision", "model_id": "fixture-vlm", "model_revision": "v1"},
+            "automated_criteria": {
+                name: {
+                    "status": "PENDING_HUMAN" if name == "speech_synchronization" else "PASS",
+                    "confidence": 0.0 if name == "speech_synchronization" else 0.99,
+                    "evidence": "fixture checked frame evidence",
+                }
+                for name in creative.CRITERION_VERSIONS
+            },
+            "status": "PENDING_HUMAN",
+            "human_approval": None,
+        }
+        review["human_approval"] = {
+            "status": "APPROVED",
+            "reviewer": "fixture-independent-human",
+            "approved_at": "2026-11-21T00:00:00Z",
+            "video_sha256": base["video_sha256"],
+            "shot_fingerprint": base["shot_fingerprint"],
+            "criterion_versions": base["criterion_versions"],
+            "observation_sha256": creative.digest(
+                {key: value for key, value in review.items() if key != "human_approval"}
+            ),
+            "criteria": {
+                name: {"status": "PASS", "evidence": "human-reviewed synthetic fixture"}
+                for name in creative.CRITERION_VERSIONS
+            },
+        }
+        (rendered / "creative-review.json").write_text(json.dumps(review))
+        previous = sha(video.read_bytes())
     video_commands = []
 
     def fake_command(command: list[str]) -> str:

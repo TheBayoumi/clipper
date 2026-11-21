@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from book_audio_timeline import FPS, RATE, SCHEMA, digest, file_sha, inspect_audio
+from book_shot_review import CreativeReviewError, verify_review
 
 ASSETS_SCHEMA = "clipper-shot-assets-v1"
 EVIDENCE_SCHEMA = "clipper-clean-master-evidence-v2"
@@ -101,6 +102,7 @@ def _prepare(
     checked: list[tuple[Path, int, int]] = []
     previous = 0
     seen: set[str] = set()
+    previous_video_sha256: str | None = None
     for shot, asset in zip(shots, records, strict=True):
         if not isinstance(shot, dict) or not isinstance(asset, dict):
             raise AssemblyError("invalid shot or cached asset record")
@@ -111,6 +113,9 @@ def _prepare(
             "source_start_frame",
             "evidence_path",
             "evidence_sha256",
+            "reference_sha256",
+            "review_path",
+            "review_sha256",
         }:
             raise AssemblyError("incomplete cached video provenance")
         shot_id = shot.get("id")
@@ -160,6 +165,19 @@ def _prepare(
             or not record["model_revision"]
         ):
             raise AssemblyError(f"unqualified cached model evidence for {shot_id}")
+        try:
+            verify_review(
+                Path(asset["review_path"]),
+                video=video,
+                reference_sha256=asset["reference_sha256"],
+                shot=shot,
+                plan_fingerprint=plan["fingerprint"],
+                previous_video_sha256=previous_video_sha256,
+                review_sha256=asset["review_sha256"],
+            )
+        except (CreativeReviewError, TypeError, ValueError) as exc:
+            raise AssemblyError(f"shot {shot_id} creative review rejected: {exc}") from exc
+        previous_video_sha256 = asset["sha256"]
         metadata = probe(video)
         picture = [s for s in metadata.get("streams", []) if s.get("codec_type") == "video"]
         if len(picture) != 1:
@@ -341,6 +359,13 @@ def make_legacy_replay(
                 "source_start_frame": 0,
                 "evidence_path": str(evidence),
                 "evidence_sha256": file_sha(evidence),
+                "reference_sha256": file_sha(picture),
+                "review_path": str(folder / "creative-review.json"),
+                "review_sha256": (
+                    file_sha(folder / "creative-review.json")
+                    if (folder / "creative-review.json").is_file()
+                    else ""
+                ),
             }
         )
         previous = end

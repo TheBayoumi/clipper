@@ -23,6 +23,13 @@ MODEL_REVISION_I2V = "206a9ee1b7bfaaf8f7e4d81335650533490646a3"
 MIN_REFERENCE_WIDTH = 384
 MIN_REFERENCE_HEIGHT = 512
 MAX_AUDIO_SECONDS = 6.5
+CRITERION_VERSIONS = {
+    "character_identity": "book-identity-v1",
+    "setting_continuity": "book-setting-v1",
+    "action_to_narration": "book-action-v1",
+    "speech_synchronization": "book-speech-v1",
+    "on_screen_titles": "book-titles-v1",
+}
 
 
 class ShotContractError(ValueError):
@@ -119,6 +126,7 @@ def prepare(
         **identity,
         "fingerprint": fingerprint,
         "stage": "INPUTS_QUALIFIED_NOT_RENDERED",
+        "creative_acceptance_versions": dict(CRITERION_VERSIONS),
         "creative_review": "PENDING",
         "publish_eligible": False,
     }
@@ -159,6 +167,7 @@ def prepare_i2v(
         **payload,
         "fingerprint": fingerprint,
         "stage": "INPUTS_QUALIFIED_NOT_RENDERED",
+        "creative_acceptance_versions": dict(CRITERION_VERSIONS),
         "creative_review": "PENDING",
         "publish_eligible": False,
     }
@@ -212,9 +221,13 @@ def audit_mp4(video: Path, request: dict[str, object]) -> dict[str, object]:
         "height": frames[0]["height"],
         "duration_seconds": float(payload["format"]["duration"]),
         "creative_review": "PENDING",
-        "identity_consistency": "NOT_ASSESSED",
-        "lip_sync": "NOT_ASSESSED",
-        "physical_motion": "NOT_ASSESSED",
+        "identity_consistency": "PENDING_HUMAN",
+        "setting_continuity": "PENDING_HUMAN",
+        "action_to_narration": "PENDING_HUMAN",
+        "speech_synchronization": "PENDING_HUMAN",
+        "on_screen_titles": "PENDING_HUMAN",
+        "lip_sync": "PENDING_HUMAN",
+        "physical_motion": "PENDING_HUMAN",
         "publish_eligible": False,
     }
 

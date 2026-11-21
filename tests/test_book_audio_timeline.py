@@ -17,6 +17,7 @@ import book_ai_director as director  # noqa: E402
 import book_audio_timeline as timeline  # noqa: E402
 import book_episode_selection as selection  # noqa: E402
 import book_timeline_assemble as assembly  # noqa: E402
+import book_shot_review as creative  # noqa: E402
 
 
 def _wav(path: Path, duration: float = 37.27) -> None:
@@ -115,6 +116,7 @@ def _source(tmp_path: Path) -> tuple[dict, dict, Path, dict, dict]:
 
 def _assets(edl: dict, tmp_path: Path) -> dict:
     sources = []
+    previous: str | None = None
     for shot in edl["shots"]:
         index = len(sources)
         video = tmp_path / f"scene-{index}.mp4"
@@ -131,6 +133,42 @@ def _assets(edl: dict, tmp_path: Path) -> dict:
             ),
             encoding="utf-8",
         )
+        review_path = tmp_path / f"scene-{index}-creative-review.json"
+        base = creative.contract(
+            shot, edl["fingerprint"], timeline.file_sha(video), "f" * 64, previous
+        )
+        review = {
+            **base,
+            "sampled_frame_sha256": ["a" * 64, "b" * 64, "c" * 64],
+            "previous_sampled_frame_sha256": ["d" * 64] if previous else [],
+            "provider": {"name": "MockVision", "model_id": "fixture-vlm", "model_revision": "v1"},
+            "automated_criteria": {
+                name: {
+                    "status": "PENDING_HUMAN" if name == "speech_synchronization" else "PASS",
+                    "confidence": 0.0 if name == "speech_synchronization" else 0.99,
+                    "evidence": "fixture checked the original sampled frames",
+                }
+                for name in creative.CRITERION_VERSIONS
+            },
+            "status": "PENDING_HUMAN",
+            "human_approval": None,
+        }
+        review["human_approval"] = {
+            "status": "APPROVED",
+            "reviewer": "fixture-independent-human",
+            "approved_at": "2026-11-21T00:00:00Z",
+            "video_sha256": base["video_sha256"],
+            "shot_fingerprint": base["shot_fingerprint"],
+            "criterion_versions": base["criterion_versions"],
+            "observation_sha256": creative.digest(
+                {key: value for key, value in review.items() if key != "human_approval"}
+            ),
+            "criteria": {
+                name: {"status": "PASS", "evidence": "human-reviewed synthetic fixture"}
+                for name in creative.CRITERION_VERSIONS
+            },
+        }
+        review_path.write_text(json.dumps(review), encoding="utf-8")
         sources.append(
             {
                 "shot_id": shot["id"],
@@ -139,8 +177,12 @@ def _assets(edl: dict, tmp_path: Path) -> dict:
                 "source_start_frame": 0,
                 "evidence_path": str(record),
                 "evidence_sha256": timeline.file_sha(record),
+                "reference_sha256": "f" * 64,
+                "review_path": str(review_path),
+                "review_sha256": timeline.file_sha(review_path),
             }
         )
+        previous = timeline.file_sha(video)
     return {
         "schema": assembly.ASSETS_SCHEMA,
         "edl_fingerprint": edl["fingerprint"],
