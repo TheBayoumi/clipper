@@ -1,5 +1,6 @@
 """Faithful, ordered, source-anchored EPUB/PDF extraction with explicit loss diagnostics.
 
+
 Never silently rewrite spelling, text or a chart axis. Images and overlays are
 separate evidence; acquisition authorization stays independently unverified.
 """
@@ -36,8 +37,22 @@ MAX_MEMBERS = 1500
 MAX_TOTAL_UNCOMPRESSED = 100_000_000
 MAX_ITEM_BYTES = 20_000_000
 BLOCK_TAGS = {
-    "p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "td", "th",
-    "figcaption", "blockquote", "pre", "dt", "dd", "caption",
+    "p",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "li",
+    "td",
+    "th",
+    "figcaption",
+    "blockquote",
+    "pre",
+    "dt",
+    "dd",
+    "caption",
 }
 IMAGE_TAGS = {"img", "image"}
 
@@ -136,12 +151,14 @@ def _verify_epub_metadata(
     if metadata is None:
         raise ExtractionError("EPUB package metadata missing")
     titles = [
-        (x.text or "").strip() for x in metadata if _tag(x.tag) == "title"
-        and (x.text or "").strip()
+        (x.text or "").strip()
+        for x in metadata
+        if _tag(x.tag) == "title" and (x.text or "").strip()
     ]
     authors = [
-        (x.text or "").strip() for x in metadata if _tag(x.tag) == "creator"
-        and (x.text or "").strip()
+        (x.text or "").strip()
+        for x in metadata
+        if _tag(x.tag) == "creator" and (x.text or "").strip()
     ]
     allowed = {_equal(candidate.title), *(_equal(x) for x in candidate.title_aliases)}
     if not titles or not any(_equal(x) in allowed for x in titles):
@@ -150,9 +167,7 @@ def _verify_epub_metadata(
         )
     if any(
         _equal(x) not in allowed
-        and not any(
-            len(_equal(x)) >= 10 and _equal(x) in name for name in allowed
-        )
+        and not any(len(_equal(x)) >= 10 and _equal(x) in name for name in allowed)
         for x in titles
     ):
         raise ExtractionError(f"ambiguous EPUB title/edition metadata: {titles!r}")
@@ -162,7 +177,8 @@ def _verify_epub_metadata(
         )
     identifiers = [
         (x.attrib.get("id", ""), (x.text or "").strip())
-        for x in metadata if _tag(x.tag) == "identifier"
+        for x in metadata
+        if _tag(x.tag) == "identifier"
     ]
     if not any(candidate.isbn == _isbn(value) for _, value in identifiers):
         raise ExtractionError(
@@ -250,20 +266,20 @@ class _SpineWalker:
                 or ""
             )
             target = _relative(self.chapter_path, path)
-            media = next(
-                (mime for value, mime in self.manifest.values() if value == target), None
-            )
+            media = next((mime for value, mime in self.manifest.values() if value == target), None)
             if media is None:
                 raise ExtractionError(f"EPUB image not declared in manifest: {target}")
             data = _read(self.archive, target)
             alt = node.attrib.get("alt", "")
             anchor = self.anchor()
-            digest = _asset_evidence(
-                data, media, target, anchor, alt, self.assets, self.payloads
-            )
+            digest = _asset_evidence(data, media, target, anchor, alt, self.assets, self.payloads)
             self.blocks.append(
                 SourceBlock(
-                    anchor, self.section_id, self.chapter_path, "image", "",
+                    anchor,
+                    self.section_id,
+                    self.chapter_path,
+                    "image",
+                    "",
                     asset_sha256=digest,
                 )
             )
@@ -281,7 +297,7 @@ class _SpineWalker:
 
     def finish(self) -> BookSection:
         self.emit("text")
-        selected = self.blocks[self.before:]
+        selected = self.blocks[self.before :]
         paragraphs = tuple(
             block.text for block in selected if block.kind != "image" and block.text.strip()
         )
@@ -304,9 +320,7 @@ def _epub(
     warnings: list[str] = []
     with _zip(raw) as archive:
         container = _xml(_read(archive, "META-INF/container.xml"))
-        roots = [
-            x.attrib.get("full-path") for x in container.iter() if _tag(x.tag) == "rootfile"
-        ]
+        roots = [x.attrib.get("full-path") for x in container.iter() if _tag(x.tag) == "rootfile"]
         if len(roots) != 1 or not roots[0]:
             raise ExtractionError("EPUB must declare exactly one package rootfile")
         package_name = roots[0]
@@ -323,11 +337,11 @@ def _epub(
                 _relative(package_name, item.attrib["href"]),
                 item.attrib.get("media-type", ""),
             )
-            for item in package.iter() if _tag(item.tag) == "item"
+            for item in package.iter()
+            if _tag(item.tag) == "item"
         }
         ordered = [
-            item.attrib.get("idref", "")
-            for item in package.iter() if _tag(item.tag) == "itemref"
+            item.attrib.get("idref", "") for item in package.iter() if _tag(item.tag) == "itemref"
         ]
         if not ordered or len(ordered) != len(set(ordered)):
             raise ExtractionError("EPUB spine missing or duplicates reading-order entries")
@@ -348,7 +362,7 @@ def _epub(
             reader.walk(body)
             section = reader.finish()
             if not section.paragraphs and not any(
-                block.kind == "image" for block in blocks[reader.before:]
+                block.kind == "image" for block in blocks[reader.before :]
             ):
                 warnings.append(f"spine item {section_id} contains no source-visible blocks")
             chapters.append(section)
@@ -359,8 +373,12 @@ def _epub(
 def _pdf(
     source: BookSource, raw: bytes, candidate: ReviewedCandidate
 ) -> tuple[
-    tuple[BookSection, ...], tuple[SourceBlock, ...], tuple[ImageEvidence, ...],
-    tuple[ExcludedPage, ...], tuple[str, ...], dict[str, bytes],
+    tuple[BookSection, ...],
+    tuple[SourceBlock, ...],
+    tuple[ImageEvidence, ...],
+    tuple[ExcludedPage, ...],
+    tuple[str, ...],
+    dict[str, bytes],
 ]:
     try:
         import pymupdf
@@ -392,14 +410,13 @@ def _pdf(
         pdf_title = str(metadata.get("title") or "")
         pdf_author = str(metadata.get("author") or "")
         if pdf_title and _equal(pdf_title) not in {
-            _equal(candidate.title), *(_equal(x) for x in candidate.title_aliases)
+            _equal(candidate.title),
+            *(_equal(x) for x in candidate.title_aliases),
         }:
             raise ExtractionError(f"PDF title metadata mismatch: {pdf_title!r}")
         if pdf_author and _equal(pdf_author) != _equal(candidate.author):
             raise ExtractionError(f"PDF author metadata mismatch: {pdf_author!r}")
-        excluded_pages = {
-            entry["page"]: entry for entry in candidate.exclusions
-        }
+        excluded_pages = {entry["page"]: entry for entry in candidate.exclusions}
         if any(not isinstance(page, int) or not 1 <= page <= count for page in excluded_pages):
             raise ExtractionError("PDF excluded page is outside the selected edition")
         first_pages: list[str] = []
@@ -412,7 +429,9 @@ def _pdf(
                 rule = excluded_pages[number]
                 excluded.append(
                     ExcludedPage(
-                        number, str(rule["reason"]), str(rule["evidence"]),
+                        number,
+                        str(rule["reason"]),
+                        str(rule["evidence"]),
                         hashlib.sha256(raw_text.encode()).hexdigest(),
                     )
                 )
@@ -428,23 +447,25 @@ def _pdf(
                     ]
                     text = "\n".join(lines)
                     if text.strip():
-                        blocks.append(
-                            SourceBlock(anchor, section_id, section_id, "pdf_text", text)
-                        )
+                        blocks.append(SourceBlock(anchor, section_id, section_id, "pdf_text", text))
                 elif item.get("type") == 1 and item.get("image"):
                     data = item["image"]
                     digest = _asset_evidence(
-                        data, str(item.get("ext", "image")), section_id, anchor, "",
-                        assets, payloads,
+                        data,
+                        str(item.get("ext", "image")),
+                        section_id,
+                        anchor,
+                        "",
+                        assets,
+                        payloads,
                     )
                     blocks.append(
-                        SourceBlock(anchor, section_id, section_id, "image", "",
-                                    asset_sha256=digest)
+                        SourceBlock(
+                            anchor, section_id, section_id, "image", "", asset_sha256=digest
+                        )
                     )
             selected = blocks[before:]
-            paragraphs = tuple(
-                block.text for block in selected if block.kind == "pdf_text"
-            )
+            paragraphs = tuple(block.text for block in selected if block.kind == "pdf_text")
             words = sum(len(item.split()) for item in paragraphs)
             if words < 10:
                 warnings.append(
@@ -462,8 +483,12 @@ def _pdf(
                 f"reviewed ISBN {candidate.isbn} not visible in first 20 pages; edition uncertain"
             )
     return (
-        tuple(chapters), tuple(blocks), tuple(assets.values()), tuple(excluded),
-        tuple(warnings), payloads,
+        tuple(chapters),
+        tuple(blocks),
+        tuple(assets.values()),
+        tuple(excluded),
+        tuple(warnings),
+        payloads,
     )
 
 
@@ -472,7 +497,10 @@ def cpu_tesseract(image: bytes, _media_type: str) -> str | None:
     try:
         process = subprocess.run(
             ["tesseract", "stdin", "stdout", "--psm", "6"],
-            input=image, capture_output=True, timeout=30, check=False,
+            input=image,
+            capture_output=True,
+            timeout=30,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -492,9 +520,11 @@ def _overlay(
         document: object = json.loads(payload)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ExtractionError("reviewed image overlay is invalid JSON") from exc
-    if not isinstance(document, dict) or set(document) != {
-        "schema", "source_sha256", "entries"
-    } or document["schema"] != "clipper-book-image-overlay-v1":
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"schema", "source_sha256", "entries"}
+        or document["schema"] != "clipper-book-image-overlay-v1"
+    ):
         raise ExtractionError("reviewed image overlay schema mismatch")
     if document["source_sha256"] != raw_sha:
         raise ExtractionError("reviewed image overlay raw-book digest mismatch")
@@ -506,9 +536,14 @@ def _overlay(
     seen: set[str] = set()
     for entry in entries:
         expected = {
-            "asset_sha256", "anchors", "original_transcription",
-            "normalized_transcription", "normalization_notes",
-            "reviewed_by", "reviewed_at", "review_status",
+            "asset_sha256",
+            "anchors",
+            "original_transcription",
+            "normalized_transcription",
+            "normalization_notes",
+            "reviewed_by",
+            "reviewed_at",
+            "review_status",
         }
         if not isinstance(entry, dict) or set(entry) != expected:
             raise ExtractionError("reviewed image overlay entry fields mismatch")
@@ -521,7 +556,8 @@ def _overlay(
         notes = entry["normalization_notes"]
         anchors = entry["anchors"]
         if (
-            not isinstance(original, str) or not original.strip()
+            not isinstance(original, str)
+            or not original.strip()
             or not isinstance(normalized, (str, type(None)))
             or not isinstance(notes, (str, type(None)))
             or (normalized is not None and normalized != original and not notes)
@@ -536,9 +572,12 @@ def _overlay(
         ):
             raise ExtractionError("reviewed image overlay text, anchors or review state invalid")
         updated[digest] = replace(
-            source_image, original_transcription=original,
-            normalized_transcription=normalized, normalization_notes=notes,
-            method="reviewed_overlay", uncertainty="transcription still requires edition review",
+            source_image,
+            original_transcription=original,
+            normalized_transcription=normalized,
+            normalization_notes=notes,
+            method="reviewed_overlay",
+            uncertainty="transcription still requires edition review",
             review_status="reviewed",
         )
         seen.add(digest)
@@ -587,8 +626,10 @@ def extract_candidate(
             if value and value.strip():
                 resolved.append(
                     replace(
-                        image, original_transcription=value,
-                        method="local_cpu_ocr", review_status="machine_unreviewed",
+                        image,
+                        original_transcription=value,
+                        method="local_cpu_ocr",
+                        review_status="machine_unreviewed",
                         uncertainty="machine OCR requires manual verification",
                     )
                 )
@@ -604,8 +645,7 @@ def extract_candidate(
     words = sum(len(p.split()) for section in sections for p in section.paragraphs)
     if words < 1200:
         gaps.append(
-            f"low extracted source word count: {words}; "
-            "full-edition completeness uncertain"
+            f"low extracted source word count: {words}; full-edition completeness uncertain"
         )
     status = "incomplete_recovery" if gaps else "mechanically_extracted_review_required"
     config = {

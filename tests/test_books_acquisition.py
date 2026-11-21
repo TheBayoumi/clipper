@@ -27,8 +27,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _sample() -> tuple[ReviewedCandidate, bytes, dict[str, object]]:
-    source = next(x for x in load_registry(ROOT / "niches/book-source-candidates-v1.json")
-                  if x.book_id == "atomic-habits")
+    source = next(
+        x
+        for x in load_registry(ROOT / "niches/book-source-candidates-v1.json")
+        if x.book_id == "atomic-habits"
+    )
     raw = b"PK\x03\x04" + b"original tiny synthetic EPUB fixture"
     candidate = replace(
         source,
@@ -55,11 +58,17 @@ class FixtureTransport:
         self.calls.append((url, limit))
         if "/metadata/" in url:
             return HTTPResult(
-                url, url, 200, "application/json",
+                url,
+                url,
+                200,
+                "application/json",
                 json.dumps(self.metadata).encode("utf-8"),
             )
         return HTTPResult(
-            url, self.asset_final or url, self.asset_status, self.asset_type,
+            url,
+            self.asset_final or url,
+            self.asset_status,
+            self.asset_type,
             self.asset,
         )
 
@@ -95,12 +104,21 @@ def test_registry_rejects_unsupported_schema_and_unsafe_selected_file(tmp_path: 
         ({"schema": "wrong", "books": original["books"]}, "unknown"),
         ({"schema": original["schema"], "books": []}, "no candidates"),
         ({"schema": original["schema"], "books": ["corrupt"]}, "invalid"),
-        ({"schema": original["schema"], "books": [{**original["books"][0], "filename": "../x"}]},
-         "invalid or duplicate"),
-        ({"schema": original["schema"], "books": [{**original["books"][0], "expected_sha256": "0"}]},
-         "invalid or duplicate"),
-        ({"schema": original["schema"], "books": [original["books"][0], original["books"][0]]},
-         "invalid or duplicate"),
+        (
+            {"schema": original["schema"], "books": [{**original["books"][0], "filename": "../x"}]},
+            "invalid or duplicate",
+        ),
+        (
+            {
+                "schema": original["schema"],
+                "books": [{**original["books"][0], "expected_sha256": "0"}],
+            },
+            "invalid or duplicate",
+        ),
+        (
+            {"schema": original["schema"], "books": [original["books"][0], original["books"][0]]},
+            "invalid or duplicate",
+        ),
     ]:
         path = tmp_path / "registry.json"
         path.write_text(json.dumps(mutation))
@@ -189,10 +207,15 @@ def test_bad_metadata_http_html_and_offline_cache_absence(tmp_path: Path) -> Non
     with pytest.raises(AcquisitionError, match="offline candidate cache is absent"):
         ArchiveAcquirer(tmp_path, Mock()).acquire(candidate, offline=True)
     transport = FixtureTransport(metadata, raw)
-    transport.get = Mock(return_value=HTTPResult(
-        candidate.record_url, candidate.record_url, 429, "text/html",
-        b"<html>throttled</html>",
-    ))
+    transport.get = Mock(
+        return_value=HTTPResult(
+            candidate.record_url,
+            candidate.record_url,
+            429,
+            "text/html",
+            b"<html>throttled</html>",
+        )
+    )
     with pytest.raises(AcquisitionError, match="HTTP status 429"):
         ArchiveAcquirer(tmp_path / "limited", transport).acquire(candidate)
     assert transport.get.call_count == 1

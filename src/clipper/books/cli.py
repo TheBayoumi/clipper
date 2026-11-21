@@ -29,9 +29,7 @@ def configure_books_parser(subparsers: Any) -> None:
     discover.add_argument("--edition")
     discover.add_argument("--registry", type=Path, default=acquisition.REGISTRY)
 
-    acquire = actions.add_parser(
-        "acquire", help="bounded anonymous Archive acquisition; no mining"
-    )
+    acquire = actions.add_parser("acquire", help="bounded anonymous Archive acquisition; no mining")
     acquire.add_argument("--title", required=True)
     acquire.add_argument("--author")
     acquire.add_argument("--edition")
@@ -107,8 +105,10 @@ def _write(path: Path, content: str) -> None:
 def dispatch_books(args: argparse.Namespace) -> int:
     if args.books_action == "candidates":
         resolved = acquisition.discover(
-            args.title, acquisition.load_registry(args.registry),
-            author=args.author, edition=args.edition,
+            args.title,
+            acquisition.load_registry(args.registry),
+            author=args.author,
+            edition=args.edition,
         )
         print(json.dumps(asdict(resolved), ensure_ascii=False))
         return 1 if isinstance(resolved, SourceUnresolved) else 0
@@ -118,9 +118,7 @@ def dispatch_books(args: argparse.Namespace) -> int:
         if args.books_action == "ingest" and args.source is not None:
             if args.author is None:
                 raise BookRunError("explicit owner-file ingest requires --author")
-            book = runner.ingest(
-                args.title, args.author, ingest.LocalFileResolver(args.source)
-            )
+            book = runner.ingest(args.title, args.author, ingest.LocalFileResolver(args.source))
             if isinstance(book, SourceUnresolved):
                 print(json.dumps(asdict(book), ensure_ascii=False))
                 return 1
@@ -140,28 +138,38 @@ def dispatch_books(args: argparse.Namespace) -> int:
         reviewed = acquisition.load_registry(args.registry)
         if args.books_action == "acquire":
             acquired = runner.acquire_candidate(
-                args.title, author=args.author, edition=args.edition,
-                registry=reviewed, offline=args.offline,
+                args.title,
+                author=args.author,
+                edition=args.edition,
+                registry=reviewed,
+                offline=args.offline,
             )
             if isinstance(acquired, SourceUnresolved):
                 print(json.dumps(asdict(acquired), ensure_ascii=False))
                 return 1
-            print(json.dumps({
-                "book_id": acquired.candidate.book_id,
-                "record_url": acquired.record_url,
-                "actual_asset_url": acquired.asset_url,
-                "raw_sha256": acquired.observed_sha256,
-                "raw_bytes": acquired.observed_bytes,
-                "http_status": acquired.http_status,
-                "cache_hit": acquired.cache_hit,
-                "authorization_status": acquired.source.authorization_status,
-                "raw_path": str(acquired.raw_path),
-            }))
+            print(
+                json.dumps(
+                    {
+                        "book_id": acquired.candidate.book_id,
+                        "record_url": acquired.record_url,
+                        "actual_asset_url": acquired.asset_url,
+                        "raw_sha256": acquired.observed_sha256,
+                        "raw_bytes": acquired.observed_bytes,
+                        "http_status": acquired.http_status,
+                        "cache_hit": acquired.cache_hit,
+                        "authorization_status": acquired.source.authorization_status,
+                        "raw_path": str(acquired.raw_path),
+                    }
+                )
+            )
             return 0
 
         recovered = runner.ingest_candidate(
-            args.title, author=args.author, edition=args.edition,
-            registry=reviewed, offline=args.offline,
+            args.title,
+            author=args.author,
+            edition=args.edition,
+            registry=reviewed,
+            offline=args.offline,
             overlay_path=args.overlay,
             ocr=faithful.cpu_tesseract if args.ocr == "tesseract" else None,
         )
@@ -169,18 +177,22 @@ def dispatch_books(args: argparse.Namespace) -> int:
             print(json.dumps(asdict(recovered), ensure_ascii=False))
             return 1
         dossier = json.loads(recovered.dossier_path.read_text(encoding="utf-8"))
-        print(json.dumps({
-            "book_id": recovered.candidate.book_id,
-            "raw_sha256": recovered.acquired.observed_sha256,
-            "stage_key": recovered.stage_key,
-            "recovery_status": recovered.book.recovery_status,
-            "dossier_path": str(recovered.dossier_path),
-            "unique_images": dossier["unique_images"],
-            "image_occurrences": dossier["image_occurrences"],
-            "excluded_pages": dossier["excluded_pages"],
-            "warnings": dossier["warnings"],
-            "authorization_status": recovered.book.source.authorization_status,
-        }))
+        print(
+            json.dumps(
+                {
+                    "book_id": recovered.candidate.book_id,
+                    "raw_sha256": recovered.acquired.observed_sha256,
+                    "stage_key": recovered.stage_key,
+                    "recovery_status": recovered.book.recovery_status,
+                    "dossier_path": str(recovered.dossier_path),
+                    "unique_images": dossier["unique_images"],
+                    "image_occurrences": dossier["image_occurrences"],
+                    "excluded_pages": dossier["excluded_pages"],
+                    "warnings": dossier["warnings"],
+                    "authorization_status": recovered.book.source.authorization_status,
+                }
+            )
+        )
         return 2 if recovered.book.recovery_status == "incomplete_recovery" else 0
     if args.books_action == "mine":
         runner = BookOrchestrator(args.artifact_root)

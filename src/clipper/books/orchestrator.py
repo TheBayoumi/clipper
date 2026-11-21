@@ -86,16 +86,12 @@ def _book_text_cached(value: object) -> BookText:
             ImageEvidence(
                 **{
                     **item,
-                    "occurrences": tuple(
-                        ImageOccurrence(**occ) for occ in item["occurrences"]
-                    ),
+                    "occurrences": tuple(ImageOccurrence(**occ) for occ in item["occurrences"]),
                 }
             )
             for item in record.get("images", [])
         ),
-        excluded_pages=tuple(
-            ExcludedPage(**x) for x in record.get("excluded_pages", [])
-        ),
+        excluded_pages=tuple(ExcludedPage(**x) for x in record.get("excluded_pages", [])),
         warnings=tuple(record.get("warnings", [])),
         recovery_status=record.get("recovery_status", "legacy_unassessed"),
         parser_version=record.get("parser_version", "legacy-v1"),
@@ -271,8 +267,11 @@ class BookOrchestrator:
         def extract() -> object:
             return asdict(
                 faithful.extract_candidate(
-                    acquired.source, raw, acquired.candidate,
-                    overlay=overlay, ocr=ocr,
+                    acquired.source,
+                    raw,
+                    acquired.candidate,
+                    overlay=overlay,
+                    ocr=ocr,
                 )
             )
 
@@ -286,11 +285,17 @@ class BookOrchestrator:
         ):
             raise BookRunError("cached candidate extraction disagrees with pinned source")
         extracted_path = (
-            self.root / "book-candidates" / "extracted" / faithful.PARSER_VERSION
+            self.root
+            / "book-candidates"
+            / "extracted"
+            / faithful.PARSER_VERSION
             / f"{identity.cache_key}.json"
         )
         dossier_path = (
-            self.root / "book-candidates" / "dossiers" / acquired.candidate.book_id
+            self.root
+            / "book-candidates"
+            / "dossiers"
+            / acquired.candidate.book_id
             / f"{identity.cache_key}.json"
         )
         acquisition._private_write(
@@ -332,8 +337,12 @@ class BookOrchestrator:
             dossier_path, (json.dumps(dossier, sort_keys=True, indent=2) + "\n").encode()
         )
         return CandidateIngestResult(
-            acquired.candidate, acquired, book, identity.cache_key,
-            extracted_path, dossier_path,
+            acquired.candidate,
+            acquired,
+            book,
+            identity.cache_key,
+            extracted_path,
+            dossier_path,
         )
 
     def ingest(

@@ -173,9 +173,7 @@ def discover(
         and (edition is None or edition == item.edition_identity)
     ]
     if len(matches) > 1:
-        options = "; ".join(
-            f"{x.title} / {x.author} / {x.edition_identity}" for x in matches
-        )
+        options = "; ".join(f"{x.title} / {x.author} / {x.edition_identity}" for x in matches)
         return SourceUnresolved(
             title, author or "", "select one reviewed author/edition", f"ambiguous: {options}"
         )
@@ -214,9 +212,7 @@ def _check_public_dns(host: str) -> None:
         records = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
     except OSError as exc:
         raise AcquisitionError(f"cannot resolve Archive host: {host}") from exc
-    if not records or any(
-        not ipaddress.ip_address(record[4][0]).is_global for record in records
-    ):
+    if not records or any(not ipaddress.ip_address(record[4][0]).is_global for record in records):
         raise AcquisitionError(f"Archive host resolves to unsafe/private address: {host}")
 
 
@@ -307,7 +303,9 @@ class ArchiveAcquirer:
         key = candidate.fingerprint
         manifest_path = self.root / "manifests" / f"{key}.json"
         raw_path = (
-            self.root / "raw" / candidate.expected_sha256[:2]
+            self.root
+            / "raw"
+            / candidate.expected_sha256[:2]
             / f"{candidate.expected_sha256}.{candidate.format}"
         )
         if offline:
@@ -323,9 +321,17 @@ class ArchiveAcquirer:
                 raise AcquisitionError("offline acquisition manifest identity mismatch")
             source = BookSource(**saved["source"])
             return AcquiredBook(
-                source, candidate, saved["record_url"], saved["asset_url"],
-                saved["fetched_at"], saved["http_status"], raw_path,
-                len(data), candidate.expected_sha256, saved["metadata_sha256"], True,
+                source,
+                candidate,
+                saved["record_url"],
+                saved["asset_url"],
+                saved["fetched_at"],
+                saved["http_status"],
+                raw_path,
+                len(data),
+                candidate.expected_sha256,
+                saved["metadata_sha256"],
+                True,
                 ("offline cached metadata not revalidated",),
             )
         try:
@@ -362,9 +368,8 @@ class ArchiveAcquirer:
                     f"Archive selected asset size changed: expected {candidate.expected_bytes}, "
                     f"listed {entry.get('size')}"
                 )
-            asset_url = (
-                f"https://archive.org/download/{identifier}/"
-                + urllib.parse.quote(entry["name"], safe="")
+            asset_url = f"https://archive.org/download/{identifier}/" + urllib.parse.quote(
+                entry["name"], safe=""
             )
             download = self.transport.get(asset_url, limit=MAX_ASSET_BYTES)
             _response(download, limit=MAX_ASSET_BYTES, kind="asset")
@@ -418,20 +423,36 @@ class ArchiveAcquirer:
                 ).encode(),
             )
             return AcquiredBook(
-                source, candidate, candidate.record_url, download.final_url,
-                timestamp, download.status, raw_path, actual_bytes, actual_hash,
-                manifest["metadata_sha256"], False, tuple(manifest["warnings"]),
+                source,
+                candidate,
+                candidate.record_url,
+                download.final_url,
+                timestamp,
+                download.status,
+                raw_path,
+                actual_bytes,
+                actual_hash,
+                manifest["metadata_sha256"],
+                False,
+                tuple(manifest["warnings"]),
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
             error_path = self.root / "errors" / f"{key}.json"
             _private_write(
                 error_path,
-                (json.dumps(
-                    {"candidate": candidate.book_id, "expected_sha256": candidate.expected_sha256,
-                     "error_type": type(exc).__name__, "reason": str(exc)},
-                    sort_keys=True,
-                ) + "\n").encode(),
+                (
+                    json.dumps(
+                        {
+                            "candidate": candidate.book_id,
+                            "expected_sha256": candidate.expected_sha256,
+                            "error_type": type(exc).__name__,
+                            "reason": str(exc),
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n"
+                ).encode(),
             )
             if isinstance(exc, AcquisitionError):
                 raise

@@ -25,11 +25,13 @@ from clipper.books.faithful import (
 
 ROOT = Path(__file__).resolve().parents[1]
 ATOMIC = next(
-    x for x in load_registry(ROOT / "niches/book-source-candidates-v1.json")
+    x
+    for x in load_registry(ROOT / "niches/book-source-candidates-v1.json")
     if x.book_id == "atomic-habits"
 )
 DEEP = next(
-    x for x in load_registry(ROOT / "niches/book-source-candidates-v1.json")
+    x
+    for x in load_registry(ROOT / "niches/book-source-candidates-v1.json")
     if x.book_id == "deep-work"
 )
 IMAGE = b"\x89PNG\r\n\x1a\nsynthetic-image-only-heading"
@@ -100,13 +102,13 @@ def _epub(
             "</body></html>"
         ),
         (
-            "<html><body><h1><img src=\"../Images/chart.png\" alt=\"\" /></h1>"
+            '<html><body><h1><img src="../Images/chart.png" alt="" /></h1>'
             "<p>The source uses an image-only heading.</p>"
             "<table><tr><th>Label</th><td>Unaltered value</td></tr></table></body></html>"
         ),
         (
             "<html><body><h2>Notes and index</h2><p>Keep the index verbatim.</p>"
-            "<img src=\"../Images/chart.png\" alt=\"Reused chart\"/></body></html>"
+            '<img src="../Images/chart.png" alt="Reused chart"/></body></html>'
         ),
     ]
     if dtd:
@@ -120,17 +122,13 @@ def _epub(
         archive.writestr("OPS/content.opf", opf)
         for index, name in enumerate(("cover", "part-one", "part-two", "index")):
             archive.writestr(f"OPS/Text/{name}.xhtml", pages[index])
-        archive.writestr(
-            "OPS/Images/chart.png", IMAGE + (b"changed" if changed_asset else b"")
-        )
+        archive.writestr("OPS/Images/chart.png", IMAGE + (b"changed" if changed_asset else b""))
     return stream.getvalue()
 
 
 def _pdf(*, with_raster: bool = False, author: str = "Cal Newport") -> bytes:
     document = pymupdf.open()
-    document.set_metadata(
-        {"title": "Deep Work", "author": author, "creator": "original fixture"}
-    )
+    document.set_metadata({"title": "Deep Work", "author": author, "creator": "original fixture"})
     page = document.new_page()
     page.insert_text((40, 50), "Deep Work - Cal Newport - ISBN 9780349411910")
     page.insert_text((40, 85), "Preserve this UK edition wording exactly: proscribed.")
@@ -175,9 +173,7 @@ def test_epub_source_order_and_text_image_separation() -> None:
 def test_epub_reuses_image_bytes_for_one_injected_cpu_ocr() -> None:
     raw = _epub()
     completion = Mock(return_value="40 10 60, do not autocorrect")
-    book = extract_candidate(
-        _source(raw, _candidate(raw)), raw, _candidate(raw), ocr=completion
-    )
+    book = extract_candidate(_source(raw, _candidate(raw)), raw, _candidate(raw), ocr=completion)
     completion.assert_called_once_with(IMAGE, "image/png")
     assert len(book.images[0].occurrences) == 3
     assert book.images[0].original_transcription == "40 10 60, do not autocorrect"
@@ -209,7 +205,10 @@ def test_reviewed_overlay_import_preserves_raw_transcription_and_rekeys() -> Non
     }
     payload = json.dumps(overlay).encode()
     verified = extract_candidate(
-        original.source, raw, selected, overlay=payload,
+        original.source,
+        raw,
+        selected,
+        overlay=payload,
         ocr=Mock(side_effect=AssertionError("reviewed image must not be re-OCRed")),
     )
     assert verified.images[0].original_transcription == "40 10 60"
@@ -230,7 +229,9 @@ def test_reviewed_overlay_import_preserves_raw_transcription_and_rekeys() -> Non
     altered = _epub(changed_asset=True)
     with pytest.raises(ExtractionError, match="raw-book digest mismatch"):
         extract_candidate(
-            _source(altered, _candidate(altered)), altered, _candidate(altered),
+            _source(altered, _candidate(altered)),
+            altered,
+            _candidate(altered),
             overlay=payload,
         )
 
@@ -314,9 +315,7 @@ def test_source_identity_and_pdf_signature_fail_closed() -> None:
             replace(_source(raw, selected), authorization_status="approved"), raw, selected
         )
     with pytest.raises(ExtractionError, match="explicit Archive candidate"):
-        extract_candidate(
-            replace(_source(raw, selected), source_kind="owner_file"), raw, selected
-        )
+        extract_candidate(replace(_source(raw, selected), source_kind="owner_file"), raw, selected)
     changed_format = replace(selected, format="pdf")
     with pytest.raises(ExtractionError, match="file signature/format mismatch"):
         extract_candidate(_source(raw, changed_format), raw, changed_format)
@@ -325,9 +324,7 @@ def test_source_identity_and_pdf_signature_fail_closed() -> None:
 def test_cpu_tesseract_adapter_is_optional_and_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "subprocess.run", Mock(side_effect=OSError("not installed"))
-    )
+    monkeypatch.setattr("subprocess.run", Mock(side_effect=OSError("not installed")))
     assert cpu_tesseract(b"image", "image/png") is None
 
     class Result:
