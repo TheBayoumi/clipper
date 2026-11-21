@@ -35,6 +35,7 @@ def configure_books_parser(subparsers: Any) -> None:
     acquire.add_argument("--edition")
     acquire.add_argument("--registry", type=Path, default=acquisition.REGISTRY)
     acquire.add_argument("--offline", action="store_true")
+    acquire.add_argument("--refresh", action="store_true", help="explicitly revalidate remote source")
     acquire.add_argument("--artifact-root", type=Path, default=Path("artifacts/books"))
 
     ingest_cmd = actions.add_parser(
@@ -46,6 +47,7 @@ def configure_books_parser(subparsers: Any) -> None:
     ingest_cmd.add_argument("--source", type=Path, help="explicit owner file (legacy mode)")
     ingest_cmd.add_argument("--registry", type=Path, default=acquisition.REGISTRY)
     ingest_cmd.add_argument("--offline", action="store_true")
+    ingest_cmd.add_argument("--refresh", action="store_true", help="explicitly revalidate remote source")
     ingest_cmd.add_argument("--overlay", type=Path, help="private reviewed image sidecar")
     ingest_cmd.add_argument("--ocr", choices=("none", "tesseract"), default="none")
     ingest_cmd.add_argument("--artifact-root", type=Path, default=Path("artifacts/books"))
@@ -143,6 +145,7 @@ def dispatch_books(args: argparse.Namespace) -> int:
                 edition=args.edition,
                 registry=reviewed,
                 offline=args.offline,
+                refresh=args.refresh,
             )
             if isinstance(acquired, SourceUnresolved):
                 print(json.dumps(asdict(acquired), ensure_ascii=False))
@@ -170,6 +173,7 @@ def dispatch_books(args: argparse.Namespace) -> int:
             edition=args.edition,
             registry=reviewed,
             offline=args.offline,
+            refresh=args.refresh,
             overlay_path=args.overlay,
             ocr=faithful.cpu_tesseract if args.ocr == "tesseract" else None,
         )

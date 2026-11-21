@@ -90,9 +90,10 @@ class AcquiredBook:
     def fingerprint(self) -> str:
         return content_fingerprint(
             {
-                "source": asdict(self.source),
                 "candidate": asdict(self.candidate),
-                "asset_url": self.asset_url,
+                "record_url": self.record_url,
+                "source_kind": self.source.source_kind,
+                "authorization_status": self.source.authorization_status,
                 "metadata_sha256": self.metadata_sha256,
                 "observed_bytes": self.observed_bytes,
                 "observed_sha256": self.observed_sha256,
@@ -279,6 +280,7 @@ def _response(result: HTTPResult, *, limit: int, kind: str) -> None:
 
 
 def _private_write(path: Path, data: bytes) -> None:
+    """Publish complete immutable bytes with an exclusive atomic link, never replace."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path.parent, 0o700)
     if path.exists():
@@ -294,38 +296,67 @@ def _private_write(path: Path, data: bytes) -> None:
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise
-    os.replace(temporary, path)
-    os.chmod(path, 0o600)
+    try:
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if path.read_bytes() != data:
+                raise AcquisitionError(
+                    f"immutable artifact conflicts with recorded bytes: {path.name}"
+                )
+        os.chmod(path, 0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class ArchiveAcquirer:
+    """Immutable first acquisition plus explicit, separately recorded refresh checks."""
+
     def __init__(self, root: Path, transport: BookTransport | None = None) -> None:
         self.root = root
         self.transport = transport if transport is not None else ArchiveHTTPTransport()
 
-    def acquire(self, candidate: ReviewedCandidate, *, offline: bool = False) -> AcquiredBook:
+    def _paths(self, candidate: ReviewedCandidate) -> tuple[Path, Path]:
         key = candidate.fingerprint
-        manifest_path = self.root / "manifests" / f"{key}.json"
-        raw_path = (
-            self.root
-            / "raw"
-            / candidate.expected_sha256[:2]
-            / f"{candidate.expected_sha256}.{candidate.format}"
+        return (
+            self.root / "manifests" / f"{key}.json",
+            self.root / "raw" / candidate.expected_sha256[:2]
+            / f"{candidate.expected_sha256}.{candidate.format}",
         )
-        if offline:
-            if not manifest_path.is_file() or not raw_path.is_file():
-                raise AcquisitionError("offline candidate cache is absent; no network allowed")
-            saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    def _cached(self, candidate: ReviewedCandidate) -> AcquiredBook:
+        manifest_path, raw_path = self._paths(candidate)
+        if not manifest_path.is_file() or not raw_path.is_file():
+            raise AcquisitionError("offline candidate cache is absent; no network allowed")
+        try:
+            saved: object = json.loads(manifest_path.read_text(encoding="utf-8"))
             if not isinstance(saved, dict) or saved.get("schema") != "clipper-book-acquisition-v1":
                 raise AcquisitionError("offline acquisition manifest schema mismatch")
+            if saved.get("candidate_fingerprint") != candidate.fingerprint:
+                raise AcquisitionError("offline acquisition manifest identity mismatch")
             data = raw_path.read_bytes()
             if len(data) != candidate.expected_bytes or (
                 hashlib.sha256(data).hexdigest() != candidate.expected_sha256
             ):
                 raise AcquisitionError("offline candidate raw artifact changed; review required")
-            if saved.get("candidate_fingerprint") != key:
-                raise AcquisitionError("offline acquisition manifest identity mismatch")
             source = BookSource(**saved["source"])
+            if (
+                saved.get("record_url") != candidate.record_url
+                or saved.get("observed_sha256") != candidate.expected_sha256
+                or saved.get("observed_bytes") != candidate.expected_bytes
+                or saved.get("http_status") != 200
+                or source.source_kind != "archive_candidate"
+                or source.content_sha256 != candidate.expected_sha256
+                or source.authorization_status != "unverified"
+                or source.edition_identity != candidate.edition_identity
+                or source.title != candidate.title
+                or source.author != candidate.author
+                or source.source_uri != saved.get("asset_url")
+                or not isinstance(saved.get("metadata_sha256"), str)
+                or not _HEX.fullmatch(saved["metadata_sha256"])
+            ):
+                raise AcquisitionError("offline acquisition manifest provenance mismatch")
+            _validate_url(saved["asset_url"], redirect=True)
             return AcquiredBook(
                 source,
                 candidate,
@@ -340,6 +371,24 @@ class ArchiveAcquirer:
                 True,
                 tuple(saved["warnings"]),
             )
+        except (KeyError, TypeError, ValueError) as exc:
+            if isinstance(exc, AcquisitionError):
+                raise
+            raise AcquisitionError("offline acquisition manifest malformed") from exc
+
+    def acquire(
+        self,
+        candidate: ReviewedCandidate,
+        *,
+        offline: bool = False,
+        refresh: bool = False,
+    ) -> AcquiredBook:
+        if offline and refresh:
+            raise AcquisitionError("--offline and --refresh are mutually exclusive")
+        manifest_path, raw_path = self._paths(candidate)
+        if offline or (manifest_path.is_file() and not refresh):
+            return self._cached(candidate)
+        key = candidate.fingerprint
         try:
             metadata = self.transport.get(candidate.record_url, limit=MAX_METADATA_BYTES)
             _response(metadata, limit=MAX_METADATA_BYTES, kind="metadata")
@@ -394,6 +443,7 @@ class ArchiveAcquirer:
                     f"observed {actual_bytes}/{actual_hash}"
                 )
             timestamp = datetime.now(UTC).isoformat()
+            metadata_digest = hashlib.sha256(metadata.body).hexdigest()
             source = BookSource(
                 candidate.title,
                 candidate.author,
@@ -405,7 +455,6 @@ class ArchiveAcquirer:
                 actual_hash,
                 candidate.format,
             )
-            metadata_digest = hashlib.sha256(metadata.body).hexdigest()
             warnings = (
                 "community-uploaded candidate; publisher authenticity and permissions unverified",
             )
@@ -426,25 +475,52 @@ class ArchiveAcquirer:
                 "warnings": list(warnings),
             }
             _private_write(raw_path, download.body)
-            _private_write(
-                manifest_path,
-                (
-                    json.dumps(manifest, sort_keys=True, ensure_ascii=False, indent=2) + "\n"
-                ).encode(),
-            )
+            if not manifest_path.is_file():
+                try:
+                    _private_write(
+                        manifest_path,
+                        (json.dumps(manifest, sort_keys=True, ensure_ascii=False, indent=2) + "\n").encode(),
+                    )
+                except AcquisitionError:
+                    # A concurrent identical fetch may have committed its own first timestamp.
+                    if not manifest_path.is_file():
+                        raise
+            canonical = self._cached(candidate)
+            if canonical.metadata_sha256 != metadata_digest:
+                raise AcquisitionError(
+                    "Archive metadata changed relative to immutable acquisition; review required"
+                )
+            if refresh or canonical.fetched_at != timestamp:
+                event = {
+                    "schema": "clipper-book-acquisition-refresh-v1",
+                    "candidate_fingerprint": key,
+                    "fetched_at": timestamp,
+                    "record_url": metadata.final_url,
+                    "asset_requested_url": asset_url,
+                    "asset_url": download.final_url,
+                    "metadata_sha256": metadata_digest,
+                    "observed_bytes": actual_bytes,
+                    "observed_sha256": actual_hash,
+                    "http_status": download.status,
+                }
+                event_bytes = (
+                    json.dumps(event, sort_keys=True, ensure_ascii=False, indent=2) + "\n"
+                ).encode()
+                event_key = hashlib.sha256(event_bytes).hexdigest()
+                _private_write(self.root / "events" / key / f"{event_key}.json", event_bytes)
             return AcquiredBook(
-                source,
+                canonical.source,
                 candidate,
-                candidate.record_url,
-                download.final_url,
-                timestamp,
-                download.status,
+                canonical.record_url,
+                canonical.asset_url,
+                canonical.fetched_at,
+                canonical.http_status,
                 raw_path,
                 actual_bytes,
                 actual_hash,
-                metadata_digest,
+                canonical.metadata_sha256,
                 False,
-                warnings,
+                canonical.warnings,
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             self.root.mkdir(parents=True, exist_ok=True, mode=0o700)

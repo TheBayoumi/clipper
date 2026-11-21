@@ -36,7 +36,7 @@ schema-validated candidate registry. The owner-placed
 `books ingest --title ... --author ... --source /path/book.epub` legacy form
 is preserved and distinct from anonymous acquisition.
 
-For deterministic offline resume after a prior successful acquisition:
+An unchanged normal acquisition reuses the pinned, verified private cache without a network\nrequest. Use `--refresh` to explicitly revalidate the remote record and asset; a new\nimmutable refresh event is saved, while the first acquisition remains immutable.\nChanged metadata, restricted listings and changed pinned bytes fail closed with an\nimmutable incident; no automatic edition substitution takes place. `--refresh` and\n`--offline` cannot be combined.\n\nFor deterministic offline resume after a prior successful acquisition:
 
 ```bash
 clipper books ingest --title "Atomic Habits" --offline \

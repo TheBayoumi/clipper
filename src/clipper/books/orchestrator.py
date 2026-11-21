@@ -203,6 +203,7 @@ class BookOrchestrator:
         registry: tuple[acquisition.ReviewedCandidate, ...] | None = None,
         transport: acquisition.BookTransport | None = None,
         offline: bool = False,
+        refresh: bool = False,
     ) -> acquisition.AcquiredBook | SourceUnresolved:
         """Discover the reviewed edition before any network or parser work."""
         available = registry if registry is not None else acquisition.load_registry()
@@ -210,7 +211,7 @@ class BookOrchestrator:
         if isinstance(choice, SourceUnresolved):
             return choice
         store = acquisition.ArchiveAcquirer(self.root / "book-candidates", transport)
-        return store.acquire(choice, offline=offline)
+        return store.acquire(choice, offline=offline, refresh=refresh)
 
     def ingest_candidate(
         self,
@@ -221,6 +222,7 @@ class BookOrchestrator:
         registry: tuple[acquisition.ReviewedCandidate, ...] | None = None,
         transport: acquisition.BookTransport | None = None,
         offline: bool = False,
+        refresh: bool = False,
         overlay_path: Path | None = None,
         ocr: faithful.OCR | None = None,
     ) -> CandidateIngestResult | SourceUnresolved:
@@ -232,6 +234,7 @@ class BookOrchestrator:
             registry=registry,
             transport=transport,
             offline=offline,
+            refresh=refresh,
         )
         if isinstance(acquired, SourceUnresolved):
             return acquired

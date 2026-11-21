@@ -461,3 +461,50 @@ def test_archive_redirect_and_dns_resolution_fail_without_network(
     monkeypatch.setattr("socket.getaddrinfo", fail_dns)
     with pytest.raises(AcquisitionError, match="cannot resolve Archive host"):
         _check_public_dns("archive.org")
+
+
+def test_default_repeat_cache_no_network_and_explicit_refresh(tmp_path: Path) -> None:
+    candidate, raw, metadata = _sample()
+    transport = FixtureTransport(metadata, raw)
+    service = ArchiveAcquirer(tmp_path, transport)
+    first = service.acquire(candidate)
+    again = service.acquire(candidate)
+    assert again.cache_hit is True
+    assert again.fingerprint == first.fingerprint
+    assert len(transport.calls) == 2
+    refreshed = service.acquire(candidate, refresh=True)
+    assert refreshed.cache_hit is False
+    assert refreshed.fingerprint == first.fingerprint
+    assert refreshed.source == first.source
+    assert len(transport.calls) == 4
+    assert len(list((tmp_path / "raw").glob("**/*.epub"))) == 1
+    assert len(list((tmp_path / "events").glob("**/*.json"))) == 1
+    assert service.acquire(candidate, offline=True).source == first.source
+    with pytest.raises(AcquisitionError, match="mutually exclusive"):
+        service.acquire(candidate, offline=True, refresh=True)
+
+
+def test_refresh_restriction_preserves_cache_and_immutable_incident(tmp_path: Path) -> None:
+    candidate, raw, metadata = _sample()
+    transport = FixtureTransport(metadata, raw)
+    service = ArchiveAcquirer(tmp_path, transport)
+    first = service.acquire(candidate)
+    transport.metadata = {**metadata, "is_restricted": True}
+    with pytest.raises(AcquisitionError, match="restricted"):
+        service.acquire(candidate, refresh=True)
+    assert service.acquire(candidate, offline=True).source == first.source
+    assert len(list((tmp_path / "errors").glob("*.json"))) == 1
+
+
+def test_concurrent_acquisition_cannot_replace_first_evidence(tmp_path: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    candidate, raw, metadata = _sample()
+    service = ArchiveAcquirer(tmp_path, FixtureTransport(metadata, raw))
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(lambda _index: service.acquire(candidate), range(12)))
+    assert len({x.fingerprint for x in results}) == 1
+    assert len({x.source.fingerprint for x in results}) == 1
+    assert len(list((tmp_path / "raw").glob("**/*.epub"))) == 1
+    assert len(list((tmp_path / "manifests").glob("*.json"))) == 1
+    assert service.acquire(candidate, offline=True).cache_hit is True
