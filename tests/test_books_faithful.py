@@ -18,7 +18,7 @@ from clipper.books.acquisition import ReviewedCandidate, load_registry
 from clipper.books.contracts import BookSource
 from clipper.books.faithful import (
     ExtractionError,
-    _parse_xml,
+    _xml,
     cpu_tesseract,
     extract_candidate,
 )
@@ -336,3 +336,8 @@ def test_cpu_tesseract_adapter_is_optional_and_bounded(
 
     monkeypatch.setattr("subprocess.run", Mock(return_value=Result()))
     assert cpu_tesseract(b"image", "image/png") == "Uncorrected 40 10 60"
+
+
+def test_epub_xml_dtd_is_rejected_before_parsing() -> None:
+    with pytest.raises(ExtractionError, match="DTD/entity"):
+        _xml(b"<!DOCTYPE x [<!ENTITY p SYSTEM 'file:///private'>]><html/>")

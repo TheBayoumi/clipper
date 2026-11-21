@@ -448,7 +448,8 @@ def _pdf(
             words = sum(len(item.split()) for item in paragraphs)
             if words < 10:
                 warnings.append(
-                    f"sparse or raster PDF page {number}: {words} extracted words; OCR/review required"
+                    f"sparse or raster PDF page {number}: {words} extracted words; "
+                    "OCR/review required"
                 )
             chapters.append(BookSection(section_id, f"PDF page {number}", paragraphs))
         front = "\n".join(first_pages)
@@ -602,7 +603,10 @@ def extract_candidate(
         )
     words = sum(len(p.split()) for section in sections for p in section.paragraphs)
     if words < 1200:
-        gaps.append(f"low extracted source word count: {words}; full-edition completeness uncertain")
+        gaps.append(
+            f"low extracted source word count: {words}; "
+            "full-edition completeness uncertain"
+        )
     status = "incomplete_recovery" if gaps else "mechanically_extracted_review_required"
     config = {
         "parser": PARSER_VERSION,

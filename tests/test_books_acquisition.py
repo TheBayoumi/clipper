@@ -252,14 +252,15 @@ def test_real_transport_adapter_only_uses_mocked_opener(
         def geturl(self) -> str:
             return "https://ia801234.us.archive.org/download/test"
 
-        headers = {"Content-Type": "application/epub+zip", "Content-Length": "5"}
+        def __init__(self) -> None:
+            self.headers = {"Content-Type": "application/epub+zip", "Content-Length": "5"}
 
         def read(self, count: int) -> bytes:
             return b"PK\x03\x04X"[:count]
 
     class FakeOpener:
         def open(self, request: object, *, timeout: int) -> FakeReply:
-            assert getattr(request, "full_url") == "https://archive.org/download/test"
+            assert request.full_url == "https://archive.org/download/test"
             assert timeout == 20
             return FakeReply()
 
