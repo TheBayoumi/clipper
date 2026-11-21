@@ -13,13 +13,17 @@ from typing import Any, NoReturn, cast
 from clipper.dag import DagStore
 from clipper.stage_contracts import content_fingerprint, stage_identity
 
-from . import ingest, mining, narration, scripting, selection, storyboards
+from . import acquisition, faithful, ingest, mining, narration, scripting, selection, storyboards
 from .contracts import (
     BOOK_STAGE_CONTRACTS,
     BookRef,
     BookSection,
     BookSource,
     BookText,
+    ExcludedPage,
+    ImageEvidence,
+    ImageOccurrence,
+    SourceBlock,
     EpisodeScript,
     LessonSelection,
     NarrationTrack,
@@ -48,6 +52,16 @@ class BookPlan:
     storyboard_provenance: StoryboardProvenance
 
 
+@dataclass(frozen=True, slots=True)
+class CandidateIngestResult:
+    candidate: acquisition.ReviewedCandidate
+    acquired: acquisition.AcquiredBook
+    book: BookText
+    stage_key: str
+    extracted_path: Path
+    dossier_path: Path
+
+
 def _book_text_cached(value: object) -> BookText:
     if not isinstance(value, dict) or not isinstance(value.get("source"), dict):
         raise BookRunError("invalid cached book-ingest stage output")
@@ -67,6 +81,25 @@ def _book_text_cached(value: object) -> BookText:
         total_word_count=record["total_word_count"],
         content_sha256=record["content_sha256"],
         source_fingerprint=record["source_fingerprint"],
+        blocks=tuple(SourceBlock(**x) for x in record.get("blocks", [])),
+        images=tuple(
+            ImageEvidence(
+                **{
+                    **item,
+                    "occurrences": tuple(
+                        ImageOccurrence(**occ) for occ in item["occurrences"]
+                    ),
+                }
+            )
+            for item in record.get("images", [])
+        ),
+        excluded_pages=tuple(
+            ExcludedPage(**x) for x in record.get("excluded_pages", [])
+        ),
+        warnings=tuple(record.get("warnings", [])),
+        recovery_status=record.get("recovery_status", "legacy_unassessed"),
+        parser_version=record.get("parser_version", "legacy-v1"),
+        parser_config_sha256=record.get("parser_config_sha256", ""),
     )
 
 
@@ -164,6 +197,144 @@ class BookOrchestrator:
         self.root = artifact_root
         self.dag = DagStore(artifact_root / "book-dag")
         self.script_cache_root = artifact_root / "book-script-cache"
+
+    def acquire_candidate(
+        self,
+        title: str,
+        *,
+        author: str | None = None,
+        edition: str | None = None,
+        registry: tuple[acquisition.ReviewedCandidate, ...] | None = None,
+        transport: acquisition.BookTransport | None = None,
+        offline: bool = False,
+    ) -> acquisition.AcquiredBook | SourceUnresolved:
+        """Discover the reviewed edition before any network or parser work."""
+        available = registry if registry is not None else acquisition.load_registry()
+        choice = acquisition.discover(title, available, author=author, edition=edition)
+        if isinstance(choice, SourceUnresolved):
+            return choice
+        store = acquisition.ArchiveAcquirer(self.root / "book-candidates", transport)
+        return store.acquire(choice, offline=offline)
+
+    def ingest_candidate(
+        self,
+        title: str,
+        *,
+        author: str | None = None,
+        edition: str | None = None,
+        registry: tuple[acquisition.ReviewedCandidate, ...] | None = None,
+        transport: acquisition.BookTransport | None = None,
+        offline: bool = False,
+        overlay_path: Path | None = None,
+        ocr: faithful.OCR | None = None,
+    ) -> CandidateIngestResult | SourceUnresolved:
+        """Preserve separate immutable raw, extracted and evidence dossier identities."""
+        acquired = self.acquire_candidate(
+            title,
+            author=author,
+            edition=edition,
+            registry=registry,
+            transport=transport,
+            offline=offline,
+        )
+        if isinstance(acquired, SourceUnresolved):
+            return acquired
+        raw = acquired.raw_path.read_bytes()
+        if (
+            hashlib.sha256(raw).hexdigest() != acquired.observed_sha256
+            or len(raw) != acquired.observed_bytes
+        ):
+            raise BookRunError("acquired raw artifact hash or length mismatch")
+        overlay = None
+        if overlay_path is not None:
+            if not overlay_path.is_file():
+                raise BookRunError(f"reviewed image overlay missing: {overlay_path}")
+            overlay = overlay_path.read_bytes()
+        configuration = {
+            "parser_version": faithful.PARSER_VERSION,
+            "candidate_fingerprint": acquired.candidate.fingerprint,
+            "raw_sha256": acquired.observed_sha256,
+            "acquisition_fingerprint": acquired.fingerprint,
+            "overlay_sha256": hashlib.sha256(overlay).hexdigest() if overlay else None,
+            "ocr_method": "local_injected" if ocr is not None else "none",
+        }
+        identity = stage_identity(
+            BOOK_STAGE_CONTRACTS["ingest"],
+            source_hash=content_fingerprint(configuration),
+            dependency_output_hashes=(acquired.fingerprint,),
+            decoding_parameters={
+                "parser": faithful.PARSER_VERSION,
+                "ocr": configuration["ocr_method"],
+            },
+        )
+
+        def extract() -> object:
+            return asdict(
+                faithful.extract_candidate(
+                    acquired.source, raw, acquired.candidate,
+                    overlay=overlay, ocr=ocr,
+                )
+            )
+
+        stored, _reused = self.dag.execute(identity, extract)
+        book = _book_text_cached(stored)
+        if (
+            book.content_sha256 != acquired.observed_sha256
+            or book.source_fingerprint != acquired.source.fingerprint
+            or book.source.authorization_status != "unverified"
+            or book.parser_version != faithful.PARSER_VERSION
+        ):
+            raise BookRunError("cached candidate extraction disagrees with pinned source")
+        extracted_path = (
+            self.root / "book-candidates" / "extracted" / faithful.PARSER_VERSION
+            / f"{identity.cache_key}.json"
+        )
+        dossier_path = (
+            self.root / "book-candidates" / "dossiers" / acquired.candidate.book_id
+            / f"{identity.cache_key}.json"
+        )
+        acquisition._private_write(
+            extracted_path,
+            (json.dumps(asdict(book), ensure_ascii=False, sort_keys=True) + "\n").encode(),
+        )
+        dossier = {
+            "schema": "clipper-book-candidate-ingest-dossier-v1",
+            "book_id": acquired.candidate.book_id,
+            "author": acquired.candidate.author,
+            "edition_identity": acquired.candidate.edition_identity,
+            "raw_sha256": acquired.observed_sha256,
+            "raw_bytes": acquired.observed_bytes,
+            "record_url": acquired.record_url,
+            "actual_asset_url": acquired.asset_url,
+            "http_status": acquired.http_status,
+            "fetched_at": acquired.fetched_at,
+            "authorization_status": book.source.authorization_status,
+            "publisher_authenticity": "unverified",
+            "source_fingerprint": acquired.source.fingerprint,
+            "acquisition_fingerprint": acquired.fingerprint,
+            "extract_stage_key": identity.cache_key,
+            "extracted_sha256": hashlib.sha256(extracted_path.read_bytes()).hexdigest(),
+            "parser_version": book.parser_version,
+            "parser_config_sha256": book.parser_config_sha256,
+            "text_blocks": len(book.blocks),
+            "sections": len(book.sections),
+            "extracted_words": book.total_word_count,
+            "unique_images": len(book.images),
+            "image_occurrences": sum(len(x.occurrences) for x in book.images),
+            "reviewed_images": sum(x.review_status == "reviewed" for x in book.images),
+            "excluded_pages": [asdict(x) for x in book.excluded_pages],
+            "recovery_status": book.recovery_status,
+            "warnings": [*acquired.warnings, *book.warnings],
+            "editorial_approved": False,
+            "publish_eligible": False,
+        }
+        acquisition._private_write(
+            dossier_path, (json.dumps(dossier, sort_keys=True, indent=2) + "\n").encode()
+        )
+        return CandidateIngestResult(
+            acquired.candidate, acquired, book, identity.cache_key,
+            extracted_path, dossier_path,
+        )
 
     def ingest(
         self, title: str, author: str, resolver: ingest.SourceResolver
