@@ -121,9 +121,7 @@ def test_remote_failure_is_persisted_without_accepted_candidate(
     assert not (output / "wan-s2v-candidate.mp4").exists()
 
 
-def test_remote_hash_mismatch_fails_closed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_remote_hash_mismatch_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     module = _worker(monkeypatch)
     reference, audio = _inputs(tmp_path)
     module.generate_s2v.remote.return_value = {
