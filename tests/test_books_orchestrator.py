@@ -177,7 +177,6 @@ def test_recorded_narration_rejects_bad_geometry_with_dag_failure_evidence(
     assert not list((tmp_path / "book-script-cache/tts").glob("*.wav"))
 
 
-
 def test_narration_resume_fails_closed_if_audio_cache_file_changes(
     tmp_path: Path,
 ) -> None:
