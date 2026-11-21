@@ -16,8 +16,8 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -244,10 +244,12 @@ class ArchiveHTTPTransport:
     def get(self, url: str, *, limit: int) -> HTTPResult:
         host = _validate_url(url)
         _check_public_dns(host)
-        request = urllib.request.Request(url, headers={"User-Agent": "ClipperBookIngest/1"})
+        request = urllib.request.Request(  # noqa: S310 - host and scheme validated
+            url, headers={"User-Agent": "ClipperBookIngest/1"}
+        )
         opener = urllib.request.build_opener(_StrictRedirect())
         try:
-            with opener.open(request, timeout=20) as response:  # noqa: S310 - checked URL
+            with opener.open(request, timeout=20) as response:
                 final = response.geturl()
                 _validate_url(final, redirect=True)
                 status = int(response.status)
@@ -344,7 +346,9 @@ class ArchiveAcquirer:
             files = record.get("files")
             if not isinstance(files, list):
                 raise AcquisitionError("Archive file listing missing")
-            matches = [x for x in files if isinstance(x, dict) and x.get("name") == candidate.filename]
+            matches = [
+                x for x in files if isinstance(x, dict) and x.get("name") == candidate.filename
+            ]
             if len(matches) != 1:
                 raise AcquisitionError(
                     f"Archive selected asset missing or ambiguous: {candidate.filename}; "
@@ -375,7 +379,7 @@ class ArchiveAcquirer:
                     f"expected {candidate.expected_bytes}/{candidate.expected_sha256}, "
                     f"observed {actual_bytes}/{actual_hash}"
                 )
-            timestamp = datetime.now(timezone.utc).isoformat()
+            timestamp = datetime.now(UTC).isoformat()
             source = BookSource(
                 candidate.title,
                 candidate.author,
@@ -402,13 +406,16 @@ class ArchiveAcquirer:
                 "authorization_status": "unverified",
                 "edition_authenticated": False,
                 "warnings": [
-                    "community-uploaded candidate; publisher authenticity and permissions unverified"
+                    "community-uploaded candidate; publisher authenticity "
+                    "and permissions unverified"
                 ],
             }
             _private_write(raw_path, download.body)
             _private_write(
                 manifest_path,
-                (json.dumps(manifest, sort_keys=True, ensure_ascii=False, indent=2) + "\n").encode(),
+                (
+                    json.dumps(manifest, sort_keys=True, ensure_ascii=False, indent=2) + "\n"
+                ).encode(),
             )
             return AcquiredBook(
                 source, candidate, candidate.record_url, download.final_url,
