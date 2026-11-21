@@ -238,7 +238,7 @@ def test_book_intro_without_text_declaration_fails_closed(explicit_none: bool) -
     shot: dict = {"id": "scene-02", "keyframe_name": "book_intro"}
     if explicit_none:
         shot["required_on_screen_text"] = None
-    with pytest.raises(creative.CreativeReviewError, match="scene-02.*plan must declare"):
+    with pytest.raises(creative.CreativeReviewError, match=r"scene-02.*plan must declare"):
         creative.expected_text(shot)
 
 
