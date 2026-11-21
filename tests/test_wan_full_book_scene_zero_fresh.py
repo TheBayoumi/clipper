@@ -87,7 +87,10 @@ def test_scene_zero_rejects_old_audio_video_even_if_old_mp4_hash_is_valid(
     manifest["audio_sha256"] = digest(audio.read_bytes())
     (clip_dir / "model-evidence.json").write_text(json.dumps(manifest))
 
+    media_commands: list[list[str]] = []
+
     def stop_at_probe(command: list[str]) -> str:
+        media_commands.append(command)
         assert command[0] == "ffprobe"
         raise RuntimeError("CURRENT_VOICE_SHOT_ACCEPTED_FOR_MEDIA_PROBE")
 
@@ -140,13 +143,15 @@ def test_scene_zero_rejects_old_audio_video_even_if_old_mp4_hash_is_valid(
     }
     (clip_dir / "creative-review.json").write_text(json.dumps(assessment))
 
-    with pytest.raises(RuntimeError, match="CURRENT_VOICE_SHOT_ACCEPTED_FOR_MEDIA_PROBE"):
+    # A valid scene zero must not trigger a probe while later scenes are unverified.
+    with pytest.raises(episode.EpisodeError, match="current-audio Wan shot scene-01"):
         episode.prepare_concat(
             plan,
             [clip_dir, clip_dir, clip_dir, clip_dir],
             tmp_path / "output",
             tmp_path / "captions.ass",
         )
+    assert media_commands == []
 
 
 def test_scene_zero_separation_does_not_modify_scene_1_2_3_jobs() -> None:
