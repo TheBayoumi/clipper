@@ -45,4 +45,4 @@ jobs:
             tests/test_modal_endpoint_bootstrap.py \
             tests/test_wan_shot_contract.py \
             tests/test_wan_keyframe_contract.py
-          coverage report --rcfile=.coveragerc.scripts
+          coverage report --rcfile=.coveragerc.scripts --fail-under=60.84
