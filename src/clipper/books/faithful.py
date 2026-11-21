@@ -18,6 +18,7 @@ import zipfile
 from collections.abc import Callable
 from dataclasses import replace
 from io import BytesIO
+from typing import Any
 
 from clipper.stage_contracts import content_fingerprint
 
@@ -394,7 +395,7 @@ def _pdf(
     excluded: list[ExcludedPage] = []
     warnings: list[str] = []
     try:
-        document = pymupdf.open(stream=raw, filetype="pdf")
+        document: Any = pymupdf.open(stream=raw, filetype="pdf")  # type: ignore[no-untyped-call]
     except Exception as exc:
         raise ExtractionError("PDF cannot be opened as a valid document") from exc
     with document:
@@ -421,7 +422,8 @@ def _pdf(
         if any(not isinstance(page, int) or not 1 <= page <= count for page in excluded_pages):
             raise ExtractionError("PDF excluded page is outside the selected edition")
         first_pages: list[str] = []
-        for number, page in enumerate(document, start=1):
+        for number in range(1, count + 1):
+            page: Any = document[number - 1]
             section_id = f"page-{number:04d}"
             raw_text = page.get_text("text")
             if number <= 20:

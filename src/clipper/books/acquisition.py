@@ -396,6 +396,11 @@ class ArchiveAcquirer:
                 actual_hash,
                 candidate.format,
             )
+            metadata_digest = hashlib.sha256(metadata.body).hexdigest()
+            warnings = (
+                "community-uploaded candidate; publisher authenticity "
+                "and permissions unverified",
+            )
             manifest = {
                 "schema": "clipper-book-acquisition-v1",
                 "candidate_fingerprint": key,
@@ -404,16 +409,13 @@ class ArchiveAcquirer:
                 "asset_requested_url": asset_url,
                 "http_status": download.status,
                 "fetched_at": timestamp,
-                "metadata_sha256": hashlib.sha256(metadata.body).hexdigest(),
+                "metadata_sha256": metadata_digest,
                 "observed_bytes": actual_bytes,
                 "observed_sha256": actual_hash,
                 "source": asdict(source),
                 "authorization_status": "unverified",
                 "edition_authenticated": False,
-                "warnings": [
-                    "community-uploaded candidate; publisher authenticity "
-                    "and permissions unverified"
-                ],
+                "warnings": list(warnings),
             }
             _private_write(raw_path, download.body)
             _private_write(
@@ -432,9 +434,9 @@ class ArchiveAcquirer:
                 raw_path,
                 actual_bytes,
                 actual_hash,
-                manifest["metadata_sha256"],
+                metadata_digest,
                 False,
-                tuple(manifest["warnings"]),
+                warnings,
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
