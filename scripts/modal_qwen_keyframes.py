@@ -77,6 +77,33 @@ def validate_request(reference: bytes, req: dict[str, Any]) -> None:
 
 
 @app.function(
+    image=modal.Image.debian_slim(python_version="3.11"),
+    cpu=1,
+    memory=512,
+    timeout=120,
+    volumes={"/model-cache": volume},
+)
+def reuse_cached_keyframe(reference: bytes, request: dict[str, Any]) -> dict[str, Any] | None:
+    """Read the same versioned Volume cache without allocating a GPU."""
+    validate_request(reference, request)
+    volume.reload()
+    cached_png = CACHE_DIR / f"{request['fingerprint']}.png"
+    if not cached_png.is_file():
+        return None
+    data = cached_png.read_bytes()
+    if not 100_000 <= len(data) <= MAX_OUTPUT_BYTES:
+        raise RuntimeError("cached keyframe size invalid")
+    return {
+        "png": data,
+        "image_sha256": hashlib.sha256(data).hexdigest(),
+        "cache": "REUSED",
+        "gpu": None,
+        "model_id": MODEL_ID,
+        "model_revision": MODEL_REVISION,
+    }
+
+
+@app.function(
     image=image_spec(),
     gpu="A100-80GB",
     cpu=12,
@@ -206,7 +233,9 @@ def main(
             "status": "INCOMPLETE",
         }
         try:
-            response = generate_keyframe.remote(source, req)
+            response = reuse_cached_keyframe.remote(source, req)
+            if response is None:
+                response = generate_keyframe.remote(source, req)
             png = response.pop("png")
             frame = output_path / f"{shot_id}.png"
             frame.write_bytes(png)
