@@ -343,9 +343,7 @@ class BookOrchestrator:
             pillar=pillar,
         )
         script = self.script(plan, source=source, completion=completion)
-        tracks = self.narrate(
-            plan, script, recorded_dir=narration_dir, producer=narration_producer
-        )
+        tracks = self.narrate(plan, script, recorded_dir=narration_dir, producer=narration_producer)
         narrated_hash = content_fingerprint([asdict(track) for track in tracks])
         self.require_unported(
             "direction",

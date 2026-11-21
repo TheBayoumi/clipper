@@ -90,7 +90,7 @@ def test_recorded_episode_resumes_narration_then_fails_closed_at_direction(
         if name == "narration":
             assert record["identity"]["model_revision"] == "v1.0"
             assert record["identity"]["decoding_parameters"]["sample_rate"] == 24000
-            assert record["identity"]["decoding_parameters"]["voice"] == "af_heart"
+            assert record["identity"]["decoding_parameters"]["voice"] == "am_adam"
 
 
 def test_script_stage_uses_existing_completion_cache_without_loading_weights(
@@ -133,7 +133,6 @@ def test_invalid_stage_and_mismatched_recorded_episode_never_start_model(
         runner.script(plan, source=ROOT / "niches/atomic-habits-episode-02.json")
 
 
-
 def test_narration_uses_legacy_audio_cache_and_dag_resume_with_fake_producer(
     tmp_path: Path,
 ) -> None:
@@ -141,7 +140,7 @@ def test_narration_uses_legacy_audio_cache_and_dag_resume_with_fake_producer(
     runner = BookOrchestrator(tmp_path)
     plan = runner.plan(catalog, board, book_id="atomic-habits", lesson_id="two-minute-rule")
     script = runner.script(plan, source=ROOT / "niches/atomic-habits-episode-02.json")
-    payload = (tmp_path / "recorded-wavs")
+    payload = tmp_path / "recorded-wavs"
     payload.mkdir()
     with wave.open(str(payload / "single.wav"), "wb") as output:
         output.setnchannels(1)
@@ -154,7 +153,7 @@ def test_narration_uses_legacy_audio_cache_and_dag_resume_with_fake_producer(
     again = runner.narrate(plan, script, producer=producer)
     assert tracks == again
     assert len(tracks) == len(script.scenes)
-    assert all(item.sample_rate == 24000 and item.voice_id == "af_heart" for item in tracks)
+    assert all(item.sample_rate == 24000 and item.voice_id == "am_adam" for item in tracks)
     assert producer.call_count == len(script.scenes)
     saved = list((tmp_path / "book-script-cache/tts").glob("*.wav"))
     assert len(saved) == len(script.scenes)

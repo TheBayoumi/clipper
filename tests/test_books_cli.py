@@ -161,7 +161,6 @@ def test_books_validate_requires_actual_book_lesson_config(
     assert "format: book_lesson" in caplog.text
 
 
-
 def test_books_run_requires_recorded_audio_before_any_inference(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
