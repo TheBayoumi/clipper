@@ -23,7 +23,11 @@ from clipper.stage_contracts import content_fingerprint, stage_identity
 
 def test_book_contracts_are_immutable_and_hash_their_serialized_content() -> None:
     book = BookRef(
-        "atomic-habits", "Atomic Habits", "James Clear", "self_improvement", "https://jamesclear.com/"
+        "atomic-habits",
+        "Atomic Habits",
+        "James Clear",
+        "self_improvement",
+        "https://jamesclear.com/",
     )
     lesson = LessonSelection(
         book,
