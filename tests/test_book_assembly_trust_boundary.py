@@ -25,6 +25,12 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _seal_legacy(plan: dict[str, Any]) -> None:
+    """Bind a synthetic historical plan with the actual legacy hash algorithm."""
+    source = {key: value for key, value in plan.items() if key != "fingerprint"}
+    plan["fingerprint"] = _sha(json.dumps(source, sort_keys=True).encode())
+
+
 def _source(tmp_path: Path) -> tuple[dict[str, Any], Path, Path, list[Path]]:
     """Build a fully hash-consistent four-shot historical source, using synthetic bytes."""
     frames = tmp_path / "artifacts/full-book/frames"
@@ -86,7 +92,7 @@ def _source(tmp_path: Path) -> tuple[dict[str, Any], Path, Path, list[Path]]:
         "shots": shots,
         "publish_eligible": False,
     }
-    plan["fingerprint"] = _sha(json.dumps(plan, sort_keys=True).encode())
+    _seal_legacy(plan)
     return plan, audio, frames, folders
 
 
@@ -143,9 +149,7 @@ def _write_approvals(
         previous = timeline.file_sha(video)
 
 
-def _generalized(
-    tmp_path: Path,
-) -> tuple[dict[str, Any], Path, dict[str, Any], list[Path]]:
+def _generalized(tmp_path: Path) -> tuple[dict[str, Any], Path, dict[str, Any], list[Path]]:
     plan, audio, frames, folders = _source(tmp_path)
     edl, assets = assembly.make_legacy_replay(plan, audio, frames, folders)
     _write_approvals(edl["shots"], edl["fingerprint"], folders, frames)
@@ -169,21 +173,15 @@ def test_legacy_intro_preserves_identity_and_declared_cover_text(tmp_path: Path)
 def test_legacy_intro_without_declared_text_fails_closed(tmp_path: Path) -> None:
     plan, audio, frames, folders = _source(tmp_path)
     plan["shots"][2].pop("required_on_screen_text")
-    plan["fingerprint"] = _sha(json.dumps(
-        {key: value for key, value in plan.items() if key != "fingerprint"},
-        sort_keys=True,
-    ).encode())
-    with pytest.raises(assembly.AssemblyError, match="intro.*required_on_screen_text"):
+    _seal_legacy(plan)
+    with pytest.raises(assembly.AssemblyError, match=r"intro.*required_on_screen_text"):
         assembly.make_legacy_replay(plan, audio, frames, folders)
 
 
 def test_legacy_intro_explicit_empty_text_survives_replay(tmp_path: Path) -> None:
     plan, audio, frames, folders = _source(tmp_path)
     plan["shots"][2]["required_on_screen_text"] = []
-    plan["fingerprint"] = _sha(json.dumps(
-        {key: value for key, value in plan.items() if key != "fingerprint"},
-        sort_keys=True,
-    ).encode())
+    _seal_legacy(plan)
     edl, _assets = assembly.make_legacy_replay(plan, audio, frames, folders)
     intro = edl["shots"][2]
     assert "required_on_screen_text" in intro
@@ -191,9 +189,7 @@ def test_legacy_intro_explicit_empty_text_survives_replay(tmp_path: Path) -> Non
     assert creative.expected_text(intro) == []
 
 
-def test_legacy_non_intro_absence_stays_absent_and_hash_binding_remains(
-    tmp_path: Path,
-) -> None:
+def test_legacy_non_intro_absence_stays_absent_and_hash_binding_remains(tmp_path: Path) -> None:
     plan, audio, frames, folders = _source(tmp_path)
     edl, _assets = assembly.make_legacy_replay(plan, audio, frames, folders)
     non_intro = edl["shots"][0]
@@ -212,11 +208,11 @@ def test_generalized_last_invalid_review_blocks_every_media_process(
     edl, audio, assets, folders = _generalized(tmp_path)
     (folders[-1] / "creative-review.json").unlink()
     calls: list[list[str]] = []
-    monkeypatch.setattr(
-        assembly, "run", lambda argv: calls.append(argv) or json.dumps(
-            {"format": {"duration": "9.0"}, "streams": [{"codec_type": "video"}]}
-        ),
-    )
+    def fake_probe(argv: list[str]) -> str:
+        calls.append(argv)
+        return json.dumps({"format": {"duration": "9.0"}, "streams": [{"codec_type": "video"}]})
+
+    monkeypatch.setattr(assembly, "run", fake_probe)
     with pytest.raises(assembly.AssemblyError, match="creative review rejected"):
         assembly.assemble(edl, audio, assets, tmp_path / "rejected")
     assert calls == [], "no earlier shot may reach ffprobe before all approvals pass"
@@ -231,7 +227,7 @@ def test_generalized_valid_reviews_preserve_probes_and_encoding(
     def fake_media(argv: list[str]) -> str:
         calls.append(argv)
         if argv[0] == "ffprobe" and ".clean-master-incomplete" in argv[-1]:
-            return json.dumps({
+            data = {
                 "format": {"duration": "36.0"},
                 "streams": [
                     {
@@ -243,12 +239,10 @@ def test_generalized_valid_reviews_preserve_probes_and_encoding(
                     },
                     {"codec_type": "audio"},
                 ],
-            })
+            }
+            return json.dumps(data)
         if argv[0] == "ffprobe":
-            return json.dumps({
-                "format": {"duration": "9.25"},
-                "streams": [{"codec_type": "video"}],
-            })
+            return json.dumps({"format": {"duration": "9.25"}, "streams": [{"codec_type": "video"}]})
         if "-filter_complex" in argv:
             Path(argv[-1]).write_bytes(b"synthetic-assembled-video")
         return ""
@@ -268,11 +262,11 @@ def test_episode_last_invalid_review_blocks_every_media_process(
     (folders[-1] / "creative-review.json").unlink()
     monkeypatch.chdir(tmp_path)
     calls: list[list[str]] = []
-    monkeypatch.setattr(
-        episode, "command_run", lambda argv: calls.append(argv) or json.dumps(
-            {"format": {"duration": "9.0"}}
-        ),
-    )
+    def fake_probe(argv: list[str]) -> str:
+        calls.append(argv)
+        return json.dumps({"format": {"duration": "9.0"}})
+
+    monkeypatch.setattr(episode, "command_run", fake_probe)
     with pytest.raises(episode.EpisodeError, match="creative review rejected"):
         episode.prepare_concat(plan, folders, tmp_path / "rejected", captions=None, clean=True)
     assert calls == [], "no earlier shot may reach ffprobe before all approvals pass"
@@ -289,7 +283,7 @@ def test_episode_valid_reviews_preserve_probes_and_encoding(
     def fake_media(argv: list[str]) -> str:
         calls.append(argv)
         if argv[0] == "ffprobe" and str(argv[-1]).endswith("master.mp4"):
-            return json.dumps({
+            data = {
                 "format": {"duration": "36.0"},
                 "streams": [
                     {
@@ -300,7 +294,8 @@ def test_episode_valid_reviews_preserve_probes_and_encoding(
                     },
                     {"codec_type": "audio"},
                 ],
-            })
+            }
+            return json.dumps(data)
         if argv[0] == "ffprobe":
             return json.dumps({"format": {"duration": "9.0"}})
         if "-filter_complex" in argv:
