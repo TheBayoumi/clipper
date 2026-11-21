@@ -162,7 +162,7 @@ def _verify_epub_metadata(
         if _tag(x.tag) == "creator" and (x.text or "").strip()
     ]
     allowed = {_equal(candidate.title), *(_equal(x) for x in candidate.title_aliases)}
-    if not titles or not any(_equal(x) in allowed for x in titles):
+    if not titles or _equal(titles[0]) not in allowed:
         raise ExtractionError(
             f"EPUB title mismatch: expected {candidate.title!r}, found {titles!r}"
         )

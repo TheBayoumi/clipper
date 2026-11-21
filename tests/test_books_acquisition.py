@@ -152,7 +152,8 @@ def test_acquisition_records_actual_url_and_immutable_private_cache(tmp_path: Pa
     reused = offline.acquire(candidate, offline=True)
     assert reused.cache_hit is True
     assert reused.observed_sha256 == acquired.observed_sha256
-    assert "not revalidated" in reused.warnings[0]
+    assert "publisher authenticity" in reused.warnings[0]
+    assert reused.cache_hit is True
     acquired.raw_path.write_bytes(raw + b"x")
     with pytest.raises(AcquisitionError, match="changed"):
         offline.acquire(candidate, offline=True)

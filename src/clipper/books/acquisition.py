@@ -332,7 +332,7 @@ class ArchiveAcquirer:
                 candidate.expected_sha256,
                 saved["metadata_sha256"],
                 True,
-                ("offline cached metadata not revalidated",),
+                tuple(saved["warnings"]),
             )
         try:
             metadata = self.transport.get(candidate.record_url, limit=MAX_METADATA_BYTES)
