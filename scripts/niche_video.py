@@ -1,23 +1,22 @@
-"""Original niche-video CLI; script stage delegates to clipper.books.scripting.
+"""Legacy niche-video CLI; Qwen and Kokoro stages delegate to clipper.books.
 
-The legacy TTS and prototype renderer remain unchanged, outside the script stage.
+Creatively rejected prototype renderer remains here solely for archival reproduction.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
-import io
 import json
 import math
 import os
 import shutil
 import subprocess
-import wave
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from clipper.books import narration as _narration
 from clipper.books import scripting as _scripting
 
 NicheVideoError = _scripting.NicheVideoError
@@ -51,67 +50,18 @@ def generate_episode(config: NicheConfig, cache_root: Path) -> tuple[Episode, st
     return _scripting.generate_episode(config, cache_root, completion=_local_script_completion)
 
 
-@lru_cache(maxsize=1)
-def _kokoro_pipeline() -> Any:
-    try:
-        from kokoro import KPipeline
-    except ImportError as exc:
-        raise NicheVideoError("Install the [niche-models] runtime for Kokoro TTS") from exc
-    return KPipeline(lang_code="a", repo_id=VOICE_MODEL)
-
-
-def _wav_metadata(payload: bytes) -> tuple[int, int, int]:
-    try:
-        with wave.open(io.BytesIO(payload), "rb") as wav:
-            return wav.getnchannels(), wav.getframerate(), wav.getnframes()
-    except (wave.Error, EOFError) as exc:
-        raise NicheVideoError("Kokoro produced invalid WAV audio") from exc
+_kokoro_pipeline = _narration._kokoro_pipeline
+_wav_metadata = _narration._wav_metadata
 
 
 def _kokoro_wav(narration: str, voice: str) -> bytes:
-    try:
-        import numpy as np
-        import soundfile as sf
-    except ImportError as exc:
-        raise NicheVideoError("Install soundfile and numpy for open-source TTS") from exc
-    chunks = [
-        np.asarray(audio, dtype=np.float32).reshape(-1)
-        for _, _, audio in _kokoro_pipeline()(narration, voice=voice, speed=1.0)
-    ]
-    if not chunks:
-        raise NicheVideoError("Kokoro returned no audio segments")
-    speech = np.concatenate(chunks)
-    if len(speech) < 8000 or not np.isfinite(speech).all():
-        raise NicheVideoError("Kokoro returned empty or non-finite audio")
-    buffer = io.BytesIO()
-    sf.write(buffer, np.clip(speech, -1.0, 1.0), 24000, format="WAV", subtype="PCM_16")
-    return buffer.getvalue()
+    """Preserve the historic mockable loader seam for existing CLI callers."""
+    return _narration._kokoro_wav(narration, voice, pipeline=_kokoro_pipeline)
 
 
 def synthesize_scene(scene: Scene, config: NicheConfig, cache_root: Path) -> Path:
-    request = {
-        "contract": VOICE_CONTRACT,
-        "model": VOICE_MODEL,
-        "model_revision": VOICE_REVISION,
-        "voice": config.voice,
-        "language": "en-us",
-        "sample_rate": 24000,
-        "speed": 1.0,
-        "text": scene.narration,
-    }
-    digest = _fingerprint(request)
-    path = cache_root / "tts" / f"{digest}.wav"
-    if path.is_file():
-        nch, rate, frames = _wav_metadata(path.read_bytes())
-        if nch == 1 and rate == 24000 and frames >= 8000:
-            return path
-        raise NicheVideoError("Cached TTS WAV has invalid geometry or duration")
-    audio = _kokoro_wav(scene.narration, config.voice)
-    nch, rate, frames = _wav_metadata(audio)
-    if nch != 1 or rate != 24000 or frames < 8000:
-        raise NicheVideoError("Kokoro WAV must be mono 24 kHz with audible duration")
-    _write_atomic(path, audio)
-    return path
+    """Delegate unchanged WAV cache semantics, retaining legacy monkeypatch hooks."""
+    return _narration.synthesize_scene(scene, config, cache_root, producer=_kokoro_wav)
 
 
 def _process(command: list[str], *, timeout: int = 240) -> str:
