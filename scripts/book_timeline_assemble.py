@@ -348,9 +348,9 @@ def make_legacy_replay(
         end = total_frames if index == len(folders) - 1 else round(float(shot["end_seconds"]) * FPS)
         if end <= previous:
             raise AssemblyError("historical shot duration collapsed")
-        if (
-            shot["keyframe_name"] == "book_intro" or shot["id"] == "book_intro"
-        ) and shot.get("required_on_screen_text") is None:
+        if (shot["keyframe_name"] == "book_intro" or shot["id"] == "book_intro") and shot.get(
+            "required_on_screen_text"
+        ) is None:
             raise AssemblyError(
                 f"historical intro {shot['id']} missing required_on_screen_text declaration"
             )
