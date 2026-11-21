@@ -75,7 +75,6 @@ def test_selection_rejects_empty_catalog_and_invalid_storyboard() -> None:
         )
 
 
-
 @pytest.mark.parametrize(
     "defect,message",
     [
