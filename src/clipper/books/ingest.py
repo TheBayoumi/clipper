@@ -253,7 +253,7 @@ def _https_get(url: str) -> bytes:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https" or parsed.hostname != "www.gutenberg.org":
         raise BookIngestError("Gutenberg transport accepts only official HTTPS URLs")
-    with urllib.request.urlopen(url, timeout=15) as response:
+    with urllib.request.urlopen(url, timeout=15) as response:  # noqa: S310 - HTTPS host checked
         redirected = urllib.parse.urlsplit(response.geturl())
         if redirected.scheme != "https" or redirected.hostname != "www.gutenberg.org":
             raise BookIngestError("Gutenberg redirect must remain on official HTTPS host")
