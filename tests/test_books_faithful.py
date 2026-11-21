@@ -338,3 +338,289 @@ def test_cpu_tesseract_adapter_is_optional_and_bounded(
 def test_epub_xml_dtd_is_rejected_before_parsing() -> None:
     with pytest.raises(ExtractionError, match="DTD/entity"):
         _xml(b"<!DOCTYPE x [<!ENTITY p SYSTEM 'file:///private'>]><html/>")
+
+
+def _mutate_epub(
+    data: bytes,
+    *,
+    replacements: dict[str, tuple[str, str]] | None = None,
+    deletions: tuple[str, ...] = (),
+    additions: dict[str, bytes] | None = None,
+) -> bytes:
+    """Original synthetic archive rewrites only; never checked-in book bytes."""
+    stream = io.BytesIO()
+    with zipfile.ZipFile(data) as source, zipfile.ZipFile(stream, "w") as target:
+        for item in source.infolist():
+            if item.filename in deletions:
+                continue
+            value = source.read(item.filename)
+            edit = (replacements or {}).get(item.filename)
+            if edit is not None:
+                value = value.replace(edit[0].encode(), edit[1].encode())
+            target.writestr(item.filename, value)
+        for name, payload in (additions or {}).items():
+            target.writestr(name, payload)
+    return stream.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("path", "old", "new", "error"),
+    [
+        (
+            "META-INF/container.xml",
+            '<rootfile full-path="OPS/content.opf"/>',
+            '<rootfile full-path="../bad.opf"/>',
+            "package path is unsafe",
+        ),
+        (
+            "META-INF/container.xml",
+            '<rootfile full-path="OPS/content.opf"/>',
+            "",
+            "exactly one package rootfile",
+        ),
+        (
+            "OPS/content.opf",
+            "unique-identifier=\"uid\"",
+            "unique-identifier=\"missing\"",
+            "primary identifier does not exist",
+        ),
+        (
+            "OPS/content.opf",
+            "urn:uuid:synthetic-file",
+            "urn:isbn:9780000000000",
+            "primary ISBN disagrees",
+        ),
+        (
+            "OPS/content.opf",
+            "<metadata>",
+            "<missing>",
+            "package metadata missing",
+        ),
+        (
+            "OPS/content.opf",
+            "<spine><itemref",
+            "<spine><itemref idref=\"s0\"/><itemref",
+            "duplicates reading-order",
+        ),
+        (
+            "OPS/content.opf",
+            'idref="s1"',
+            'idref="unknown"',
+            "spine idref missing",
+        ),
+        (
+            "OPS/content.opf",
+            'media-type="application/xhtml+xml"',
+            'media-type="application/pdf"',
+            "non-XHTML spine",
+        ),
+        (
+            "OPS/Text/part-one.xhtml",
+            "<body>",
+            "<head>",
+            "XHTML body missing",
+        ),
+    ],
+)
+def test_epub_package_metadata_and_spine_ambiguity_fail_closed(
+    path: str, old: str, new: str, error: str
+) -> None:
+    raw = _mutate_epub(_epub(), replacements={path: (old, new)})
+    candidate = _candidate(raw)
+    with pytest.raises(ExtractionError, match=error):
+        extract_candidate(_source(raw, candidate), raw, candidate)
+
+
+def test_epub_missing_referenced_asset_is_an_error() -> None:
+    raw = _mutate_epub(_epub(), deletions=("OPS/Images/chart.png",))
+    with pytest.raises(ExtractionError, match="referenced spine/asset missing"):
+        extract_candidate(_source(raw, _candidate(raw)), raw, _candidate(raw))
+
+
+def test_epub_short_frontmatter_and_empty_spine_report_coverage_diagnostics() -> None:
+    raw = _mutate_epub(
+        _epub(),
+        replacements={
+            "OPS/content.opf": (
+                '<itemref idref="s1"/><itemref idref="s2"/><itemref idref="s3"/>',
+                "",
+            ),
+            "OPS/Text/cover.xhtml": (
+                "<h1>Cover</h1><p>Short front matter.</p>",
+                "",
+            ),
+        },
+    )
+    candidate = _candidate(raw)
+    book = extract_candidate(_source(raw, candidate), raw, candidate)
+    assert len(book.sections) == 1
+    assert any("no source-visible blocks" in warning for warning in book.warnings)
+    assert any("only 1 spine" in warning for warning in book.warnings)
+
+
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [
+        (b"<root", "malformed EPUB"),
+        (b"<!DOCTYPE x><html/>", "DTD/entity"),
+    ],
+)
+def test_xml_untrusted_markup_is_rejected(payload: bytes, error: str) -> None:
+    from clipper.books.faithful import _xml
+
+    with pytest.raises(ExtractionError, match=error):
+        _xml(payload)
+
+
+@pytest.mark.parametrize(
+    ("path", "error"),
+    [
+        ("/absolute.png", "external or absolute"),
+        ("https://host/image.png", "external or absolute"),
+        ("../x/../../evil.png", "path traversal"),
+    ],
+)
+def test_epub_relative_asset_paths_are_strictly_sandboxed(path: str, error: str) -> None:
+    from clipper.books.faithful import _relative
+
+    with pytest.raises(ExtractionError, match=error):
+        _relative("OPS/Text/page.xhtml", path)
+
+
+def test_epub_zip_bomb_and_untrusted_members_are_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clipper.books import faithful
+
+    raw = _epub()
+    with pytest.raises(ExtractionError, match="invalid EPUB ZIP"):
+        faithful._zip(b"not a ZIP")
+    monkeypatch.setattr(faithful, "MAX_MEMBERS", 1)
+    with pytest.raises(ExtractionError, match="entry limit"):
+        faithful._zip(raw)
+    monkeypatch.setattr(faithful, "MAX_MEMBERS", 1500)
+    monkeypatch.setattr(faithful, "MAX_TOTAL_UNCOMPRESSED", 100)
+    with pytest.raises(ExtractionError, match="decompressed byte budget"):
+        faithful._zip(raw)
+    monkeypatch.setattr(faithful, "MAX_TOTAL_UNCOMPRESSED", 100_000_000)
+    monkeypatch.setattr(faithful, "MAX_ITEM_BYTES", 2)
+    with pytest.raises(ExtractionError, match="decompressed byte budget"):
+        faithful._zip(raw)
+    monkeypatch.setattr(faithful, "MAX_ITEM_BYTES", 20_000_000)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as out:
+        out.writestr("../private", b"no")
+    with pytest.raises(ExtractionError, match="unsafe EPUB archive member"):
+        faithful._zip(archive.getvalue())
+    bomb = io.BytesIO()
+    with zipfile.ZipFile(bomb, "w", compression=zipfile.ZIP_DEFLATED) as out:
+        out.writestr("highratio", b"\x00" * 500_000)
+    with pytest.raises(ExtractionError, match="compression ratio"):
+        faithful._zip(bomb.getvalue())
+
+
+def test_epub_read_refuses_missing_member_and_individual_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clipper.books import faithful
+
+    with zipfile.ZipFile(io.BytesIO(_epub())) as archive:
+        with pytest.raises(ExtractionError, match="referenced spine/asset missing"):
+            faithful._read(archive, "OPS/no-such-image.png")
+        monkeypatch.setattr(faithful, "MAX_ITEM_BYTES", 1)
+        with pytest.raises(ExtractionError, match="member exceeds byte limit"):
+            faithful._read(archive, "OPS/content.opf")
+
+
+def test_overlay_malformed_schema_missing_review_and_unknown_asset_fail_closed() -> None:
+    raw = _epub()
+    candidate = _candidate(raw)
+    book = extract_candidate(_source(raw, candidate), raw, candidate)
+    asset = book.images[0]
+    record = {
+        "schema": "clipper-book-image-overlay-v1",
+        "source_sha256": book.content_sha256,
+        "entries": [
+            {
+                "asset_sha256": asset.asset_sha256,
+                "anchors": [x.anchor for x in asset.occurrences],
+                "original_transcription": "40 10 60",
+                "normalized_transcription": None,
+                "normalization_notes": None,
+                "reviewed_by": "fixture-human",
+                "reviewed_at": "2026-11-21",
+                "review_status": "reviewed",
+            }
+        ],
+    }
+    inputs: list[tuple[bytes, str]] = [
+        (b"{broken JSON", "invalid JSON"),
+        (json.dumps({**record, "schema": "unknown"}).encode(), "schema mismatch"),
+        (json.dumps({**record, "entries": "invalid"}).encode(), "must be a list"),
+        (
+            json.dumps({**record, "entries": [{"missing": "required"}]}).encode(),
+            "entry fields mismatch",
+        ),
+        (
+            json.dumps({**record, "entries": [
+                {**record["entries"][0], "asset_sha256": "0" * 64},
+            ]}).encode(),
+            "SHA-256 missing or duplicate",
+        ),
+        (
+            json.dumps({**record, "entries": [*record["entries"], *record["entries"]]}).encode(),
+            "SHA-256 missing or duplicate",
+        ),
+    ]
+    for payload, error in inputs:
+        with pytest.raises(ExtractionError, match=error):
+            extract_candidate(book.source, raw, candidate, overlay=payload)
+
+
+def test_missing_ocr_does_not_imply_complete_transcription() -> None:
+    raw = _epub()
+    candidate = _candidate(raw)
+    book = extract_candidate(_source(raw, candidate), raw, candidate, ocr=lambda _p, _m: None)
+    assert book.recovery_status == "incomplete_recovery"
+    assert all(image.original_transcription is None for image in book.images)
+    assert "OCR absent/failed" in book.images[0].uncertainty
+
+
+def test_pdf_rejects_corrupted_bytes_zero_pages_and_invalid_exclusion() -> None:
+    raw = b"%PDF-not-a-valid-document"
+    candidate = _candidate(raw, DEEP, fmt="pdf")
+    with pytest.raises(ExtractionError, match="cannot be opened"):
+        extract_candidate(_source(raw, candidate), raw, candidate)
+    empty = pymupdf.open()
+    data = empty.tobytes()
+    empty.close()
+    candidate = replace(_candidate(data, DEEP, fmt="pdf"), expected_pages=None)
+    with pytest.raises(ExtractionError, match="page count unsupported"):
+        extract_candidate(_source(data, candidate), data, candidate)
+    original = _pdf()
+    candidate = replace(
+        _candidate(original, DEEP, fmt="pdf"), expected_pages=3,
+        exclusions=({"page": 4, "reason": "unknown", "evidence": "bad"},),
+    )
+    with pytest.raises(ExtractionError, match="excluded page is outside"):
+        extract_candidate(_source(original, candidate), original, candidate)
+
+
+def test_pdf_frontmatter_identity_and_isbn_gap_are_diagnostic() -> None:
+    document = pymupdf.open()
+    document.new_page().insert_text((30, 50), "Deep Work by someone else")
+    raw = document.tobytes()
+    document.close()
+    candidate = replace(_candidate(raw, DEEP, fmt="pdf"), expected_pages=1, exclusions=())
+    with pytest.raises(ExtractionError, match="author absent"):
+        extract_candidate(_source(raw, candidate), raw, candidate)
+
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((30, 50), "Deep Work by Cal Newport; no ISBN number given")
+    raw = document.tobytes()
+    document.close()
+    candidate = replace(_candidate(raw, DEEP, fmt="pdf"), expected_pages=1, exclusions=())
+    book = extract_candidate(_source(raw, candidate), raw, candidate)
+    assert any("ISBN" in warning and "uncertain" in warning for warning in book.warnings)
+    assert book.recovery_status == "incomplete_recovery"
