@@ -398,8 +398,7 @@ class ArchiveAcquirer:
             )
             metadata_digest = hashlib.sha256(metadata.body).hexdigest()
             warnings = (
-                "community-uploaded candidate; publisher authenticity "
-                "and permissions unverified",
+                "community-uploaded candidate; publisher authenticity and permissions unverified",
             )
             manifest = {
                 "schema": "clipper-book-acquisition-v1",
