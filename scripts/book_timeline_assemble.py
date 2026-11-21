@@ -99,7 +99,7 @@ def _prepare(
     records = assets["assets"]
     if not isinstance(shots, list) or not shots or len(records) != len(shots):
         raise AssemblyError("a cached source is required for every directed shot")
-    checked: list[tuple[Path, int, int]] = []
+    preflight: list[tuple[Path, int, int, str]] = []
     previous = 0
     seen: set[str] = set()
     previous_video_sha256: str | None = None
@@ -178,6 +178,13 @@ def _prepare(
         except (CreativeReviewError, TypeError, ValueError) as exc:
             raise AssemblyError(f"shot {shot_id} creative review rejected: {exc}") from exc
         previous_video_sha256 = asset["sha256"]
+        preflight.append((video, source_start, end - start, shot_id))
+    if previous != output["frames"]:
+        raise AssemblyError("cached timeline does not cover complete narration")
+
+    # Phase two: no media subprocess starts until every source and approval is verified.
+    checked: list[tuple[Path, int, int]] = []
+    for video, source_start, count, shot_id in preflight:
         metadata = probe(video)
         picture = [s for s in metadata.get("streams", []) if s.get("codec_type") == "video"]
         if len(picture) != 1:
@@ -185,12 +192,10 @@ def _prepare(
         source_duration = float(metadata["format"]["duration"])
         if not math.isfinite(source_duration) or source_duration <= 0:
             raise AssemblyError("invalid cached shot duration")
-        required_seconds = (source_start + end - start) / FPS
+        required_seconds = (source_start + count) / FPS
         if source_duration + 1 / FPS < required_seconds:
             raise AssemblyError(f"cached shot too short; never extend or loop: {shot_id}")
-        checked.append((video, source_start, end - start))
-    if previous != output["frames"]:
-        raise AssemblyError("cached timeline does not cover complete narration")
+        checked.append((video, source_start, count))
     return checked, frames
 
 
@@ -343,14 +348,22 @@ def make_legacy_replay(
         end = total_frames if index == len(folders) - 1 else round(float(shot["end_seconds"]) * FPS)
         if end <= previous:
             raise AssemblyError("historical shot duration collapsed")
-        shots.append(
-            {
-                "id": shot["id"],
-                "start_frame": previous,
-                "end_frame": end,
-                "director_role": "LEGACY_APPROVED_SHOT",
-            }
-        )
+        if (
+            shot["keyframe_name"] == "book_intro" or shot["id"] == "book_intro"
+        ) and shot.get("required_on_screen_text") is None:
+            raise AssemblyError(
+                f"historical intro {shot['id']} missing required_on_screen_text declaration"
+            )
+        replayed = {
+            "id": shot["id"],
+            "start_frame": previous,
+            "end_frame": end,
+            "director_role": "LEGACY_APPROVED_SHOT",
+            "keyframe_name": shot["keyframe_name"],
+        }
+        if "required_on_screen_text" in shot:
+            replayed["required_on_screen_text"] = shot["required_on_screen_text"]
+        shots.append(replayed)
         assets.append(
             {
                 "shot_id": shot["id"],

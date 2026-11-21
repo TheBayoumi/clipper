@@ -15,6 +15,7 @@ import math
 import subprocess
 import wave
 from pathlib import Path
+from typing import Any
 
 from book_shot_review import (
     CreativeReviewError,
@@ -239,6 +240,7 @@ def prepare_concat(
     output.mkdir(parents=True, exist_ok=True)
     if plan.get("schema") != SCHEMA or not 30 <= plan["seconds"] <= 60:
         raise EpisodeError("not a valid 30-60 second source-backed episode")
+    preflighted: list[tuple[Path, dict[str, Any]]] = []
     clips = []
     previous_video_sha256: str | None = None
     for shot, folder in zip(plan["shots"], paths, strict=True):
@@ -271,6 +273,11 @@ def prepare_concat(
         except CreativeReviewError as exc:
             raise EpisodeError(f"shot {name} creative review rejected: {exc}") from exc
         previous_video_sha256 = digest(video.read_bytes())
+        preflighted.append((video, shot))
+
+    # Phase two: all creative reviews and source hashes pass before any media process.
+    for video, shot in preflighted:
+        name = shot["id"]
         probe = json.loads(
             command_run(
                 [
