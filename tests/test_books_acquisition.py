@@ -294,3 +294,158 @@ def test_real_transport_adapter_only_uses_mocked_opener(
     assert result.status == 200
     assert result.body == b"PK\x03\x04X"
     assert result.final_url.startswith("https://ia801234.us.archive.org/")
+
+
+def test_acquisition_metadata_schema_and_restrictions_fail_closed(tmp_path: Path) -> None:
+    candidate, raw, metadata = _sample()
+    malformed: list[tuple[dict[str, object], str]] = [
+        ({**metadata, "metadata": None}, "metadata edition record is malformed"),
+        ({**metadata, "metadata": {"is_restricted": True}}, "record is restricted"),
+        ({**metadata, "metadata": ["not a mapping"]}, "metadata edition record is malformed"),
+    ]
+    for index, (record, message) in enumerate(malformed):
+        transport = FixtureTransport(record, raw)
+        with pytest.raises(AcquisitionError, match=message):
+            ArchiveAcquirer(tmp_path / f"metadata-{index}", transport).acquire(candidate)
+        assert len(transport.calls) == 1
+    invalid = [
+        HTTPResult(candidate.record_url, candidate.record_url, 200, "text/plain", b"[]"),
+        HTTPResult(candidate.record_url, candidate.record_url, 200, "application/json", b"[]"),
+        HTTPResult(candidate.record_url, candidate.record_url, 200, "application/json", b"{broken"),
+    ]
+    for index, result in enumerate(invalid):
+        transport = FixtureTransport(metadata, raw)
+        transport.get = Mock(return_value=result)
+        with pytest.raises(AcquisitionError, match="not JSON|object malformed|metadata/acquisition"):
+            ArchiveAcquirer(tmp_path / f"invalid-{index}", transport).acquire(candidate)
+        transport.get.assert_called_once()
+
+
+def test_archive_metadata_response_size_and_offline_manifest_cannot_be_trusted(
+    tmp_path: Path,
+) -> None:
+    from clipper.books.acquisition import _response
+
+    candidate, raw, record = _sample()
+    payload = HTTPResult(
+        candidate.record_url, candidate.record_url, 200, "application/json", b"abcdef"
+    )
+    with pytest.raises(AcquisitionError, match="response exceeds"):
+        _response(payload, limit=3, kind="metadata")
+    transport = FixtureTransport(record, raw)
+    acquired = ArchiveAcquirer(tmp_path, transport).acquire(candidate)
+    assert acquired.raw_path.is_file()
+    manifest = next((tmp_path / "manifests").glob("*.json"))
+    original = json.loads(manifest.read_text())
+    for patch in (
+        {"schema": "untrusted"},
+        {"candidate_fingerprint": "wrong"},
+    ):
+        changed = {**original, **patch}
+        manifest.write_text(json.dumps(changed))
+        with pytest.raises(AcquisitionError, match="manifest schema mismatch|manifest identity mismatch"):
+            ArchiveAcquirer(tmp_path, Mock()).acquire(candidate, offline=True)
+    manifest.write_text(json.dumps(original))
+
+
+def test_candidate_registry_rejects_missing_identity_and_scalar_aliases(tmp_path: Path) -> None:
+    registry = json.loads((ROOT / "niches/book-source-candidates-v1.json").read_text())
+    entry = registry["books"][0]
+    for index, mutation in enumerate(
+        [
+            {k: v for k, v in entry.items() if k != "expected_sha256"},
+            {**entry, "title_aliases": "untrusted scalar"},
+            {**entry, "exclusions": "unexpected scalar"},
+        ]
+    ):
+        path = tmp_path / f"bad-registry-{index}.json"
+        path.write_text(
+            json.dumps({"schema": registry["schema"], "books": [mutation]})
+        )
+        with pytest.raises(AcquisitionError, match="incomplete reviewed|must be arrays"):
+            load_registry(path)
+
+
+def test_archive_transport_budgets_and_network_errors_are_injected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.error
+
+    class MockReply:
+        status = 200
+
+        def __init__(self, size: str, payload: bytes) -> None:
+            self.headers = {
+                "Content-Type": "application/epub+zip",
+                "Content-Length": size,
+            }
+            self.payload = payload
+
+        def __enter__(self) -> MockReply:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return "https://archive.org/download/synthetic"
+
+        def read(self, count: int) -> bytes:
+            return self.payload[:count]
+
+    current: list[MockReply | Exception] = [MockReply("5", b"12345")]
+
+    class Opener:
+        def open(self, _request: object, *, timeout: int) -> MockReply:
+            assert timeout == 20
+            item = current[0]
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    monkeypatch.setattr("clipper.books.acquisition._check_public_dns", lambda _host: None)
+    monkeypatch.setattr("urllib.request.build_opener", lambda *_handlers: Opener())
+    url = "https://archive.org/download/synthetic"
+    assert ArchiveHTTPTransport().get(url, limit=6).body == b"12345"
+    current[0] = MockReply("100", b"12345")
+    with pytest.raises(AcquisitionError, match="Content-Length exceeds"):
+        ArchiveHTTPTransport().get(url, limit=6)
+    current[0] = MockReply("5", b"123456789")
+    with pytest.raises(AcquisitionError, match="response exceeds"):
+        ArchiveHTTPTransport().get(url, limit=6)
+    current[0] = urllib.error.URLError("recorded connection failure")
+    with pytest.raises(AcquisitionError, match="HTTP transport failed"):
+        ArchiveHTTPTransport().get(url, limit=6)
+
+
+def test_archive_redirect_and_dns_resolution_fail_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.request
+
+    from clipper.books.acquisition import _StrictRedirect
+
+    request = urllib.request.Request("https://archive.org/metadata/synthetic")
+    checked: list[str] = []
+    monkeypatch.setattr(
+        "clipper.books.acquisition._check_public_dns",
+        lambda host: checked.append(host),
+    )
+    handler = _StrictRedirect()
+    rewritten = handler.redirect_request(
+        request, None, 302, "Found", {},
+        "https://ia801234.us.archive.org/download/synthetic",
+    )
+    assert rewritten is not None
+    assert "ia801234.us.archive.org" in checked
+    with pytest.raises(AcquisitionError, match="unsafe Archive HTTPS"):
+        handler.redirect_request(
+            request, None, 302, "Found", {}, "http://localhost/private"
+        )
+
+    def fail_dns(*_args: object, **_kwargs: object) -> object:
+        raise OSError("recorded resolver timeout")
+
+    monkeypatch.setattr("socket.getaddrinfo", fail_dns)
+    with pytest.raises(AcquisitionError, match="cannot resolve Archive host"):
+        _check_public_dns("archive.org")
