@@ -789,9 +789,7 @@ def test_local_ocr_contract_includes_version_and_cpu_settings(
     monkeypatch.setattr("subprocess.run", run)
     identity = tesseract_identity()
     assert identity.adapter == "local-tesseract"
-    assert identity.version == hashlib.sha256(
-        recorded.stdout + b"\\n" + recorded.stderr
-    ).hexdigest()
+    assert identity.version == hashlib.sha256(recorded.stdout + b"\n" + recorded.stderr).hexdigest()
     assert identity.settings == (
         ("executable", "/installed/tesseract"),
         ("language", "eng"),
