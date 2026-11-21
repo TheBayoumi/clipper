@@ -34,9 +34,10 @@ def test_every_catalog_book_plans_and_records_template_identity(
     expected_file = NICHES / f"{book_id}-approved-storyboard.json"
     assert plan.selection_json == json.dumps(picked, indent=2, ensure_ascii=False) + "\n"
     assert plan.selected.legacy_fingerprint == picked["fingerprint"]
-    assert plan.storyboard_provenance.template_sha256 == hashlib.sha256(
-        expected_file.read_bytes()
-    ).hexdigest()
+    assert (
+        plan.storyboard_provenance.template_sha256
+        == hashlib.sha256(expected_file.read_bytes()).hexdigest()
+    )
     assert plan.storyboard_provenance.template_path == str(expected_file)
     record_paths = list((tmp_path / "book-dag/books-selection").glob("*/stage.json"))
     assert len(record_paths) == 1
@@ -78,30 +79,44 @@ def test_deep_work_cli_default_matches_legacy_selection_output_byte_for_byte(
     expected = tmp_path / "legacy"
     actual = tmp_path / "books"
     common = [
-        "--catalog", str(CATALOG),
-        "--book-id", "deep-work",
-        "--lesson-id", "focus-without-distraction",
+        "--catalog",
+        str(CATALOG),
+        "--book-id",
+        "deep-work",
+        "--lesson-id",
+        "focus-without-distraction",
     ]
     monkeypatch.setattr(
-        sys, "argv",
+        sys,
+        "argv",
         [
             "book_episode_selection.py",
             *common,
-            "--output", str(expected / "selection.json"),
-            "--niche-config-output", str(expected / "config.json"),
-            "--storyboard-template", str(NICHES / "deep-work-approved-storyboard.json"),
-            "--storyboard-output", str(expected / "outline.json"),
+            "--output",
+            str(expected / "selection.json"),
+            "--niche-config-output",
+            str(expected / "config.json"),
+            "--storyboard-template",
+            str(NICHES / "deep-work-approved-storyboard.json"),
+            "--storyboard-output",
+            str(expected / "outline.json"),
         ],
     )
     selection.main()
     legacy_stdout = capsys.readouterr().out
     result = cli.main(
         [
-            "books", "plan", *common,
-            "--artifact-root", str(tmp_path / "dag"),
-            "--output", str(actual / "selection.json"),
-            "--niche-config-output", str(actual / "config.json"),
-            "--storyboard-output", str(actual / "outline.json"),
+            "books",
+            "plan",
+            *common,
+            "--artifact-root",
+            str(tmp_path / "dag"),
+            "--output",
+            str(actual / "selection.json"),
+            "--niche-config-output",
+            str(actual / "config.json"),
+            "--storyboard-output",
+            str(actual / "outline.json"),
         ]
     )
     assert result == 0
@@ -119,14 +134,22 @@ def test_atomic_default_matches_explicit_legacy_template_override(
     ):
         root = tmp_path / str(index)
         argv = [
-            "books", "plan",
-            "--catalog", str(CATALOG),
-            "--book-id", "atomic-habits",
-            "--lesson-id", "two-minute-rule",
-            "--artifact-root", str(root / "dag"),
-            "--output", str(root / "selection.json"),
-            "--niche-config-output", str(root / "config.json"),
-            "--storyboard-output", str(root / "outline.json"),
+            "books",
+            "plan",
+            "--catalog",
+            str(CATALOG),
+            "--book-id",
+            "atomic-habits",
+            "--lesson-id",
+            "two-minute-rule",
+            "--artifact-root",
+            str(root / "dag"),
+            "--output",
+            str(root / "selection.json"),
+            "--niche-config-output",
+            str(root / "config.json"),
+            "--storyboard-output",
+            str(root / "outline.json"),
             *extra,
         ]
         assert cli.main(argv) == 0
@@ -145,11 +168,16 @@ def test_psychology_of_money_plans_without_atomic_fallback(tmp_path: Path) -> No
     assert (
         cli.main(
             [
-                "books", "plan",
-                "--catalog", str(CATALOG),
-                "--book-id", "psychology-of-money",
-                "--output", str(target),
-                "--artifact-root", str(tmp_path / "dag"),
+                "books",
+                "plan",
+                "--catalog",
+                str(CATALOG),
+                "--book-id",
+                "psychology-of-money",
+                "--output",
+                str(target),
+                "--artifact-root",
+                str(tmp_path / "dag"),
             ]
         )
         == 0
@@ -164,14 +192,23 @@ def test_cross_book_and_unapproved_overrides_fail_before_selection_pass(
 ) -> None:
     first = tmp_path / "failed.json"
     base = [
-        "books", "plan",
-        "--catalog", str(CATALOG),
-        "--book-id", "deep-work",
-        "--output", str(first),
-        "--artifact-root", str(tmp_path / "dag"),
+        "books",
+        "plan",
+        "--catalog",
+        str(CATALOG),
+        "--book-id",
+        "deep-work",
+        "--output",
+        str(first),
+        "--artifact-root",
+        str(tmp_path / "dag"),
     ]
-    assert cli.main([*base, "--storyboard-template",
-                     str(NICHES / "atomic-habits-approved-storyboard.json")]) == 1
+    assert (
+        cli.main(
+            [*base, "--storyboard-template", str(NICHES / "atomic-habits-approved-storyboard.json")]
+        )
+        == 1
+    )
     assert "book mismatch" in caplog.text
     corrupted = copy.deepcopy(
         json.loads((NICHES / "deep-work-approved-storyboard.json").read_text())
