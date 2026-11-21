@@ -48,9 +48,7 @@ _recover_book_script = _scripting._recover_book_script
 
 def generate_episode(config: NicheConfig, cache_root: Path) -> tuple[Episode, str]:
     """Preserve legacy model monkeypatch boundaries and exact cache key semantics."""
-    return _scripting.generate_episode(
-        config, cache_root, completion=_local_script_completion
-    )
+    return _scripting.generate_episode(config, cache_root, completion=_local_script_completion)
 
 
 @lru_cache(maxsize=1)
