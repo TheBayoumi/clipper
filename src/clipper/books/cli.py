@@ -10,7 +10,6 @@ from typing import Any
 from . import scripting, selection
 from .orchestrator import BookOrchestrator
 
-
 DEFAULT_BOARD = Path("niches/atomic-habits-approved-storyboard.json")
 DEFAULT_CONFIG = Path("niches/book-lessons.yaml")
 
