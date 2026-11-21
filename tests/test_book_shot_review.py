@@ -214,7 +214,6 @@ def test_required_book_title_is_not_exempt_and_no_text_is_explicit(tmp_path: Pat
     assert with_text["automated_criteria"]["on_screen_titles"]["status"] == "FAIL"
 
 
-
 @pytest.mark.parametrize(
     "book,expected",
     [
@@ -254,9 +253,12 @@ def test_book_intro_rejects_blank_wrong_type_and_duplicate_contracts(value: obje
 
 
 def test_explicit_no_text_intro_and_undeclared_other_shot() -> None:
-    assert creative.expected_text(
-        {"id": "scene-02", "keyframe_name": "book_intro", "required_on_screen_text": []}
-    ) == []
+    assert (
+        creative.expected_text(
+            {"id": "scene-02", "keyframe_name": "book_intro", "required_on_screen_text": []}
+        )
+        == []
+    )
     assert creative.expected_text({"id": "other", "role": "hook"}) == []
 
 
