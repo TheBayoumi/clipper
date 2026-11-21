@@ -37,7 +37,7 @@ def declared_filename(catalog: dict[str, Any], book_id: str) -> str:
             expected = f"{book_id}-approved-storyboard.json"
             if not isinstance(actual, str) or actual != expected:
                 raise BookSelectionError(
-                    f"book {book_id} requires declared book-specific storyboard_template: {expected}"
+                    f"book {book_id} requires declared book-specific storyboard_template"
                 )
             return actual
     raise BookSelectionError(f"no storyboard binding for selected book {book_id}")
