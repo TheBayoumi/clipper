@@ -36,3 +36,13 @@ jobs:
       - run: pytest
       - name: Enforce measured package coverage floor
         run: coverage report --fail-under=95
+      - name: Measure GPU-driving script coverage (baseline)
+        run: |
+          coverage run --rcfile=.coveragerc.scripts -m pytest -q -o addopts="" \
+            tests/test_modal_qwen_cache_dispatch.py \
+            tests/test_modal_wan_request_contract.py \
+            tests/test_modal_endpoint_identity_contract.py \
+            tests/test_modal_endpoint_bootstrap.py \
+            tests/test_wan_shot_contract.py \
+            tests/test_wan_keyframe_contract.py
+          coverage report --rcfile=.coveragerc.scripts

@@ -1,0 +1,16 @@
+# Dedicated worker/contract baseline. The package's 95% gate is unchanged.
+# Source=all scripts records unimported lines; report includes only the
+# explicitly scoped GPU workers and their direct dispatch/identity contracts.
+[run]
+source = scripts
+data_file = .coverage.scripts
+branch = False
+
+[report]
+include =
+    scripts/modal_wan_s2v.py
+    scripts/modal_qwen_keyframes.py
+    scripts/wan_shot_contract.py
+    scripts/wan_keyframe_contract.py
+    scripts/modal_endpoint_bootstrap.py
+show_missing = True
