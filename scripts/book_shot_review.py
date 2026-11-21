@@ -13,9 +13,9 @@ import math
 from pathlib import Path
 from typing import Any
 
-from clipper.providers.base import VisionProvider
-
 from wan_shot_contract import CRITERION_VERSIONS
+
+from clipper.providers.base import VisionProvider
 
 SCHEMA = "clipper-book-shot-creative-review-v1"
 OBSERVATION_SCHEMA = "clipper-book-shot-vision-observation-v1"
@@ -98,7 +98,11 @@ def contract(
 def _observation(
     raw: object, name: str, frame_hashes: set[str], expected_titles: list[str], has_previous: bool
 ) -> dict[str, Any]:
-    pending = {"status": "PENDING_HUMAN", "confidence": 0.0, "evidence": "insufficient VLM evidence"}
+    pending = {
+        "status": "PENDING_HUMAN",
+        "confidence": 0.0,
+        "evidence": "insufficient VLM evidence",
+    }
     if not isinstance(raw, dict):
         return pending
     status, confidence = raw.get("status"), raw.get("confidence")
@@ -110,6 +114,7 @@ def _observation(
         or not 0 <= confidence <= 1
         or not isinstance(evidence, str)
         or not evidence.strip()
+        or not isinstance(frame, str)
         or frame not in frame_hashes
     ):
         return pending
@@ -202,7 +207,9 @@ def review_candidate(
         },
         "automated_criteria": observations,
         "status": (
-            "FAILED" if any(x["status"] == "FAIL" for x in observations.values()) else "PENDING_HUMAN"
+            "FAILED"
+            if any(x["status"] == "FAIL" for x in observations.values())
+            else "PENDING_HUMAN"
         ),
         "human_approval": None,
     }

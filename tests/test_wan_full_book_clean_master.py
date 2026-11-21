@@ -11,8 +11,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-import wan_full_book_episode as episode  # noqa: E402
 import book_shot_review as creative  # noqa: E402
+import wan_full_book_episode as episode  # noqa: E402
 from wan_shared_shot_cache import WAN_MODEL_ID, WAN_REVISION  # noqa: E402
 
 
@@ -83,7 +83,9 @@ def test_clean_master_renders_only_raw_video_and_locked_narration(
     for shot, rendered in zip(shots, folders, strict=True):
         video = rendered / "wan-s2v-candidate.mp4"
         reference_sha = sha((frames / (shot["keyframe_name"] + ".png")).read_bytes())
-        base = creative.contract(shot, plan["fingerprint"], sha(video.read_bytes()), reference_sha, previous)
+        base = creative.contract(
+            shot, plan["fingerprint"], sha(video.read_bytes()), reference_sha, previous
+        )
         review = {
             **base,
             "sampled_frame_sha256": ["a" * 64, "b" * 64, "c" * 64],
@@ -160,6 +162,11 @@ def test_clean_master_renders_only_raw_video_and_locked_narration(
     assert evidence["subtitle_overlay_applied"] is False
     assert evidence["book_title_overlay_applied"] is False
     assert evidence["captions_sha256"] is None
+
+    (folders[1] / "creative-review.json").unlink()
+    with pytest.raises(episode.EpisodeError, match="creative review rejected"):
+        episode.prepare_concat(plan, folders, tmp_path / "blocked", captions=None, clean=True)
+    assert len(video_commands) == 1
 
 
 def test_captions_still_required_for_original_subtitled_mode(tmp_path: Path) -> None:

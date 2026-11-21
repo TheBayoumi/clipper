@@ -16,8 +16,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import book_ai_director as director  # noqa: E402
 import book_audio_timeline as timeline  # noqa: E402
 import book_episode_selection as selection  # noqa: E402
-import book_timeline_assemble as assembly  # noqa: E402
 import book_shot_review as creative  # noqa: E402
+import book_timeline_assemble as assembly  # noqa: E402
 
 
 def _wav(path: Path, duration: float = 37.27) -> None:
@@ -349,3 +349,19 @@ def test_alignment_cannot_be_replaced_with_proportional_word_timings(
     alignment["words"] = []
     with pytest.raises(timeline.AudioTimelineError, match="every spoken word"):
         timeline.build_timeline(request, plan, audio, voice, alignment)
+
+def test_mixed_shot_review_rejects_assembly_before_ffmpeg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    edl, audio, assets = _lock(tmp_path)
+    second = assets["assets"][1]
+    review_path = Path(second["review_path"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    review["human_approval"]["criteria"]["action_to_narration"]["status"] = "FAIL"
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+    second["review_sha256"] = timeline.file_sha(review_path)
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(assembly, "run", lambda argv: invoked.append(argv) or "")
+    with pytest.raises(assembly.AssemblyError, match="creative review rejected"):
+        assembly.assemble(edl, audio, assets, tmp_path / "blocked")
+    assert not any(argv[0] == "ffmpeg" for argv in invoked)

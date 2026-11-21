@@ -36,7 +36,11 @@ def _fixture(tmp_path: Path, *, previous: bool = False) -> tuple[Path, Path, lis
 
 
 def _provider(
-    frames: list[Path], *, failed: str | None = None, confidence: float = 0.99, text: list[str] | None = None
+    frames: list[Path],
+    *,
+    failed: str | None = None,
+    confidence: float = 0.99,
+    text: list[str] | None = None,
 ) -> SimpleNamespace:
     model = ModelIdentity("fake-vision", "revision-1", "none", "test")
     raw = {
@@ -97,7 +101,7 @@ def _require(path: Path, video: Path, shot: dict) -> None:
     creative.verify_review(
         path,
         video=video,
-        reference_sha256=creative.digest("unused-reference") if False else _reference_sha(path),
+        reference_sha256=_reference_sha(path),
         shot=shot,
         plan_fingerprint="c" * 64,
         previous_video_sha256=None,
