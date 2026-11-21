@@ -83,7 +83,6 @@ def test_qwen_invalid_cache_and_recovery_reject_source_mismatch(tmp_path: Path) 
         scripting.generate_episode(config, cache, completion=Mock())
 
 
-
 def test_fake_optional_qwen_loader_and_completion_preserve_pinned_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -131,7 +130,7 @@ def test_fake_optional_qwen_loader_and_completion_preserve_pinned_request(
 
 
 def test_missing_optional_qwen_runtime_fails_without_loading_weights(
-    monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def missing(_name: str) -> object:
         raise ImportError("synthetic missing optional dependency")
