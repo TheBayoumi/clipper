@@ -97,17 +97,23 @@ def _source(tmp_path: Path) -> tuple[dict[str, Any], Path, Path, list[Path]]:
 
 
 def _write_approvals(
-    shots: list[dict[str, Any]], plan_fingerprint: str, folders: list[Path], frames: Path
+    shots: list[dict[str, Any]],
+    plan_fingerprint: str,
+    folders: list[Path],
+    frames: Path,
+    *,
+    frame_names: list[str] | None = None,
 ) -> None:
     """Create synthetic, self-consistent content-bound review records, not real approvals."""
     previous: str | None = None
-    for shot, folder in zip(shots, folders, strict=True):
+    names = frame_names if frame_names is not None else [shot["keyframe_name"] for shot in shots]
+    for shot, folder, frame_name in zip(shots, folders, names, strict=True):
         video = folder / "wan-s2v-candidate.mp4"
         base = creative.contract(
             shot,
             plan_fingerprint,
             timeline.file_sha(video),
-            timeline.file_sha(frames / f"{shot['keyframe_name']}.png"),
+            timeline.file_sha(frames / f"{frame_name}.png"),
             previous,
         )
         record: dict[str, Any] = {
@@ -152,7 +158,13 @@ def _write_approvals(
 def _generalized(tmp_path: Path) -> tuple[dict[str, Any], Path, dict[str, Any], list[Path]]:
     plan, audio, frames, folders = _source(tmp_path)
     edl, assets = assembly.make_legacy_replay(plan, audio, frames, folders)
-    _write_approvals(edl["shots"], edl["fingerprint"], folders, frames)
+    _write_approvals(
+        edl["shots"],
+        edl["fingerprint"],
+        folders,
+        frames,
+        frame_names=[shot["keyframe_name"] for shot in plan["shots"]],
+    )
     for asset in assets["assets"]:
         asset["review_sha256"] = timeline.file_sha(Path(asset["review_path"]))
     return edl, audio, assets, folders
