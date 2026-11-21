@@ -49,6 +49,7 @@ def _text_sections(text: str) -> tuple[BookSection, ...]:
                 chapters.append(
                     BookSection(f"chapter-{len(chapters) + 1:02d}", heading, tuple(paragraphs))
                 )
+
             heading, paragraphs = line, []
         elif heading and line:
             paragraphs.append(line)
@@ -62,16 +63,18 @@ def _txt(raw: bytes, source: BookSource) -> tuple[str, str, str | None, tuple[Bo
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise BookIngestError("text source must be UTF-8") from exc
+
     def field(name: str) -> str:
         match = re.search(rf"^{name}:\s*(.+)$", text, flags=re.M | re.I)
         return match.group(1).strip() if match else ""
+
     body = text
     if source.source_kind == "public_domain":
         start = re.search(r"\*\*\* START OF (?:THE )?PROJECT GUTENBERG EBOOK[^\n]*\*\*\*", text)
         end = re.search(r"\*\*\* END OF (?:THE )?PROJECT GUTENBERG EBOOK[^\n]*\*\*\*", text)
         if start is None or end is None or end.start() <= start.end():
             raise BookIngestError("Gutenberg START/END completeness check failed")
-        body = text[start.end():end.start()]
+        body = text[start.end() : end.start()]
     return field("Title"), field("Author"), field("Edition") or None, _text_sections(body)
 
 
@@ -89,21 +92,28 @@ def _epub(raw: bytes) -> tuple[str, str, str | None, tuple[BookSection, ...]]:
                 raise BookIngestError("EPUB uncompressed byte limit exceeded")
             container = _parse_xml(archive.read("META-INF/container.xml"))
             opf = next(
-                node.attrib["full-path"] for node in container.iter()
+                node.attrib["full-path"]
+                for node in container.iter()
                 if node.tag.endswith("rootfile")
             )
             if ".." in Path(opf).parts or opf.startswith("/"):
                 raise BookIngestError("unsafe EPUB package path")
             package = _parse_xml(archive.read(opf))
             metadata = next(node for node in package if node.tag.endswith("metadata"))
+
             def field(name: str) -> str:
                 return next(
-                    (node.text.strip() for node in metadata
-                     if node.tag.endswith(name) and node.text), ""
+                    (
+                        node.text.strip()
+                        for node in metadata
+                        if node.tag.endswith(name) and node.text
+                    ),
+                    "",
                 )
             manifest = {
                 node.attrib["id"]: node.attrib["href"]
-                for node in package.iter() if node.tag.endswith("item")
+                for node in package.iter()
+                if node.tag.endswith("item")
             }
             order = [
                 node.attrib["idref"] for node in package.iter() if node.tag.endswith("itemref")
@@ -117,11 +127,16 @@ def _epub(raw: bytes) -> tuple[str, str, str | None, tuple[BookSection, ...]]:
                 body = next(node for node in page.iter() if node.tag.endswith("body"))
                 paragraphs = tuple(
                     " ".join("".join(p.itertext()).split())
-                    for p in body.iter() if p.tag.endswith("p")
+                    for p in body.iter()
+                    if p.tag.endswith("p")
                 )
                 heading = next(
-                    (" ".join("".join(p.itertext()).split())
-                     for p in body.iter() if p.tag.endswith("h1")), item
+                    (
+                        " ".join("".join(p.itertext()).split())
+                        for p in body.iter()
+                        if p.tag.endswith("h1")
+                    ),
+                    item,
                 )
                 chapters.append(
                     BookSection(f"chapter-{len(chapters) + 1:02d}", heading, paragraphs)
@@ -198,8 +213,15 @@ class LocalFileResolver:
             raise BookIngestError(f"owner source exceeds byte limit: {len(data)}")
         return (
             BookSource(
-                title, author, None, self.path.resolve().as_uri(), "owner_file", "owner",
-                "", hashlib.sha256(data).hexdigest(), self.path.suffix.lower()[1:],
+                title,
+                author,
+                None,
+                self.path.resolve().as_uri(),
+                "owner_file",
+                "owner",
+                "",
+                hashlib.sha256(data).hexdigest(),
+                self.path.suffix.lower()[1:],
             ),
         )
 
@@ -230,8 +252,8 @@ class _BookIndex(HTMLParser):
                 self.number = match.group(1)
         if self.active and tag == "span":
             styles = (data.get("class") or "").split()
-            self.field = "title" if "title" in styles else (
-                "author" if "subtitle" in styles else ""
+            self.field = (
+                "title" if "title" in styles else ("author" if "subtitle" in styles else "")
             )
 
     def handle_data(self, data: str) -> None:
@@ -273,22 +295,31 @@ class GutenbergResolver:
         index = _BookIndex()
         index.feed(data.decode("utf-8"))
         found = [
-            item for item in index.items
+            item
+            for item in index.items
             if item[0] and _norm(item[1]) == _norm(title) and _norm(item[2]) == _norm(author)
         ]
         if len(found) > 1:
             raise BookIngestError(f"ambiguous Gutenberg edition matches: {len(found)}")
         if not found:
             return SourceUnresolved(
-                title, author, "declare exact book edition or supply owner file",
+                title,
+                author,
+                "declare exact book edition or supply owner file",
                 "no exact title and author match in Gutenberg; no fallback",
             )
         number = found[0][0]
         return (
             BookSource(
-                title, author, f"gutenberg-{number}",
+                title,
+                author,
+                f"gutenberg-{number}",
                 f"https://www.gutenberg.org/ebooks/{number}.txt.utf-8",
-                "public_domain", "resolver:gutenberg", "", "", "txt",
+                "public_domain",
+                "resolver:gutenberg",
+                "",
+                "",
+                "txt",
             ),
         )
 
@@ -300,9 +331,7 @@ class GutenbergResolver:
         return self.transport(source.source_uri)
 
 
-def ingest_book(
-    title: str, author: str, resolver: SourceResolver
-) -> BookText | SourceUnresolved:
+def ingest_book(title: str, author: str, resolver: SourceResolver) -> BookText | SourceUnresolved:
     matches = resolver.resolve(title, author)
     if isinstance(matches, SourceUnresolved):
         return matches

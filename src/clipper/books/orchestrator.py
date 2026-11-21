@@ -187,9 +187,7 @@ class BookOrchestrator:
                 {"title": title, "author": author, "source": source.fingerprint, "bytes": sha256}
             ),
         )
-        stored, _reused = self.dag.execute(
-            identity, lambda: asdict(ingest.parse_book(source, raw))
-        )
+        stored, _reused = self.dag.execute(identity, lambda: asdict(ingest.parse_book(source, raw)))
         book = _book_text_cached(stored)
         if book.content_sha256 != sha256:
             raise BookRunError("cached ingest content SHA-256 does not match source bytes")
@@ -208,9 +206,10 @@ class BookOrchestrator:
         book = _book_text_cached(json.loads(path.read_text(encoding="utf-8")))
         if book.source_fingerprint != book.source.fingerprint:
             raise BookRunError("stored BookText source fingerprint mismatch")
-        if sum(
-            len(p.split()) for section in book.sections for p in section.paragraphs
-        ) != book.total_word_count:
+        if (
+            sum(len(p.split()) for section in book.sections for p in section.paragraphs)
+            != book.total_word_count
+        ):
             raise BookRunError("stored BookText word-count mismatch")
         if _book_slug(book.source.title) != book_id:
             raise BookRunError("stored BookText book-id does not match source title")
@@ -239,9 +238,7 @@ class BookOrchestrator:
                 "chunk_words": mining.CHUNK_WORDS,
             },
         )
-        stored, _reused = self.dag.execute(
-            identity, lambda: mining.mine_book(book, completion)
-        )
+        stored, _reused = self.dag.execute(identity, lambda: mining.mine_book(book, completion))
         if not isinstance(stored, dict) or stored.get("ingest_fingerprint") != book.fingerprint:
             raise BookRunError("cached mined catalog is inconsistent with the ingested book")
         if stored.get("review_status") != "MINED_UNREVIEWED":

@@ -58,16 +58,14 @@ def make_epub(*, chapters: int = 3, author: str = "Fixture Author") -> bytes:
             "META-INF/container.xml",
             '<container><rootfiles><rootfile full-path="OPS/content.opf"/></rootfiles></container>',
         )
-        refs = "".join(
-            f'<item id="c{i}" href="chapter{i}.xhtml"/>' for i in range(chapters)
-        )
+        refs = "".join(f'<item id="c{i}" href="chapter{i}.xhtml"/>' for i in range(chapters))
         spine = "".join(f'<itemref idref="c{i}"/>' for i in range(chapters))
         target.writestr(
             "OPS/content.opf",
-            '<package><metadata>'
-            f'<title>Synthetic Complete Book</title><creator>{author}</creator>'
-            '<identifier>test-edition</identifier></metadata>'
-            f'<manifest>{refs}</manifest><spine>{spine}</spine></package>',
+            "<package><metadata>"
+            f"<title>Synthetic Complete Book</title><creator>{author}</creator>"
+            "<identifier>test-edition</identifier></metadata>"
+            f"<manifest>{refs}</manifest><spine>{spine}</spine></package>",
         )
         paragraph = " ".join(["Invented EPUB test content has no external source."] * 75)
         for i in range(chapters):
@@ -80,8 +78,15 @@ def make_epub(*, chapters: int = 3, author: str = "Fixture Author") -> bytes:
 
 def source_for(raw: bytes, *, format: str = "txt") -> BookSource:
     return BookSource(
-        "Synthetic Complete Book", "Fixture Author", None, "file:///tmp/synthetic.txt",
-        "owner_file", "owner", "", hashlib.sha256(raw).hexdigest(), format,
+        "Synthetic Complete Book",
+        "Fixture Author",
+        None,
+        "file:///tmp/synthetic.txt",
+        "owner_file",
+        "owner",
+        "",
+        hashlib.sha256(raw).hexdigest(),
+        format,
     )
 
 
@@ -160,9 +165,7 @@ def test_gutenberg_fixture_transport_e2e_authorization_metadata_is_not_approval(
     )
     full_book = make_txt(gutenberg=True, rights=True)
     transport = Mock(side_effect=[html, full_book])
-    book = ingest_book(
-        "Synthetic Complete Book", "Fixture Author", GutenbergResolver(transport)
-    )
+    book = ingest_book("Synthetic Complete Book", "Fixture Author", GutenbergResolver(transport))
     assert not isinstance(book, SourceUnresolved)
     assert book.source.source_kind == "public_domain"
     assert book.source.authorization_status == "unverified"
@@ -192,9 +195,7 @@ def test_gutenberg_missing_and_ambiguous_matches_no_fetch() -> None:
         '<span class="subtitle">by Fixture Author</span></a></li>'
     )
     missing = Mock(return_value=b"<html><body></body></html>")
-    resolved = ingest_book(
-        "Synthetic Complete Book", "Fixture Author", GutenbergResolver(missing)
-    )
+    resolved = ingest_book("Synthetic Complete Book", "Fixture Author", GutenbergResolver(missing))
     assert isinstance(resolved, SourceUnresolved)
     assert missing.call_count == 1
     multiple = Mock(return_value=(item + item).encode("utf-8"))
@@ -207,11 +208,14 @@ def test_gutenberg_refuses_other_hosts_and_resolver_ambiguity() -> None:
     resolver = GutenbergResolver(lambda _url: b"nothing")
     with pytest.raises(BookIngestError, match="invalid Gutenberg HTTPS ebook URI"):
         resolver.read(replace(source_for(b"x"), source_uri="https://example.org/evil"))
+
     class Ambiguous:
         def resolve(self, _title: str, _author: str) -> tuple[BookSource, ...]:
             return (source_for(b"x"), source_for(b"x"))
+
         def read(self, _source: BookSource) -> bytes:
             raise AssertionError("ambiguous resolver cannot read")
+
     with pytest.raises(BookIngestError, match="ambiguous source resolver"):
         ingest_book("X", "Y", Ambiguous())
 
@@ -220,9 +224,15 @@ def test_recorded_public_domain_excerpt_is_incomplete_by_full_book_rules() -> No
     assert "Pride and Prejudice" in RECORDED.read_text()
     excerpt = RECORDED.read_bytes()
     source = BookSource(
-        "Pride and Prejudice", "Jane Austen", "gutenberg-1342",
+        "Pride and Prejudice",
+        "Jane Austen",
+        "gutenberg-1342",
         "https://www.gutenberg.org/ebooks/1342.txt.utf-8",
-        "public_domain", "fixture", "", hashlib.sha256(excerpt).hexdigest(), "txt",
+        "public_domain",
+        "fixture",
+        "",
+        hashlib.sha256(excerpt).hexdigest(),
+        "txt",
     )
     with pytest.raises(BookIngestError, match="completeness"):
         parse_book(source, excerpt)

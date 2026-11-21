@@ -91,8 +91,15 @@ def test_every_book_stage_is_registered_with_versioned_identity() -> None:
 
 def test_book_ingest_contracts_are_immutable_and_unverified() -> None:
     source = BookSource(
-        "A Book", "A Writer", None, "file:///owner/book.txt", "owner_file",
-        "owner", "", "a" * 64, "txt",
+        "A Book",
+        "A Writer",
+        None,
+        "file:///owner/book.txt",
+        "owner_file",
+        "owner",
+        "",
+        "a" * 64,
+        "txt",
     )
     assert source.authorization_status == "unverified"
     section = BookSection("chapter-01", "Beginning", ("One first paragraph.",))

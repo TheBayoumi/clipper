@@ -81,18 +81,14 @@ def _write(path: Path, content: str) -> None:
 def dispatch_books(args: argparse.Namespace) -> int:
     if args.books_action == "ingest":
         runner = BookOrchestrator(args.artifact_root)
-        result = runner.ingest(
-            args.title, args.author, ingest.LocalFileResolver(args.source)
-        )
+        result = runner.ingest(args.title, args.author, ingest.LocalFileResolver(args.source))
         if isinstance(result, ingest.SourceUnresolved):
             print(json.dumps(asdict(result), ensure_ascii=False))
             return 1
         print(
             json.dumps(
                 {
-                    "book_id": "-".join(
-                        re.findall(r"[a-z0-9]+", args.title.casefold())
-                    ),
+                    "book_id": "-".join(re.findall(r"[a-z0-9]+", args.title.casefold())),
                     "source_fingerprint": result.source_fingerprint,
                     "content_sha256": result.content_sha256,
                     "total_words": result.total_word_count,
@@ -108,13 +104,16 @@ def dispatch_books(args: argparse.Namespace) -> int:
         replies: object = json.loads(data)
         if not isinstance(replies, dict):
             raise mining.BookMiningError("recorded mining responses must be a JSON mapping")
+
         def recorded(request: dict[str, object]) -> str:
             from clipper.stage_contracts import content_fingerprint
+
             key = content_fingerprint(request)
             answer = replies.get(key)
             if not isinstance(answer, dict):
                 raise mining.BookMiningError(f"recorded completion missing for {key}")
             return json.dumps(answer, ensure_ascii=False, sort_keys=True)
+
         result = runner.mine(
             book, completion=recorded, response_sha256=hashlib.sha256(data).hexdigest()
         )

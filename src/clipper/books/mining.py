@@ -85,9 +85,9 @@ def mining_request(book: BookText, chunk: BookChunk) -> dict[str, object]:
             {
                 "role": "system",
                 "content": (
-                    "Return JSON only: {\\\"lessons\\\": [{\\\"id\\\": str, \\\"topic\\\": str, "
-                    "\\\"claim\\\": str, \\\"hook_angle\\\": str, \\\"visual_action\\\": str, "
-                    "\\\"evidence\\\": str}]}. No invented quotes or statistics. "
+                    'Return JSON only: {\\"lessons\\": [{\\"id\\": str, \\"topic\\": str, '
+                    '\\"claim\\": str, \\"hook_angle\\": str, \\"visual_action\\": str, '
+                    '\\"evidence\\": str}]}. No invented quotes or statistics. '
                     "Evidence MUST be an exact continuous substring of the supplied text. "
                     "Propose original, unreviewed candidate lessons only, never approved facts."
                 ),
@@ -97,9 +97,7 @@ def mining_request(book: BookText, chunk: BookChunk) -> dict[str, object]:
     }
 
 
-def _validate_response(
-    payload: object, chunk: BookChunk
-) -> list[dict[str, str]]:
+def _validate_response(payload: object, chunk: BookChunk) -> list[dict[str, str]]:
     if not isinstance(payload, dict) or set(payload) != {"lessons"}:
         raise BookMiningError("mining response must contain only lessons")
     lessons = payload["lessons"]
@@ -111,8 +109,7 @@ def _validate_response(
         if not isinstance(item, dict) or set(item) != keys:
             raise BookMiningError("mined lesson fields are incomplete or unexpected")
         if any(
-            not isinstance(item[key], str) or not item[key].strip()
-            or len(item[key]) > 400
+            not isinstance(item[key], str) or not item[key].strip() or len(item[key]) > 400
             for key in keys
         ):
             raise BookMiningError("mined lesson fields must be bounded nonempty text")

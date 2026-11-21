@@ -25,10 +25,7 @@ AUTHOR = "Fixture Author"
 
 
 def _complete_book(*, altered: bool = False, rights: bool = True) -> bytes:
-    header = (
-        f"Title: {TITLE}\nAuthor: {AUTHOR}\nEdition: gutenberg-1342\n"
-        "EBook #1342\n"
-    )
+    header = f"Title: {TITLE}\nAuthor: {AUTHOR}\nEdition: gutenberg-1342\nEBook #1342\n"
     if rights:
         header += "Rights: Public domain in the USA\n"
     header += "*** START OF THE PROJECT GUTENBERG EBOOK TEST ***\n"
@@ -39,9 +36,7 @@ def _complete_book(*, altered: bool = False, rights: bool = True) -> bytes:
         paragraph += " Changed source file identity."
     for index in range(1, 4):
         header += f"\nCHAPTER {index}\n{paragraph}\n"
-    return (
-        header + "\n*** END OF THE PROJECT GUTENBERG EBOOK TEST ***\n"
-    ).encode("utf-8")
+    return (header + "\n*** END OF THE PROJECT GUTENBERG EBOOK TEST ***\n").encode("utf-8")
 
 
 def _transport(book: bytes) -> Mock:
@@ -83,6 +78,7 @@ def test_full_offline_gutenberg_ingest_mine_select_and_resume(
 ) -> None:
     def no_network(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("no live network")
+
     monkeypatch.setattr("urllib.request.urlopen", no_network)
     transport = _transport(_complete_book())
     runner = BookOrchestrator(tmp_path)
@@ -103,10 +99,14 @@ def test_full_offline_gutenberg_ingest_mine_select_and_resume(
     assert result["review_status"] == "MINED_UNREVIEWED"
     assert result["publish_eligible"] is False
     assert result["books"][0]["authorization_status"] == "unverified"
-    assert all(item["review_status"] == "MINED_UNREVIEWED" for item in result["books"][0]["lessons"])
+    assert all(
+        item["review_status"] == "MINED_UNREVIEWED" for item in result["books"][0]["lessons"]
+    )
     assert all(item["publish_eligible"] is False for item in result["books"][0]["lessons"])
-    assert all(item["claim_source_url"].startswith(book.source.source_uri + "#chapter-")
-               for item in result["books"][0]["lessons"])
+    assert all(
+        item["claim_source_url"].startswith(book.source.source_uri + "#chapter-")
+        for item in result["books"][0]["lessons"]
+    )
     picked = selection.choose_lesson(result, book_id="synthetic-complete-book")
     assert picked["publish_eligible"] is False
     assert picked["lesson"]["review_status"] == "MINED_UNREVIEWED"
@@ -127,12 +127,23 @@ def test_cli_ingest_owner_file_and_reject_unsourced_mining(
     text = _complete_book().decode()
     text = text.split("*** START", 1)[0] + text.split("*** START", 1)[1]
     path.write_text(text)
-    assert cli.main(
-        [
-            "books", "ingest", "--title", TITLE, "--author", AUTHOR,
-            "--source", str(path), "--artifact-root", str(tmp_path / "artifacts"),
-        ]
-    ) == 0
+    assert (
+        cli.main(
+            [
+                "books",
+                "ingest",
+                "--title",
+                TITLE,
+                "--author",
+                AUTHOR,
+                "--source",
+                str(path),
+                "--artifact-root",
+                str(tmp_path / "artifacts"),
+            ]
+        )
+        == 0
+    )
     report = json.loads(capsys.readouterr().out)
     assert report["authorization_status"] == "unverified"
     assert report["book_id"] == "synthetic-complete-book"
@@ -143,12 +154,21 @@ def test_cli_ingest_owner_file_and_reject_unsourced_mining(
         mining.mine_book(local, _completion)
     responses = tmp_path / "responses.json"
     responses.write_text("{}")
-    assert cli.main(
-        [
-            "books", "mine", "--book-id", "synthetic-complete-book",
-            "--responses", str(responses), "--artifact-root", str(tmp_path / "artifacts"),
-        ]
-    ) == 1
+    assert (
+        cli.main(
+            [
+                "books",
+                "mine",
+                "--book-id",
+                "synthetic-complete-book",
+                "--responses",
+                str(responses),
+                "--artifact-root",
+                str(tmp_path / "artifacts"),
+            ]
+        )
+        == 1
+    )
     assert "no HTTPS citation URI" in caplog.text
 
 
@@ -166,12 +186,21 @@ def test_cli_gutenberg_fixture_mining_uses_recorded_responses_only(
     }
     file = tmp_path / "recorded.json"
     file.write_text(json.dumps(replies), encoding="utf-8")
-    assert cli.main(
-        [
-            "books", "mine", "--book-id", "synthetic-complete-book",
-            "--responses", str(file), "--artifact-root", str(tmp_path),
-        ]
-    ) == 0
+    assert (
+        cli.main(
+            [
+                "books",
+                "mine",
+                "--book-id",
+                "synthetic-complete-book",
+                "--responses",
+                str(file),
+                "--artifact-root",
+                str(tmp_path),
+            ]
+        )
+        == 0
+    )
     assert json.loads(capsys.readouterr().out)["review_status"] == "MINED_UNREVIEWED"
     saved = json.loads((tmp_path / "mined/synthetic-complete-book.json").read_text())
     assert saved["publish_eligible"] is False
@@ -214,25 +243,33 @@ def test_mining_rejects_bad_completions_duplicates_and_unauthorized_sources() ->
     duplicate["lessons"][0]["id"] = "duplicate"
     with pytest.raises(mining.BookMiningError, match="duplicate mined lesson"):
         mining.mine_book(book, lambda _request: json.dumps(duplicate))
-    bad = replace(
-        book, source=replace(book.source, authorization_status="auto_approved")
-    )
+    bad = replace(book, source=replace(book.source, authorization_status="auto_approved"))
     with pytest.raises(mining.BookMiningError, match="upgrade or accept"):
         mining.mine_book(bad, _completion)
 
 
 def test_chunk_capacity_and_empty_book_fail_closed() -> None:
     source = BookSource(
-        TITLE, AUTHOR, None, "https://www.gutenberg.org/ebooks/1342.txt.utf-8",
-        "public_domain", "fixture", "", "e" * 64, "txt",
+        TITLE,
+        AUTHOR,
+        None,
+        "https://www.gutenberg.org/ebooks/1342.txt.utf-8",
+        "public_domain",
+        "fixture",
+        "",
+        "e" * 64,
+        "txt",
     )
     empty = BookText(source, None, (), 0, "e" * 64, source.fingerprint)
     with pytest.raises(mining.BookMiningError, match="nonempty ordered"):
         mining.chunks_for(empty)
     huge = BookText(
-        source, None,
+        source,
+        None,
         (BookSection("chapter-01", "Long", ("long " * (350 * 130),)),),
-        350 * 130, "e" * 64, source.fingerprint,
+        350 * 130,
+        "e" * 64,
+        source.fingerprint,
     )
     with pytest.raises(mining.BookMiningError, match="chunk capacity exceeded"):
         mining.chunks_for(huge)
