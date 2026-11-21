@@ -267,11 +267,11 @@ class BookOrchestrator:
                 }
             ),
             dependency_output_hashes=(script.fingerprint,),
-            model_revision=narration.VOICE_REVISION,
+            model_revision=scripting.VOICE_REVISION,
             decoding_parameters={
-                "model": narration.VOICE_MODEL,
+                "model": scripting.VOICE_MODEL,
                 "voice": config.voice,
-                "contract": narration.VOICE_CONTRACT,
+                "contract": scripting.VOICE_CONTRACT,
                 "language": "en-us",
                 "sample_rate": 24000,
                 "speed": 1.0,
