@@ -8,6 +8,11 @@ import time
 from collections.abc import Iterable
 from typing import Any
 
+from clipper.providers.editorial_model_contract import (
+    EDITORIAL_MODEL_ID,
+    EDITORIAL_MODEL_REVISION,
+)
+
 
 def _run(*args: str) -> str:
     result = subprocess.run(args, capture_output=True, text=True)
@@ -42,6 +47,26 @@ def _find_endpoint(value: Any, name: str) -> tuple[str, str] | None:
     return None
 
 
+def _assert_endpoint_identity(payload: Any, name: str) -> None:
+    """Refuse to trust an endpoint without verifiable pinned model metadata."""
+    for item in _walk(payload):
+        if str(item.get("name") or item.get("endpoint_name") or "") != name:
+            continue
+        raw_model = item.get("model_id") or item.get("model")
+        model_id = raw_model
+        revision = item.get("model_revision") or item.get("revision")
+        if isinstance(raw_model, dict):
+            model_id = raw_model.get("model_id") or raw_model.get("id")
+            revision = revision or raw_model.get("revision")
+        if model_id != EDITORIAL_MODEL_ID or revision != EDITORIAL_MODEL_REVISION:
+            raise RuntimeError(
+                f"endpoint {name} model identity is missing or differs from pinned editorial "
+                "contract; refuse to reuse an unverifiable endpoint"
+            )
+        return
+    raise RuntimeError(f"endpoint {name} identity metadata is missing")
+
+
 def _proxy_token(value: Any) -> tuple[str, str]:
     if isinstance(value, dict):
         modal_key = str(value.get("Modal-Key") or "")
@@ -65,16 +90,24 @@ def _proxy_token(value: Any) -> tuple[str, str]:
 
 
 def ensure_endpoint(name: str, model: str, *, timeout: float = 900.0) -> str:
+    if model != EDITORIAL_MODEL_ID:
+        raise ValueError("endpoint model disagrees with pinned editorial contract")
+
     def listing() -> Any:
         return json.loads(_run("modal", "endpoint", "list", "--json") or "[]")
 
-    found = _find_endpoint(listing(), name)
+    endpoints = listing()
+    found = _find_endpoint(endpoints, name)
     if found is None:
         _run("modal", "endpoint", "create", "--name", name, "--model", model)
+    else:
+        _assert_endpoint_identity(endpoints, name)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        found = _find_endpoint(listing(), name)
+        endpoints = listing()
+        found = _find_endpoint(endpoints, name)
         if found is not None:
+            _assert_endpoint_identity(endpoints, name)
             url, status = found
             if status not in {"failed", "error", "stopped"}:
                 return url
@@ -90,8 +123,10 @@ def create_proxy_token() -> tuple[str, str]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", default="clipper-editorial")
-    parser.add_argument("--model", default="Qwen/Qwen3.6-27B-FP8")
+    parser.add_argument("--model", default=EDITORIAL_MODEL_ID)
     args = parser.parse_args()
+    if args.model != EDITORIAL_MODEL_ID:
+        parser.error("--model must match the pinned editorial model contract")
     token_id, token_secret = create_proxy_token()
     try:
         endpoint_url = ensure_endpoint(args.name, args.model)
