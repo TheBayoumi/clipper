@@ -139,6 +139,7 @@ def test_synthetic_kokoro_pipeline_and_wave_conversion_without_model_weights(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Exercise optional module boundaries with synthetic arrays and PCM writing."""
+
     class FakeArray(list[float]):
         def reshape(self, _length: int) -> FakeArray:
             return self
@@ -159,7 +160,7 @@ def test_synthetic_kokoro_pipeline_and_wave_conversion_without_model_weights(
             output.setnchannels(1)
             output.setsampwidth(2)
             output.setframerate(rate)
-            output.writeframes(b"\\x01\\x00" * len(audio))
+            output.writeframes(bytes((1, 0)) * len(audio))
 
     numpy = SimpleNamespace(
         float32=object(),
