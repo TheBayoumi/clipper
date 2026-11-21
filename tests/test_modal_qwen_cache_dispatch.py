@@ -169,9 +169,34 @@ def test_cpu_cache_validation_failure_records_error_and_never_dispatches_gpu(
     reference = tmp_path / "reference.png"
     reference.write_bytes(REFERENCE)
     module.reuse_cached_keyframe.remote.side_effect = RuntimeError("cached keyframe size invalid")
-    with pytest.raises(RuntimeError, match="cached keyframe size invalid"):
+    with pytest.raises(RuntimeError, match="CPU cache preflight failed") as caught:
         module.main(reference=str(reference), storyboard="unused", output=str(tmp_path / "out"))
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert "cached keyframe size invalid" in str(caught.value.__cause__)
     module.generate_keyframe.remote.assert_not_called()
     evidence = json.loads((tmp_path / "out/hook.json").read_text(encoding="utf-8"))
     assert evidence["status"] == "FRAME_GENERATION_FAILED"
     assert evidence["error_type"] == "RuntimeError"
+
+
+def test_undeployed_cpu_cache_function_fails_closed_before_any_gpu_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _worker(monkeypatch)
+    _request_main(monkeypatch, module)
+    reference = tmp_path / "reference.png"
+    reference.write_bytes(REFERENCE)
+    module.reuse_cached_keyframe.remote.side_effect = LookupError(
+        "synthetic Modal function unavailable"
+    )
+
+    with pytest.raises(RuntimeError, match="GPU dispatch blocked") as caught:
+        module.main(reference=str(reference), storyboard="unused", output=str(tmp_path / "out"))
+    assert isinstance(caught.value.__cause__, LookupError)
+    module.generate_keyframe.remote.assert_not_called()
+
+    evidence = json.loads((tmp_path / "out/hook.json").read_text(encoding="utf-8"))
+    assert evidence["status"] == "FRAME_GENERATION_FAILED"
+    assert evidence["error_type"] == "RuntimeError"
+    assert "reuse_cached_keyframe" in evidence["error_reason"]
+    assert evidence["publish_eligible"] is False

@@ -233,7 +233,14 @@ def main(
             "status": "INCOMPLETE",
         }
         try:
-            response = reuse_cached_keyframe.remote(source, req)
+            try:
+                response = reuse_cached_keyframe.remote(source, req)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Qwen CPU cache preflight failed (undeployed function or lookup/cache error); "
+                    "GPU dispatch blocked. Verify reuse_cached_keyframe has been deployed "
+                    "with owner approval and inspect the chained cause before retrying"
+                ) from exc
             if response is None:
                 response = generate_keyframe.remote(source, req)
             png = response.pop("png")

@@ -18,3 +18,28 @@ Coverage additions should test real failure paths, not trivial constants.
 
 W1's pending deadline design means deadline/termination tests are not yet claimed.
 All GPU/model inference remains unverified; no live Modal worker was invoked.
+
+## Rollout — CPU-first Qwen shared-cache lookup
+
+`scripts/modal_qwen_keyframes.py` now calls the new **CPU Modal function**
+`reuse_cached_keyframe` (same shared Volume) before any A100 GPU dispatch.
+The function must be present in the deployed Modal App for the new local script
+to work. Deploying that app requires **separate, explicit owner approval**.
+**No Modal deployment was performed for this work.**
+
+When a verified shared cache hit is found, the GPU function is not invoked;
+the CPU lookup and Volume read still cost time/resources. A miss adds one CPU
+round-trip before the unchanged GPU path; savings are not measured.
+
+When the **new script** is run against a deployment missing this function, or
+the CPU lookup raises any error, it persists `FRAME_GENERATION_FAILED`
+with an actionable preflight error and **never silently falls through to GPU**.
+A separately deployed **older script** may still follow the original GPU-first
+path; this change does not retroactively replace deployed code. All runtime
+behavior here is inferred from source and synthetic tests, not live execution.
+
+Known residual: the worker validates the supplied request fingerprint as a
+64-character string but does not independently recompute it. Fingerprinting
+is done by `wan_keyframe_contract.prepare` before dispatch. Re-derivation was
+not added because it would require coordinated changes to the test fixtures
+and request validation assumptions; no cache schema was changed.
