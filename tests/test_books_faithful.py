@@ -304,8 +304,11 @@ def test_pdf_raster_image_and_sparse_text_require_review() -> None:
     assert original.recovery_status == "incomplete_recovery"
     ocr = Mock(return_value="source-visible label")
     recovered = extract_candidate(
-        _source(raw, selected), raw, selected,
-        ocr=ocr, ocr_identity=OCRIdentity("fixture-pdf-ocr", "v1"),
+        _source(raw, selected),
+        raw,
+        selected,
+        ocr=ocr,
+        ocr_identity=OCRIdentity("fixture-pdf-ocr", "v1"),
     )
     assert recovered.images[0].review_status == "machine_unreviewed"
     assert ocr.call_count >= 1
