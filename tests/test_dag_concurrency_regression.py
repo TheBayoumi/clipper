@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -100,3 +103,70 @@ def test_expired_execution_claim_is_recovered_as_new_attempt(tmp_path) -> None:
     assert record["status"] == "PASS"
     assert record["attempt_count"] == 2
     assert not store._execution_claim_path(identity).exists()
+
+
+def test_private_dag_creation_resume_and_concurrent_writers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    root = tmp_path / "private-dag"
+    store = DagStore(root, private_stages=frozenset({identity.stage_name}))
+    calls: list[int] = []
+    original_replace = Path.replace
+
+    def inspect_replace(path: Path, target: Path) -> Path:
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert path.parent.stat().st_mode & 0o777 == 0o700
+        return original_replace(path, target)
+
+    def operation() -> object:
+        calls.append(1)
+        time.sleep(0.03)
+        return {"synthetic": "private"}
+
+    previous = os.umask(0)
+    try:
+        monkeypatch.setattr(Path, "replace", inspect_replace)
+        store.protect_stage(identity.stage_name)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            results = list(pool.map(lambda _: store.execute(identity, operation), range(3)))
+        assert len(calls) == 1
+        assert sum(not reused for _, reused in results) == 1
+        for directory in (root, root / identity.stage_name, store._directory(identity)):
+            assert directory.stat().st_mode & 0o777 == 0o700
+        files = list(store._directory(identity).glob("*.json"))
+        assert files
+        hashes = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+        for path in files:
+            assert path.stat().st_mode & 0o777 == 0o600
+            path.chmod(0o644)
+        store._directory(identity).chmod(0o755)
+        store.protect_stage(identity.stage_name)
+        assert store.execute(identity, operation)[1]
+        assert len(calls) == 1
+        for path, digest in hashes.items():
+            assert path.stat().st_mode & 0o777 == 0o600
+            assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+        assert store._directory(identity).stat().st_mode & 0o777 == 0o700
+    finally:
+        os.umask(previous)
+
+
+def test_private_dag_failure_keeps_record_private_and_no_temporary_files(tmp_path: Path) -> None:
+    identity = _identity()
+    store = DagStore(tmp_path / "private", private_stages=frozenset({identity.stage_name}))
+
+    def fail() -> object:
+        raise ValueError("synthetic failure")
+
+    previous = os.umask(0)
+    try:
+        with pytest.raises(ValueError, match="synthetic failure"):
+            store.execute(identity, fail)
+        record = store._record_path(identity)
+        assert record.stat().st_mode & 0o777 == 0o600
+        assert not store._output_path(identity).exists()
+        assert not list(record.parent.glob("*.tmp"))
+        assert not store._execution_claim_path(identity).exists()
+    finally:
+        os.umask(previous)

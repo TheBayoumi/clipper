@@ -162,9 +162,10 @@ def dispatch_books(args: argparse.Namespace) -> int:
             )
         except faithful.ExtractionError as exc:
             rejection = {
-                "schema": "clipper-book-research-import-rejection-v1",
+                "schema": "clipper-book-research-import-rejection-v2",
                 "research_sha256": research_digest,
                 "source_sha256": recovered.book.content_sha256,
+                "candidate_fingerprint": recovered.candidate.fingerprint,
                 "status": "rejected",
                 "reason": str(exc),
             }
@@ -173,6 +174,7 @@ def dispatch_books(args: argparse.Namespace) -> int:
                 / "book-candidates"
                 / "research-import"
                 / "rejections"
+                / recovered.candidate.fingerprint
                 / f"{research_digest}.json"
             )
             acquisition._private_write(

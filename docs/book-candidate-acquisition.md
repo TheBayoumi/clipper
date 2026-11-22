@@ -265,3 +265,30 @@ establishes rights, source exactness, editorial approval or eligibility
 to publish. Real retained private research observations were not available
 for this implementation round. The separately supplied three-book CPU
 validation applies to the prior exact SHA, not to imported private recovery.
+
+### Evidence hardening (parser v3)
+
+Both research and overlay JSON are parsed with duplicate-member rejection at every
+object depth and Unicode validation. V1 overlays remain readable. V2 standalone
+research digests are **unverified claims** unless the exact raw research exists in
+the private source directory and deterministic conversion matches the overlay.
+The raw research digest (or its absence) is part of the extraction cache identity.
+Parser v3 invalidates v2 extraction identities; no old review state is promoted.
+
+An explicit empty overlay fails before DAG reuse. Rejection dossiers are keyed by
+candidate fingerprint and research digest (v2 rejection schema). Partial v2
+coverage permits explicitly requested OCR once per asset, with machine evidence
+projected only at unlinked occurrences. OCR remains unreviewed and diagram
+geometry remains unverified. V1 empty normalized values project original text
+with original provenance. Source rights and publication gates remain unchanged.
+
+Candidate and legacy book-ingest share the existing `books-ingest` stage.
+That stage opts into private DagStore persistence; its dedicated book-DAG root,
+stage directory and cache-key directories are mode 0700 on POSIX. Private
+stage JSON temporary files are opened exclusively with mode 0600, then atomically
+renamed as before. Candidate ingest restricts prior stage directories and files
+(including v2 outputs) without changing their bytes or stage identities. Other
+DagStore consumers retain their existing behavior; the book-DAG root restriction
+also prevents non-owner traversal of sibling book stages. These are local
+filesystem permission controls, not protection against another owner-equivalent
+process or a filesystem without POSIX permission enforcement.

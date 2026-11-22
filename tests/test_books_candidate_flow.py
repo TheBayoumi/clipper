@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import zipfile
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -19,12 +20,19 @@ from clipper.books.orchestrator import BookOrchestrator, BookRunError
 
 
 def _fixture(
-    tmp_path: Path,
+    tmp_path: Path, *, book_id: str = "atomic-habits"
 ) -> tuple[
     acquisition.ReviewedCandidate,
     acquisition.BookTransport,
     Path,
 ]:
+    baseline = next(
+        x
+        for x in acquisition.load_registry(
+            Path(__file__).resolve().parents[1] / "niches/book-source-candidates-v1.json"
+        )
+        if x.book_id == book_id
+    )
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as archive:
         archive.writestr(
@@ -34,9 +42,9 @@ def _fixture(
         archive.writestr(
             "OPS/content.opf",
             '<package xmlns:dc="http://purl.org/dc/elements/1.1/" unique-identifier="uid">'
-            "<metadata><dc:title>Atomic Habits</dc:title>"
-            "<dc:creator>James Clear</dc:creator>"
-            '<dc:identifier id="uid">urn:isbn:9780735211308</dc:identifier>'
+            f"<metadata><dc:title>{baseline.title}</dc:title>"
+            f"<dc:creator>{baseline.author}</dc:creator>"
+            f'<dc:identifier id="uid">urn:isbn:{baseline.isbn}</dc:identifier>'
             "</metadata><manifest>"
             '<item id="a" href="chapter1.xhtml" media-type="application/xhtml+xml"/>'
             '<item id="b" href="chapter2.xhtml" media-type="application/xhtml+xml"/>'
@@ -62,13 +70,6 @@ def _fixture(
         )
         archive.writestr("OPS/figure.png", b"\x89PNG\r\n\x1a\nSOURCE")
     raw = stream.getvalue()
-    baseline = next(
-        x
-        for x in acquisition.load_registry(
-            Path(__file__).resolve().parents[1] / "niches/book-source-candidates-v1.json"
-        )
-        if x.book_id == "atomic-habits"
-    )
     candidate = replace(
         baseline,
         expected_sha256=hashlib.sha256(raw).hexdigest(),
@@ -135,6 +136,9 @@ def test_title_only_ingest_preserves_private_raw_and_incomplete_image_evidence(
     assert result.extracted_path.is_file()
     assert result.dossier_path.is_file()
     assert result.extracted_path.stat().st_mode & 0o077 == 0
+    dag_output = tmp_path / "artifacts" / "book-dag" / "books-ingest" / result.stage_key
+    assert (dag_output / "output.json").stat().st_mode & 0o777 == 0o600
+    assert dag_output.stat().st_mode & 0o777 == 0o700
     dossier = json.loads(result.dossier_path.read_text())
     assert dossier["publish_eligible"] is False
     assert dossier["editorial_approved"] is False
@@ -510,6 +514,8 @@ def test_synthetic_v2_cli_import_offline_reuse_and_changed_provenance_rekey(
     assert linked.book.images[0].occurrences[0].normalized_transcription == "Grouped chart text"
     dossier = json.loads(linked.dossier_path.read_text())
     assert dossier["normalized_only_occurrences"] == 1
+    assert dossier["verified_research_links"] == 1
+    assert linked.book.images[0].occurrences[0].research_link_status == "verified"
     assert dossier["reviewed_images"] == 0
     assert dossier["publish_eligible"] is False
     assert dossier["authorization_status"] == "unverified"
@@ -519,6 +525,29 @@ def test_synthetic_v2_cli_import_offline_reuse_and_changed_provenance_rekey(
     assert not isinstance(repeated, SourceUnresolved)
     assert repeated.stage_key == linked.stage_key
     assert repeated.book == linked.book
+    source_path.unlink()
+    unverified = runner.ingest_candidate(
+        "Atomic Habits", registry=(candidate,), offline=True, overlay_path=overlay_path
+    )
+    assert not isinstance(unverified, SourceUnresolved)
+    assert unverified.stage_key != linked.stage_key
+    assert unverified.book.images[0].occurrences[0].research_link_status == "unverified_claim"
+    assert json.loads(unverified.dossier_path.read_text())["unverified_research_links"] == 1
+    assert cli.main(cmd) == 2
+    capsys.readouterr()
+    restored = runner.ingest_candidate(
+        "Atomic Habits", registry=(candidate,), offline=True, overlay_path=overlay_path
+    )
+    assert not isinstance(restored, SourceUnresolved)
+    assert restored.stage_key == linked.stage_key
+    altered = json.loads(overlay_path.read_text())
+    altered["entries"][0]["normalized_transcription"] = "unlinked edit"
+    tampered = tmp_path / "tampered-overlay.json"
+    tampered.write_text(json.dumps(altered))
+    with pytest.raises(ValueError, match="differs from deterministic"):
+        runner.ingest_candidate(
+            "Atomic Habits", registry=(candidate,), offline=True, overlay_path=tampered
+        )
     observation["observations"][0]["normalization_notes"] = "Revised grouping note"
     research_path.write_text(json.dumps(observation))
     changed_path = tmp_path / "changed-overlay.json"
@@ -531,7 +560,7 @@ def test_synthetic_v2_cli_import_offline_reuse_and_changed_provenance_rekey(
     assert not isinstance(changed, SourceUnresolved)
     assert changed.stage_key != linked.stage_key
     assert changed.book.images[0].occurrences[0].normalization_notes == "Revised grouping note"
-    assert len(list((root / "book-candidates" / "extracted").glob("**/*.json"))) == 3
+    assert len(list((root / "book-candidates" / "extracted").glob("**/*.json"))) == 4
 
 
 def test_cli_bad_v2_research_preserves_exact_input_and_rejection_reason(
@@ -598,7 +627,84 @@ def test_cli_bad_v2_research_preserves_exact_input_and_rejection_reason(
     digest = hashlib.sha256(data).hexdigest()
     base = root / "book-candidates" / "research-import"
     assert (base / "source" / f"{digest}.json").read_bytes() == data
-    rejected = json.loads((base / "rejections" / f"{digest}.json").read_text())
+    rejection = base / "rejections" / candidate.fingerprint / f"{digest}.json"
+    rejected = json.loads(rejection.read_text())
     assert rejected["status"] == "rejected"
     assert "review provenance invalid" in rejected["reason"]
     assert rejected["source_sha256"] == first.book.content_sha256
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_empty_overlay_cannot_alias_omitted_overlay_cache(tmp_path: Path, offline: bool) -> None:
+    candidate, transport, _ = _fixture(tmp_path)
+    runner = BookOrchestrator(tmp_path / "private")
+    empty = tmp_path / "empty.json"
+    empty.write_bytes(b"")
+    runner.acquire_candidate("Atomic Habits", registry=(candidate,), transport=transport)
+    for warmed in (False, True):
+        if warmed:
+            normal = runner.ingest_candidate(
+                "Atomic Habits", registry=(candidate,), offline=True
+            )
+            assert not isinstance(normal, SourceUnresolved)
+        with pytest.raises(ValueError, match="explicit image overlay is empty"):
+            runner.ingest_candidate(
+                "Atomic Habits",
+                registry=(candidate,),
+                transport=transport,
+                offline=offline,
+                overlay_path=empty,
+            )
+
+
+def test_malformed_unicode_rejections_are_immutable_and_source_bound(tmp_path: Path) -> None:
+    root = tmp_path / "private"
+    runner = BookOrchestrator(root)
+    input_path = tmp_path / "malformed.json"
+    data = b'{"private":"secret\\ud800"}'
+    input_path.write_bytes(data)
+    digest = hashlib.sha256(data).hexdigest()
+    reports: list[Path] = []
+    previous = os.umask(0)
+    try:
+        for book_id in ("atomic-habits", "psychology-of-money"):
+            fixture_root = tmp_path / book_id
+            fixture_root.mkdir()
+            candidate, transport, registry = _fixture(fixture_root, book_id=book_id)
+            acquired = runner.ingest_candidate(
+                candidate.title, registry=(candidate,), transport=transport
+            )
+            assert not isinstance(acquired, SourceUnresolved)
+            output = fixture_root / "overlay.json"
+            cmd = [
+                "books",
+                "overlay-import",
+                "--title",
+                candidate.title,
+                "--registry",
+                str(registry),
+                "--artifact-root",
+                str(root),
+                "--research",
+                str(input_path),
+                "--output",
+                str(output),
+            ]
+            assert cli.main(cmd) == 1
+            base = root / "book-candidates" / "research-import"
+            rejection = base / "rejections" / candidate.fingerprint / f"{digest}.json"
+            saved = rejection.read_bytes()
+            assert cli.main(cmd) == 1
+            assert rejection.read_bytes() == saved
+            assert b"secret" not in saved
+            assert json.loads(saved)["source_sha256"] == candidate.expected_sha256
+            assert json.loads(saved)["candidate_fingerprint"] == candidate.fingerprint
+            assert rejection.stat().st_mode & 0o777 == 0o600
+            assert rejection.parent.stat().st_mode & 0o777 == 0o700
+            assert not output.exists()
+            assert (base / "source" / f"{digest}.json").read_bytes() == data
+            assert (base / "source" / f"{digest}.json").stat().st_mode & 0o777 == 0o600
+            reports.append(rejection)
+        assert len(set(reports)) == 2
+    finally:
+        os.umask(previous)

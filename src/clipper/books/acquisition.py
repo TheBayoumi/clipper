@@ -284,6 +284,7 @@ def _private_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path.parent, 0o700)
     if path.exists():
+        os.chmod(path, 0o600)
         if path.read_bytes() != data:
             raise AcquisitionError(f"immutable artifact conflicts with recorded bytes: {path.name}")
         return

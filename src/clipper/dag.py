@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import threading
 import time
 import uuid
@@ -83,11 +84,13 @@ class DagStore:
         execution_lease_seconds: float = 86_400.0,
         follower_poll_seconds: float = 0.05,
         coordinator: DagLeaseCoordinator | None = None,
+        private_stages: frozenset[str] = frozenset(),
     ) -> None:
         self.root = Path(root)
         self.execution_lease_seconds = float(execution_lease_seconds)
         self.follower_poll_seconds = float(follower_poll_seconds)
         self.coordinator = coordinator
+        self.private_stages = private_stages
         if not math.isfinite(self.execution_lease_seconds) or self.execution_lease_seconds <= 0:
             raise ValueError("DAG execution lease must be finite and positive")
         if not math.isfinite(self.follower_poll_seconds) or self.follower_poll_seconds <= 0:
@@ -133,14 +136,60 @@ class DagStore:
         return not math.isfinite(float(expires_at)) or float(expires_at) <= now
 
     @staticmethod
-    def _write_json(path: Path, payload: object) -> None:
+    def _private_directory(path: Path) -> None:
+        if path.is_symlink():
+            raise ValueError("private DAG directory cannot be a symbolic link")
+        path.mkdir(mode=0o700, parents=False, exist_ok=True)
+        os.chmod(path, 0o700)
+
+    def protect_stage(self, stage_name: str) -> None:
+        """Restrict pre-existing content without rewriting its bytes or identities."""
+        if stage_name not in self.private_stages:
+            raise ValueError("DAG stage is not configured for private persistence")
+        self.root.parent.mkdir(parents=True, exist_ok=True)
+        self._private_directory(self.root)
+        stage = self.root / stage_name
+        self._private_directory(stage)
+        for directory in stage.iterdir():
+            if directory.is_symlink() or not directory.is_dir():
+                raise ValueError("unexpected entry in private DAG stage")
+            self._private_directory(directory)
+            self._protect_artifacts(directory)
+
+    @staticmethod
+    def _protect_artifacts(directory: Path) -> None:
+        for path in directory.iterdir():
+            if path.is_symlink():
+                raise ValueError("private DAG artifact cannot be a symbolic link")
+            try:
+                if path.is_dir():
+                    os.chmod(path, 0o700)
+                elif path.is_file():
+                    os.chmod(path, 0o600)
+            except FileNotFoundError:
+                # A concurrent atomic writer may have replaced a temp or claim.
+                continue
+
+    def _prepare_private_stage(self, identity: StageIdentity) -> None:
+        if identity.stage_name in self.private_stages:
+            self.root.parent.mkdir(parents=True, exist_ok=True)
+            self._private_directory(self.root)
+            self._private_directory(self._directory(identity).parent)
+            directory = self._directory(identity)
+            self._private_directory(directory)
+            self._protect_artifacts(directory)
+
+    def _write_json(self, path: Path, payload: object) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         try:
-            temporary.write_text(
-                json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-                encoding="utf-8",
-            )
+            serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+            if path.parent.parent.name in self.private_stages:
+                descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    handle.write(serialized)
+            else:
+                temporary.write_text(serialized, encoding="utf-8")
             temporary.replace(path)
         finally:
             temporary.unlink(missing_ok=True)
@@ -152,11 +201,16 @@ class DagStore:
         *,
         timeout_seconds: float = 30.0,
     ) -> Iterator[None]:
+        self._prepare_private_stage(identity)
         lock = self._directory(identity) / ".write-lock"
         deadline = time.monotonic() + timeout_seconds
         while True:
             try:
-                lock.mkdir(parents=True, exist_ok=False)
+                lock.mkdir(
+                    parents=True,
+                    exist_ok=False,
+                    mode=0o700 if identity.stage_name in self.private_stages else 0o777,
+                )
                 break
             except FileExistsError:
                 if time.monotonic() >= deadline:
@@ -187,6 +241,7 @@ class DagStore:
         return int(raw) if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
 
     def cached_output(self, identity: StageIdentity) -> object | None:
+        self._prepare_private_stage(identity)
         record = self._read_record_payload(identity)
         output_path = self._output_path(identity)
         if record is None or record.get("status") != "PASS" or not output_path.is_file():

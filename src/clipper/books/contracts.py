@@ -86,6 +86,7 @@ class ReadingBlock:
     research_origin: str | None = None
     research_author: str | None = None
     diagram_geometry_verified: bool = False
+    research_link_status: str = "not_applicable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +104,7 @@ class ImageOccurrence:
     reviewed_by: str | None = None
     reviewed_at: str | None = None
     review_status: str | None = None
+    research_link_status: str = "not_applicable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +121,7 @@ class ImageEvidence:
     review_status: str = "needs_review"
     reviewed_by: str | None = None
     reviewed_at: str | None = None
+    machine_transcription: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

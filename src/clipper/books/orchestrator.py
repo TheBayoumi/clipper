@@ -192,7 +192,9 @@ class BookOrchestrator:
 
     def __init__(self, artifact_root: Path) -> None:
         self.root = artifact_root
-        self.dag = DagStore(artifact_root / "book-dag")
+        self.dag = DagStore(
+            artifact_root / "book-dag", private_stages=frozenset({"books-ingest"})
+        )
         self.script_cache_root = artifact_root / "book-script-cache"
 
     def acquire_candidate(
@@ -248,16 +250,42 @@ class BookOrchestrator:
         ):
             raise BookRunError("acquired raw artifact hash or length mismatch")
         overlay = None
+        research_payload = None
         if overlay_path is not None:
             if not overlay_path.is_file():
                 raise BookRunError(f"reviewed image overlay missing: {overlay_path}")
             overlay = overlay_path.read_bytes()
+            if not overlay:
+                raise faithful.ExtractionError("explicit image overlay is empty")
+            declared_digest = faithful.research_digest(overlay)
+            if declared_digest is not None:
+                research_path = (
+                    self.root
+                    / "book-candidates"
+                    / "research-import"
+                    / "source"
+                    / f"{declared_digest}.json"
+                )
+                if research_path.exists():
+                    with research_path.open("rb") as handle:
+                        research_payload = handle.read(2_000_001)
+                    if len(research_payload) > 2_000_000:
+                        raise faithful.ExtractionError(
+                            "cached research exceeds bounded import size"
+                        )
+                    if hashlib.sha256(research_payload).hexdigest() != declared_digest:
+                        raise faithful.ExtractionError("cached research bytes do not match digest")
         configuration = {
             "parser_version": faithful.PARSER_VERSION,
             "candidate_fingerprint": acquired.candidate.fingerprint,
             "raw_sha256": acquired.observed_sha256,
             "acquisition_fingerprint": acquired.fingerprint,
-            "overlay_sha256": hashlib.sha256(overlay).hexdigest() if overlay else None,
+            "overlay_sha256": hashlib.sha256(overlay).hexdigest() if overlay is not None else None,
+            "research_sha256": (
+                hashlib.sha256(research_payload).hexdigest()
+                if research_payload is not None
+                else None
+            ),
             "ocr_producer": producer_fingerprint,
         }
         identity = stage_identity(
@@ -277,11 +305,13 @@ class BookOrchestrator:
                     raw,
                     acquired.candidate,
                     overlay=overlay,
+                    research_payload=research_payload,
                     ocr=ocr,
                     ocr_identity=ocr_identity,
                 )
             )
 
+        self.dag.protect_stage(identity.stage_name)
         stored, _reused = self.dag.execute(identity, extract)
         book = _book_text_cached(stored)
         if (
@@ -311,7 +341,7 @@ class BookOrchestrator:
         )
         reconciliation = faithful.image_reconciliation(book)
         dossier = {
-            "schema": "clipper-book-candidate-ingest-dossier-v2",
+            "schema": "clipper-book-candidate-ingest-dossier-v3",
             "book_id": acquired.candidate.book_id,
             "author": acquired.candidate.author,
             "edition_identity": acquired.candidate.edition_identity,
@@ -337,6 +367,7 @@ class BookOrchestrator:
                         "method": x.method,
                         "review_status": x.review_status,
                         "original_transcription": x.original_transcription,
+                        "machine_transcription": x.machine_transcription,
                     }
                     for x in book.images
                 ]
@@ -357,6 +388,9 @@ class BookOrchestrator:
         dossier["normalized_only_occurrences"] = reconciliation["normalized_only_occurrences"]
         dossier["linked_occurrences"] = reconciliation["linked_occurrences"]
         dossier["unresolved_occurrences"] = reconciliation["unresolved_occurrences"]
+        dossier["verified_research_links"] = reconciliation["verified_research_links"]
+        dossier["unverified_research_links"] = reconciliation["unverified_research_links"]
+        dossier["machine_occurrences"] = reconciliation["machine_occurrences"]
         reconciliation_path = (
             self.root
             / "book-candidates"

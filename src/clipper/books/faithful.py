@@ -36,7 +36,7 @@ from .contracts import (
     SourceBlock,
 )
 
-PARSER_VERSION = "clipper-book-ordered-extract-v2"
+PARSER_VERSION = "clipper-book-ordered-extract-v3"
 MAX_MEMBERS = 1500
 MAX_TOTAL_UNCOMPRESSED = 100_000_000
 MAX_ITEM_BYTES = 20_000_000
@@ -554,16 +554,42 @@ def cpu_tesseract(image: bytes, _media_type: str) -> str | None:
     return result or None
 
 
+def _unique_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ExtractionError("duplicate JSON member in private evidence")
+        result[key] = value
+    return result
+
+
+def evidence_json(payload: bytes) -> object:
+    """Reject ambiguous objects and non-UTF-8-representable strings at every depth."""
+    try:
+        document: object = json.loads(payload, object_pairs_hook=_unique_members)
+        json.dumps(document, ensure_ascii=False).encode("utf-8")
+    except (UnicodeError, json.JSONDecodeError, RecursionError):
+        raise ExtractionError("private evidence is invalid JSON or Unicode") from None
+    return document
+
+
+def research_digest(overlay: bytes) -> str | None:
+    document = evidence_json(overlay)
+    if isinstance(document, dict) and document.get("schema") == "clipper-book-image-overlay-v2":
+        digest = document.get("research_sha256")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ExtractionError("v2 image overlay provenance invalid")
+        return digest
+    return None
+
+
 def _overlay(
     raw_sha: str,
     blocks: tuple[SourceBlock, ...],
     images: tuple[ImageEvidence, ...],
     payload: bytes,
 ) -> tuple[tuple[SourceBlock, ...], tuple[ImageEvidence, ...]]:
-    try:
-        document: object = json.loads(payload)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ExtractionError("reviewed image overlay is invalid JSON") from exc
+    document = evidence_json(payload)
     if isinstance(document, dict) and document.get("schema") == "clipper-book-image-overlay-v2":
         return _overlay_v2(raw_sha, blocks, images, document)
     if (
@@ -756,6 +782,7 @@ def _overlay_v2(
                     research_origin=origin,
                     research_author=author,
                     research_sha256=research_sha,
+                    research_link_status="unverified_claim",
                     reviewed_by=entry["reviewed_by"],
                     reviewed_at=entry["reviewed_at"],
                     review_status=entry["review_status"],
@@ -783,6 +810,7 @@ def extract_candidate(
     candidate: ReviewedCandidate,
     *,
     overlay: bytes | None = None,
+    research_payload: bytes | None = None,
     ocr: OCR | None = None,
     ocr_identity: OCRIdentity | None = None,
 ) -> BookText:
@@ -805,22 +833,61 @@ def extract_candidate(
         sections, blocks, images, excluded, warnings, payloads = _pdf(source, raw, candidate)
     else:
         raise ExtractionError("candidate file signature/format mismatch")
+    if research_payload is not None:
+        if (
+            overlay is None
+            or research_digest(overlay) != hashlib.sha256(research_payload).hexdigest()
+        ):
+            raise ExtractionError("research bytes do not match claimed digest")
+        base = BookText(
+            source,
+            candidate.edition_identity,
+            sections,
+            0,
+            digest,
+            source.fingerprint,
+            blocks=blocks,
+            images=images,
+            parser_version=PARSER_VERSION,
+        )
+        derived, _ = convert_research_observations(base, research_payload)
+        if evidence_json(derived) != evidence_json(overlay):
+            raise ExtractionError("overlay differs from deterministic research conversion")
     if overlay is not None:
         blocks, images = _overlay(digest, blocks, images, overlay)
+        if research_payload is not None:
+            images = tuple(
+                replace(
+                    image,
+                    occurrences=tuple(
+                        replace(occ, research_link_status="verified")
+                        if occ.observation_id is not None
+                        else occ
+                        for occ in image.occurrences
+                    ),
+                )
+                for image in images
+            )
     if ocr is not None:
         resolved: list[ImageEvidence] = []
         for image in images:
-            if image.method in ("reviewed_overlay", "research_observation"):
+            if image.method == "reviewed_overlay" or all(
+                occ.observation_id is not None for occ in image.occurrences
+            ):
                 resolved.append(image)
                 continue
             # OCR is never source truth and is kept separately as unreviewed evidence.
             warning = "OCR absent/failed; source image words not recovered"
             value = ocr(payloads[image.asset_sha256], image.media_type)
             if value and value.strip():
+                if image.method == "research_observation":
+                    resolved.append(replace(image, machine_transcription=value))
+                    continue
                 resolved.append(
                     replace(
                         image,
                         original_transcription=value,
+                        machine_transcription=value,
                         method="local_cpu_ocr",
                         review_status="machine_unreviewed",
                         uncertainty="machine OCR requires manual verification",
@@ -846,7 +913,10 @@ def extract_candidate(
         "candidate": candidate.fingerprint,
         "format": candidate.format,
         "ocr": producer_fingerprint,
-        "overlay_sha256": hashlib.sha256(overlay).hexdigest() if overlay else None,
+        "overlay_sha256": hashlib.sha256(overlay).hexdigest() if overlay is not None else None,
+        "research_sha256": (
+            hashlib.sha256(research_payload).hexdigest() if research_payload is not None else None
+        ),
     }
     return BookText(
         source=source,
@@ -868,6 +938,8 @@ def extract_candidate(
 def _effective_review(image: ImageEvidence, occ: ImageOccurrence) -> str:
     if occ.observation_id is not None:
         return occ.review_status or "needs_review"
+    if image.machine_transcription is not None:
+        return "machine_unreviewed"
     return image.review_status
 
 
@@ -921,6 +993,12 @@ def reading_blocks(book: BookText) -> Iterator[ReadingBlock]:
                 provenance = "image_original"
             original = item.original_transcription
             notes = item.normalization_notes
+        elif image.machine_transcription is not None:
+            text = image.machine_transcription
+            original = None
+            notes = None
+            origin = "machine_ocr"
+            provenance = "machine_ocr"
         else:
             original = image.original_transcription
             notes = image.normalization_notes
@@ -929,7 +1007,7 @@ def reading_blocks(book: BookText) -> Iterator[ReadingBlock]:
                 origin = "reviewed_image"
                 provenance = (
                     "image_normalized"
-                    if image.normalized_transcription is not None
+                    if image.normalized_transcription
                     else "image_original"
                 )
             elif image.review_status == "machine_unreviewed":
@@ -951,6 +1029,7 @@ def reading_blocks(book: BookText) -> Iterator[ReadingBlock]:
             asset_source_path=item.source_path,
             research_origin=item.research_origin,
             research_author=item.research_author,
+            research_link_status=item.research_link_status,
         )
 
 
@@ -962,6 +1041,8 @@ def image_reconciliation(book: BookText) -> dict[str, Any]:
     normalized_only = 0
     linked_occurrences = 0
     unresolved_occurrences = 0
+    machine_occurrences = 0
+    verified_links = 0
     for image in book.images:
         occurrences: list[dict[str, Any]] = []
         all_reviewed = bool(image.occurrences)
@@ -978,7 +1059,10 @@ def image_reconciliation(book: BookText) -> dict[str, Any]:
             )
             linked_occurrences += int(linked)
             normalized_only += int(normalized)
-            missing = not linked and image.original_transcription is None
+            machine = status == "machine_unreviewed"
+            machine_occurrences += int(machine)
+            verified_links += int(occ.research_link_status == "verified")
+            missing = not linked and not machine and image.original_transcription is None
             unresolved_occurrences += int(missing)
             occurrences.append(
                 {
@@ -987,6 +1071,7 @@ def image_reconciliation(book: BookText) -> dict[str, Any]:
                     "review_status": status,
                     "observation_id": occ.observation_id,
                     "research_sha256": occ.research_sha256,
+                    "research_link_status": occ.research_link_status,
                     "resolution_reason": (
                         "source occurrence lacks recovery evidence"
                         if missing
@@ -1003,6 +1088,8 @@ def image_reconciliation(book: BookText) -> dict[str, Any]:
                         if linked
                         else "unresolved"
                         if missing
+                        else "local_cpu_ocr"
+                        if machine
                         else image.method
                     ),
                 }
@@ -1019,7 +1106,7 @@ def image_reconciliation(book: BookText) -> dict[str, Any]:
         )
     total_occurrences = sum(len(x.occurrences) for x in book.images)
     return {
-        "schema": "clipper-book-image-reconciliation-v2",
+        "schema": "clipper-book-image-reconciliation-v3",
         "source_sha256": book.content_sha256,
         "parser_version": book.parser_version,
         "unique_assets": len(book.images),
@@ -1029,6 +1116,9 @@ def image_reconciliation(book: BookText) -> dict[str, Any]:
         "unreviewed_assets": len(book.images) - reviewed_assets,
         "unreviewed_occurrences": total_occurrences - reviewed_occurrences,
         "linked_occurrences": linked_occurrences,
+        "verified_research_links": verified_links,
+        "unverified_research_links": linked_occurrences - verified_links,
+        "machine_occurrences": machine_occurrences,
         "normalized_only_occurrences": normalized_only,
         "unresolved_occurrences": unresolved_occurrences,
         "rejected_observations": 0,
@@ -1040,10 +1130,7 @@ def convert_research_observations(book: BookText, payload: bytes) -> tuple[bytes
     """Convert explicit private research observations; never synthesize missing review."""
     if len(payload) > 2_000_000:
         raise ExtractionError("private research observations exceed bounded import size")
-    try:
-        document: object = json.loads(payload)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ExtractionError("private research observations are invalid JSON") from exc
+    document = evidence_json(payload)
     if (
         isinstance(document, dict)
         and document.get("schema") == "clipper-book-research-observations-v2"
@@ -1187,6 +1274,18 @@ def _convert_research_v2(
         json.dumps(overlay, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
     ).encode()
     _, images = _overlay(book.content_sha256, book.blocks, book.images, serialized)
+    images = tuple(
+        replace(
+            image,
+            occurrences=tuple(
+                replace(occ, research_link_status="verified")
+                if occ.observation_id is not None
+                else occ
+                for occ in image.occurrences
+            ),
+        )
+        for image in images
+    )
     report = image_reconciliation(replace(book, images=images))
     report["source_research_sha256"] = overlay["research_sha256"]
     report["research_origin"] = overlay["research_origin"]

@@ -155,7 +155,7 @@ def _pdf(*, with_raster: bool = False, author: str = "Cal Newport") -> bytes:
 def test_epub_source_order_and_text_image_separation() -> None:
     raw = _epub()
     book = extract_candidate(_source(raw, _candidate(raw)), raw, _candidate(raw))
-    assert book.parser_version == "clipper-book-ordered-extract-v2"
+    assert book.parser_version == "clipper-book-ordered-extract-v3"
     assert len(book.sections) == 4
     assert book.sections[0].heading == "Cover"
     assert "proscribed" in "\n".join(block.text for block in book.blocks)
@@ -1173,3 +1173,176 @@ def test_reading_projection_rejects_corrupt_anchor_path_and_ocr_is_unreviewed() 
     assert any(x.origin == "machine_ocr" for x in reading_blocks(machine))
     assert image_reconciliation(machine)["reviewed_occurrences"] == 0
     assert image_reconciliation(machine)["unresolved_occurrences"] == 0
+
+
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("reader", ["research", "overlay"])
+@pytest.mark.parametrize(
+    "duplicate",
+    [
+        b'{"schema":"one","schema":"one"}',
+        b'{"entries":[{"review_status":null,"review_status":"reviewed"}]}',
+        b'{"entries":[{"original_transcription":null,"original_transcription":"secret"}]}',
+        b'{"entries":[{"nested":{"research_sha256":"x","research_sha256":"y"}}]}',
+    ],
+)
+def test_private_evidence_rejects_raw_duplicate_json_members(
+    version: int, reader: str, duplicate: bytes
+) -> None:
+    raw = _epub()
+    candidate = _candidate(raw)
+    book = extract_candidate(_source(raw, candidate), raw, candidate)
+    schema = (
+        f"clipper-book-research-observations-v{version}"
+        if reader == "research"
+        else f"clipper-book-image-overlay-v{version}"
+    )
+    if duplicate.startswith(b'{"schema"'):
+        payload = duplicate.replace(b'"one"', json.dumps(schema).encode())
+    else:
+        payload = b'{"schema":' + json.dumps(schema).encode() + b',"nested":' + duplicate + b"}"
+    with pytest.raises(ExtractionError, match="duplicate JSON member") as error:
+        if reader == "research":
+            convert_research_observations(book, payload)
+        else:
+            extract_candidate(book.source, raw, candidate, overlay=payload)
+    assert "secret" not in str(error.value)
+
+
+@pytest.mark.parametrize("reader", ["research", "overlay"])
+def test_private_evidence_rejects_unpaired_surrogate(reader: str) -> None:
+    raw = _epub()
+    candidate = _candidate(raw)
+    book = extract_candidate(_source(raw, candidate), raw, candidate)
+    payload = b'{"private_text":"secret\\ud800"}'
+    with pytest.raises(ExtractionError, match="invalid JSON or Unicode") as error:
+        if reader == "research":
+            convert_research_observations(book, payload)
+        else:
+            extract_candidate(book.source, raw, candidate, overlay=payload)
+    assert "secret" not in str(error.value)
+
+
+def test_research_digest_is_claim_until_exact_conversion_is_verified() -> None:
+    raw = _epub()
+    candidate = _candidate(raw)
+    book = extract_candidate(_source(raw, candidate), raw, candidate)
+    research = _research_v2(book)
+    inventory = research["occurrence_inventory"]
+    assert isinstance(inventory, list)
+    research["observations"] = [_observation(inventory[0], observation_id="linked")]
+    payload = json.dumps(research).encode()
+    overlay, report = convert_research_observations(book, payload)
+    assert report["verified_research_links"] == 1
+    standalone = extract_candidate(book.source, raw, candidate, overlay=overlay)
+    assert image_reconciliation(standalone)["unverified_research_links"] == 1
+    assert standalone.images[0].occurrences[0].research_link_status == "unverified_claim"
+    verified = extract_candidate(
+        book.source, raw, candidate, overlay=overlay, research_payload=payload
+    )
+    assert verified.images[0].occurrences[0].research_link_status == "verified"
+    assert verified.parser_config_sha256 != standalone.parser_config_sha256
+    assert image_reconciliation(verified)["verified_research_links"] == 1
+    assert any(x.research_link_status == "verified" for x in reading_blocks(verified))
+    changed = json.loads(overlay)
+    changed["entries"][0]["normalized_transcription"] = "different text"
+    with pytest.raises(ExtractionError, match="differs from deterministic"):
+        extract_candidate(
+            book.source,
+            raw,
+            candidate,
+            overlay=json.dumps(changed).encode(),
+            research_payload=payload,
+        )
+    changed["research_sha256"] = "0" * 64
+    claim = extract_candidate(book.source, raw, candidate, overlay=json.dumps(changed).encode())
+    assert image_reconciliation(claim)["unverified_research_links"] == 1
+    with pytest.raises(ExtractionError, match="do not match claimed digest"):
+        extract_candidate(
+            book.source,
+            raw,
+            candidate,
+            overlay=json.dumps(changed).encode(),
+            research_payload=payload,
+        )
+
+
+@pytest.mark.parametrize("words", ["machine words", "", None])
+def test_partial_research_keeps_one_explicit_ocr_fallback_per_asset(words: str | None) -> None:
+    raw = _epub()
+    candidate = _candidate(raw)
+    book = extract_candidate(_source(raw, candidate), raw, candidate)
+    research = _research_v2(book)
+    inventory = research["occurrence_inventory"]
+    assert isinstance(inventory, list)
+    research["observations"] = [_observation(inventory[0], observation_id="linked")]
+    overlay, _ = convert_research_observations(book, json.dumps(research).encode())
+    no_ocr = extract_candidate(book.source, raw, candidate, overlay=overlay)
+    callback = Mock(return_value=words)
+    with_ocr = extract_candidate(
+        book.source,
+        raw,
+        candidate,
+        overlay=overlay,
+        ocr=callback,
+        ocr_identity=OCRIdentity("fixture", "1"),
+    )
+    callback.assert_called_once_with(IMAGE, "image/png")
+    assert with_ocr.images[0].occurrences == no_ocr.images[0].occurrences
+    assert with_ocr.parser_config_sha256 != no_ocr.parser_config_sha256
+    report = image_reconciliation(with_ocr)
+    assert report["machine_occurrences"] == (2 if words else 0)
+    assert report["unresolved_occurrences"] == (0 if words else 2)
+    assert report["reviewed_occurrences"] == 0
+    view = [x for x in reading_blocks(with_ocr) if x.asset_sha256 is not None]
+    assert [x.anchor for x in view] == [x.anchor for x in book.images[0].occurrences]
+    assert view[0].origin == "normalized_research"
+    assert view[1].origin == ("machine_ocr" if words else "unrecovered_image")
+    assert view[1].text == (words or "")
+    assert view[1].original_image_text is None
+    research["observations"] = [
+        _observation(occ, observation_id=str(i)) for i, occ in enumerate(inventory)
+    ]
+    full, _ = convert_research_observations(book, json.dumps(research).encode())
+    callback.reset_mock()
+    complete = extract_candidate(
+        book.source,
+        raw,
+        candidate,
+        overlay=full,
+        ocr=callback,
+        ocr_identity=OCRIdentity("fixture", "1"),
+    )
+    callback.assert_not_called()
+    assert image_reconciliation(complete)["machine_occurrences"] == 0
+
+
+@pytest.mark.parametrize("normalized", [None, "", "normalized"])
+def test_v1_projection_provenance_labels_actual_text(normalized: str | None) -> None:
+    raw = _epub()
+    candidate = _candidate(raw)
+    book = extract_candidate(_source(raw, candidate), raw, candidate)
+    image = book.images[0]
+    overlay = {
+        "schema": "clipper-book-image-overlay-v1",
+        "source_sha256": book.content_sha256,
+        "entries": [
+            {
+                "asset_sha256": image.asset_sha256,
+                "anchors": [occ.anchor for occ in image.occurrences],
+                "original_transcription": "original",
+                "normalized_transcription": normalized,
+                "normalization_notes": "explicit editorial change",
+                "reviewed_by": "fixture human",
+                "reviewed_at": None,
+                "review_status": "reviewed",
+            }
+        ],
+    }
+    extracted = extract_candidate(
+        book.source, raw, candidate, overlay=json.dumps(overlay).encode()
+    )
+    image_view = [x for x in reading_blocks(extracted) if x.asset_sha256 is not None]
+    assert all(x.text == (normalized or "original") for x in image_view)
+    expected = "image_normalized" if normalized else "image_original"
+    assert all(x.text_provenance == expected for x in image_view)
