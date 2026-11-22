@@ -309,7 +309,30 @@ def test_workflow_github_context_rules_and_dormant_trigger_are_explicit() -> Non
     assert "runner.temp" not in content
     assert "actions/cache" not in content
     assert "upload-artifact" not in content
-    assert not (smoke.REPO / smoke.RUN_REQUEST).exists()
+
+
+@pytest.mark.parametrize("request_present", [False, True])
+def test_workflow_structure_allows_absent_or_present_request_in_isolated_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request_present: bool
+) -> None:
+    """A later request-only trigger must not break ordinary workflow-structure CI."""
+    isolated_repo = tmp_path / "isolated-repo"
+    relative_workflow = Path(".github/workflows/book-local-cpu-smoke.yml")
+    copied_workflow = isolated_repo / relative_workflow
+    copied_workflow.parent.mkdir(parents=True)
+    copied_workflow.write_bytes((smoke.REPO / relative_workflow).read_bytes())
+
+    request = isolated_repo / smoke.RUN_REQUEST
+    if request_present:
+        request.parent.mkdir(parents=True)
+        request.write_text('{"synthetic_inert_fixture": true}\n', encoding="utf-8")
+
+    monkeypatch.setattr(smoke, "REPO", isolated_repo)
+    monkeypatch.setattr(
+        smoke, "gate", lambda: pytest.fail("workflow structure must not invoke the run gate")
+    )
+    test_workflow_github_context_rules_and_dormant_trigger_are_explicit()
+    assert request.exists() is request_present
 
 
 def _sample_progress(root: Path) -> Path:
