@@ -558,13 +558,10 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                             flush=True,
                         )
                     if (
-                        (
-                            case_name in {"latin", "arabic", "bounded_350_spans", "bounded_400_spans"}
-                            and count == 1
-                            and not ascii_only
-                        )
-                        or (case_name == "mixed_emoji_combining" and count == 1 and ascii_only)
-                    ):
+                        case_name in {"latin", "arabic", "bounded_350_spans", "bounded_400_spans"}
+                        and count == 1
+                        and not ascii_only
+                    ) or (case_name == "mixed_emoji_combining" and count == 1 and ascii_only):
                         assert allowed and complete
             if case_name == "cjk":
                 # The pinned vocabulary has no complete token containing 彙.
