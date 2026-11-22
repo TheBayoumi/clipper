@@ -761,10 +761,33 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
             )
             == wide_raw
         )
+        # The pinned tokenizer's greedy encoding uses token 15553 for
+        # space+quote+comma+quote, which is not a legal single JSON-string
+        # token to LMFE. A tokenization path is not an authored raw reply:
+        # preserve EVERY raw byte while splitting only this token boundary.
+        assert tokenizer.decode(
+            [15553], skip_special_tokens=True, clean_up_tokenization_spaces=False
+        ) == ' ","'
+        replacement = [
+            330,
+            *tokenizer.encode(',"', add_special_tokens=False),
+        ]
+        assert tokenizer.decode(
+            replacement, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        ) == ' ","'
+        assert 15553 in wide_tokens
+        alternate_tokens = [
+            part for token in wide_tokens
+            for part in (replacement if token == 15553 else [token])
+        ]
+        assert len(alternate_tokens) <= 960
+        assert tokenizer.decode(
+            alternate_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        ) == wide_raw
         wide_callback = constrained.prefix_for(wide_request, tokenizer, scripting.SCRIPT_REVISION)
         wide_prefix = [tokenizer.eos_token_id]
         wide_start = time.perf_counter()
-        for index, token in enumerate(wide_tokens):
+        for index, token in enumerate(alternate_tokens):
             assert token in wide_callback(0, torch.tensor(wide_prefix)), index
             wide_prefix.append(token)
         wide_seconds = time.perf_counter() - wide_start
@@ -775,7 +798,9 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
             "QWEN_FOUR_400_CHAR_FIELDS "
             + json.dumps(
                 {
-                    "whole_reply_tokens": len(wide_tokens),
+                    "whole_reply_tokens": len(alternate_tokens),
+                    "canonical_boundary_token_rejected": 15553,
+                    "raw_json_unchanged": True,
                     "prefix_seconds": round(wide_seconds, 3),
                     "complete_path": True,
                     "model_loaded": False,
