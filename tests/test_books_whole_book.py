@@ -310,9 +310,12 @@ def test_reused_analysis_ancestors_tightened_without_changing_artifact_bytes(
         )
         assert not isinstance(repeated, SourceUnresolved)
         assert repeated.analysis_ref_path == acquired.analysis_ref_path
-        assert runner.mine_candidate(
-            acquired.analysis_ref_path, responses=replies, response_file_sha256=digest
-        ) == initial
+        assert (
+            runner.mine_candidate(
+                acquired.analysis_ref_path, responses=replies, response_file_sha256=digest
+            )
+            == initial
+        )
     finally:
         os.umask(previous)
     for directory in directories:

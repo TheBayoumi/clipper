@@ -148,9 +148,9 @@ def test_reviewed_book_id_is_not_replaced_by_title_slug(
     assert book.source.title == candidate.title
     assert book.source.author == candidate.author
     assert book.fingerprint == result.book.fingerprint
-    assert reference.extracted_sha256 == hashlib.sha256(
-        result.extracted_path.read_bytes()
-    ).hexdigest()
+    assert (
+        reference.extracted_sha256 == hashlib.sha256(result.extracted_path.read_bytes()).hexdigest()
+    )
 
     # Both a random requested ID and the other valid reviewed registry ID
     # must be rejected even if their title conventions differ.
@@ -183,9 +183,7 @@ def test_private_write_restricts_new_parents_without_touching_shared_paths(
     private_root = tmp_path / "artifact-root" / "book-candidates"
     previous = os.umask(0)
     try:
-        output = (
-            private_root / "research-import" / "rejections" / "synthetic" / "record.json"
-        )
+        output = private_root / "research-import" / "rejections" / "synthetic" / "record.json"
         acquisition._private_write(output, b"private fixture", private_root=private_root)
         assert output.stat().st_mode & 0o777 == 0o600
         directory = output.parent
@@ -205,9 +203,7 @@ def test_private_write_restricts_new_parents_without_touching_shared_paths(
         assert previous_file.read_bytes() == previous_bytes
 
         with pytest.raises(acquisition.AcquisitionError, match="outside owned root"):
-            acquisition._private_write(
-                shared / "escape.json", b"no", private_root=private_root
-            )
+            acquisition._private_write(shared / "escape.json", b"no", private_root=private_root)
         outside = shared / "outside"
         outside.mkdir(mode=0o755)
         (private_root / "analysis").symlink_to(outside, target_is_directory=True)

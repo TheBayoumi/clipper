@@ -336,9 +336,7 @@ def _matches_immutable_bytes(path: Path, data: bytes) -> bool:
     return _read_bounded_file(path, len(data) + 1) == data
 
 
-def _private_write(
-    path: Path, data: bytes, *, private_root: Path | None = None
-) -> None:
+def _private_write(path: Path, data: bytes, *, private_root: Path | None = None) -> None:
     """Publish complete immutable bytes with an exclusive atomic link, never replace."""
     _private_directory(path.parent, private_root=private_root)
     if path.is_symlink():
