@@ -222,6 +222,7 @@ class BookOrchestrator:
                 {
                     BOOK_STAGE_CONTRACTS["ingest"].name,
                     "books.mining.unit.v1",
+                    "books.mining.local-completion.v1",
                 }
             ),
         )
