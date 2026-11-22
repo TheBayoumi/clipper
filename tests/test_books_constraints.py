@@ -161,7 +161,7 @@ def test_pool_identity_and_nonselected_quote_cannot_pass_decoder_grammar() -> No
     req, schema = _decode_request(text)
     original = content_fingerprint(req)
     req["constraints"]["spans"][0]["text"] = "invented quote"
-    with pytest.raises(constrained.ConstraintError, match="identity"):
+    with pytest.raises(constrained.ConstraintError, match="invalid canonical source span request"):
         constrained.decode_schema(req)
     assert content_fingerprint(req) != original
     _req, schema = _decode_request(text)
