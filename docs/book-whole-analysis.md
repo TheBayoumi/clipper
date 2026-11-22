@@ -19,6 +19,13 @@ clipper books mine --candidate-ref \
   --artifact-root artifacts/books
 ```
 
+The versioned `CandidateAnalysisRef` is read in full with a 128 KiB
+byte limit plus a one-byte overflow probe; the acquisition dossier,
+manifest and ingest-stage JSON are likewise bounded at 2 MB. Oversize
+or truncated-prefix files fail closed even if their initial JSON value
+is valid. Exactly bounded JSON files are accepted when complete, and
+neither malformed input nor historic immutable evidence is rewritten.
+
 The versioned `CandidateAnalysisRef` contains selected candidate metadata,
 candidate/acquisition/source fingerprints, pinned raw SHA, ingest stage key,
 extracted/dossier byte hashes, book fingerprint, parser version/config and
@@ -101,14 +108,27 @@ gap. A missing or invalid later answer produces
 `status="incomplete"` and exit code 2; no partial candidate catalog is
 exported. A successful pass across all eligible units produces a separate
 private `book-candidates/analysis/exports/<book-id>/` provisional catalog,
-even when there are **zero candidates**. Both output identities include
-the work-plan fingerprint and the complete recorded-response file SHA.
+even when there are **zero candidates**.
+
+The immutable report filename binds the work-plan fingerprint, the
+**complete** recorded-response file SHA-256 and the SHA-256 of the exact
+serialized progress bytes (including all per-unit outcomes). A transient
+failure followed by a successful retry with the **same** response-file
+bytes therefore creates a *different* complete progress artifact without
+overwriting or deleting the earlier incomplete report. A replay with the
+same outcomes reuses byte-identical immutable progress and export files.
+The complete export uses the corresponding outcome-qualified filename
+and embeds `progress_sha256` of the actual report bytes. Publication
+conflicts and storage errors are not treated as successful retries.
 Response-file provenance lives on the progress report; each DAG unit
-depends only on its own used response. IDs include an exact unit/idea
-SHA-256 and collisions are rejected, never overwritten. All candidates
-and exports remain `MINED_UNREVIEWED` with
-`publish_eligible=false`; the old selector's `approved_facts` name is
-**not** an approval mechanism and the new path does not invoke it.
+depends only on its own used response. Validated book and plan fingerprints
+are computed once per invocation and reused throughout the per-unit loop
+without changing the existing cache or request identity material.
+IDs include an exact unit/idea SHA-256 and collisions are rejected,
+never overwritten. All candidates and exports remain
+`MINED_UNREVIEWED` with `publish_eligible=false`; the old selector's
+`approved_facts` name is **not** an approval mechanism and the new path
+does not invoke it.
 
 The analysis status `complete` means every **eligible work unit** was
 accounted for. It does **not** upgrade source recovery, authenticate a

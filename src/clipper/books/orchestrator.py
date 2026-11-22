@@ -53,6 +53,14 @@ class BookRunError(ValueError):
     """Book run input or stored stage output is inconsistent."""
 
 
+def _bounded_candidate_json(path: Path, *, max_bytes: int) -> object:
+    """Parse a complete, byte-bounded JSON file; never accept a truncated prefix."""
+    payload = acquisition._read_bounded_file(path, max_bytes + 1)
+    if len(payload) > max_bytes:
+        raise BookRunError("candidate evidence JSON exceeds bounded input")
+    return json.loads(payload)
+
+
 class NotPortedStage(BookRunError):
     """Refuse unimplemented book work before any external producer starts."""
 
@@ -467,7 +475,7 @@ class BookOrchestrator:
         if book_id is not None and not selection.IDENTIFIER.fullmatch(book_id):
             raise BookRunError("invalid requested candidate book id")
         try:
-            raw_ref = json.loads(acquisition._read_bounded_file(ref_path, 131_073))
+            raw_ref = _bounded_candidate_json(ref_path, max_bytes=131_072)
             expected_fields = {field.name for field in fields(whole_book.CandidateAnalysisRef)}
             if not isinstance(raw_ref, dict) or set(raw_ref) != expected_fields:
                 raise ValueError("invalid candidate analysis handle schema")
@@ -534,6 +542,7 @@ class BookOrchestrator:
             if (
                 len(extracted) > 32_000_000
                 or hashlib.sha256(extracted).hexdigest() != ref.extracted_sha256
+                or len(dossier_bytes) > 2_000_000
                 or hashlib.sha256(dossier_bytes).hexdigest() != ref.dossier_sha256
             ):
                 raise ValueError("candidate extracted/dossier evidence changed")
@@ -591,10 +600,9 @@ class BookOrchestrator:
             )
             if dossier.get("ocr_evidence_sha256") != image_digest:
                 raise ValueError("candidate image evidence fingerprint mismatch")
-            manifest = json.loads(
-                acquisition._read_bounded_file(
-                    base / "manifests" / f"{ref.candidate_fingerprint}.json", 2_000_001
-                )
+            manifest = _bounded_candidate_json(
+                base / "manifests" / f"{ref.candidate_fingerprint}.json",
+                max_bytes=2_000_000,
             )
             if (
                 not isinstance(manifest, dict)
@@ -629,7 +637,7 @@ class BookOrchestrator:
             stage_path = (
                 self.root / "book-dag" / "books-ingest" / ref.ingest_stage_key / "stage.json"
             )
-            record = json.loads(acquisition._read_bounded_file(stage_path, 2_000_001))
+            record = _bounded_candidate_json(stage_path, max_bytes=2_000_000)
             identity_data = record["identity"]
             if not isinstance(identity_data, dict):
                 raise ValueError("candidate ingest DAG identity missing")
@@ -677,6 +685,9 @@ class BookOrchestrator:
         ):
             raise BookRunError("candidate analysis requires a recorded response mapping and digest")
         work = whole_book.plan_for(book)
+        # plan_for derived this fingerprint from the already validated BookText.
+        book_fingerprint = work.book_fingerprint
+        plan_fingerprint = work.fingerprint
         self.dag.protect_stage("books.mining.unit.v1")
         unit_contract = StageContract(
             "books.mining.unit.v1", {"schema": whole_book.RESULT_SCHEMA, "unit": "v1"}
@@ -687,7 +698,8 @@ class BookOrchestrator:
         for window_index, offset in enumerate(range(0, len(work.units), whole_book.WINDOW_UNITS)):
             window = work.units[offset : offset + whole_book.WINDOW_UNITS]
             for unit in window:
-                request = whole_book.request_for(book, unit)
+                unit_fingerprint = unit.fingerprint
+                request = whole_book._request_for_identity(book, unit, book_fingerprint)
                 request_key = content_fingerprint(request)
                 status = "unresolved"
                 count = 0
@@ -703,14 +715,14 @@ class BookOrchestrator:
                             unit_contract,
                             source_hash=content_fingerprint(
                                 {
-                                    "book": book.fingerprint,
-                                    "projection": work.fingerprint,
-                                    "unit": unit.fingerprint,
+                                    "book": book_fingerprint,
+                                    "projection": plan_fingerprint,
+                                    "unit": unit_fingerprint,
                                     "request": request_key,
                                     "used_completion": response_digest,
                                 }
                             ),
-                            dependency_output_hashes=(book.fingerprint,),
+                            dependency_output_hashes=(book_fingerprint,),
                             model_revision=scripting.SCRIPT_REVISION,
                             decoding_parameters={
                                 "seed": 42,
@@ -722,12 +734,13 @@ class BookOrchestrator:
 
                         def produce(
                             current_unit: whole_book.WorkUnit = unit,
+                            current_unit_fingerprint: str = unit_fingerprint,
                             current_request: str = request_key,
                             current_response: str | None = response_digest,
                             current_answer: object = answer,
                         ) -> object:
                             return {
-                                "unit": current_unit.fingerprint,
+                                "unit": current_unit_fingerprint,
                                 "request": current_request,
                                 "completion": current_response,
                                 "lessons": whole_book.validate_reply(current_answer, current_unit),
@@ -737,7 +750,7 @@ class BookOrchestrator:
                         if (
                             not isinstance(stored, dict)
                             or set(stored) != {"unit", "request", "completion", "lessons"}
-                            or stored["unit"] != unit.fingerprint
+                            or stored["unit"] != unit_fingerprint
                             or stored["request"] != request_key
                             or stored["completion"] != response_digest
                         ):
@@ -757,7 +770,7 @@ class BookOrchestrator:
                     {
                         "window": window_index,
                         "unit": unit.ordinal,
-                        "unit_fingerprint": unit.fingerprint,
+                        "unit_fingerprint": unit_fingerprint,
                         "anchor": unit.anchor,
                         "source_path": unit.source_path,
                         "asset_sha256": unit.asset_sha256,
@@ -779,15 +792,14 @@ class BookOrchestrator:
         counts["skipped"] = len(work.skipped)
         outcome = "complete" if not counts["unresolved"] and not counts["failed"] else "incomplete"
         base = self.root / "book-candidates" / "analysis"
-        artifact_name = f"{work.fingerprint}-{response_file_sha256}.json"
         ledger = {
             "schema": whole_book.RESULT_SCHEMA,
             "book_id": ref.book_id,
             "source_fingerprint": book.source_fingerprint,
-            "book_fingerprint": book.fingerprint,
+            "book_fingerprint": book_fingerprint,
             "candidate_fingerprint": ref.candidate_fingerprint,
             "ingest_stage_key": ref.ingest_stage_key,
-            "plan_fingerprint": work.fingerprint,
+            "plan_fingerprint": plan_fingerprint,
             "window_size": whole_book.WINDOW_UNITS,
             "total_work_units": len(work.units),
             "response_file_sha256": response_file_sha256,
@@ -804,10 +816,16 @@ class BookOrchestrator:
             "review_status": "MINED_UNREVIEWED",
             "publish_eligible": False,
         }
+        # Progress is immutable evidence of this *observed* outcome. A retry
+        # with the same response file but a different failed/complete state
+        # must publish a distinct report, never overwrite the earlier one.
+        progress_bytes = (
+            json.dumps(ledger, ensure_ascii=False, sort_keys=True) + "\n"
+        ).encode()
+        progress_sha256 = hashlib.sha256(progress_bytes).hexdigest()
+        artifact_name = f"{plan_fingerprint}-{response_file_sha256}-{progress_sha256}.json"
         progress_path = base / "progress" / ref.book_id / artifact_name
-        acquisition._private_write(
-            progress_path, (json.dumps(ledger, ensure_ascii=False, sort_keys=True) + "\n").encode()
-        )
+        acquisition._private_write(progress_path, progress_bytes)
         export_path: Path | None = None
         if outcome == "complete":
             export = {
@@ -815,9 +833,9 @@ class BookOrchestrator:
                 "input_kind": "mined_separate_unreviewed_whole_book",
                 "review_status": "MINED_UNREVIEWED",
                 "publish_eligible": False,
-                "analysis_plan_fingerprint": work.fingerprint,
-                "progress_sha256": hashlib.sha256(progress_path.read_bytes()).hexdigest(),
-                "ingest_fingerprint": book.fingerprint,
+                "analysis_plan_fingerprint": plan_fingerprint,
+                "progress_sha256": progress_sha256,
+                "ingest_fingerprint": book_fingerprint,
                 "recovery_status": book.recovery_status,
                 "books": [
                     {

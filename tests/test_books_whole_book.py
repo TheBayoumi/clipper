@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from clipper import cli
-from clipper.books import acquisition, mining, whole_book
+from clipper.books import acquisition, mining, orchestrator as orchestrator_module, whole_book
 from clipper.books.contracts import BookText, ImageEvidence, ImageOccurrence, SourceBlock
 from clipper.books.orchestrator import BookOrchestrator, BookRunError
 from clipper.dag import DagStore
@@ -430,3 +430,204 @@ def test_evidence_field_and_origin_never_conflate_research_ocr_and_source(tmp_pa
         ]["field"]
         == "machine_ocr_text"
     )
+
+
+@pytest.mark.parametrize("target", ["ref", "dossier", "manifest", "stage"])
+@pytest.mark.parametrize("tail", [b" ", b"{"])
+def test_candidate_json_over_budget_rejects_complete_prefix_before_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    tail: bytes,
+) -> None:
+    runner, result, _ = ingested(tmp_path, paragraphs=9, with_image=False)
+    paths = {
+        "ref": result.analysis_ref_path,
+        "dossier": result.dossier_path,
+        "manifest": (
+            tmp_path
+            / "artifacts/book-candidates/manifests"
+            / f"{result.candidate.fingerprint}.json"
+        ),
+        "stage": (
+            tmp_path
+            / "artifacts/book-dag/books-ingest"
+            / result.stage_key
+            / "stage.json"
+        ),
+    }
+    target_path = paths[target]
+    max_bytes = 131_072 if target == "ref" else 2_000_000
+    original_bytes = target_path.read_bytes()
+    assert len(original_bytes) < max_bytes
+    # The original JSON is complete and valid. The unread tail lies past the
+    # old limit, so accepting the prefix would silently ignore malformed bytes.
+    padding = b" " * (max_bytes - len(original_bytes) + 1)
+    mutated = original_bytes + padding + tail
+    assert len(mutated) > max_bytes
+    target_path.write_bytes(mutated)
+    with pytest.raises(BookRunError, match="bounded input"):
+        orchestrator_module._bounded_candidate_json(target_path, max_bytes=max_bytes)
+    monkeypatch.setattr(
+        whole_book,
+        "plan_for",
+        lambda _book: pytest.fail("invalid candidate reached mining producer"),
+    )
+    with pytest.raises(BookRunError, match="candidate analysis reference"):
+        runner.mine_candidate(
+            result.analysis_ref_path,
+            responses={},
+            response_file_sha256="a" * 64,
+        )
+    assert not (tmp_path / "artifacts/book-candidates/analysis").exists()
+
+
+@pytest.mark.parametrize("max_bytes", [1, 16, 131_072, 2_000_000])
+def test_bounded_candidate_json_exact_eof_and_first_excess_byte(
+    tmp_path: Path, max_bytes: int
+) -> None:
+    """Use real file bytes, not stat sizes or single-short-read assumptions."""
+    file = tmp_path / "boundary.json"
+    valid = b"1" + b" " * (max_bytes - 1)
+    file.write_bytes(valid)
+    assert orchestrator_module._bounded_candidate_json(file, max_bytes=max_bytes) == 1
+    assert file.read_bytes() == valid
+    file.write_bytes(valid + b" ")
+    with pytest.raises(BookRunError, match="bounded input"):
+        orchestrator_module._bounded_candidate_json(file, max_bytes=max_bytes)
+    file.write_bytes(valid + b"invalid-tail")
+    with pytest.raises(BookRunError, match="bounded input"):
+        orchestrator_module._bounded_candidate_json(file, max_bytes=max_bytes)
+
+
+def test_canonical_ref_remains_readable_at_exact_json_budget(tmp_path: Path) -> None:
+    runner, result, _ = ingested(tmp_path, paragraphs=9, with_image=False)
+    path = result.analysis_ref_path
+    original = path.read_bytes()
+    path.write_bytes(original + b" " * (131_072 - len(original)))
+    assert len(path.read_bytes()) == 131_072
+    reference, book = runner.load_candidate_for_analysis(path)
+    assert reference.ingest_stage_key == result.stage_key
+    assert book.fingerprint == result.book.fingerprint
+
+
+def test_same_response_digest_failed_then_success_keeps_both_immutable_reports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, result, _ = ingested(tmp_path, paragraphs=18, with_image=False)
+    plan = whole_book.plan_for(result.book)
+    replies = responses_for(result.book)
+    digest = content_fingerprint(replies)
+    real_execute = DagStore.execute
+    transient = ValueError("synthetic one-time mining DAG failure")
+    attempts = 0
+
+    def transient_once(self, identity, operation):
+        nonlocal attempts
+        if identity.stage_name == "books.mining.unit.v1":
+            attempts += 1
+            if attempts == 1:
+                raise transient
+        return real_execute(self, identity, operation)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(DagStore, "execute", transient_once)
+        incomplete = runner.mine_candidate(
+            result.analysis_ref_path,
+            responses=replies,
+            response_file_sha256=digest,
+        )
+    assert incomplete["status"] == "incomplete"
+    assert incomplete["counts"]["failed"] == 1
+    assert incomplete["export_path"] is None
+    assert attempts == len(plan.units)
+    first_path = Path(incomplete["progress_path"])
+    first_bytes = first_path.read_bytes()
+    assert json.loads(first_bytes)["status"] == "incomplete"
+
+    hits: list[bool] = []
+
+    def track_hits(self, identity, operation):
+        output, reused = real_execute(self, identity, operation)
+        if identity.stage_name == "books.mining.unit.v1":
+            hits.append(reused)
+        return output, reused
+
+    with monkeypatch.context() as patch:
+        patch.setattr(DagStore, "execute", track_hits)
+        complete = runner.mine_candidate(
+            result.analysis_ref_path,
+            responses=replies,
+            response_file_sha256=digest,
+        )
+    assert complete["status"] == "complete"
+    assert complete["counts"]["failed"] == 0
+    assert complete["candidate_count"] == len(plan.units)
+    assert len(hits) == len(plan.units)
+    assert sum(hits) == len(plan.units) - 1
+    completed_path = Path(complete["progress_path"])
+    export_path = Path(complete["export_path"])
+    completed_bytes = completed_path.read_bytes()
+    original_export = export_path.read_bytes()
+    assert first_path != completed_path
+    assert first_path.read_bytes() == first_bytes
+    assert json.loads(completed_bytes)["status"] == "complete"
+    export = json.loads(original_export)
+    assert export["progress_sha256"] == hashlib.sha256(completed_bytes).hexdigest()
+    assert completed_path.name == export_path.name
+    assert first_path.stat().st_mode & 0o777 == 0o600
+    assert completed_path.stat().st_mode & 0o777 == 0o600
+    assert export_path.stat().st_mode & 0o777 == 0o600
+
+    hits.clear()
+    with monkeypatch.context() as patch:
+        patch.setattr(DagStore, "execute", track_hits)
+        replay = runner.mine_candidate(
+            result.analysis_ref_path,
+            responses=replies,
+            response_file_sha256=digest,
+        )
+    assert replay == complete
+    assert len(hits) == len(plan.units) and all(hits)
+    assert first_path.read_bytes() == first_bytes
+    assert completed_path.read_bytes() == completed_bytes
+    assert export_path.read_bytes() == original_export
+
+
+@pytest.mark.parametrize("paragraphs", [9, 99])
+def test_whole_book_fingerprint_traversals_are_constant_per_invocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    paragraphs: int,
+) -> None:
+    runner, result, _ = ingested(
+        tmp_path, paragraphs=paragraphs, with_image=False
+    )
+    replies = responses_for(result.book)
+    counts = {"book": 0, "plan": 0}
+    actual_book = BookText.fingerprint.fget
+    actual_plan = whole_book.WorkPlan.fingerprint.fget
+    assert actual_book is not None and actual_plan is not None
+
+    def count_book(book: BookText) -> str:
+        counts["book"] += 1
+        return actual_book(book)
+
+    def count_plan(work: whole_book.WorkPlan) -> str:
+        counts["plan"] += 1
+        return actual_plan(work)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(BookText, "fingerprint", property(count_book))
+        patch.setattr(whole_book.WorkPlan, "fingerprint", property(count_plan))
+        result_status = runner.mine_candidate(
+            result.analysis_ref_path,
+            responses=replies,
+            response_file_sha256=content_fingerprint(replies),
+        )
+    assert result_status["status"] == "complete"
+    assert result_status["total_work_units"] >= paragraphs
+    # Exact full-material traversal count is independent of the number of
+    # units; unit-local SHA operations are intentionally not restricted.
+    assert counts["book"] <= 3
+    assert counts["plan"] == 1

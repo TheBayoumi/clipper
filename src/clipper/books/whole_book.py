@@ -151,13 +151,20 @@ def plan_for(book: BookText) -> WorkPlan:
 
 
 def request_for(book: BookText, unit: WorkUnit) -> dict[str, object]:
-    """Bind model input to one exact field and the review status of that field."""
+    """Public standalone request, deriving its own verified content identity."""
+    return _request_for_identity(book, unit, book.fingerprint)
+
+
+def _request_for_identity(
+    book: BookText, unit: WorkUnit, book_fingerprint: str
+) -> dict[str, object]:
+    """Private batching helper: identity comes from plan_for(book), not caller input."""
     evidence = {
         "book_title": book.source.title,
         "book_author": book.source.author,
         "edition": book.edition_identity,
         "source_sha256": book.content_sha256,
-        "book_fingerprint": book.fingerprint,
+        "book_fingerprint": book_fingerprint,
         "anchor": unit.anchor,
         "section_id": unit.section_id,
         "source_path": unit.source_path,
