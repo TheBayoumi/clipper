@@ -974,7 +974,7 @@ def _dag_terminal_path(stage_name: str, cache_key: str) -> str:
 def _dag_legacy_terminal(stage_name: str, cache_key: str, dag_root: str) -> dict[str, Any] | None:
     """Read a complete, previously committed PASS without rewriting legacy bytes."""
     from clipper.dag import DagStore
-    from clipper.stage_contracts import content_fingerprint
+    from clipper.stage_contracts import StageIdentity, content_fingerprint
 
     if not dag_root:
         return None
@@ -988,6 +988,32 @@ def _dag_legacy_terminal(stage_name: str, cache_key: str, dag_root: str) -> dict
         return None
     identity = record.get("identity")
     if not isinstance(identity, dict) or identity.get("cache_key") != cache_key:
+        return None
+    # A legacy record's cache_key field is a claim, not an identity proof.
+    # Reconstruct canonical material without coercing JSON booleans or numbers.
+    dependencies = identity.get("dependency_output_hashes")
+    decoding = identity.get("decoding_parameters")
+    if not isinstance(dependencies, list) or not isinstance(decoding, dict):
+        return None
+    if not all(isinstance(item, str) for item in dependencies):
+        return None
+    try:
+        canonical = StageIdentity(
+            stage_name=identity["stage_name"],
+            source_hash=identity["source_hash"],
+            contract_hash=identity["contract_hash"],
+            dependency_output_hashes=tuple(dependencies),
+            model_revision=identity["model_revision"],
+            decoding_parameters=decoding,
+            relevant_policy_hash=identity["relevant_policy_hash"],
+        )
+        if (
+            canonical.stage_name != stage_name
+            or canonical.cache_key != cache_key
+            or not DagStore._matches_identity(record, canonical)
+        ):
+            return None
+    except (KeyError, TypeError, ValueError, AttributeError, RecursionError, OverflowError):
         return None
     # Output can be any valid JSON value, including null and scalar values.
     try:

@@ -611,3 +611,161 @@ def test_authoritative_background_lease_loss_or_termination_is_not_success(
     else:
         assert authority.durable is None
         assert authority.publish_calls == 0
+
+
+# Exact JSON identity semantics: ordinary dict equality aliases bool/int/float.
+_IDENTITY_TYPE_CASES = [
+    pytest.param(("flag",), 0, id="false-vs-zero"),
+    pytest.param(("enabled",), 1, id="true-vs-one"),
+    pytest.param(("temperature",), 0.0, id="integer-vs-float"),
+    pytest.param(("nested", "flag"), 0, id="nested-false-vs-zero"),
+    pytest.param(("nested", "sequence", 0), 1, id="nested-list-true-vs-one"),
+    pytest.param(("nested", "sequence", 1), 1.0, id="nested-list-integer-vs-float"),
+]
+
+
+def _typed_identity():
+    return stage_identity(
+        StageContract("identity-type-probe", {"v": 1}),
+        source_hash="synthetic",
+        decoding_parameters={
+            "flag": False,
+            "enabled": True,
+            "temperature": 0,
+            "nested": {"flag": False, "sequence": [True, 1]},
+        },
+    )
+
+
+def _mutate_record_identity(
+    record: dict[str, Any], path: tuple[str | int, ...], replacement: object
+) -> None:
+    current: Any = record["identity"]["decoding_parameters"]
+    for key in path[:-1]:
+        current = current[key]
+    current[path[-1]] = replacement
+
+
+@pytest.mark.parametrize(("path", "replacement"), _IDENTITY_TYPE_CASES)
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("output", [None, {"complete": True}], ids=["null", "object"])
+def test_local_type_altered_identity_never_reuses_valid_pass(
+    tmp_path: Path,
+    private: bool,
+    output: object,
+    path: tuple[str | int, ...],
+    replacement: object,
+) -> None:
+    identity = _typed_identity()
+    store = DagStore(
+        tmp_path,
+        private_stages=frozenset({identity.stage_name}) if private else frozenset(),
+    )
+    assert store.execute(identity, lambda: output) == (output, False)
+    record_path = store._record_path(identity)
+    output_path = store._output_path(identity)
+    original_record = record_path.read_bytes()
+    original_output = output_path.read_bytes()
+    modified: dict[str, Any] = json.loads(original_record)
+    _mutate_record_identity(modified, path, replacement)
+    # Python dict equality is exactly the dangerous false-positive.
+    assert modified["identity"] == identity.to_dict()
+    assert content_fingerprint(modified["identity"]) != content_fingerprint(identity.to_dict())
+    record_path.write_text(json.dumps(modified), encoding="utf-8")
+
+    assert store._cache_hit(identity) == (False, None)
+    assert store.cached_output(identity) is None
+    assert output_path.read_bytes() == original_output
+    if private:
+        assert store._directory(identity).stat().st_mode & 0o777 == 0o700
+        assert record_path.stat().st_mode & 0o777 == 0o600
+
+    # Restore the original synthetic bytes: valid complete records still reuse
+    # both ordinary and JSON-null outputs without invoking the operation.
+    record_path.write_bytes(original_record)
+    assert record_path.read_bytes() == original_record
+    assert store.execute(identity, lambda: pytest.fail("unexpected operation rerun")) == (
+        output,
+        True,
+    )
+    assert output_path.read_bytes() == original_output
+
+
+@pytest.mark.parametrize(("path", "replacement"), _IDENTITY_TYPE_CASES)
+@pytest.mark.parametrize("output", [None, {"complete": True}], ids=["null", "object"])
+def test_authoritative_type_altered_committed_identity_fails_closed(
+    tmp_path: Path,
+    path: tuple[str | int, ...],
+    replacement: object,
+    output: object,
+) -> None:
+    authority = FakeAuthority()
+    identity = _typed_identity()
+    store = authority.store(tmp_path)
+    assert store.execute(identity, lambda: output) == (output, False)
+    assert authority.durable is not None
+    original_bytes = json.dumps(authority.durable, sort_keys=True).encode("utf-8")
+    _mutate_record_identity(authority.durable["record"], path, replacement)
+    assert authority.durable["record"]["identity"] == identity.to_dict()
+    assert content_fingerprint(authority.durable["record"]["identity"]) != content_fingerprint(
+        identity.to_dict()
+    )
+    claims_before = authority.claim_calls
+    with pytest.raises(RuntimeError, match="committed PASS identity or output is invalid"):
+        store.cached_output(identity)
+    with pytest.raises(RuntimeError, match="committed PASS identity or output is invalid"):
+        authority.store(tmp_path).execute(
+            identity, lambda: pytest.fail("invalid committed evidence was reused")
+        )
+    assert authority.claim_calls == claims_before
+
+    authority.durable = json.loads(original_bytes)
+    assert json.dumps(authority.durable, sort_keys=True).encode("utf-8") == original_bytes
+    assert authority.store(tmp_path).execute(
+        identity, lambda: pytest.fail("valid committed output was rerun")
+    ) == (output, True)
+
+
+@pytest.mark.parametrize(("path", "replacement"), _IDENTITY_TYPE_CASES)
+@pytest.mark.parametrize("implicit", [False, True])
+def test_legacy_committed_type_alteration_does_not_block_recovery(
+    tmp_path: Path,
+    implicit: bool,
+    path: tuple[str | int, ...],
+    replacement: object,
+) -> None:
+    call, volume = _load_endpoint(tmp_path, implicit=implicit)
+    identity = _typed_identity()
+    store = DagStore(tmp_path / "legacy")
+    assert store.execute(identity, lambda: None) == (None, False)
+    volume.commit()
+    record_path = store._record_path(identity)
+    relative_record = record_path.relative_to(tmp_path).as_posix()
+    relative_output = store._output_path(identity).relative_to(tmp_path).as_posix()
+    original_record = volume.durable[relative_record]
+    original_output = volume.durable[relative_output]
+    previous_commits = volume.commit_calls
+    valid = call(_request(identity, "read"))["terminal"]
+    assert valid is not None and valid["output"] is None
+    assert volume.commit_calls == previous_commits
+
+    changed: dict[str, Any] = json.loads(original_record)
+    _mutate_record_identity(changed, path, replacement)
+    assert changed["identity"] == identity.to_dict()
+    assert content_fingerprint(changed["identity"]) != content_fingerprint(identity.to_dict())
+    changed_bytes = json.dumps(changed, sort_keys=True).encode("utf-8")
+    volume.durable[relative_record] = changed_bytes
+    record_path.write_bytes(changed_bytes)
+    assert call(_request(identity, "read")) == {"terminal": None}
+    # A type-altered legacy PASS must not falsely prevent the owner from claiming.
+    acquired = call(_request(identity, "claim", "a" * 32))
+    assert acquired["acquired"] is True
+    assert volume.durable[relative_record] == changed_bytes
+    assert volume.durable[relative_output] == original_output
+
+    # No migration or rewriting of the original complete evidence is necessary.
+    volume.durable[relative_record] = original_record
+    record_path.write_bytes(original_record)
+    assert call(_request(identity, "read"))["terminal"]["output"] is None
+    assert volume.durable[relative_record] == original_record
+    assert volume.durable[relative_output] == original_output

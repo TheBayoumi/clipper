@@ -325,7 +325,14 @@ class DagStore:
 
     @staticmethod
     def _matches_identity(record: dict[str, Any], identity: StageIdentity) -> bool:
-        return record.get("identity") == identity.to_dict()
+        """Require canonical, type-preserving JSON identity, not Python value equality."""
+        persisted = record.get("identity")
+        if not isinstance(persisted, dict):
+            return False
+        try:
+            return content_fingerprint(persisted) == content_fingerprint(identity.to_dict())
+        except (TypeError, ValueError, RecursionError, OverflowError):
+            return False
 
     @staticmethod
     def _complete_pass_record(record: dict[str, Any]) -> bool:
