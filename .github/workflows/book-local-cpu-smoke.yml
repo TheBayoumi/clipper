@@ -80,6 +80,8 @@ jobs:
           exit 0
       - name: Emit bounded exact public evidence only to job logs and summary
         if: always()
+        env:
+          SMOKE_PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: python -u scripts/book_local_cpu_smoke.py collect
       - name: Fail if real inference or completed-cache replay failed or timed out
         if: always()

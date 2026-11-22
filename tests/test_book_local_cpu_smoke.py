@@ -311,6 +311,23 @@ def test_workflow_github_context_rules_and_dormant_trigger_are_explicit() -> Non
     assert "upload-artifact" not in content
 
 
+def test_smoke_gate_model_replay_and_collect_share_push_before_sha() -> None:
+    """The always-run collector must be able to revalidate the genuine push gate."""
+    workflow_path = smoke.REPO / ".github/workflows/book-local-cpu-smoke.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["public-synthetic-only-cpu"]["steps"]
+    commands = (
+        "python scripts/book_local_cpu_smoke.py gate",
+        "python -u scripts/book_local_cpu_smoke.py run",
+        "python -u scripts/book_local_cpu_smoke.py replay",
+        "python -u scripts/book_local_cpu_smoke.py collect",
+    )
+    for command in commands:
+        matches = [step for step in steps if command in str(step.get("run", ""))]
+        assert len(matches) == 1, command
+        assert matches[0].get("env", {}).get("SMOKE_PUSH_BEFORE_SHA") == "${{ github.event.before }}"
+
+
 @pytest.mark.parametrize("request_present", [False, True])
 def test_workflow_structure_allows_absent_or_present_request_in_isolated_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request_present: bool
