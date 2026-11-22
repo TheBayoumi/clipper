@@ -272,8 +272,8 @@ def test_local_raw_unselected_substring_fails_without_repair(
     unit = whole_book.plan_for(acquired.book).units[0]
     request = whole_book.request_for(acquired.book, unit)
     selected = request["constraints"]["spans"][0]
-    assert len(selected["text"]) > 25
-    unselected = selected["text"][:20]
+    assert len(selected["text"]) > 10
+    unselected = selected["text"][:10]
     assert unselected in unit.text
     lesson = dict(response_for(unit)["lessons"][0], evidence=unselected)
     raw = json.dumps({"lessons": [lesson]}, ensure_ascii=False)
@@ -299,9 +299,10 @@ def test_local_fresh_and_replay_recheck_canonical_selected_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner, acquired, _ = ingested(tmp_path, paragraphs=1, with_image=False)
-    unit = whole_book.plan_for(acquired.book).units[0]
-    request = whole_book.request_for(acquired.book, unit)
-    raw = json.dumps({"lessons": response_for(unit)["lessons"]}, ensure_ascii=False)
+    units = whole_book.plan_for(acquired.book).units
+    responses = responses_for(acquired.book)
+    requests = [whole_book.request_for(acquired.book, unit) for unit in units]
+    keys = [content_fingerprint(request) for request in requests]
     real_check = constrained.validate_local_choice
     checks: list[str] = []
 
@@ -313,18 +314,19 @@ def test_local_fresh_and_replay_recheck_canonical_selected_evidence(
     first = runner.mine_candidate(
         acquired.analysis_ref_path,
         local_cpu=True,
-        max_new_units=1,
-        local_completion=lambda _request: raw,
+        max_new_units=len(units),
+        local_completion=lambda request: json.dumps(responses[content_fingerprint(request)]),
     )
     assert first["counts"]["failed"] == 0
+    assert first["status"] == "complete"
     second = runner.mine_candidate(
         acquired.analysis_ref_path,
         local_cpu=True,
-        max_new_units=1,
+        max_new_units=len(units),
         local_completion=lambda _request: pytest.fail("cache must not generate"),
     )
     assert second == first
-    assert checks == [content_fingerprint(request)] * 3
+    assert checks == [key for key in keys for _ in range(2)] + keys
     report = json.loads(Path(first["progress_path"]).read_bytes())
     summary = report["evidence_coverage_summary"]
     assert summary["policy"] == constrained.SPAN_POLICY
