@@ -21,7 +21,10 @@ MAX_SOURCE_CHARS = 12_000
 MAX_SPANS = 400
 MAX_FIELD_CHARS = 400
 FIELDS = ("id", "topic", "claim", "hook_angle", "visual_action", "evidence", "evidence_field")
-SPLIT = re.compile(r"(?<=[.!?;:\u3002\uFF01\uFF1F\u061B\u061F])\s+|(?<=[\u3002\uFF01\uFF1F\u061B\u061F])(?=\S)")
+SPLIT = re.compile(
+    r"(?<=[.!?;:\u3002\uFF01\uFF1F\u061B\u061F])\s+"
+    r"|(?<=[\u3002\uFF01\uFF1F\u061B\u061F])(?=\S)"
+)
 ABBREVIATIONS = frozenset({
     "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.",
     "e.g.", "i.e.", "vs.", "etc.", "fig.", "no.", "vol.",
