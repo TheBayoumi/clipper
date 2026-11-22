@@ -1082,9 +1082,7 @@ def test_original_research_observation_with_unknown_review_is_not_approved() -> 
     assert report["normalized_only_occurrences"] == 0
     assert report["reviewed_occurrences"] == 0
     extracted = extract_candidate(book.source, raw, selected, overlay=overlay)
-    observed = [
-        x for x in reading_blocks(extracted) if x.origin == "original_research_unreviewed"
-    ]
+    observed = [x for x in reading_blocks(extracted) if x.origin == "original_research_unreviewed"]
     assert len(observed) == 1
     assert observed[0].text == "Unmodified synthetic axis label"
     assert observed[0].text_provenance == "image_original"
@@ -1137,9 +1135,7 @@ def test_v2_converter_rejects_missing_inventory_evidence_and_schema_drift() -> N
     reference = _research_v2(book)
     inventory = reference["occurrence_inventory"]
     assert isinstance(inventory, list)
-    reference["observations"] = [
-        _observation(inventory[0], observation_id="synthetic-evidence")
-    ]
+    reference["observations"] = [_observation(inventory[0], observation_id="synthetic-evidence")]
     invalid = [
         {**reference, "extra_field": 1},
         {**reference, "occurrence_inventory": "wrong"},
