@@ -202,9 +202,7 @@ def validate_reply(payload: object, unit: WorkUnit) -> list[dict[str, str]]:
         )
     seen: set[str] = set()
     validated: list[dict[str, str]] = []
-    expected = {
-        "id", "topic", "claim", "hook_angle", "visual_action", "evidence", "evidence_field"
-    }
+    expected = {"id", "topic", "claim", "hook_angle", "visual_action", "evidence", "evidence_field"}
     for item in items:
         if not isinstance(item, dict) or set(item) != expected:
             raise mining.BookMiningError("analysis lesson fields are incomplete or unexpected")
@@ -223,9 +221,7 @@ def validate_reply(payload: object, unit: WorkUnit) -> list[dict[str, str]]:
 
 
 def candidate_for(book: BookText, unit: WorkUnit, item: dict[str, str]) -> dict[str, Any]:
-    local_key = content_fingerprint(
-        {"unit": unit.fingerprint, "candidate_id": item["id"]}
-    )
+    local_key = content_fingerprint({"unit": unit.fingerprint, "candidate_id": item["id"]})
     return {
         "id": f"{item['id']}-{local_key}",
         "proposed_id": item["id"],

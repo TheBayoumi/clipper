@@ -26,9 +26,7 @@ def synthetic_candidate(
 ) -> tuple[acquisition.ReviewedCandidate, object]:
     """All prose and image bytes are original synthetic fixtures, never book extracts."""
     candidate = next(
-        item
-        for item in acquisition.load_registry(BASE)
-        if item.book_id == "atomic-habits"
+        item for item in acquisition.load_registry(BASE) if item.book_id == "atomic-habits"
     )
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as z:
@@ -108,9 +106,7 @@ def synthetic_candidate(
     return selected, RecordedTransport()
 
 
-def ingested(
-    tmp_path: Path, *, paragraphs: int = 129, with_image: bool = True
-):
+def ingested(tmp_path: Path, *, paragraphs: int = 129, with_image: bool = True):
     candidate, transport = synthetic_candidate(
         tmp_path, paragraphs=paragraphs, with_image=with_image
     )
@@ -215,10 +211,14 @@ def test_title_only_ingest_handoff_more_than_128_chunks_64_candidates_and_cli(
     assert all(p.stat().st_mode & 0o777 == 0o600 for p in stage_root.glob("*/output.json"))
     original_export = export_path.read_bytes()
     original_progress = progress_path.read_bytes()
-    assert runner.mine_candidate(
-        acquired.analysis_ref_path, responses=replies,
-        response_file_sha256=hashlib.sha256(source.read_bytes()).hexdigest()
-    ) == summary
+    assert (
+        runner.mine_candidate(
+            acquired.analysis_ref_path,
+            responses=replies,
+            response_file_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+        )
+        == summary
+    )
     assert export_path.read_bytes() == original_export
     assert progress_path.read_bytes() == original_progress
 
@@ -255,9 +255,7 @@ def test_partial_missing_invalid_and_extended_response_resume(
     assert broken["counts"]["failed"] == 1
     assert broken["status"] == "incomplete"
     assert broken["export_path"] is None
-    stage_records = (
-        tmp_path / "artifacts/book-dag/books-mining-unit-v1"
-    ).glob("*/stage.json")
+    stage_records = (tmp_path / "artifacts/book-dag/books-mining-unit-v1").glob("*/stage.json")
     assert len(list(stage_records)) == 39
     corrected = dict(complete)
     corrected[keys[41]] = {"lessons": []}
@@ -288,8 +286,16 @@ def test_partial_missing_invalid_and_extended_response_resume(
 @pytest.mark.parametrize(
     "tamper",
     [
-        "book-id", "stage-key", "source", "parser", "raw", "dossier",
-        "extracted", "unsafe-path", "cross-book", "extra-field",
+        "book-id",
+        "stage-key",
+        "source",
+        "parser",
+        "raw",
+        "dossier",
+        "extracted",
+        "unsafe-path",
+        "cross-book",
+        "extra-field",
     ],
 )
 def test_candidate_reference_is_checked_before_any_mining_work(
@@ -320,12 +326,12 @@ def test_candidate_reference_is_checked_before_any_mining_work(
         ref_path = outside
     if tamper in {"book-id", "stage-key", "source", "parser", "extra-field"}:
         ref_path.write_text(json.dumps(reference))
-    monkeypatch.setattr(
-        whole_book, "plan_for", lambda _book: pytest.fail("producer was invoked")
-    )
+    monkeypatch.setattr(whole_book, "plan_for", lambda _book: pytest.fail("producer was invoked"))
     with pytest.raises(BookRunError, match="candidate analysis reference"):
         runner.mine_candidate(
-            ref_path, responses={}, response_file_sha256="a" * 64,
+            ref_path,
+            responses={},
+            response_file_sha256="a" * 64,
             book_id="psychology-of-money" if tamper == "cross-book" else None,
         )
     assert not (tmp_path / "artifacts/book-candidates/analysis").exists()
@@ -347,9 +353,7 @@ def test_zero_candidates_are_honest_not_editorial_approval(tmp_path: Path) -> No
     assert catalog["review_status"] == "MINED_UNREVIEWED"
 
 
-def test_evidence_field_and_origin_never_conflate_research_ocr_and_source(
-    tmp_path: Path
-) -> None:
+def test_evidence_field_and_origin_never_conflate_research_ocr_and_source(tmp_path: Path) -> None:
     _, acquired, _ = ingested(tmp_path, paragraphs=9)
     book = acquired.book
     original = book.blocks[-1]
@@ -361,10 +365,14 @@ def test_evidence_field_and_origin_never_conflate_research_ocr_and_source(
     )
     images = (
         ImageEvidence(
-            digest, "image/png", 5,
+            digest,
+            "image/png",
+            5,
             (
                 ImageOccurrence(
-                    "n-1", "fig-n.png", "",
+                    "n-1",
+                    "fig-n.png",
+                    "",
                     observation_id="synthetic-obs",
                     original_transcription="ORIGINAL synthetic unreviewed diagram",
                     normalized_transcription="NORMALIZED synthetic interpretation",
@@ -375,13 +383,17 @@ def test_evidence_field_and_origin_never_conflate_research_ocr_and_source(
             review_status="needs_review",
         ),
         ImageEvidence(
-            "3" * 64, "image/png", 5,
+            "3" * 64,
+            "image/png",
+            5,
             (ImageOccurrence("m-1", "fig-m.png", ""),),
             machine_transcription="OCR synthetic ambiguous words",
             review_status="machine_unreviewed",
         ),
         ImageEvidence(
-            "4" * 64, "image/png", 5,
+            "4" * 64,
+            "image/png",
+            5,
             (ImageOccurrence("g-1", "fig-g.png", ""),),
             review_status="needs_review",
         ),
@@ -412,6 +424,9 @@ def test_evidence_field_and_origin_never_conflate_research_ocr_and_source(
     assert provisional["evidence_anchor"]["field"] == "normalized_research_text"
     assert provisional["evidence_anchor"]["origin"] == "normalized_research"
     assert provisional["publish_eligible"] is False
-    assert whole_book.candidate_for(synthetic, machine, response_for(machine)["lessons"][0])[
-        "evidence_anchor"
-    ]["field"] == "machine_ocr_text"
+    assert (
+        whole_book.candidate_for(synthetic, machine, response_for(machine)["lessons"][0])[
+            "evidence_anchor"
+        ]["field"]
+        == "machine_ocr_text"
+    )

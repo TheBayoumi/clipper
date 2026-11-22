@@ -492,10 +492,17 @@ class BookOrchestrator:
             ):
                 if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
                     raise ValueError("invalid candidate analysis digest")
-            if ref_path.is_symlink() or ref_path.resolve(strict=True) != (
-                self.root / "book-candidates" / "analysis-refs" / ref.book_id
-                / f"{ref.ingest_stage_key}.json"
-            ).resolve():
+            if (
+                ref_path.is_symlink()
+                or ref_path.resolve(strict=True)
+                != (
+                    self.root
+                    / "book-candidates"
+                    / "analysis-refs"
+                    / ref.book_id
+                    / f"{ref.ingest_stage_key}.json"
+                ).resolve()
+            ):
                 raise ValueError("candidate analysis handle path is not canonical")
             candidate_values = raw_ref["candidate"]
             candidate_keys = {field.name for field in fields(acquisition.ReviewedCandidate)}
@@ -608,9 +615,7 @@ class BookOrchestrator:
             )
             if acquisition_digest != ref.acquisition_fingerprint:
                 raise ValueError("candidate acquisition fingerprint mismatch")
-            raw_path = (
-                base / "raw" / ref.raw_sha256[:2] / f"{ref.raw_sha256}.{candidate.format}"
-            )
+            raw_path = base / "raw" / ref.raw_sha256[:2] / f"{ref.raw_sha256}.{candidate.format}"
             raw_bytes = acquisition._read_bounded_file(raw_path, candidate.expected_bytes + 1)
             if (
                 len(raw_bytes) != candidate.expected_bytes
@@ -618,8 +623,7 @@ class BookOrchestrator:
             ):
                 raise ValueError("candidate pinned raw evidence changed")
             stage_path = (
-                self.root / "book-dag" / "books-ingest" / ref.ingest_stage_key
-                / "stage.json"
+                self.root / "book-dag" / "books-ingest" / ref.ingest_stage_key / "stage.json"
             )
             record = json.loads(acquisition._read_bounded_file(stage_path, 2_000_001))
             identity_data = record["identity"]
@@ -676,9 +680,7 @@ class BookOrchestrator:
         progress: list[dict[str, Any]] = []
         lessons: list[dict[str, Any]] = []
         used_ids: set[str] = set()
-        for window_index, offset in enumerate(
-            range(0, len(work.units), whole_book.WINDOW_UNITS)
-        ):
+        for window_index, offset in enumerate(range(0, len(work.units), whole_book.WINDOW_UNITS)):
             window = work.units[offset : offset + whole_book.WINDOW_UNITS]
             for unit in window:
                 request = whole_book.request_for(book, unit)
@@ -736,9 +738,7 @@ class BookOrchestrator:
                             or stored["completion"] != response_digest
                         ):
                             raise mining.BookMiningError("cached analysis unit identity mismatch")
-                        validated = whole_book.validate_reply(
-                            {"lessons": stored["lessons"]}, unit
-                        )
+                        validated = whole_book.validate_reply({"lessons": stored["lessons"]}, unit)
                         for item in validated:
                             candidate = whole_book.candidate_for(book, unit, item)
                             if candidate["id"] in used_ids:
@@ -773,9 +773,7 @@ class BookOrchestrator:
             for key in ("complete", "zero_candidate", "unresolved", "failed")
         }
         counts["skipped"] = len(work.skipped)
-        outcome = (
-            "complete" if not counts["unresolved"] and not counts["failed"] else "incomplete"
-        )
+        outcome = "complete" if not counts["unresolved"] and not counts["failed"] else "incomplete"
         base = self.root / "book-candidates" / "analysis"
         artifact_name = f"{work.fingerprint}-{response_file_sha256}.json"
         ledger = {
