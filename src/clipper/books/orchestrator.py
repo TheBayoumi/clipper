@@ -714,12 +714,17 @@ class BookOrchestrator:
                             },
                         )
 
-                        def produce() -> object:
+                        def produce(
+                            current_unit: whole_book.WorkUnit = unit,
+                            current_request: str = request_key,
+                            current_response: str | None = response_digest,
+                            current_answer: object = answer,
+                        ) -> object:
                             return {
-                                "unit": unit.fingerprint,
-                                "request": request_key,
-                                "completion": response_digest,
-                                "lessons": whole_book.validate_reply(answer, unit),
+                                "unit": current_unit.fingerprint,
+                                "request": current_request,
+                                "completion": current_response,
+                                "lessons": whole_book.validate_reply(current_answer, current_unit),
                             }
 
                         stored, _cached = self.dag.execute(identity, produce)

@@ -6,12 +6,13 @@ import hashlib
 import io
 import json
 import zipfile
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
+
 import pytest
 
 from clipper import cli
-from clipper.books import acquisition, faithful, mining, whole_book
+from clipper.books import acquisition, mining, whole_book
 from clipper.books.contracts import BookText, ImageEvidence, ImageOccurrence, SourceBlock
 from clipper.books.orchestrator import BookOrchestrator, BookRunError
 from clipper.dag import DagStore
