@@ -971,9 +971,7 @@ def _dag_terminal_path(stage_name: str, cache_key: str) -> str:
     return f"_dag-authority/{key}.json"
 
 
-def _dag_legacy_terminal(
-    stage_name: str, cache_key: str, dag_root: str
-) -> dict[str, Any] | None:
+def _dag_legacy_terminal(stage_name: str, cache_key: str, dag_root: str) -> dict[str, Any] | None:
     """Read a complete, previously committed PASS without rewriting legacy bytes."""
     from clipper.dag import DagStore
     from clipper.stage_contracts import content_fingerprint
@@ -1011,9 +1009,11 @@ def _dag_committed_terminal(
 ) -> dict[str, Any] | None:
     stored = _durable_json(_dag_terminal_path(stage_name, cache_key))
     if stored is not None:
-        if stored.get("schema") != _TERMINAL_SCHEMA or not isinstance(
-            stored.get("record"), dict
-        ) or "output" not in stored:
+        if (
+            stored.get("schema") != _TERMINAL_SCHEMA
+            or not isinstance(stored.get("record"), dict)
+            or "output" not in stored
+        ):
             raise RuntimeError("DAG authoritative terminal envelope is malformed")
         return {"record": stored["record"], "output": stored["output"]}
     return _dag_legacy_terminal(stage_name, cache_key, dag_root)
@@ -1124,8 +1124,7 @@ def dag_execution_lease(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("DAG terminal publication record is invalid")
     identity_data = record.get("identity")
     if not isinstance(identity_data, dict) or (
-        identity_data.get("stage_name") != stage_name
-        or identity_data.get("cache_key") != cache_key
+        identity_data.get("stage_name") != stage_name or identity_data.get("cache_key") != cache_key
     ):
         raise ValueError("DAG terminal publication identity mismatch")
     if record.get("attempt_count") != counter:
@@ -1348,9 +1347,7 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
                 raise RuntimeError("DAG committed terminal response is malformed")
             return value
 
-        def publish_terminal(
-            identity: Any, owner: str, record: Any, output: object
-        ) -> bool:
+        def publish_terminal(identity: Any, owner: str, record: Any, output: object) -> bool:
             response = lease_action(
                 "publish", identity, owner, record=record.to_dict(), output=output
             )

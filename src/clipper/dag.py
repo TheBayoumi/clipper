@@ -105,9 +105,7 @@ class DagLeaseCoordinator:
     commit: Callable[[], None]
     reload: Callable[[], None]
     read_committed: Callable[[StageIdentity], dict[str, Any] | None] | None = None
-    publish_terminal: (
-        Callable[[StageIdentity, str, StageRecord, object], bool] | None
-    ) = None
+    publish_terminal: Callable[[StageIdentity, str, StageRecord, object], bool] | None = None
 
 
 class DagStore:
@@ -250,13 +248,9 @@ class DagStore:
     def _lock_file(descriptor: int, *, acquire: bool) -> None:
         if os.name == "nt":
             os.lseek(descriptor, 0, os.SEEK_SET)
-            msvcrt.locking(
-                descriptor, msvcrt.LK_NBLCK if acquire else msvcrt.LK_UNLCK, 1
-            )
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK if acquire else msvcrt.LK_UNLCK, 1)
         else:
-            fcntl.flock(
-                descriptor, (fcntl.LOCK_EX | fcntl.LOCK_NB) if acquire else fcntl.LOCK_UN
-            )
+            fcntl.flock(descriptor, (fcntl.LOCK_EX | fcntl.LOCK_NB) if acquire else fcntl.LOCK_UN)
 
     @contextmanager
     def _write_lock(
@@ -416,9 +410,7 @@ class DagStore:
             if identity.cache_key in self._pending_passes:
                 return False, None
             try:
-                validated = self._validated_pass(
-                    identity, self._read_record_payload(identity)
-                )
+                validated = self._validated_pass(identity, self._read_record_payload(identity))
             except OSError:
                 return False, None
             return (True, validated[0]) if validated is not None else (False, None)

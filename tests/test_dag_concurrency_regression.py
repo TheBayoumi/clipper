@@ -670,12 +670,18 @@ def test_os_file_lock_is_exclusive_across_processes_and_released(
         path = store._directory(identity) / ".write-lock-file"
         blocked = subprocess.run(
             [sys.executable, "-c", other, str(path)],
-            capture_output=True, text=True, timeout=5, check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
         )
         assert blocked.returncode == 1, blocked.stderr
     acquired = subprocess.run(
         [sys.executable, "-c", other, str(path)],
-        capture_output=True, text=True, timeout=5, check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
     )
     assert acquired.returncode == 0, acquired.stderr
 

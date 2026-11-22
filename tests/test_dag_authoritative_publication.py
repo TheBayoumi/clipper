@@ -344,14 +344,16 @@ def _request(identity, action: str, owner: str = "", **extras):
 
 
 @pytest.mark.parametrize("implicit", [False, True])
-def test_endpoint_committed_read_does_not_flush_dirty_mount(
-    tmp_path: Path, implicit: bool
-) -> None:
+def test_endpoint_committed_read_does_not_flush_dirty_mount(tmp_path: Path, implicit: bool) -> None:
     call, volume = _load_endpoint(tmp_path, implicit=implicit)
     identity = _identity()
-    dirty = tmp_path / "_dag-authority" / (
-        hashlib.sha256(f"{identity.stage_name}\0{identity.cache_key}".encode()).hexdigest()
-        + ".json"
+    dirty = (
+        tmp_path
+        / "_dag-authority"
+        / (
+            hashlib.sha256(f"{identity.stage_name}\0{identity.cache_key}".encode()).hexdigest()
+            + ".json"
+        )
     )
     dirty.parent.mkdir()
     dirty.write_text('{"schema":"clipper-dag-authoritative-terminal-v1","record":{},"output":5}')
@@ -383,18 +385,26 @@ def test_endpoint_fences_terminal_publication_against_owner_and_expiry(
         completed_at="done",
         output_fingerprint=hashlib.sha256(
             json.dumps(output, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest() if terminal_type == "PASS" else None,
+        ).hexdigest()
+        if terminal_type == "PASS"
+        else None,
         usage={},
         cost_usd=0.0,
         error_type="TestFailure" if terminal_type == "FAILED" else None,
         error="synthetic failure" if terminal_type == "FAILED" else None,
     )
-    assert call(_request(identity, "publish", "b" * 32, record=record.to_dict(), output=output))[
-        "published"
-    ] is False
-    assert call(_request(identity, "publish", owner, record=record.to_dict(), output=output))[
-        "published"
-    ] is True
+    assert (
+        call(_request(identity, "publish", "b" * 32, record=record.to_dict(), output=output))[
+            "published"
+        ]
+        is False
+    )
+    assert (
+        call(_request(identity, "publish", owner, record=record.to_dict(), output=output))[
+            "published"
+        ]
+        is True
+    )
     committed = call(_request(identity, "read"))["terminal"]
     assert committed["record"] == record.to_dict()
     assert committed["output"] == output
