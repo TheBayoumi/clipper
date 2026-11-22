@@ -180,4 +180,90 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                 ),
                 flush=True,
             )
+
+        # Diagnostic-only: test the actual pinned adapter with unconstrained
+        # schema evidence spelling, not a simulated codepoint tokenizer.
+        # This cannot certify that the production exact-choice overlay works.
+        _, integration = constrained._decoder()
+        import lmformatenforcer
+
+        long_sources = {
+            "cjk_400": ("漢字語彙" * 100)[:400],
+            "arabic_400": ("العربيةبيانات" * 40)[:400],
+        }
+        for language, source in long_sources.items():
+            request = _request(source)
+            schema = constrained.decode_schema(request)
+            lesson = _canonical_reply(source, request)
+            for spelling, ascii_only in (("direct", False), ("escaped", True)):
+                output = json.dumps(
+                    json.loads(lesson), ensure_ascii=ascii_only, separators=(",", ":")
+                )
+                tokens = tokenizer.encode(output, add_special_tokens=False)
+                adapter = integration.build_transformers_prefix_allowed_tokens_fn(
+                    constrained._tokenizer_data(tokenizer, scripting.SCRIPT_REVISION),
+                    lmformatenforcer.JsonSchemaParser(schema),
+                )
+                prefix = [tokenizer.eos_token_id]
+                rejected_at: int | None = None
+                t0 = time.perf_counter()
+                for i, token in enumerate(tokens[:961]):
+                    if token not in adapter(0, torch.tensor(prefix)):
+                        rejected_at = i
+                        break
+                    prefix.append(token)
+                seconds = time.perf_counter() - t0
+                accepted = (
+                    rejected_at is None
+                    and len(tokens) <= 960
+                    and tokenizer.eos_token_id in adapter(0, torch.tensor(prefix))
+                )
+                assert tokenizer.decode(
+                    tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                ) == output
+                print(
+                    "QWEN_TOKENIZER_ONLY_BUDGET_DIAGNOSTIC "
+                    + json.dumps(
+                        {
+                            "source": language,
+                            "spelling": spelling,
+                            "adapter": "actual pinned tokenizer + released JsonSchemaParser",
+                            "evidence_chars": len(source),
+                            "wire_bytes": len(output.encode("utf-8")),
+                            "whole_reply_tokens": len(tokens),
+                            "fits_960": len(tokens) <= 960,
+                            "canonical_token_path_accepted": accepted,
+                            "first_rejected_token": rejected_at,
+                            "prefix_check_seconds": round(seconds, 3),
+                            "weights_loaded": False,
+                            "generate_called": False,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+        for count, span_length in ((24, 390), (400, 12)):
+            fragments = [
+                (f"{i:03d}" + "漢字" * span_length)[:span_length]
+                for i in range(count)
+            ]
+            pool = constrained.span_pool(" ".join(
+                fragment + "." for fragment in fragments
+            ), "native_text")
+            print(
+                "QWEN_TOKENIZER_ONLY_POOL_DIAGNOSTIC "
+                + json.dumps(
+                    {
+                        "source_fragment_count": count,
+                        "span_length_target": span_length,
+                        "selected_span_count": len(pool["spans"]),
+                        "source_chars": pool["source_chars"],
+                        "excluded_fragment_chars": pool["coverage"]["omitted_fragment_chars"],
+                        "max_spans": constrained.MAX_SPANS,
+                        "weights_loaded": False,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
         constrained._tokenizer_data.cache_clear()
