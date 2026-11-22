@@ -177,7 +177,7 @@ def test_bounded_reconstructable_log_evidence_ignores_unrelated_paths(tmp_path: 
         / "private/book-candidates/analysis/completions"
         / smoke.BOOK_ID
         / ("a" * 64)
-        / f'{"b" * 64}.txt'
+        / f"{'b' * 64}.txt"
     )
     raw.parent.mkdir(parents=True)
     raw.write_bytes(b'{"lessons": []}\n')

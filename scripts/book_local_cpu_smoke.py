@@ -160,9 +160,7 @@ def gate() -> dict[str, str]:
     if _git("rev-parse", "HEAD") != trigger:
         raise SmokeError("checked-out trigger SHA differs from GitHub push SHA")
     parents = tuple(_git("show", "--format=%P", "--no-patch", "HEAD").split())
-    changes = tuple(
-        _git("diff-tree", "--no-commit-id", "--name-status", "-r", "HEAD").splitlines()
-    )
+    changes = tuple(_git("diff-tree", "--no-commit-id", "--name-status", "-r", "HEAD").splitlines())
     reviewed_sha = validate_request(
         record,
         ref=ref,
@@ -236,9 +234,11 @@ def marker(root: Path, phase: str, **fields: object) -> None:
 
 def _epub(paragraphs: tuple[str, str]) -> bytes:
     """Build one-spine deterministic EPUB without headings or a real book claim."""
-    content = "<html><body>" + "".join(
-        f"<p>{html.escape(paragraph)}</p>" for paragraph in paragraphs
-    ) + "</body></html>"
+    content = (
+        "<html><body>"
+        + "".join(f"<p>{html.escape(paragraph)}</p>" for paragraph in paragraphs)
+        + "</body></html>"
+    )
     package = (
         '<package xmlns:dc="http://purl.org/dc/elements/1.1/" unique-identifier="uid">'
         f"<metadata><dc:title>{LABEL}</dc:title>"
@@ -459,8 +459,7 @@ def _capture_paths(root: Path) -> dict[str, str]:
     result: dict[str, str] = {}
     for path in _allowed_files(root):
         if "/analysis/completions/" in path.as_posix() or (
-            "/analysis/progress/" in path.as_posix()
-            or "/analysis/exports/" in path.as_posix()
+            "/analysis/progress/" in path.as_posix() or "/analysis/exports/" in path.as_posix()
         ):
             result[str(path.relative_to(root))] = _digest(path.read_bytes())
     return result
