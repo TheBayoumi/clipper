@@ -206,9 +206,10 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
 
         # Test admission BEFORE consuming a token, not parser rejection after.
         # Token 330 is the pinned tokenizer's merged space + closing quote.
-        assert tokenizer.decode(
-            [330], skip_special_tokens=True, clean_up_tokenization_spaces=False
-        ) == ' "'
+        assert (
+            tokenizer.decode([330], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+            == ' "'
+        )
         blank_request = _request("A synthetic exact source sentence.")
         template = _canonical_reply("A synthetic exact source sentence.", blank_request)
         for creative in ("topic", "claim", "hook_angle", "visual_action"):
@@ -217,19 +218,19 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
             for blank_count in (0, 1, 2):
                 partial = template.split(marker, 1)[0] + marker + " " * blank_count
                 prefix_tokens = tokenizer.encode(partial, add_special_tokens=False)
-                assert tokenizer.decode(
-                    prefix_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                ) == partial
-                fresh = constrained.prefix_for(
-                    blank_request, tokenizer, scripting.SCRIPT_REVISION
+                assert (
+                    tokenizer.decode(
+                        prefix_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                    )
+                    == partial
                 )
+                fresh = constrained.prefix_for(blank_request, tokenizer, scripting.SCRIPT_REVISION)
                 allowed = fresh(0, torch.tensor([tokenizer.eos_token_id, *prefix_tokens]))
                 assert 330 not in allowed, (creative, blank_count)
                 assert tokenizer.eos_token_id not in allowed
                 if blank_count == 0:
                     good = tokenizer.encode(partial + "meaningful", add_special_tokens=False)
                     assert 330 in fresh(0, torch.tensor([tokenizer.eos_token_id, *good]))
-
 
         constrained._tokenizer_data.cache_clear()
         cases = {
@@ -466,10 +467,9 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                 enable_thinking=False,
             )
             assert len(prompt_ids) + 960 <= effective_context
-            assert (
-                constrained.check_prompt_context(full_request, tokenizer, effective_context)
-                == len(prompt_ids)
-            )
+            assert constrained.check_prompt_context(
+                full_request, tokenizer, effective_context
+            ) == len(prompt_ids)
             print(
                 "QWEN_FULL_CANONICAL_PROMPT_BUDGET "
                 + json.dumps(
@@ -526,9 +526,7 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                     )
                     allowed = token_count <= 960 and raw_bytes <= 16_384
                     fresh_start = time.perf_counter()
-                    callback = constrained.prefix_for(
-                        request, tokenizer, scripting.SCRIPT_REVISION
-                    )
+                    callback = constrained.prefix_for(request, tokenizer, scripting.SCRIPT_REVISION)
                     fresh_path_setup = time.perf_counter() - fresh_start
                     if allowed:
                         prefix = [tokenizer.eos_token_id]
@@ -663,12 +661,13 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
         wide_tokens = tokenizer.encode(wide_raw, add_special_tokens=False)
         assert len(wide_tokens) <= 960
         assert len(wide_raw.encode("utf-8")) <= 16_384
-        assert tokenizer.decode(
-            wide_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
-        ) == wide_raw
-        wide_callback = constrained.prefix_for(
-            wide_request, tokenizer, scripting.SCRIPT_REVISION
+        assert (
+            tokenizer.decode(
+                wide_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
+            )
+            == wide_raw
         )
+        wide_callback = constrained.prefix_for(wide_request, tokenizer, scripting.SCRIPT_REVISION)
         wide_prefix = [tokenizer.eos_token_id]
         wide_start = time.perf_counter()
         for index, token in enumerate(wide_tokens):

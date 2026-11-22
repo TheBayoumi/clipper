@@ -417,7 +417,6 @@ def _public_cpu_smoke_phase(phase: str) -> None:
             path.chmod(0o600)
 
 
-
 @lru_cache(maxsize=1)
 def _public_book_context() -> tuple[Any, int]:
     """Validate pinned public-only tokenizer/config before loading book weights."""
@@ -486,9 +485,7 @@ def _public_book_context() -> tuple[Any, int]:
             or tokenizer_limit != 131_072
         ):
             raise PinnedQwenSnapshotError("pinned public context limits mismatch")
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            snapshot, local_files_only=True
-        )
+        tokenizer = transformers.AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
         if tokenizer.model_max_length != tokenizer_limit:
             raise PinnedQwenSnapshotError("pinned tokenizer context metadata mismatch")
         return tokenizer, min(model_limit, tokenizer_limit)

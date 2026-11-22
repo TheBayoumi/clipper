@@ -101,10 +101,12 @@ def _boundaries(text: str) -> tuple[list[tuple[int, int]], int, int]:
             # capitalized phrase, unlike the internal abbreviation e.g.
             if previous_token.casefold() == "etc." and follows_name:
                 ordinary_abbreviation = False
-            if ordinary_abbreviation or numbered or (
-                initials and (
-                    previous_token.count(".") > 1
-                    or (follows_name and name_left_context)
+            if (
+                ordinary_abbreviation
+                or numbered
+                or (
+                    initials
+                    and (previous_token.count(".") > 1 or (follows_name and name_left_context))
                 )
             ):
                 prevented += 1

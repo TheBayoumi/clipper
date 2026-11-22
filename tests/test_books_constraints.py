@@ -726,9 +726,7 @@ def test_released_token_enforcer_cannot_cache_away_choice_restrictions() -> None
         ("السؤال؟ الجواب؛ ثم غادر.", 3),
     ],
 )
-def test_contextual_initial_and_quoted_punctuation_boundaries(
-    source: str, expected: int
-) -> None:
+def test_contextual_initial_and_quoted_punctuation_boundaries(source: str, expected: int) -> None:
     pool = constrained.span_pool(source, "native_text")
     assert len(pool["spans"]) == expected
     coverage = pool["coverage"]
@@ -743,6 +741,7 @@ def test_contextual_initial_and_quoted_punctuation_boundaries(
 def test_full_chat_context_budget_fail_closed_with_synthetic_tokenizer() -> None:
     request = _request("Synthetic source.")
     request["max_new_tokens"] = 960
+
     class SyntheticTokenizer:
         def __init__(self, prompt_length: int) -> None:
             self.prompt_length = prompt_length
@@ -756,10 +755,7 @@ def test_full_chat_context_budget_fail_closed_with_synthetic_tokenizer() -> None
             }
             return [1] * self.prompt_length
 
-    assert (
-        constrained.check_prompt_context(request, SyntheticTokenizer(40_000), 40_960)
-        == 40_000
-    )
+    assert constrained.check_prompt_context(request, SyntheticTokenizer(40_000), 40_960) == 40_000
     with pytest.raises(constrained.ConstraintError, match="exceeds context"):
         constrained.check_prompt_context(request, SyntheticTokenizer(40_001), 40_960)
     with pytest.raises(constrained.ConstraintError, match="pinned book prompt budget"):
