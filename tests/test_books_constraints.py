@@ -701,6 +701,4 @@ def test_released_token_enforcer_cannot_cache_away_choice_restrictions() -> None
     first_lesson, second_lesson = lesson(first), lesson(second)
     assert reachable(json.dumps({"lessons": [first_lesson, second_lesson]}))
     assert not reachable(json.dumps({"lessons": [first_lesson, first_lesson]}))
-    assert not reachable(
-        json.dumps({"lessons": [{**first_lesson, "topic": "  "}]})
-    )
+    assert not reachable(json.dumps({"lessons": [{**first_lesson, "topic": "  "}]}))

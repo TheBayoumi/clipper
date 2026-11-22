@@ -468,7 +468,7 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                     tokens = tokenizer.encode(raw, add_special_tokens=False)
                     token_count = len(tokens)
                     raw_bytes = len(raw.encode("utf-8"))
-                    assert (
+                    wire_roundtrip = (
                         tokenizer.decode(
                             tokens,
                             skip_special_tokens=True,
@@ -476,6 +476,20 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                         )
                         == raw
                     )
+                    if not wire_roundtrip:
+                        # The actual tokenizer NFC-normalizes direct decomposed
+                        # accents. Never accept a changed source or post-repair it;
+                        # the explicit JSON Unicode-escape spelling stays exact.
+                        assert case_name == "mixed_emoji_combining" and not ascii_only
+                        print(
+                            "QWEN_NONEXACT_CANONICAL_WIRE_REJECTED "
+                            + json.dumps(
+                                {"case": case_name, "lesson_count": count, "ascii": ascii_only},
+                                sort_keys=True,
+                            ),
+                            flush=True,
+                        )
+                        continue
                     assert (
                         whole_book.load_strict_reply(raw)["lessons"] == (json.loads(raw)["lessons"])
                     )
@@ -544,9 +558,12 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                             flush=True,
                         )
                     if (
-                        case_name in {"latin", "arabic", "bounded_350_spans", "bounded_400_spans"}
-                        and count == 1
-                        and not ascii_only
+                        (
+                            case_name in {"latin", "arabic", "bounded_350_spans", "bounded_400_spans"}
+                            and count == 1
+                            and not ascii_only
+                        )
+                        or (case_name == "mixed_emoji_combining" and count == 1 and ascii_only)
                     ):
                         assert allowed and complete
             if case_name == "cjk":
