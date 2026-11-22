@@ -74,9 +74,8 @@ def _boundaries(text: str) -> tuple[list[tuple[int, int]], int, int]:
             # Single initials require a plausible following name; a. a.
             # must remain two independent clauses, not one overlong string.
             follows_name = bool(next_token and next_token[0][0].isupper())
-            if (
-                previous_token.casefold() in ABBREVIATIONS
-                or (initials and (previous_token.count(".") > 1 or follows_name))
+            if previous_token.casefold() in ABBREVIATIONS or (
+                initials and (previous_token.count(".") > 1 or follows_name)
             ):
                 prevented += 1
                 continue
