@@ -389,6 +389,12 @@ def _pinned_qwen_snapshot() -> Path:
         raise PinnedQwenSnapshotError("pinned Qwen snapshot download failed") from exc
 
 
+def _public_cpu_smoke_phase(phase: str) -> None:
+    """Optional public-only phase markers, never prompts, tokens, or credentials."""
+    if os.environ.get("CLIPPER_PUBLIC_BOOK_CPU_SMOKE") == "1":
+        print(f"PUBLIC_BOOK_CPU_MODEL_PHASE {phase}", flush=True)
+
+
 @lru_cache(maxsize=1)
 def _script_pipeline() -> tuple[Any, Any]:
     """Lazy, single initialization using an exact local Qwen snapshot path."""
@@ -399,12 +405,18 @@ def _script_pipeline() -> tuple[Any, Any]:
         raise NicheVideoError(
             "Install the [niche-models] runtime for open-weight inference"
         ) from exc
+    _public_cpu_smoke_phase("pinned_snapshot_resolution_start")
     snapshot = _pinned_qwen_snapshot()
+    _public_cpu_smoke_phase("pinned_snapshot_resolution_complete")
     torch.set_num_threads(min(4, os.cpu_count() or 1))
+    _public_cpu_smoke_phase("tokenizer_initialization_start")
     tokenizer = transformers.AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
+    _public_cpu_smoke_phase("tokenizer_initialization_complete")
+    _public_cpu_smoke_phase("cpu_weight_loading_start")
     model = transformers.AutoModelForCausalLM.from_pretrained(
         snapshot, local_files_only=True, dtype="auto"
     ).eval()
+    _public_cpu_smoke_phase("cpu_weight_loading_complete")
     return model, tokenizer
 
 
@@ -422,6 +434,7 @@ def _run_pinned_qwen(request: dict[str, object], *, normalize_script: bool) -> s
         return_dict=True,
         return_tensors="pt",
     )
+    _public_cpu_smoke_phase("real_generation_start")
     with torch.inference_mode():
         output = model.generate(
             **inputs,
@@ -429,6 +442,7 @@ def _run_pinned_qwen(request: dict[str, object], *, normalize_script: bool) -> s
             **QWEN_GENERATION_SETTINGS,
             pad_token_id=tokenizer.eos_token_id,
         )
+    _public_cpu_smoke_phase("real_generation_complete")
     output_ids = output[0][inputs["input_ids"].shape[-1] :]
     result: str = tokenizer.decode(output_ids, skip_special_tokens=True)
     if normalize_script:
