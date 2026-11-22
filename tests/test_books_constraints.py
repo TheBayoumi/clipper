@@ -530,7 +530,7 @@ def test_incomplete_generation_raw_is_not_a_valid_completion() -> None:
         ("See No. 5 for the details. Then leave.", 2),
         ("Dr. Ada saw A. Smith. Then she left.", 2),
         ("U.S. trials succeeded. Dr. Lin agreed.", 2),
-        ("第一句。第二句！第三句？", 3),
+        ("第一句。第二句\uFF01第三句\uFF1F", 3),
         ("سؤال؟ جواب. ثم غادر.", 3),
     ],
 )

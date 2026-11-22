@@ -556,9 +556,12 @@ def _literal_evidence_guard(parser: Any, spans: list[dict[str, object]], base_ty
                         selected_id is not None and pairs[selected_id] != selected_quote
                     ):
                         raise ConstraintError("source ID/evidence pair mismatch")
-                elif in_candidate and field in CREATIVE_FIELDS:
-                    if not json.loads('"' + value_buffer + '"').strip():
-                        raise ConstraintError("empty creative field")
+                elif (
+                    in_candidate
+                    and field in CREATIVE_FIELDS
+                    and not json.loads('"' + value_buffer + '"').strip()
+                ):
+                    raise ConstraintError("empty creative field")
                 active = None
                 in_string = False
                 field = ""
