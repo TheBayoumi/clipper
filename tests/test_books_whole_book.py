@@ -1001,7 +1001,7 @@ def test_cli_recorded_and_opt_in_cpu_modes_are_exclusive(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+    _runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
     source = tmp_path / "responses.json"
     replies = responses_for(acquired.book, count=0)
     _write_responses(source, replies)

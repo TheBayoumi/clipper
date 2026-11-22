@@ -894,15 +894,20 @@ class BookOrchestrator:
                     generation_key = identity_local.cache_key
                     tried = 0
 
-                    def generate() -> object:
+                    def generate(
+                        current_identity: StageIdentity = identity_local,
+                        current_request: dict[str, object] = request,
+                        current_request_key: str = request_key,
+                        current_unit: whole_book.WorkUnit = unit,
+                    ) -> object:
                         nonlocal tried
                         tried += 1
                         return self._produce_local_unit(
                             ref=ref,
-                            identity=identity_local,
-                            request=request,
-                            request_sha256=request_key,
-                            unit=unit,
+                            identity=current_identity,
+                            request=current_request,
+                            request_sha256=current_request_key,
+                            unit=current_unit,
                             producer_fingerprint=producer_fingerprint,
                             completion=producer,
                         )
@@ -940,7 +945,8 @@ class BookOrchestrator:
                     finally:
                         local_attempts += tried
                 else:
-                    assert responses is not None
+                    if responses is None:
+                        raise BookRunError("recorded response mapping missing")
                     answer = whole_book.recorded_answer(responses, request)
                     has_answer = request_key in responses
                 if has_answer:
