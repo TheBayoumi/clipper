@@ -187,8 +187,38 @@ fixtures are synthetic and do not contain private book sources or research
 sidecars. Offline evidence import is a separate owner-controlled action, not
 a prerequisite for inspecting the code.
 
-See [candidate acquisition and faithful ingest](docs/book-candidate-acquisition.md),
-[offline ingest and mining limits](docs/book-pipeline-phase3.md),
+An ingest result now exposes `analysis_ref_path`: a private versioned,
+immutable handle to that exact extraction and dossier, not a request to copy
+source text into the legacy `book-text/<book-id>.json` path. After preparing
+**local recorded** response JSON for this exact work plan, offline analysis
+is explicit:
+
+```bash
+clipper books ingest --title "Atomic Habits" --offline --artifact-root artifacts/books
+clipper books mine --candidate-ref artifacts/books/book-candidates/analysis-refs/atomic-habits/EXACT_STAGE_KEY.json \
+  --book-id atomic-habits --responses /local/recorded-responses.json \
+  --artifact-root artifacts/books
+```
+
+The first command can exit **2** for `incomplete_recovery`; it still emits
+the exact `analysis_ref_path` on successful artifact creation. Substitute
+the actual returned path, not a guessed or most-recent file. The second
+command never fetches content or loads a model. Per-unit recorded response
+keys must match the canonical SHA-256 of the requested field/provenance.
+The new path accounts for all ordered native and image evidence units across
+bounded 32-unit windows, with separate statuses for zero candidates, gaps,
+failed and unresolved work. Missing replies yield an incomplete progress
+report (exit 2), not a partial catalog claimed complete. Successful unit
+DAG records are reusable when later responses are supplied; new mappings
+do not invalidate previously used identical completions. It produces
+private, separate `MINED_UNREVIEWED` candidate and progress artifacts;
+no editorial claim is approved, no lesson count is targeted, and no
+downstream stage runs.
+
+The legacy explicit-owner-file ingest and `books mine --book-id ...`
+interfaces remain available. See [whole-book recorded analysis and handoff](docs/book-whole-analysis.md),
+[candidate acquisition and faithful ingest](docs/book-candidate-acquisition.md),
+[offline ingest and legacy mining limits](docs/book-pipeline-phase3.md),
 [recorded narration and unported stages](docs/book-pipeline-phase1b.md) and
 [creative review trust boundaries](docs/book-creative-review.md).
 Direction, visuals, assembly and review remain unported/approval-gated; no

@@ -465,3 +465,43 @@ There is no guarantee for an unavailable coordinator, uncooperative renewal
 thread, unsupported Modal RPC payload size or cross-version running writers.
 Unconfirmed publication is not transformed into success. No source-fidelity,
 private-runtime or publication approval is implied by these tests.
+
+## Exact candidate-to-whole-book analysis handoff (current additive path)
+
+The canonical title-only `ingest_candidate` result now has an
+`analysis_ref_path`. Its CLI JSON prints the same field alongside the
+existing immutable `extracted` and dossier identities. The versioned
+`clipper-book-candidate-analysis-ref-v1` artifact binds the selected
+candidate, acquisition and source fingerprints, pinned raw bytes, exact
+ingest DAG stage, extracted file SHA-256, dossier SHA-256, parser and
+configuration fingerprint, book fingerprint and recovery status. It is
+published privately and immutably next to the original extraction; it does
+**not** rewrite the old `book-text` snapshot or source evidence.
+
+```bash
+clipper books ingest --title "Atomic Habits" --offline --artifact-root artifacts/books
+clipper books mine \
+  --candidate-ref artifacts/books/book-candidates/analysis-refs/atomic-habits/EXACT_STAGE_KEY.json \
+  --book-id atomic-habits --responses /local/recorded-responses.json \
+  --artifact-root artifacts/books
+```
+
+Use the exact `analysis_ref_path` returned by the first command. The
+`--offline` option requires a preexisting pinned raw cache and does not
+download assets. The synthetic fixture tests invoke an injected HTTP
+transport only; this milestone did **not** fetch a registry candidate,
+run a model or ingest private research. The `--candidate-ref` branch
+of `books mine` reads the exact handle, verifies the actual extraction,
+dossier, acquisition manifest, raw bytes and ingest DAG PASS before
+considering any recorded response. Missing, mismatched, cross-book,
+corrupted or unsafe handles fail closed. It never picks a latest edition.
+Older owner-file ingest and `books mine --book-id` still use their
+existing `book-text/<book-id>.json` path and legacy per-book limits.
+
+Refer to [whole-book analysis](book-whole-analysis.md) for the field-level
+source/research/OCR provenance contract, bounded windows, response mapping,
+zero-candidate outcomes, progress/restart, private output paths and
+unported downstream boundaries. The `incomplete_recovery` status, parser
+and OCR source identities, rights uncertainty and original/reviewed
+evidence remain unchanged. A completed eligible-unit analysis is **not**
+a certified complete edition or an editorially approved episode.

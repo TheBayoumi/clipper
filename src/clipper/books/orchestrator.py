@@ -6,14 +6,29 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
 from clipper.dag import DagStore
-from clipper.stage_contracts import content_fingerprint, stage_identity
+from clipper.stage_contracts import (
+    StageContract,
+    StageIdentity,
+    content_fingerprint,
+    stage_identity,
+)
 
-from . import acquisition, faithful, ingest, mining, narration, scripting, selection, storyboards
+from . import (
+    acquisition,
+    faithful,
+    ingest,
+    mining,
+    narration,
+    scripting,
+    selection,
+    storyboards,
+    whole_book,
+)
 from .contracts import (
     BOOK_STAGE_CONTRACTS,
     BookRef,
@@ -61,6 +76,7 @@ class CandidateIngestResult:
     stage_key: str
     extracted_path: Path
     dossier_path: Path
+    analysis_ref_path: Path
 
 
 def _book_text_cached(value: object) -> BookText:
@@ -402,6 +418,33 @@ class BookOrchestrator:
         acquisition._private_write(
             dossier_path, (json.dumps(dossier, sort_keys=True, indent=2) + "\n").encode()
         )
+        analysis_ref_path = (
+            self.root
+            / "book-candidates"
+            / "analysis-refs"
+            / acquired.candidate.book_id
+            / f"{identity.cache_key}.json"
+        )
+        analysis_ref = whole_book.CandidateAnalysisRef(
+            schema=whole_book.REF_SCHEMA,
+            book_id=acquired.candidate.book_id,
+            candidate_fingerprint=acquired.candidate.fingerprint,
+            candidate=asdict(acquired.candidate),
+            acquisition_fingerprint=acquired.fingerprint,
+            source_fingerprint=book.source_fingerprint,
+            raw_sha256=acquired.observed_sha256,
+            ingest_stage_key=identity.cache_key,
+            extracted_sha256=hashlib.sha256(extracted_path.read_bytes()).hexdigest(),
+            dossier_sha256=hashlib.sha256(dossier_path.read_bytes()).hexdigest(),
+            book_fingerprint=book.fingerprint,
+            parser_version=book.parser_version,
+            parser_config_sha256=book.parser_config_sha256,
+            recovery_status=book.recovery_status,
+        )
+        acquisition._private_write(
+            analysis_ref_path,
+            (json.dumps(asdict(analysis_ref), ensure_ascii=False, sort_keys=True) + "\n").encode(),
+        )
         return CandidateIngestResult(
             acquired.candidate,
             acquired,
@@ -409,7 +452,401 @@ class BookOrchestrator:
             identity.cache_key,
             extracted_path,
             dossier_path,
+            analysis_ref_path,
         )
+
+    def load_candidate_for_analysis(
+        self, ref_path: Path, *, book_id: str | None = None
+    ) -> tuple[whole_book.CandidateAnalysisRef, BookText]:
+        """Load only an exact immutable title-only extraction; never discover or fetch."""
+        if book_id is not None and not selection.IDENTIFIER.fullmatch(book_id):
+            raise BookRunError("invalid requested candidate book id")
+        try:
+            raw_ref = json.loads(acquisition._read_bounded_file(ref_path, 131_073))
+            expected_fields = {field.name for field in fields(whole_book.CandidateAnalysisRef)}
+            if not isinstance(raw_ref, dict) or set(raw_ref) != expected_fields:
+                raise ValueError("invalid candidate analysis handle schema")
+            if any(
+                not isinstance(value, str) or not value
+                for key, value in raw_ref.items()
+                if key != "candidate"
+            ):
+                raise ValueError("candidate analysis handle field type mismatch")
+            ref = whole_book.CandidateAnalysisRef(**raw_ref)
+            if (
+                ref.schema != whole_book.REF_SCHEMA
+                or not selection.IDENTIFIER.fullmatch(ref.book_id)
+                or (book_id is not None and ref.book_id != book_id)
+            ):
+                raise ValueError("candidate analysis handle edition/book mismatch")
+            for digest in (
+                ref.candidate_fingerprint,
+                ref.acquisition_fingerprint,
+                ref.source_fingerprint,
+                ref.raw_sha256,
+                ref.ingest_stage_key,
+                ref.extracted_sha256,
+                ref.dossier_sha256,
+                ref.book_fingerprint,
+                ref.parser_config_sha256,
+            ):
+                if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                    raise ValueError("invalid candidate analysis digest")
+            if ref_path.is_symlink() or ref_path.resolve(strict=True) != (
+                self.root / "book-candidates" / "analysis-refs" / ref.book_id
+                / f"{ref.ingest_stage_key}.json"
+            ).resolve():
+                raise ValueError("candidate analysis handle path is not canonical")
+            candidate_values = raw_ref["candidate"]
+            candidate_keys = {field.name for field in fields(acquisition.ReviewedCandidate)}
+            if not isinstance(candidate_values, dict) or set(candidate_values) != candidate_keys:
+                raise ValueError("candidate analysis source metadata malformed")
+            candidate = acquisition.ReviewedCandidate(**candidate_values)
+            if (
+                candidate.fingerprint != ref.candidate_fingerprint
+                or candidate.book_id != ref.book_id
+                or candidate.expected_sha256 != ref.raw_sha256
+                or candidate.format not in {"epub", "pdf"}
+                or not isinstance(candidate.expected_bytes, int)
+                or isinstance(candidate.expected_bytes, bool)
+                or not 0 < candidate.expected_bytes <= acquisition.MAX_ASSET_BYTES
+            ):
+                raise ValueError("candidate analysis source pin mismatch")
+            base = self.root / "book-candidates"
+            extracted_path = (
+                base / "extracted" / ref.parser_version / f"{ref.ingest_stage_key}.json"
+            )
+            dossier_path = base / "dossiers" / ref.book_id / f"{ref.ingest_stage_key}.json"
+            extracted = acquisition._read_bounded_file(extracted_path, 32_000_001)
+            dossier_bytes = acquisition._read_bounded_file(dossier_path, 2_000_001)
+            if (
+                len(extracted) > 32_000_000
+                or hashlib.sha256(extracted).hexdigest() != ref.extracted_sha256
+                or hashlib.sha256(dossier_bytes).hexdigest() != ref.dossier_sha256
+            ):
+                raise ValueError("candidate extracted/dossier evidence changed")
+            dossier = json.loads(dossier_bytes)
+            if not isinstance(dossier, dict):
+                raise ValueError("candidate dossier malformed")
+            checks = {
+                "schema": "clipper-book-candidate-ingest-dossier-v3",
+                "book_id": ref.book_id,
+                "edition_identity": candidate.edition_identity,
+                "raw_sha256": ref.raw_sha256,
+                "raw_bytes": candidate.expected_bytes,
+                "candidate_fingerprint": ref.candidate_fingerprint,
+                "acquisition_fingerprint": ref.acquisition_fingerprint,
+                "source_fingerprint": ref.source_fingerprint,
+                "extract_stage_key": ref.ingest_stage_key,
+                "extracted_sha256": ref.extracted_sha256,
+                "parser_version": ref.parser_version,
+                "parser_config_sha256": ref.parser_config_sha256,
+                "recovery_status": ref.recovery_status,
+                "authorization_status": "unverified",
+                "publish_eligible": False,
+                "editorial_approved": False,
+            }
+            if any(dossier.get(k) != v for k, v in checks.items()):
+                raise ValueError("candidate dossier identity mismatch")
+            book = _book_text_cached(json.loads(extracted))
+            if (
+                book.fingerprint != ref.book_fingerprint
+                or book.source_fingerprint != ref.source_fingerprint
+                or book.source_fingerprint != book.source.fingerprint
+                or book.content_sha256 != ref.raw_sha256
+                or book.source.title != candidate.title
+                or book.source.author != candidate.author
+                or book.edition_identity != candidate.edition_identity
+                or book.parser_version != ref.parser_version
+                or book.parser_config_sha256 != ref.parser_config_sha256
+                or book.recovery_status != ref.recovery_status
+                or book.source.authorization_status != "unverified"
+                or _book_slug(book.source.title) != ref.book_id
+                or sum(len(p.split()) for section in book.sections for p in section.paragraphs)
+                != book.total_word_count
+            ):
+                raise ValueError("candidate BookText evidence identity mismatch")
+            image_digest = content_fingerprint(
+                [
+                    {
+                        "asset_sha256": item.asset_sha256,
+                        "method": item.method,
+                        "review_status": item.review_status,
+                        "original_transcription": item.original_transcription,
+                        "machine_transcription": item.machine_transcription,
+                    }
+                    for item in book.images
+                ]
+            )
+            if dossier.get("ocr_evidence_sha256") != image_digest:
+                raise ValueError("candidate image evidence fingerprint mismatch")
+            manifest = json.loads(
+                acquisition._read_bounded_file(
+                    base / "manifests" / f"{ref.candidate_fingerprint}.json", 2_000_001
+                )
+            )
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("schema") != "clipper-book-acquisition-v1"
+                or manifest.get("candidate_fingerprint") != ref.candidate_fingerprint
+                or manifest.get("observed_sha256") != ref.raw_sha256
+                or manifest.get("observed_bytes") != candidate.expected_bytes
+                or manifest.get("record_url") != candidate.record_url
+                or manifest.get("source") != asdict(book.source)
+            ):
+                raise ValueError("candidate acquisition manifest identity mismatch")
+            acquisition_digest = content_fingerprint(
+                {
+                    "candidate": asdict(candidate),
+                    "record_url": candidate.record_url,
+                    "source_kind": book.source.source_kind,
+                    "authorization_status": book.source.authorization_status,
+                    "metadata_sha256": manifest["metadata_sha256"],
+                    "observed_bytes": candidate.expected_bytes,
+                    "observed_sha256": ref.raw_sha256,
+                }
+            )
+            if acquisition_digest != ref.acquisition_fingerprint:
+                raise ValueError("candidate acquisition fingerprint mismatch")
+            raw_path = (
+                base / "raw" / ref.raw_sha256[:2] / f"{ref.raw_sha256}.{candidate.format}"
+            )
+            raw_bytes = acquisition._read_bounded_file(raw_path, candidate.expected_bytes + 1)
+            if (
+                len(raw_bytes) != candidate.expected_bytes
+                or hashlib.sha256(raw_bytes).hexdigest() != ref.raw_sha256
+            ):
+                raise ValueError("candidate pinned raw evidence changed")
+            stage_path = (
+                self.root / "book-dag" / "books-ingest" / ref.ingest_stage_key
+                / "stage.json"
+            )
+            record = json.loads(acquisition._read_bounded_file(stage_path, 2_000_001))
+            identity_data = record["identity"]
+            if not isinstance(identity_data, dict):
+                raise ValueError("candidate ingest DAG identity missing")
+            parameters = identity_data["decoding_parameters"]
+            dependencies = identity_data["dependency_output_hashes"]
+            if not isinstance(parameters, dict) or not isinstance(dependencies, list):
+                raise ValueError("candidate ingest DAG material malformed")
+            identity = StageIdentity(
+                identity_data["stage_name"],
+                identity_data["source_hash"],
+                identity_data["contract_hash"],
+                tuple(dependencies),
+                identity_data["model_revision"],
+                parameters,
+                identity_data["relevant_policy_hash"],
+            )
+            if (
+                identity.stage_name != BOOK_STAGE_CONTRACTS["ingest"].name
+                or identity.contract_hash != BOOK_STAGE_CONTRACTS["ingest"].contract_hash
+                or identity.cache_key != ref.ingest_stage_key
+                or tuple(dependencies) != (ref.acquisition_fingerprint,)
+                or self.dag._validated_pass(identity, record) is None
+                or content_fingerprint(self.dag._cache_hit(identity)[1])
+                != content_fingerprint(asdict(book))
+            ):
+                raise ValueError("candidate ingest DAG publication is inconsistent")
+            return ref, book
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError) as exc:
+            raise BookRunError(
+                "candidate analysis reference or pinned evidence is invalid"
+            ) from exc
+
+    def mine_candidate(
+        self,
+        ref_path: Path,
+        *,
+        responses: dict[str, object],
+        response_file_sha256: str,
+        book_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Process every faithful unit in bounded windows using recorded replies only."""
+        ref, book = self.load_candidate_for_analysis(ref_path, book_id=book_id)
+        if not isinstance(responses, dict) or not re.fullmatch(
+            r"[0-9a-f]{64}", response_file_sha256
+        ):
+            raise BookRunError("candidate analysis requires a recorded response mapping and digest")
+        work = whole_book.plan_for(book)
+        self.dag.protect_stage("books.mining.unit.v1")
+        unit_contract = StageContract(
+            "books.mining.unit.v1", {"schema": whole_book.RESULT_SCHEMA, "unit": "v1"}
+        )
+        progress: list[dict[str, Any]] = []
+        lessons: list[dict[str, Any]] = []
+        used_ids: set[str] = set()
+        for window_index, offset in enumerate(
+            range(0, len(work.units), whole_book.WINDOW_UNITS)
+        ):
+            window = work.units[offset : offset + whole_book.WINDOW_UNITS]
+            for unit in window:
+                request = whole_book.request_for(book, unit)
+                request_key = content_fingerprint(request)
+                status = "unresolved"
+                count = 0
+                response_digest: str | None = None
+                answer = whole_book.recorded_answer(responses, request)
+                if request_key in responses:
+                    try:
+                        serialized = json.dumps(answer, ensure_ascii=False, sort_keys=True)
+                        if len(serialized.encode("utf-8")) > whole_book.MAX_RECORDED_REPLY_BYTES:
+                            raise mining.BookMiningError("recorded response exceeds per-unit size")
+                        response_digest = content_fingerprint(answer)
+                        identity = stage_identity(
+                            unit_contract,
+                            source_hash=content_fingerprint(
+                                {
+                                    "book": book.fingerprint,
+                                    "projection": work.fingerprint,
+                                    "unit": unit.fingerprint,
+                                    "request": request_key,
+                                    "used_completion": response_digest,
+                                }
+                            ),
+                            dependency_output_hashes=(book.fingerprint,),
+                            model_revision=scripting.SCRIPT_REVISION,
+                            decoding_parameters={
+                                "seed": 42,
+                                "max_new_tokens": 960,
+                                "chunk_words": mining.CHUNK_WORDS,
+                                "evidence_field": unit.evidence_field,
+                            },
+                        )
+
+                        def produce() -> object:
+                            return {
+                                "unit": unit.fingerprint,
+                                "request": request_key,
+                                "completion": response_digest,
+                                "lessons": whole_book.validate_reply(answer, unit),
+                            }
+
+                        stored, _cached = self.dag.execute(identity, produce)
+                        if (
+                            not isinstance(stored, dict)
+                            or set(stored) != {"unit", "request", "completion", "lessons"}
+                            or stored["unit"] != unit.fingerprint
+                            or stored["request"] != request_key
+                            or stored["completion"] != response_digest
+                        ):
+                            raise mining.BookMiningError("cached analysis unit identity mismatch")
+                        validated = whole_book.validate_reply(
+                            {"lessons": stored["lessons"]}, unit
+                        )
+                        for item in validated:
+                            candidate = whole_book.candidate_for(book, unit, item)
+                            if candidate["id"] in used_ids:
+                                raise mining.BookMiningError("mined candidate identity collision")
+                            used_ids.add(candidate["id"])
+                            lessons.append(candidate)
+                        count = len(validated)
+                        status = "complete" if count else "zero_candidate"
+                    except (TypeError, ValueError, RecursionError, OverflowError):
+                        status = "failed"
+                progress.append(
+                    {
+                        "window": window_index,
+                        "unit": unit.ordinal,
+                        "unit_fingerprint": unit.fingerprint,
+                        "anchor": unit.anchor,
+                        "source_path": unit.source_path,
+                        "asset_sha256": unit.asset_sha256,
+                        "origin": unit.origin,
+                        "evidence_field": unit.evidence_field,
+                        "review_status": unit.review_status,
+                        "research_link_status": unit.research_link_status,
+                        "text_sha256": unit.text_sha256,
+                        "request_sha256": request_key,
+                        "used_completion_sha256": response_digest,
+                        "status": status,
+                        "candidate_count": count,
+                    }
+                )
+        counts = {
+            key: sum(item["status"] == key for item in progress)
+            for key in ("complete", "zero_candidate", "unresolved", "failed")
+        }
+        counts["skipped"] = len(work.skipped)
+        outcome = (
+            "complete" if not counts["unresolved"] and not counts["failed"] else "incomplete"
+        )
+        base = self.root / "book-candidates" / "analysis"
+        artifact_name = f"{work.fingerprint}-{response_file_sha256}.json"
+        ledger = {
+            "schema": whole_book.RESULT_SCHEMA,
+            "book_id": ref.book_id,
+            "source_fingerprint": book.source_fingerprint,
+            "book_fingerprint": book.fingerprint,
+            "candidate_fingerprint": ref.candidate_fingerprint,
+            "ingest_stage_key": ref.ingest_stage_key,
+            "plan_fingerprint": work.fingerprint,
+            "window_size": whole_book.WINDOW_UNITS,
+            "total_work_units": len(work.units),
+            "response_file_sha256": response_file_sha256,
+            "recovery_status": book.recovery_status,
+            "authorization_status": book.source.authorization_status,
+            "parser_version": book.parser_version,
+            "parser_config_sha256": book.parser_config_sha256,
+            "excluded_pages": [asdict(p) for p in book.excluded_pages],
+            "gaps": list(work.skipped),
+            "progress": progress,
+            "counts": counts,
+            "candidate_count": len(lessons),
+            "status": outcome,
+            "review_status": "MINED_UNREVIEWED",
+            "publish_eligible": False,
+        }
+        progress_path = base / "progress" / ref.book_id / artifact_name
+        acquisition._private_write(
+            progress_path, (json.dumps(ledger, ensure_ascii=False, sort_keys=True) + "\n").encode()
+        )
+        export_path: Path | None = None
+        if outcome == "complete":
+            export = {
+                "schema": "clipper-book-editorial-catalog-v1",
+                "input_kind": "mined_separate_unreviewed_whole_book",
+                "review_status": "MINED_UNREVIEWED",
+                "publish_eligible": False,
+                "analysis_plan_fingerprint": work.fingerprint,
+                "progress_sha256": hashlib.sha256(progress_path.read_bytes()).hexdigest(),
+                "ingest_fingerprint": book.fingerprint,
+                "recovery_status": book.recovery_status,
+                "books": [
+                    {
+                        "id": ref.book_id,
+                        "title": book.source.title,
+                        "author": book.source.author,
+                        "pillar": "unreviewed",
+                        "source_url": book.source.source_uri,
+                        "status": "source_verified_candidate",
+                        "review_status": "MINED_UNREVIEWED",
+                        "publish_eligible": False,
+                        "source_fingerprint": book.source_fingerprint,
+                        "authorization_status": "unverified",
+                        "lessons": lessons,
+                    }
+                ],
+            }
+            # Do NOT call the curated selector: zero candidates is a valid
+            # analysis outcome, never an approved fact or episode brief.
+            export_path = base / "exports" / ref.book_id / artifact_name
+            acquisition._private_write(
+                export_path,
+                (json.dumps(export, ensure_ascii=False, sort_keys=True) + "\n").encode(),
+            )
+        return {
+            "book_id": ref.book_id,
+            "status": outcome,
+            "recovery_status": book.recovery_status,
+            "review_status": "MINED_UNREVIEWED",
+            "publish_eligible": False,
+            "candidate_count": len(lessons),
+            "total_work_units": len(work.units),
+            "counts": counts,
+            "progress_path": str(progress_path),
+            "export_path": str(export_path) if export_path is not None else None,
+        }
 
     def ingest(
         self, title: str, author: str, resolver: ingest.SourceResolver

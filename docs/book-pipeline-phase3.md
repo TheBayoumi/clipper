@@ -91,3 +91,17 @@ HTTPS claim source. Do not invent or substitute an HTTPS URL to bypass
 the selector. In-copyright title-only source discovery, live inference,
 live Gutenberg reliability, actual legal permissions, human editorial
 approval, and production acceptance are **not** established by Phase 3.
+
+## Current additive candidate-ref analysis path (later than Phase 3)
+
+The historical `mine_book` interface above remains supported for the
+explicit owner-file/recorded-response workflow. Its original global
+128-chunk/64-candidate limits are **not** removed. The newer title-only
+candidate extraction is not copied into `book-text/<book-id>.json`;
+instead, `books mine --candidate-ref` consumes its exact immutable
+`analysis_ref_path` and processes the faithful ordered reading projection
+in bounded units/windows with new per-unit DAG identities. This does not
+silently enable an arbitrary book-title Internet search, an approved
+lesson, a storyboard or any downstream producer. See
+[whole-book analysis](book-whole-analysis.md) and the current
+[candidate ingest guide](book-candidate-acquisition.md).

@@ -72,7 +72,14 @@ def configure_books_parser(subparsers: Any) -> None:
     private_import.add_argument("--output", type=Path, required=True)
 
     mine_cmd = actions.add_parser("mine", help="mine recorded responses, never infer live")
-    mine_cmd.add_argument("--book-id", required=True)
+    mine_cmd.add_argument(
+        "--book-id", help="legacy owner-file book id or candidate ref cross-check"
+    )
+    mine_cmd.add_argument(
+        "--candidate-ref",
+        type=Path,
+        help="exact immutable title-only ingest analysis ref; never discover or fetch",
+    )
     mine_cmd.add_argument("--responses", type=Path, required=True)
     mine_cmd.add_argument("--artifact-root", type=Path, default=Path("artifacts/books"))
 
@@ -282,6 +289,7 @@ def dispatch_books(args: argparse.Namespace) -> int:
                     "book_id": recovered.candidate.book_id,
                     "raw_sha256": recovered.acquired.observed_sha256,
                     "stage_key": recovered.stage_key,
+                    "analysis_ref_path": str(recovered.analysis_ref_path),
                     "recovery_status": recovered.book.recovery_status,
                     "dossier_path": str(recovered.dossier_path),
                     "unique_images": dossier["unique_images"],
@@ -295,9 +303,30 @@ def dispatch_books(args: argparse.Namespace) -> int:
         return 2 if recovered.book.recovery_status == "incomplete_recovery" else 0
     if args.books_action == "mine":
         runner = BookOrchestrator(args.artifact_root)
+        if args.candidate_ref is None and args.book_id is None:
+            raise BookRunError("books mine requires --book-id or --candidate-ref")
+        if args.candidate_ref is not None:
+            # Bounded input bytes; recorded replies cannot be an unbounded private dump.
+            data = acquisition._read_bounded_file(args.responses, 64_000_001)
+            if len(data) > 64_000_000:
+                raise mining.BookMiningError("recorded response mapping exceeds bounded input")
+            replies: object = json.loads(data)
+            if not isinstance(replies, dict) or not all(
+                isinstance(k, str) and re.fullmatch(r"[0-9a-f]{64}", k) for k in replies
+            ):
+                raise mining.BookMiningError("recorded response mapping keys must be SHA-256")
+            result = runner.mine_candidate(
+                args.candidate_ref,
+                responses=replies,
+                response_file_sha256=hashlib.sha256(data).hexdigest(),
+                book_id=args.book_id,
+            )
+            # Never print source quotations or private image/research observations.
+            print(json.dumps(result, sort_keys=True))
+            return 0 if result["status"] == "complete" else 2
         book = runner.load_text(args.book_id)
         data = args.responses.read_bytes()
-        replies: object = json.loads(data)
+        replies = json.loads(data)
         if not isinstance(replies, dict):
             raise mining.BookMiningError("recorded mining responses must be a JSON mapping")
 
