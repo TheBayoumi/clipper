@@ -21,7 +21,7 @@ MAX_SOURCE_CHARS = 12_000
 MAX_SPANS = 400
 MAX_FIELD_CHARS = 400
 FIELDS = ("id", "topic", "claim", "hook_angle", "visual_action", "evidence", "evidence_field")
-SPLIT = re.compile(r"(?<=[.!?;:。！？؛؟])\s+|(?<=[。！？؛؟])(?=\S)")
+SPLIT = re.compile(r"(?<=[.!?;:\u3002\uFF01\uFF1F\u061B\u061F])\s+|(?<=[\u3002\uFF01\uFF1F\u061B\u061F])(?=\S)")
 ABBREVIATIONS = frozenset({
     "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.",
     "e.g.", "i.e.", "vs.", "etc.", "fig.", "no.", "vol.",
@@ -150,7 +150,7 @@ def span_pool(text: str, evidence_field: str) -> dict[str, object]:
             "fail_closed_for_coverage": bool(omitted_chars or oversized_source),
             "unit_start_context_unknown": bool(text.strip()),
             "unit_end_context_unknown": bool(text.strip()),
-            "token_budget_status": "unverified_per_span_and_full_reply",
+            "generation_budget_status": "unverified_per_span_and_full_reply",
             "whole_reply_max_tokens": 960,
             "raw_reply_max_bytes": 16_384,
         },

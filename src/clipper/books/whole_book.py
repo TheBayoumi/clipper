@@ -10,7 +10,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any
+from typing import Any, cast
 
 from clipper.stage_contracts import content_fingerprint
 

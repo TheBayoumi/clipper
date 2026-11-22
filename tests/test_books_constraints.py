@@ -452,7 +452,7 @@ def test_exact_pairs_rejected_in_both_field_orders_and_raw_validator() -> None:
         ("Dr. Ada met Prof. Lin. The result followed.", 2),
         ("U.S. trials succeeded. Dr. Lin agreed.", 2),
         ("A. Smith reported a result. Another result followed.", 2),
-        ("第一句。第二句！第三句？", 3),
+        ("第一句。第二句\uFF01第三句\uFF1F", 3),
         ("الجملة الأولى؟الجملة الثانية؛الجملة الثالثة.", 3),
         ("سؤال؟ جواب.", 2),
     ],
@@ -464,7 +464,7 @@ def test_multilingual_boundaries_and_abbreviations(source: str, expected: int) -
     assert sum(len(s["text"]) for s in pool["spans"]) + (
         pool["coverage"]["split_separator_chars"]
     ) == len(source)
-    assert pool["coverage"]["token_budget_status"] == "unverified_per_span_and_full_reply"
+    assert pool["coverage"]["generation_budget_status"] == "unverified_per_span_and_full_reply"
 
 
 def test_true_350_word_upper_bound_and_unresolved_long_fragment() -> None:

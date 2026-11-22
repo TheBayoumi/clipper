@@ -192,7 +192,7 @@ def test_canonical_prompt_states_existing_strict_validator_contract(
     assert supplied["anchor"] == unit.anchor
     choices = supplied["source_evidence_choices"]
     assert len(choices) == len(request["constraints"]["spans"])
-    for selected, span in zip(choices, request["constraints"]["spans"]):
+    for selected, span in zip(choices, request["constraints"]["spans"], strict=True):
         assert selected["id"] == span["id"]
         assert selected["evidence"] == unit.text[span["start"] : span["end"]]
         assert selected["start"] == span["start"]
