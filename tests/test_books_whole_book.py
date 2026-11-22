@@ -15,7 +15,13 @@ import pytest
 from clipper import cli
 from clipper.books import acquisition, mining, whole_book
 from clipper.books import orchestrator as orchestrator_module
-from clipper.books.contracts import BookText, ImageEvidence, ImageOccurrence, SourceBlock
+from clipper.books.contracts import (
+    BookText,
+    ImageEvidence,
+    ImageOccurrence,
+    SourceBlock,
+    SourceUnresolved,
+)
 from clipper.books.orchestrator import BookOrchestrator, BookRunError
 from clipper.dag import DagStore
 from clipper.stage_contracts import content_fingerprint
