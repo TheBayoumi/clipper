@@ -6,12 +6,19 @@ import base64
 import hashlib
 import json
 import os
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import pytest
 
 from clipper.books import scripting
-from scripts import book_local_cpu_smoke as smoke
+
+_SCRIPT = Path(__file__).resolve().parents[1] / "scripts/book_local_cpu_smoke.py"
+_SPEC = spec_from_file_location("clipper_book_local_cpu_smoke", _SCRIPT)
+if _SPEC is None or _SPEC.loader is None:
+    raise RuntimeError("public smoke harness file could not be loaded")
+smoke = module_from_spec(_SPEC)
+_SPEC.loader.exec_module(smoke)
 
 
 def _request() -> dict[str, object]:
