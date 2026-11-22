@@ -799,9 +799,11 @@ def test_write_lock_permanent_os_error_propagates_once_and_closes_fd(
     with monkeypatch.context() as scoped:
         scoped.setattr(DagStore, "_lock_file", staticmethod(fail))
         scoped.setattr(time, "sleep", lambda _delay: pytest.fail("permanent OS error retried"))
-        with pytest.raises(OSError) as caught:
-            with store._write_lock(identity, timeout_seconds=0.025):
-                pytest.fail("invalid lock acquisition succeeded")
+        with (
+            pytest.raises(OSError) as caught,
+            store._write_lock(identity, timeout_seconds=0.025),
+        ):
+            pytest.fail("invalid lock acquisition succeeded")
     assert caught.value is primary
     assert caught.value.errno == error_number
     assert attempts == 1
@@ -875,9 +877,11 @@ def test_write_lock_contention_times_out_with_underlying_cause(
     with monkeypatch.context() as scoped:
         scoped.setattr(DagStore, "_lock_file", staticmethod(busy))
         scoped.setattr(time, "sleep", lambda _delay: pytest.fail("zero timeout slept"))
-        with pytest.raises(TimeoutError, match="timed out acquiring DAG write lock") as caught:
-            with store._write_lock(identity, timeout_seconds=0.0):
-                pytest.fail("contention succeeded")
+        with (
+            pytest.raises(TimeoutError, match="timed out acquiring DAG write lock") as caught,
+            store._write_lock(identity, timeout_seconds=0.0),
+        ):
+            pytest.fail("contention succeeded")
     assert caught.value.__cause__ is primary
     assert attempts == 1
     with pytest.raises(OSError) as closed:
@@ -893,7 +897,8 @@ def test_write_lock_platform_contention_codes_are_deliberately_distinct() -> Non
     assert not DagStore._lock_is_busy(OSError(errno.EDEADLK, "deadlock"), windows=False)
     assert DagStore._lock_is_busy(OSError(errno.EACCES, "crt lock violation"), windows=True)
     assert DagStore._lock_is_busy(OSError(errno.EDEADLK, "crt deadlock"), windows=True)
-    assert not DagStore._lock_is_busy(OSError(errno.EAGAIN, "not CRT lock contention"), windows=True)
+    not_contended = OSError(errno.EAGAIN, "not CRT lock contention")
+    assert not DagStore._lock_is_busy(not_contended, windows=True)
     winerror = OSError(errno.EIO, "synthetic Windows native lock violation")
     winerror.winerror = 33
     assert DagStore._lock_is_busy(winerror, windows=True)

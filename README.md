@@ -139,11 +139,60 @@ Default production execution uses the deployed Modal pipeline when the resolved 
 
 ## Content-addressed execution
 
-Grounding and editorial stages are keyed from source/model/contract inputs. A changed source, model identity, schema contract, or relevant stage input invalidates the affected cache rather than reusing stale output.
+Grounding and editorial stages are keyed by source, contract, model/revision,
+decoding parameters, dependencies and relevant policy. Cache reuse requires a
+**canonical, type-preserving identity match**: JSON `false`, integer `0` and
+float `0.0` are distinct. A PASS also requires a complete terminal record and
+matching output fingerprint; valid JSON null, false and empty outputs are
+cacheable.
 
-`--resume RUN_ID` reuses matching content-addressed artifacts from an interrupted run. `--fresh-inference` creates an empty cache root so live model evidence cannot be satisfied by an existing cache entry.
+Local `DagStore` execution uses atomic records and OS-managed advisory write
+locks. The production coordinated path uses a paired authoritative
+`read_committed` / `publish_terminal` contract: the serialized lease owner
+fences publication by owner, attempt and expiry. It does not treat a worker's
+dirty Volume mount or an unacknowledged commit as confirmed durable evidence.
+The older `reload` / `commit` coordinator callback path remains for
+compatibility but does **not** independently guarantee fenced publication.
+Lost acknowledgements and cancellations remain visible rather than being
+silently returned as success. See [DAG execution and recovery](docs/dag-execution.md)
+for responsibilities, locking errors and runtime limits.
 
-Each run persists model identities, source hashes, cache events, funnel/yield evidence, rejections, render attempts, QC evidence, and output hashes in its artifact directory.
+`--resume RUN_ID` reuses matching content-addressed artifacts from an
+interrupted run. `--fresh-inference` creates an empty cache root so live
+model evidence cannot be satisfied by an existing cache entry.
+
+Each run persists model identities, source hashes, cache events, funnel/yield
+evidence, rejections, render attempts, QC evidence and output hashes in its
+artifact directory.
+
+## Bounded book-candidate and faithful text ingest
+
+The separate book front half provides exact-title discovery from a **small,
+explicitly reviewed candidate registry**, bounded acquisition, source-ordered
+text extraction and versioned provenance/rejection reports. It is **not**
+general internet book discovery, authentication of a publisher edition,
+rights approval, a guarantee of complete text or title-to-video production.
+The existing registry and source pins remain unchanged.
+
+```bash
+clipper books candidates --title "Atomic Habits"
+clipper books ingest --title "Atomic Habits" --artifact-root artifacts/books
+```
+
+`books ingest` writes private, locally controlled evidence. It reports
+`incomplete_recovery` with exit code **2** when recovery or unreviewed image
+evidence is incomplete; this must not be treated as a full-text success.
+Rights/provenance and human observation review are separate gates. Repository
+fixtures are synthetic and do not contain private book sources or research
+sidecars. Offline evidence import is a separate owner-controlled action, not
+a prerequisite for inspecting the code.
+
+See [candidate acquisition and faithful ingest](docs/book-candidate-acquisition.md),
+[offline ingest and mining limits](docs/book-pipeline-phase3.md),
+[recorded narration and unported stages](docs/book-pipeline-phase1b.md) and
+[creative review trust boundaries](docs/book-creative-review.md).
+Direction, visuals, assembly and review remain unported/approval-gated; no
+book-video publication acceptance is implied.
 
 ## Setup
 
@@ -210,12 +259,20 @@ mypy
 pytest
 ```
 
-Pytest enforces a repository-wide coverage floor of **95%**. CI runs the quality gates on Python 3.11 and 3.12.
+The **95% minimum applies to the `clipper` package**, not to all repository
+scripts combined: `pytest` uses `--cov=clipper --cov-fail-under=95`, and CI
+separately checks the measured package result with
+`coverage report --fail-under=95`. GPU-driving scripts have a separate
+CPU-fake coverage run and threshold; see
+[GPU-driving script coverage](docs/gpu-worker-script-coverage.md).
+CI runs these checks on Python 3.11 and 3.12. No measured coverage result
+certifies live model execution or creative acceptance.
 
 Production acceptance additionally requires exact-head deployment evidence, current model/schema smoke tests, a current end-to-end render, technical QC, multimodal final QC, and review of the actual MP4. Historical renders do not prove the current head.
 
-## Original niche video (open-weight prototype)
+## Original niche video (historical open-weight prototype)
 
+**Historical prototype status — not acceptance of this cleanup branch.**
 **Editorial acceptance: REJECTED for production visuals (October 24, 2026).**
 The basic Pillow-designed Pip mascot, two-pose mouth animation, and static book
 title cards are technical proofs **not professional cartoon content**. Successful
@@ -225,7 +282,9 @@ for publishing. Book drafts now stop before model inference unless
 technical reproduction. See `plans/professional-book-video-creative-rebuild.md`.
 
 
-Branch: `feat/unified-niche-tts`. This independent original-content workflow does not
+Historical prototype branch: `feat/unified-niche-tts` (not the active
+`review/unified-tts-cleanup` implementation branch). This independent
+original-content workflow does not
 use a Reach/Whop campaign or another creator's podcast. Configure
 `niches/ai-workflows.yaml` (example English US Kokoro voice: `af_heart`).
 

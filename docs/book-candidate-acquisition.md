@@ -1,5 +1,9 @@
 # Reviewed candidate acquisition and faithful source-text ingest
 
+Shared DAG locking, cache identity and terminal publication are documented in
+[DAG execution and recovery](dag-execution.md). This page describes the
+book-candidate evidence path and the history of its bounded repairs.
+
 ## Scope and evidence status
 
 This is a **bounded title-only acquisition and text-recovery entry point**, not
@@ -52,11 +56,11 @@ clipper books ingest --title "Atomic Habits" --offline \
 ```
 
 An overlay is **optional evidence import**, not an instruction to recreate
-private transcriptions. The existing private Atomic and Psychology research
-sidecars are not in the connected GitHub repository and have not been
-read, executed, altered or reconstructed. Until those sidecars are available
-on the authorized execution machine, their actual image recovery coverage
-remains **unverified**.
+private transcriptions. Referenced private research sidecars are **not in this repository or its
+synthetic test fixtures**. Repository-only tests cannot measure their actual
+image recovery, and they do not establish whether those files were inspected
+in any other authorized environment. Their current recovery coverage here
+remains **unverified**; do not request or reconstruct private material.
 
 Any injected OCR producer now requires a deterministic `OCRIdentity` containing the
 adapter/version/settings; extraction cache keys bind to its fingerprint. The optional
@@ -352,6 +356,11 @@ changes. Cleanup cannot guarantee release when the storage service is unavailabl
 
 ### Raw read budgets and terminal failure cleanup
 
+The terminal-cleanup details in this section describe the **historical local
+and older coordinated callback repair path**. For the current authoritative
+production adapter, read [DAG execution and recovery](dag-execution.md);
+the endpoint now owns fenced terminal publication and non-flushing reads.
+
 Both opened-file evidence reads and immutable destination comparisons share an
 unbuffered raw reader. It reads only the remaining budget, accumulates short
 reads until actual EOF or the budget, and never performs buffered read-ahead.
@@ -375,6 +384,11 @@ unconditional recovery guarantee. A failed report can leave RUNNING evidence
 without a reusable PASS, and the next owned attempt increments its count.
 
 ### PASS publication acknowledgement and renewal termination
+
+The coordinated reload-based reconciliation below applies to the **legacy
+callback-compatible DagStore path**, not the paired authoritative
+`read_committed` / `publish_terminal` path. The current contract
+and its runtime limitations are in [DAG execution and recovery](dag-execution.md).
 
 A local stage's terminal boundary is its atomic PASS record with matching full
 stage identity and fingerprint-valid output, not the write helper's return.
@@ -405,6 +419,12 @@ returning success. Owner-bound release remains best effort, without changing
 local or production lease durations or the coordinator API.
 
 ### Serialized terminal authority and OS-managed local locks
+
+This is a historical summary of the introduction of the paired-authority
+path. Its current canonical identity validation, terminal rejection rules
+and OS-error classification are documented in
+[DAG execution and recovery](dag-execution.md). Do not read prior sections
+as applying unconditional reload/commit guarantees to the new authority.
 
 The production coordinated DagStore now has two optional paired callbacks:
 `read_committed(identity)` reads the authoritative durable terminal without
