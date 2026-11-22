@@ -380,29 +380,33 @@ def _literal_evidence_guard(parser: Any, spans: list[dict[str, object]], base_ty
     def trie_for(strings: set[str], *, escaped: bool) -> dict[str, Any]:
         """Build linear-size spelling DAGs instead of 2**N alternatives."""
 
-        def merge(
-            left: dict[str, Any],
-            right: dict[str, Any],
-            memo: dict[tuple[int, int], dict[str, Any]],
-        ) -> dict[str, Any]:
-            # Persistent union: mutating a shared DAG suffix can introduce
-            # cycles and admit spurious paths for overlapping source quotes.
-            if left is right:
-                return left
-            key = (id(left), id(right))
-            if key in memo:
-                return memo[key]
-            result: dict[str, Any] = {}
-            memo[key] = result
-            for letter in sorted(set(left) | set(right)):
-                if letter == terminal:
-                    result[letter] = True
-                elif letter in left and letter in right:
-                    result[letter] = merge(left[letter], right[letter], memo)
-                elif letter in left:
-                    result[letter] = left[letter]
-                else:
-                    result[letter] = right[letter]
+        def merge(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+            """Iterative persistent DAG union; wire spellings may exceed 1000 chars."""
+            memo: dict[tuple[int, int], dict[str, Any]] = {}
+            pending: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+            def merged_node(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
+                if a is b:
+                    return a
+                pair = (id(a), id(b))
+                if pair not in memo:
+                    memo[pair] = {}
+                    pending.append((a, b))
+                return memo[pair]
+
+            result = merged_node(left, right)
+            while pending:
+                a, b = pending.pop()
+                node = memo[(id(a), id(b))]
+                for letter in sorted(set(a) | set(b)):
+                    if letter == terminal:
+                        node[letter] = True
+                    elif letter in a and letter in b:
+                        node[letter] = merged_node(a[letter], b[letter])
+                    elif letter in a:
+                        node[letter] = a[letter]
+                    else:
+                        node[letter] = b[letter]
             return result
 
         root: dict[str, Any] = {}
@@ -419,7 +423,7 @@ def _literal_evidence_guard(parser: Any, spans: list[dict[str, object]], base_ty
                         node = node.setdefault(symbol, {})
                     node[spelling[-1]] = suffix
                 suffix = prefix
-            root = merge(root, suffix, {})
+            root = merge(root, suffix)
         return root
 
     all_ids = trie_for(set(pairs), escaped=False)
