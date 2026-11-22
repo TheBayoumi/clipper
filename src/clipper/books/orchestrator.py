@@ -760,7 +760,13 @@ class BookOrchestrator:
             / identity.cache_key
             / f"{digest}.txt"
         )
-        if path.is_symlink() or path.parent.is_symlink():
+        private_root = self.root / "book-candidates"
+        current = path
+        while current != private_root:
+            if current.is_symlink():
+                raise BookRunError("cached local model evidence is a symlink")
+            current = current.parent
+        if private_root.is_symlink():
             raise BookRunError("cached local model evidence is a symlink")
         raw = acquisition._read_bounded_file(path, whole_book.MAX_RECORDED_REPLY_BYTES + 1)
         if (

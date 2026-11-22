@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from clipper import cli
-from clipper.books import acquisition, mining, whole_book
+from clipper.books import acquisition, mining, scripting, whole_book
 from clipper.books import orchestrator as orchestrator_module
 from clipper.books.contracts import (
     BookText,
@@ -866,7 +866,7 @@ def test_recorded_empty_does_not_alias_real_local_completion(tmp_path: Path) -> 
 
 @pytest.mark.parametrize(
     "kind",
-    ["invalid-json", "invalid-quote", "oversized", "runtime", "nontext"],
+    ["invalid-json", "invalid-quote", "oversized", "runtime", "nontext", "invalid-utf8"],
 )
 def test_local_failure_retains_bounded_evidence_then_retries(tmp_path: Path, kind: str) -> None:
     runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
@@ -880,6 +880,8 @@ def test_local_failure_retains_bounded_evidence_then_retries(tmp_path: Path, kin
             return None  # type: ignore[return-value]
         if kind == "oversized":
             return "a" * (whole_book.MAX_RECORDED_REPLY_BYTES + 1)
+        if kind == "invalid-utf8":
+            return "\ud800"
         if kind == "invalid-json":
             return "{"
         invalid = dict(responses[content_fingerprint(request)])
@@ -910,7 +912,7 @@ def test_local_failure_retains_bounded_evidence_then_retries(tmp_path: Path, kin
     assert "synthetic secret" not in failure_files[0].read_text()
     assert failure_files[0].stat().st_mode & 0o777 == 0o600
     raw_files = list((tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt"))
-    assert len(raw_files) == (0 if kind in ("runtime", "nontext") else 1)
+    assert len(raw_files) == (0 if kind in ("runtime", "nontext", "invalid-utf8") else 1)
     assert all(p.stat().st_size <= whole_book.MAX_RECORDED_REPLY_BYTES for p in raw_files)
     if kind == "oversized":
         assert raw_files[0].stat().st_size == whole_book.MAX_RECORDED_REPLY_BYTES
@@ -940,6 +942,7 @@ def test_local_producer_identity_change_invalidates_only_generated_cache(
     runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
     responses = responses_for(acquired.book)
     calls: list[str] = []
+    units = whole_book.plan_for(acquired.book).units
 
     def fake(request: dict[str, object]) -> str:
         key = content_fingerprint(request)
@@ -949,7 +952,7 @@ def test_local_producer_identity_change_invalidates_only_generated_cache(
     first = runner.mine_candidate(
         acquired.analysis_ref_path,
         local_cpu=True,
-        max_new_units=3,
+        max_new_units=len(units),
         local_completion=fake,
     )
     assert first["status"] == "complete"
@@ -958,13 +961,26 @@ def test_local_producer_identity_change_invalidates_only_generated_cache(
     second = runner.mine_candidate(
         acquired.analysis_ref_path,
         local_cpu=True,
-        max_new_units=3,
+        max_new_units=len(units),
         local_completion=fake,
     )
     assert second["status"] == "complete"
-    assert len(calls) == 6
+    assert len(calls) == 2 * len(units)
     assert first["progress_path"] != second["progress_path"]
     assert first["export_path"] != second["export_path"]
+    assert Path(first["progress_path"]).read_bytes() == before
+
+    altered = {**scripting.QWEN_GENERATION_SETTINGS, "temperature": 0.6}
+    monkeypatch.setattr(scripting, "QWEN_GENERATION_SETTINGS", altered)
+    changed_settings = runner.mine_candidate(
+        acquired.analysis_ref_path,
+        local_cpu=True,
+        max_new_units=len(units),
+        local_completion=fake,
+    )
+    assert changed_settings["status"] == "complete"
+    assert len(calls) == 3 * len(units)
+    assert changed_settings["progress_path"] != second["progress_path"]
     assert Path(first["progress_path"]).read_bytes() == before
 
 
@@ -1036,3 +1052,142 @@ def test_cli_recorded_and_opt_in_cpu_modes_are_exclusive(
         cli._parser().parse_args([*common, "--responses", str(source), "--local-cpu"])
     with pytest.raises(SystemExit):
         cli._parser().parse_args(common)
+
+
+def test_local_mode_rejects_mixed_and_invalid_budgets(tmp_path: Path) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+    ref_path = acquired.analysis_ref_path
+    with pytest.raises(BookRunError, match="exclusive"):
+        runner.mine_candidate(
+            ref_path,
+            local_cpu=True,
+            responses={},
+            response_file_sha256="a" * 64,
+        )
+    for invalid in (0, 20_001, True):
+        with pytest.raises(BookRunError, match="max-new-units"):
+            runner.mine_candidate(ref_path, local_cpu=True, max_new_units=invalid)
+    with pytest.raises(BookRunError, match="local generation options"):
+        runner.mine_candidate(
+            ref_path, responses={}, response_file_sha256="a" * 64, max_new_units=1
+        )
+
+
+def test_local_cached_ancestor_symlink_is_rejected(tmp_path: Path) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+    replies = responses_for(acquired.book)
+
+    def fake(request: dict[str, object]) -> str:
+        return json.dumps(replies[content_fingerprint(request)])
+
+    count = len(whole_book.plan_for(acquired.book).units)
+    completed = runner.mine_candidate(
+        acquired.analysis_ref_path,
+        local_cpu=True,
+        max_new_units=count,
+        local_completion=fake,
+    )
+    assert completed["status"] == "complete"
+    base = tmp_path / "artifacts/book-candidates/analysis"
+    originals = base / "completions"
+    renamed = base / "completions-preserved"
+    originals.rename(renamed)
+    originals.symlink_to(renamed, target_is_directory=True)
+    with pytest.raises(BookRunError, match="symlink"):
+        runner.mine_candidate(
+            acquired.analysis_ref_path,
+            local_cpu=True,
+            max_new_units=1,
+            local_completion=lambda _: pytest.fail("generation cache must be used"),
+        )
+    assert list(renamed.glob("**/*.txt"))
+
+
+def test_pinned_local_qwen_cpu_loader_uses_one_fake_model_without_weight_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+    unit = whole_book.plan_for(acquired.book).units[0]
+    request = whole_book.request_for(acquired.book, unit)
+    loaded: list[str] = []
+    seeds: list[int] = []
+    generated: list[dict[str, object]] = []
+    decoded = ' {"lessons": []} '
+
+    class Inputs:
+        shape = (1, 1)
+
+    class Model:
+        device = "cpu"
+
+        def eval(self):
+            return self
+
+        def generate(self, **kwargs):
+            generated.append(kwargs)
+            return [[0, 7]]
+
+    class Tokenizer:
+        eos_token_id = 0
+
+        def apply_chat_template(self, *args, **kwargs):
+            assert kwargs["enable_thinking"] is False
+            return {"input_ids": Inputs()}
+
+        def decode(self, tokens, *, skip_special_tokens: bool):
+            assert tokens == [7] and skip_special_tokens
+            return decoded
+
+    model = Model()
+    tokenizer = Tokenizer()
+
+    class AutoTokenizer:
+        @staticmethod
+        def from_pretrained(name, *, revision):
+            loaded.append("tokenizer")
+            assert name == scripting.SCRIPT_MODEL
+            assert revision == scripting.SCRIPT_REVISION
+            return tokenizer
+
+    class AutoModel:
+        @staticmethod
+        def from_pretrained(name, *, revision, dtype):
+            loaded.append("model")
+            assert name == scripting.SCRIPT_MODEL
+            assert revision == scripting.SCRIPT_REVISION
+            assert dtype == "auto"
+            return model
+
+    fake_torch = SimpleNamespace(
+        set_num_threads=lambda count: None,
+        manual_seed=lambda seed: seeds.append(seed),
+        inference_mode=lambda: nullcontext(),
+    )
+    fake_transformers = SimpleNamespace(
+        AutoTokenizer=AutoTokenizer, AutoModelForCausalLM=AutoModel
+    )
+    real_import = scripting.importlib.import_module
+
+    def injected(name: str):
+        if name == "torch":
+            return fake_torch
+        if name == "transformers":
+            return fake_transformers
+        return real_import(name)
+
+    scripting._script_pipeline.cache_clear()
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(scripting.importlib, "import_module", injected)
+            assert scripting._local_book_completion(request) == decoded
+            assert scripting._local_book_completion(request) == decoded
+            assert loaded == ["tokenizer", "model"]
+            assert seeds == [42, 42]
+            assert len(generated) == 2
+            assert all(call["temperature"] == 0.7 for call in generated)
+            assert all(call["max_new_tokens"] == 960 for call in generated)
+    finally:
+        scripting._script_pipeline.cache_clear()
