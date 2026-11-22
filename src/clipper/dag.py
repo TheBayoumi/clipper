@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import math
@@ -255,6 +256,19 @@ class DagStore:
         else:
             fcntl.flock(descriptor, (fcntl.LOCK_EX | fcntl.LOCK_NB) if acquire else fcntl.LOCK_UN)
 
+    @staticmethod
+    def _lock_is_busy(exc: OSError, *, windows: bool | None = None) -> bool:
+        """Retry only documented nonblocking file-lock contention errors."""
+        if windows is None:
+            windows = os.name == "nt"
+        if windows:
+            # MS C runtime _locking reports EACCES/EDEADLOCK for lock violations.
+            return exc.errno in {errno.EACCES, errno.EDEADLK} or (
+                getattr(exc, "winerror", None) == 33
+            )
+        # Python fcntl.flock(LOCK_NB) documents EACCES or EAGAIN.
+        return exc.errno in {errno.EACCES, errno.EAGAIN}
+
     @contextmanager
     def _write_lock(
         self,
@@ -289,11 +303,13 @@ class DagStore:
                 try:
                     self._lock_file(fd, acquire=True)
                     break
-                except (BlockingIOError, PermissionError, OSError):
+                except OSError as exc:
+                    if not self._lock_is_busy(exc):
+                        raise
                     if time.monotonic() >= deadline:
                         raise TimeoutError(
                             f"timed out acquiring DAG write lock for {identity.stage_name}"
-                        ) from None
+                        ) from exc
                     time.sleep(0.01)
             try:
                 yield

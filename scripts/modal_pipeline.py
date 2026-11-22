@@ -954,6 +954,70 @@ def _editorial_acceptance_probe(
 _TERMINAL_SCHEMA = "clipper-dag-authoritative-terminal-v1"
 
 
+def _dag_canonical_identity_matches(
+    record: dict[str, Any], stage_name: str, cache_key: str
+) -> bool:
+    """Validate the complete requested stage identity without type coercion."""
+    from clipper.dag import DagStore
+    from clipper.stage_contracts import StageIdentity
+
+    raw = record.get("identity")
+    fields = {
+        "stage_name",
+        "source_hash",
+        "contract_hash",
+        "dependency_output_hashes",
+        "model_revision",
+        "decoding_parameters",
+        "relevant_policy_hash",
+        "cache_key",
+    }
+    if not isinstance(raw, dict) or set(raw) != fields:
+        return False
+    if (
+        raw["stage_name"] != stage_name
+        or not isinstance(raw["stage_name"], str)
+        or not isinstance(raw["source_hash"], str)
+        or not isinstance(raw["contract_hash"], str)
+        or not isinstance(raw["cache_key"], str)
+        or raw["cache_key"] != cache_key
+    ):
+        return False
+    dependencies = raw["dependency_output_hashes"]
+    decoding = raw["decoding_parameters"]
+    if not isinstance(dependencies, list) or not all(
+        isinstance(item, str) for item in dependencies
+    ):
+        return False
+    if not isinstance(decoding, dict) or not all(
+        isinstance(key, str) for key in decoding
+    ):
+        return False
+    if raw["model_revision"] is not None and not isinstance(raw["model_revision"], str):
+        return False
+    if raw["relevant_policy_hash"] is not None and not isinstance(
+        raw["relevant_policy_hash"], str
+    ):
+        return False
+    try:
+        canonical = StageIdentity(
+            stage_name=raw["stage_name"],
+            source_hash=raw["source_hash"],
+            contract_hash=raw["contract_hash"],
+            dependency_output_hashes=tuple(dependencies),
+            model_revision=raw["model_revision"],
+            decoding_parameters=decoding,
+            relevant_policy_hash=raw["relevant_policy_hash"],
+        )
+        return (
+            canonical.stage_name == stage_name
+            and canonical.cache_key == cache_key
+            and DagStore._matches_identity(record, canonical)
+        )
+    except (TypeError, ValueError, AttributeError, RecursionError, OverflowError):
+        return False
+
+
 def _durable_json(path: str) -> dict[str, Any] | None:
     """Read committed Volume bytes without reload or flushing this mount."""
     try:
@@ -974,7 +1038,7 @@ def _dag_terminal_path(stage_name: str, cache_key: str) -> str:
 def _dag_legacy_terminal(stage_name: str, cache_key: str, dag_root: str) -> dict[str, Any] | None:
     """Read a complete, previously committed PASS without rewriting legacy bytes."""
     from clipper.dag import DagStore
-    from clipper.stage_contracts import StageIdentity, content_fingerprint
+    from clipper.stage_contracts import content_fingerprint
 
     if not dag_root:
         return None
@@ -986,34 +1050,7 @@ def _dag_legacy_terminal(stage_name: str, cache_key: str, dag_root: str) -> dict
     record = _durable_json(f"{prefix}/stage.json")
     if record is None or not DagStore._complete_pass_record(record):
         return None
-    identity = record.get("identity")
-    if not isinstance(identity, dict) or identity.get("cache_key") != cache_key:
-        return None
-    # A legacy record's cache_key field is a claim, not an identity proof.
-    # Reconstruct canonical material without coercing JSON booleans or numbers.
-    dependencies = identity.get("dependency_output_hashes")
-    decoding = identity.get("decoding_parameters")
-    if not isinstance(dependencies, list) or not isinstance(decoding, dict):
-        return None
-    if not all(isinstance(item, str) for item in dependencies):
-        return None
-    try:
-        canonical = StageIdentity(
-            stage_name=identity["stage_name"],
-            source_hash=identity["source_hash"],
-            contract_hash=identity["contract_hash"],
-            dependency_output_hashes=tuple(dependencies),
-            model_revision=identity["model_revision"],
-            decoding_parameters=decoding,
-            relevant_policy_hash=identity["relevant_policy_hash"],
-        )
-        if (
-            canonical.stage_name != stage_name
-            or canonical.cache_key != cache_key
-            or not DagStore._matches_identity(record, canonical)
-        ):
-            return None
-    except (KeyError, TypeError, ValueError, AttributeError, RecursionError, OverflowError):
+    if not _dag_canonical_identity_matches(record, stage_name, cache_key):
         return None
     # Output can be any valid JSON value, including null and scalar values.
     try:
@@ -1144,10 +1181,7 @@ def dag_execution_lease(payload: dict[str, Any]) -> dict[str, Any]:
     record = payload.get("record")
     if not isinstance(record, dict) or record.get("status") not in {"PASS", "FAILED"}:
         raise ValueError("DAG terminal publication record is invalid")
-    identity_data = record.get("identity")
-    if not isinstance(identity_data, dict) or (
-        identity_data.get("stage_name") != stage_name or identity_data.get("cache_key") != cache_key
-    ):
+    if not _dag_canonical_identity_matches(record, stage_name, cache_key):
         raise ValueError("DAG terminal publication identity mismatch")
     if record.get("attempt_count") != counter:
         return {"published": False, "owner_id": current_owner}

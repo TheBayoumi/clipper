@@ -288,6 +288,7 @@ def _load_endpoint(root: Path, *, implicit: bool):
         "_atomic_write_json",
         "_durable_json",
         "_dag_terminal_path",
+        "_dag_canonical_identity_matches",
         "_dag_legacy_terminal",
         "_dag_committed_terminal",
         "dag_execution_lease",
@@ -769,3 +770,91 @@ def test_legacy_committed_type_alteration_does_not_block_recovery(
     assert call(_request(identity, "read"))["terminal"]["output"] is None
     assert volume.durable[relative_record] == original_record
     assert volume.durable[relative_output] == original_output
+
+
+@pytest.mark.parametrize("implicit", [False, True])
+@pytest.mark.parametrize("status", ["PASS", "FAILED"])
+@pytest.mark.parametrize("output", [None, 7, False], ids=["null", "scalar", "false"])
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "source",
+        "bool-int",
+        "int-float",
+        "nested",
+        "missing",
+        "extra",
+        "wrong-cache-key",
+        "bad-dependencies",
+        "bad-decoding",
+        "bad-model-revision",
+    ],
+)
+def test_endpoint_rejects_unbound_canonical_identity_before_terminal_publication(
+    tmp_path: Path,
+    implicit: bool,
+    status: str,
+    output: object,
+    tamper: str,
+) -> None:
+    """Exercise the actual endpoint AST; only fabricated JSON reaches fake storage."""
+    call, volume = _load_endpoint(tmp_path, implicit=implicit)
+    identity = _typed_identity()
+    owner = "a" * 32
+    receipt = call(_request(identity, "claim", owner))
+    assert receipt["acquired"] is True
+    record = StageRecord(
+        identity=identity,
+        status=status,  # type: ignore[arg-type]
+        attempt_count=receipt["attempt_count"],
+        started_at="synthetic-start",
+        completed_at="synthetic-end",
+        output_fingerprint=content_fingerprint(output) if status == "PASS" else None,
+        usage={},
+        cost_usd=0.0,
+        error_type="SyntheticFailure" if status == "FAILED" else None,
+        error="synthetic failure" if status == "FAILED" else None,
+    ).to_dict()
+    mutated = json.loads(json.dumps(record))
+    material = mutated["identity"]
+    if tamper == "source":
+        material["source_hash"] = "different-source"
+    elif tamper == "bool-int":
+        material["decoding_parameters"]["flag"] = 0
+    elif tamper == "int-float":
+        material["decoding_parameters"]["temperature"] = 0.0
+    elif tamper == "nested":
+        material["decoding_parameters"]["nested"]["sequence"][0] = 1
+    elif tamper == "missing":
+        del material["model_revision"]
+    elif tamper == "extra":
+        material["unrecognized"] = "not-canonical"
+    elif tamper == "wrong-cache-key":
+        material["cache_key"] = "0" * 64
+    elif tamper == "bad-dependencies":
+        material["dependency_output_hashes"] = [False]
+    elif tamper == "bad-decoding":
+        material["decoding_parameters"] = []
+    elif tamper == "bad-model-revision":
+        material["model_revision"] = False
+    assert mutated["identity"]["stage_name"] == identity.stage_name
+    if tamper != "wrong-cache-key":
+        assert mutated["identity"]["cache_key"] == identity.cache_key
+    assert content_fingerprint(mutated["identity"]) != content_fingerprint(identity.to_dict())
+
+    with pytest.raises(ValueError, match="DAG terminal publication identity mismatch"):
+        call(_request(identity, "publish", owner, record=mutated, output=output))
+    assert call(_request(identity, "read")) == {"terminal": None}
+    assert not list((tmp_path / "_dag-authority").glob("*.json"))
+    assert not any(key.startswith("_dag-authority/") for key in volume.durable)
+
+    # The same owned attempt remains eligible: rejected bytes did not strand it.
+    success = call(_request(identity, "publish", owner, record=record, output=output))
+    assert success["published"] is True
+    committed = call(_request(identity, "read"))["terminal"]
+    assert committed == {"record": record, "output": output}
+    assert call(_request(identity, "release", owner))["released"] is True
+    if status == "PASS":
+        assert call(_request(identity, "claim", "b" * 32))["acquired"] is False
+    else:
+        assert call(_request(identity, "claim", "b" * 32))["acquired"] is True

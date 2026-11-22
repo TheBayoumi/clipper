@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -767,3 +768,133 @@ def test_complete_pass_validation_rejects_invalid_metadata(
     path.write_bytes(original)
     assert store.cached_output(identity) == {"synthetic": True}
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("error_number", [errno.EIO, errno.EBADF, errno.ENOTSUP, errno.ENOLCK])
+def test_write_lock_permanent_os_error_propagates_once_and_closes_fd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    private: bool,
+    error_number: int,
+) -> None:
+    identity = StageIdentity("books.ingest", "synthetic", "locking")
+    store = DagStore(
+        tmp_path,
+        private_stages=frozenset({identity.stage_name}) if private else frozenset(),
+    )
+    original = DagStore._lock_file
+    primary = OSError(error_number, "synthetic permanent lock failure")
+    descriptors: list[int] = []
+    attempts = 0
+
+    def fail(fd: int, *, acquire: bool) -> None:
+        nonlocal attempts
+        if acquire:
+            attempts += 1
+            descriptors.append(fd)
+            raise primary
+        original(fd, acquire=acquire)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(DagStore, "_lock_file", staticmethod(fail))
+        scoped.setattr(time, "sleep", lambda _delay: pytest.fail("permanent OS error retried"))
+        with pytest.raises(OSError) as caught:
+            with store._write_lock(identity, timeout_seconds=0.025):
+                pytest.fail("invalid lock acquisition succeeded")
+    assert caught.value is primary
+    assert caught.value.errno == error_number
+    assert attempts == 1
+    with pytest.raises(OSError) as closed:
+        os.fstat(descriptors[0])
+    assert closed.value.errno == errno.EBADF
+    assert not store._execution_claim_path(identity).exists()
+    assert not (store._directory(identity) / ".write-lock").exists()
+    if private:
+        directory = store._directory(identity)
+        assert directory.stat().st_mode & 0o777 == 0o700
+        assert (directory / ".write-lock-file").stat().st_mode & 0o777 == 0o600
+    # Permanent errors must not strand the lock for a healthy caller.
+    with store._write_lock(identity, timeout_seconds=0.0):
+        assert (store._directory(identity) / ".write-lock-file").is_file()
+
+
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("busy_number", [errno.EAGAIN, errno.EACCES])
+def test_write_lock_retries_only_contention_then_acquires(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    private: bool,
+    busy_number: int,
+) -> None:
+    identity = StageIdentity("books.ingest", "synthetic", "contention")
+    store = DagStore(
+        tmp_path,
+        private_stages=frozenset({identity.stage_name}) if private else frozenset(),
+    )
+    original = DagStore._lock_file
+    attempts: list[int] = []
+    delays: list[float] = []
+
+    def attempt(fd: int, *, acquire: bool) -> None:
+        if acquire:
+            attempts.append(fd)
+            if len(attempts) == 1:
+                raise OSError(busy_number, "synthetic lock held by another owner")
+        original(fd, acquire=acquire)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(DagStore, "_lock_file", staticmethod(attempt))
+        scoped.setattr(time, "sleep", delays.append)
+        with store._write_lock(identity, timeout_seconds=0.5):
+            assert len(attempts) == 2
+    assert delays == [0.01]
+    assert attempts[0] == attempts[1]
+
+
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("busy_number", [errno.EAGAIN, errno.EACCES])
+def test_write_lock_contention_times_out_with_underlying_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, private: bool, busy_number: int
+) -> None:
+    identity = StageIdentity("books.ingest", "synthetic", "timeout")
+    store = DagStore(
+        tmp_path,
+        private_stages=frozenset({identity.stage_name}) if private else frozenset(),
+    )
+    primary = OSError(busy_number, "synthetic lock contention")
+    descriptors: list[int] = []
+    attempts = 0
+
+    def busy(fd: int, *, acquire: bool) -> None:
+        nonlocal attempts
+        attempts += 1
+        descriptors.append(fd)
+        raise primary
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(DagStore, "_lock_file", staticmethod(busy))
+        scoped.setattr(time, "sleep", lambda _delay: pytest.fail("zero timeout slept"))
+        with pytest.raises(TimeoutError, match="timed out acquiring DAG write lock") as caught:
+            with store._write_lock(identity, timeout_seconds=0.0):
+                pytest.fail("contention succeeded")
+    assert caught.value.__cause__ is primary
+    assert attempts == 1
+    with pytest.raises(OSError) as closed:
+        os.fstat(descriptors[0])
+    assert closed.value.errno == errno.EBADF
+
+
+def test_write_lock_platform_contention_codes_are_deliberately_distinct() -> None:
+    # Linux CI exercises POSIX classification and simulates Windows errno values;
+    # this is not a live Windows locking or filesystem integration test.
+    assert DagStore._lock_is_busy(OSError(errno.EAGAIN, "busy"), windows=False)
+    assert DagStore._lock_is_busy(OSError(errno.EACCES, "busy"), windows=False)
+    assert not DagStore._lock_is_busy(OSError(errno.EDEADLK, "deadlock"), windows=False)
+    assert DagStore._lock_is_busy(OSError(errno.EACCES, "crt lock violation"), windows=True)
+    assert DagStore._lock_is_busy(OSError(errno.EDEADLK, "crt deadlock"), windows=True)
+    assert not DagStore._lock_is_busy(OSError(errno.EAGAIN, "not CRT lock contention"), windows=True)
+    winerror = OSError(errno.EIO, "synthetic Windows native lock violation")
+    winerror.winerror = 33
+    assert DagStore._lock_is_busy(winerror, windows=True)
+    assert not DagStore._lock_is_busy(OSError(errno.EBADF, "bad descriptor"), windows=True)
