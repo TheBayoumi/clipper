@@ -892,7 +892,7 @@ def test_synthetic_public_book_prefix_wrapper_and_escape_paths() -> None:
     by_char = {value: index for index, value, _new_word in data.regular_tokens}
     assert '"' in by_char
     assert constrained._blank_closing_token_ids(data)
-    for topic in ("Visible", "\\u00a0Visible"):
+    for topic in ("Visible", "\u00a0Visible"):
         # The second topic is an in-memory synthetic raw escape, not a source
         # rewrite. Its decoded value is nonblank and exactly validated.
         span = cast(list[dict[str, object]], request["constraints"]["spans"])[0]
