@@ -142,9 +142,44 @@ def dispatch_books(args: argparse.Namespace) -> int:
         if isinstance(recovered, SourceUnresolved):
             print(json.dumps(asdict(recovered), ensure_ascii=False))
             return 1
-        overlay_bytes, report = faithful.convert_research_observations(
-            recovered.book, args.research.read_bytes()
+        if args.research.stat().st_size > 2_000_000:
+            raise faithful.ExtractionError(
+                "private research observations exceed bounded import size"
+            )
+        research_bytes = args.research.read_bytes()
+        research_digest = hashlib.sha256(research_bytes).hexdigest()
+        raw_research_path = (
+            args.artifact_root
+            / "book-candidates"
+            / "research-import"
+            / "source"
+            / f"{research_digest}.json"
         )
+        acquisition._private_write(raw_research_path, research_bytes)
+        try:
+            overlay_bytes, report = faithful.convert_research_observations(
+                recovered.book, research_bytes
+            )
+        except faithful.ExtractionError as exc:
+            rejection = {
+                "schema": "clipper-book-research-import-rejection-v1",
+                "research_sha256": research_digest,
+                "source_sha256": recovered.book.content_sha256,
+                "status": "rejected",
+                "reason": str(exc),
+            }
+            rejection_path = (
+                args.artifact_root
+                / "book-candidates"
+                / "research-import"
+                / "rejections"
+                / f"{research_digest}.json"
+            )
+            acquisition._private_write(
+                rejection_path,
+                (json.dumps(rejection, sort_keys=True, indent=2) + "\n").encode(),
+            )
+            raise
         acquisition._private_write(args.output, overlay_bytes)
         report_path = (
             args.artifact_root
@@ -162,6 +197,8 @@ def dispatch_books(args: argparse.Namespace) -> int:
                     "overlay_path": str(args.output),
                     "report_path": str(report_path),
                     "unreviewed_assets": report["unreviewed_assets"],
+                    "normalized_only_occurrences": report["normalized_only_occurrences"],
+                    "linked_occurrences": report["linked_occurrences"],
                 }
             )
         )

@@ -144,20 +144,26 @@ and narrowly allowlisted Archive CDN redirects. It caps response bytes,
 redirects, page/ZIP expansion and elapsed request time, rejects unsafe
 paths, HTML download substitutes, private addresses, restricted files,
 ambiguous listings, changed pinned hashes and throttling, with no
-unbounded retry or weaker-source fallback. HTTP interoperability and
-version-dependent metadata remain **unverified against live Archive**.
+unbounded retry or weaker-source fallback. Separately reported anonymous
+HTTP verification at the predecessor SHA `93784f4188be0b741c295da28011fdcac7ab8f5a`
+recovered all three pinned candidates. That independent validation is not
+verification of this newer recovery contract or the private sidecar imports.
 
 ## Acceptance limitations
 
-Fixture-only tests validate mechanics, exact fingerprints, negative
-security behavior, offline resume, overlay invalidation and the preserved
-Phase 1–3 regression suite. **No live candidate acquisition, real EPUB/PDF
-page/asset recovery count, actual image transcription import, or private
-CPU Tesseract availability was verified.** In particular the separately
-observed Atomic 24 unique images/47 occurrences and Psychology 36 unique
-images/36 occurrences (60 unique/83 total across both) are PRIVATE RESEARCH
-BASELINES, not observed output from this implementation.
-
+Synthetic tests validate mechanics, fingerprints, negative security behavior,
+offline resume, overlay invalidation and Phase 1–3 regressions. Separate
+independent CPU execution at predecessor SHA `93784f4` succeeded in anonymous
+acquisition and ordered parsing of the three pinned editions: Atomic
+78 sections / 2,509 blocks / 24 unique images / 47 occurrences;
+Psychology 51 sections / 1,656 blocks / 37 unique images / 37 occurrences;
+Deep UK 229 retained pages / 1,272 blocks / 4 unique images / 38 occurrences,
+with physical page 230 excluded. Counts are diagnostics, not fidelity
+certificates; **all three remained incomplete_recovery**. This round has not
+inspected, converted or reviewed actual private research observations. The
+prior private research image inventory was incomplete, including a missing
+Psychology cover observation. No source authorization or publisher
+authentication is established.
 The old curated selection, claim/HTTPS citation gate, recorded-WAV
 narration, direction `NOT_PORTED` boundary and creative-review controls
 are unchanged. Candidate text does NOT enter automatic mining, and an
@@ -188,3 +194,70 @@ The observed Psychology discrepancy is a missing cover.jpeg in the earlier
 reviewed occurrence inventory (36 reviewed observations versus 37 extraction
 occurrences); this report is computed from the exact source, never from a
 hardcoded count. The Deep UK final physical page exclusion stays source-bound.
+
+
+## Recovery provenance v2: legacy normalized observation import
+
+The v1 reviewed overlay and v1 research-observation conversion remain readable
+as **explicit v1** formats; a v1 overlay requires original transcription,
+nonempty reviewer label, and explicit reviewed status as before. The new
+`clipper-book-image-overlay-v2` and `clipper-book-research-observations-v2`
+are versioned separately. Ordered source extraction now uses
+`clipper-book-ordered-extract-v2`, so previous extraction-stage cache
+identities are not reused after the evidence contract changed. A stale
+v1/unknown overlay is never silently interpreted as v2.
+
+The new research input has these exact top-level keys: `schema`,
+`source_sha256`, `research_origin`, `research_author` (nullable),
+`occurrence_inventory` and `observations`. The inventory is a list of
+`{asset_sha256, anchor, source_path}` records originating from the exact
+extracted source (not index-based guesses). An observation repeats these
+three identity fields and adds `observation_id`, nullable
+`original_transcription`, nullable `normalized_transcription`,
+`normalization_notes`, nullable `reviewed_by`, nullable `reviewed_at`,
+and nullable `review_status` (either `reviewed` or `needs_review` when
+known). A normalized-only record needs a nonblank normalization note,
+even when its original character transcription remains unknown.
+Review cannot be marked complete without both an actual original
+transcription and an explicit human reviewer label. The research author
+is **not** automatically a reviewer. No reviewer-label authentication is
+implied; this remains the documented local single-operator trust boundary.
+
+The conversion rejects unknown book/asset/anchor/path combinations,
+duplicate inventory occurrences, contradictory observation IDs,
+duplicate annotations at an occurrence, missing review provenance on
+asserted reviewed observations and normalized text without a change note.
+An identical asset may occur repeatedly at different source anchors:
+each observation is linked only to its exact occurrence. A partial legacy
+inventory is acceptable; unmatched covers/images remain unreviewed,
+not rejected or filled in. Report counts and per-occurrence reasons
+distinguish linked, normalized-only, reviewed and unresolved observations.
+A rejected import emits a separate immutable non-content rejection dossier
+with its reason and research-input hash; it never emits a usable overlay.
+Linear image reading projections carry distinct `text_provenance`,
+source-original vs normalized text and normalization notes; they do not
+claim preserved diagram geometry or duplicate image alt-text as prose.
+
+On an authorized local machine with an existing pinned acquisition cache:
+
+```bash
+clipper books overlay-import --title "The Psychology of Money" \
+  --artifact-root /private/clipper-books \
+  --research /private/research-export-v2.json \
+  --output /private/psychology-overlay-v2.json
+clipper books ingest --title "The Psychology of Money" --offline \
+  --artifact-root /private/clipper-books \
+  --overlay /private/psychology-overlay-v2.json
+```
+
+The converter works **offline** and persists an unchanged private copy of
+the research JSON (by its SHA-256) plus a separate versioned derived overlay
+and a non-content reconciliation report. Repeating an identical import
+reuses the same immutable bytes. Changing even provenance or grouping
+notes changes the derived overlay hash and therefore extraction stage key.
+Normalized-only and unreviewed records leave recovery
+`incomplete_recovery`; neither this conversion nor an offline ingest
+establishes rights, source exactness, editorial approval or eligibility
+to publish. Real retained private research observations were not available
+for this implementation round. The separately supplied three-book CPU
+validation applies to the prior exact SHA, not to imported private recovery.

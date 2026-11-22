@@ -425,3 +425,178 @@ def test_second_normal_candidate_ingest_reuses_pinned_extracted_artifact(
     assert second.dossier_path == first.dossier_path
     assert len(list((tmp_path / "private/book-candidates/raw").glob("**/*.epub"))) == 1
     assert len(list((tmp_path / "private/book-candidates/extracted").glob("**/*.json"))) == 1
+
+
+def test_synthetic_v2_cli_import_offline_reuse_and_changed_provenance_rekey(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    candidate, transport, registry = _fixture(tmp_path)
+    root = tmp_path / "private"
+    runner = BookOrchestrator(root)
+    first = runner.ingest_candidate("Atomic Habits", registry=(candidate,), transport=transport)
+    assert not isinstance(first, SourceUnresolved)
+    image = first.book.images[0]
+    occ = image.occurrences[0]
+    observation = {
+        "schema": "clipper-book-research-observations-v2",
+        "source_sha256": candidate.expected_sha256,
+        "research_origin": "fixture historical ledger",
+        "research_author": None,
+        "occurrence_inventory": [
+            {
+                "asset_sha256": image.asset_sha256,
+                "anchor": occ.anchor,
+                "source_path": occ.source_path,
+            }
+        ],
+        "observations": [
+            {
+                "observation_id": "fixture-1",
+                "asset_sha256": image.asset_sha256,
+                "anchor": occ.anchor,
+                "source_path": occ.source_path,
+                "original_transcription": None,
+                "normalized_transcription": "Grouped chart text",
+                "normalization_notes": "Editorial grouping only",
+                "reviewed_by": None,
+                "reviewed_at": None,
+                "review_status": None,
+            }
+        ],
+    }
+    research_path = tmp_path / "research-v2.json"
+    overlay_path = tmp_path / "overlay-v2.json"
+    research_path.write_text(json.dumps(observation))
+    cmd = [
+        "books",
+        "overlay-import",
+        "--title",
+        "Atomic Habits",
+        "--registry",
+        str(registry),
+        "--artifact-root",
+        str(root),
+        "--research",
+        str(research_path),
+        "--output",
+        str(overlay_path),
+    ]
+    assert cli.main(cmd) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["normalized_only_occurrences"] == 1
+    assert result["linked_occurrences"] == 1
+    report = json.loads(Path(result["report_path"]).read_text())
+    assert report["unreviewed_assets"] == 1
+    assert report["reviewed_occurrences"] == 0
+    source_path = (
+        root
+        / "book-candidates"
+        / "research-import"
+        / "source"
+        / f"{hashlib.sha256(research_path.read_bytes()).hexdigest()}.json"
+    )
+    assert source_path.read_bytes() == research_path.read_bytes()
+    assert cli.main(cmd) == 2
+    capsys.readouterr()
+    linked = runner.ingest_candidate(
+        "Atomic Habits", registry=(candidate,), offline=True, overlay_path=overlay_path
+    )
+    assert not isinstance(linked, SourceUnresolved)
+    assert linked.stage_key != first.stage_key
+    assert linked.book.recovery_status == "incomplete_recovery"
+    assert linked.book.images[0].original_transcription is None
+    assert linked.book.images[0].occurrences[0].review_status is None
+    assert linked.book.images[0].occurrences[0].normalized_transcription == "Grouped chart text"
+    dossier = json.loads(linked.dossier_path.read_text())
+    assert dossier["normalized_only_occurrences"] == 1
+    assert dossier["reviewed_images"] == 0
+    assert dossier["publish_eligible"] is False
+    assert dossier["authorization_status"] == "unverified"
+    repeated = runner.ingest_candidate(
+        "Atomic Habits", registry=(candidate,), offline=True, overlay_path=overlay_path
+    )
+    assert not isinstance(repeated, SourceUnresolved)
+    assert repeated.stage_key == linked.stage_key
+    assert repeated.book == linked.book
+    observation["observations"][0]["normalization_notes"] = "Revised grouping note"
+    research_path.write_text(json.dumps(observation))
+    changed_path = tmp_path / "changed-overlay.json"
+    updated = [*cmd[:-1], str(changed_path)]
+    assert cli.main(updated) == 2
+    capsys.readouterr()
+    changed = runner.ingest_candidate(
+        "Atomic Habits", registry=(candidate,), offline=True, overlay_path=changed_path
+    )
+    assert not isinstance(changed, SourceUnresolved)
+    assert changed.stage_key != linked.stage_key
+    assert changed.book.images[0].occurrences[0].normalization_notes == "Revised grouping note"
+    assert len(list((root / "book-candidates" / "extracted").glob("**/*.json"))) == 3
+
+
+def test_cli_bad_v2_research_preserves_exact_input_and_rejection_reason(
+    tmp_path: Path,
+) -> None:
+    candidate, transport, registry = _fixture(tmp_path)
+    root = tmp_path / "private"
+    runner = BookOrchestrator(root)
+    first = runner.ingest_candidate("Atomic Habits", registry=(candidate,), transport=transport)
+    assert not isinstance(first, SourceUnresolved)
+    image = first.book.images[0]
+    occ = image.occurrences[0]
+    payload = {
+        "schema": "clipper-book-research-observations-v2",
+        "source_sha256": first.book.content_sha256,
+        "research_origin": "synthetic legacy observation",
+        "research_author": None,
+        "occurrence_inventory": [
+            {
+                "asset_sha256": image.asset_sha256,
+                "anchor": occ.anchor,
+                "source_path": occ.source_path,
+            }
+        ],
+        "observations": [
+            {
+                "observation_id": "not-reviewed",
+                "asset_sha256": image.asset_sha256,
+                "anchor": occ.anchor,
+                "source_path": occ.source_path,
+                "original_transcription": None,
+                "normalized_transcription": "synthetic line grouping",
+                "normalization_notes": "groups words visually",
+                "reviewed_by": None,
+                "reviewed_at": None,
+                "review_status": "reviewed",
+            }
+        ],
+    }
+    input_path = tmp_path / "bad-research.json"
+    data = json.dumps(payload).encode()
+    input_path.write_bytes(data)
+    output_path = tmp_path / "must-not-exist.json"
+    with pytest.raises(Exception, match="review provenance invalid"):
+        cli.main(
+            [
+                "books",
+                "overlay-import",
+                "--title",
+                "Atomic Habits",
+                "--registry",
+                str(registry),
+                "--artifact-root",
+                str(root),
+                "--research",
+                str(input_path),
+                "--output",
+                str(output_path),
+            ]
+        )
+    assert not output_path.exists()
+    digest = hashlib.sha256(data).hexdigest()
+    base = root / "book-candidates" / "research-import"
+    assert (base / "source" / f"{digest}.json").read_bytes() == data
+    rejected = json.loads((base / "rejections" / f"{digest}.json").read_text())
+    assert rejected["status"] == "rejected"
+    assert "review provenance invalid" in rejected["reason"]
+    assert rejected["source_sha256"] == first.book.content_sha256

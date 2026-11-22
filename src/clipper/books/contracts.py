@@ -69,11 +69,22 @@ class ReadingBlock:
     section_id: str
     source_path: str
     text: str
-    origin: Literal["source", "reviewed_image", "machine_ocr", "unrecovered_image"]
+    origin: Literal[
+        "source",
+        "reviewed_image",
+        "machine_ocr",
+        "unrecovered_image",
+        "normalized_research",
+        "original_research_unreviewed",
+    ]
     asset_sha256: str | None = None
     original_image_text: str | None = None
     normalization_notes: str | None = None
     review_status: str = "source_unverified"
+    text_provenance: str = "source"
+    research_origin: str | None = None
+    research_author: str | None = None
+    diagram_geometry_verified: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +92,16 @@ class ImageOccurrence:
     anchor: str
     source_path: str
     alt_text: str
+    observation_id: str | None = None
+    original_transcription: str | None = None
+    normalized_transcription: str | None = None
+    normalization_notes: str | None = None
+    research_origin: str | None = None
+    research_author: str | None = None
+    research_sha256: str | None = None
+    reviewed_by: str | None = None
+    reviewed_at: str | None = None
+    review_status: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

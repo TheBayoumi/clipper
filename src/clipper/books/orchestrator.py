@@ -309,8 +309,9 @@ class BookOrchestrator:
             extracted_path,
             (json.dumps(asdict(book), ensure_ascii=False, sort_keys=True) + "\n").encode(),
         )
+        reconciliation = faithful.image_reconciliation(book)
         dossier = {
-            "schema": "clipper-book-candidate-ingest-dossier-v1",
+            "schema": "clipper-book-candidate-ingest-dossier-v2",
             "book_id": acquired.candidate.book_id,
             "author": acquired.candidate.author,
             "edition_identity": acquired.candidate.edition_identity,
@@ -345,14 +346,17 @@ class BookOrchestrator:
             "extracted_words": book.total_word_count,
             "unique_images": len(book.images),
             "image_occurrences": sum(len(x.occurrences) for x in book.images),
-            "reviewed_images": sum(x.review_status == "reviewed" for x in book.images),
+            "reviewed_images": reconciliation["reviewed_assets"],
             "excluded_pages": [asdict(x) for x in book.excluded_pages],
             "recovery_status": book.recovery_status,
             "warnings": [*acquired.warnings, *book.warnings],
             "editorial_approved": False,
             "publish_eligible": False,
         }
-        reconciliation = faithful.image_reconciliation(book)
+        dossier["reviewed_occurrences"] = reconciliation["reviewed_occurrences"]
+        dossier["normalized_only_occurrences"] = reconciliation["normalized_only_occurrences"]
+        dossier["linked_occurrences"] = reconciliation["linked_occurrences"]
+        dossier["unresolved_occurrences"] = reconciliation["unresolved_occurrences"]
         reconciliation_path = (
             self.root
             / "book-candidates"

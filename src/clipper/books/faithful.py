@@ -36,7 +36,7 @@ from .contracts import (
     SourceBlock,
 )
 
-PARSER_VERSION = "clipper-book-ordered-extract-v1"
+PARSER_VERSION = "clipper-book-ordered-extract-v2"
 MAX_MEMBERS = 1500
 MAX_TOTAL_UNCOMPRESSED = 100_000_000
 MAX_ITEM_BYTES = 20_000_000
@@ -564,6 +564,8 @@ def _overlay(
         document: object = json.loads(payload)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ExtractionError("reviewed image overlay is invalid JSON") from exc
+    if isinstance(document, dict) and document.get("schema") == "clipper-book-image-overlay-v2":
+        return _overlay_v2(raw_sha, blocks, images, document)
     if (
         not isinstance(document, dict)
         or set(document) != {"schema", "source_sha256", "entries"}
@@ -635,6 +637,152 @@ def _overlay(
     return blocks, reordered
 
 
+def _overlay_v2(
+    raw_sha: str,
+    blocks: tuple[SourceBlock, ...],
+    images: tuple[ImageEvidence, ...],
+    document: dict[str, Any],
+) -> tuple[tuple[SourceBlock, ...], tuple[ImageEvidence, ...]]:
+    """Link occurrence-granular research evidence without promoting editorial text."""
+    if set(document) != {
+        "schema",
+        "source_sha256",
+        "research_sha256",
+        "research_origin",
+        "research_author",
+        "entries",
+    }:
+        raise ExtractionError("v2 image overlay schema mismatch")
+    if document["source_sha256"] != raw_sha:
+        raise ExtractionError("reviewed image overlay raw-book digest mismatch")
+    origin = document["research_origin"]
+    author = document["research_author"]
+    research_sha = document["research_sha256"]
+    if (
+        not isinstance(origin, str)
+        or not origin.strip()
+        or len(origin) > 200
+        or (
+            author is not None
+            and (not isinstance(author, str) or not author.strip() or len(author) > 200)
+        )
+        or not isinstance(research_sha, str)
+        or re.fullmatch(r"[0-9a-f]{64}", research_sha) is None
+        or not isinstance(document["entries"], list)
+    ):
+        raise ExtractionError("v2 image overlay provenance invalid")
+    known = {
+        (image.asset_sha256, occ.anchor, occ.source_path)
+        for image in images
+        for occ in image.occurrences
+    }
+    linked: dict[tuple[str, str, str], dict[str, Any]] = {}
+    observation_ids: set[str] = set()
+    for entry in document["entries"]:
+        if not isinstance(entry, dict) or set(entry) != {
+            "observation_id",
+            "asset_sha256",
+            "anchor",
+            "source_path",
+            "original_transcription",
+            "normalized_transcription",
+            "normalization_notes",
+            "reviewed_by",
+            "reviewed_at",
+            "review_status",
+        }:
+            raise ExtractionError("v2 image overlay entry fields mismatch")
+        digest = entry["asset_sha256"]
+        anchor = entry["anchor"]
+        path = entry["source_path"]
+        identity = (digest, anchor, path)
+        observation_id = entry["observation_id"]
+        if (
+            not isinstance(digest, str)
+            or not isinstance(anchor, str)
+            or not isinstance(path, str)
+            or identity not in known
+            or identity in linked
+            or not isinstance(observation_id, str)
+            or not observation_id.strip()
+            or len(observation_id) > 200
+            or observation_id in observation_ids
+        ):
+            raise ExtractionError("v2 image overlay unknown/duplicate asset occurrence")
+        original = entry["original_transcription"]
+        normalized = entry["normalized_transcription"]
+        notes = entry["normalization_notes"]
+        reviewer = entry["reviewed_by"]
+        timestamp = entry["reviewed_at"]
+        status = entry["review_status"]
+        if (
+            (original is not None and (not isinstance(original, str) or not original.strip()))
+            or (
+                normalized is not None
+                and (not isinstance(normalized, str) or not normalized.strip())
+            )
+            or (original is None and normalized is None)
+            or (notes is not None and not isinstance(notes, str))
+            or (
+                normalized is not None
+                and normalized != original
+                and (not isinstance(notes, str) or not notes.strip())
+            )
+            or (
+                reviewer is not None
+                and (not isinstance(reviewer, str) or not reviewer.strip())
+            )
+            or (
+                timestamp is not None
+                and (not isinstance(timestamp, str) or not timestamp.strip())
+            )
+            or status not in (None, "needs_review", "reviewed")
+            or (status == "reviewed" and (original is None or reviewer is None))
+        ):
+            raise ExtractionError("v2 image overlay observation/review provenance invalid")
+        linked[identity] = entry
+        observation_ids.add(observation_id)
+    updated: list[ImageEvidence] = []
+    for image in images:
+        occurrences: list[ImageOccurrence] = []
+        found = False
+        for occ in image.occurrences:
+            entry = linked.get((image.asset_sha256, occ.anchor, occ.source_path))
+            if entry is None:
+                occurrences.append(occ)
+                continue
+            found = True
+            occurrences.append(
+                replace(
+                    occ,
+                    observation_id=entry["observation_id"],
+                    original_transcription=entry["original_transcription"],
+                    normalized_transcription=entry["normalized_transcription"],
+                    normalization_notes=entry["normalization_notes"],
+                    research_origin=origin,
+                    research_author=author,
+                    research_sha256=research_sha,
+                    reviewed_by=entry["reviewed_by"],
+                    reviewed_at=entry["reviewed_at"],
+                    review_status=entry["review_status"],
+                )
+            )
+        if not found:
+            updated.append(image)
+            continue
+        fully_reviewed = all(occ.review_status == "reviewed" for occ in occurrences)
+        updated.append(
+            replace(
+                image,
+                occurrences=tuple(occurrences),
+                method="research_observation",
+                review_status="reviewed" if fully_reviewed else "needs_review",
+                uncertainty="linked research observations; source fidelity/review still uncertain",
+            )
+        )
+    return blocks, tuple(updated)
+
+
 def extract_candidate(
     source: BookSource,
     raw: bytes,
@@ -668,7 +816,7 @@ def extract_candidate(
     if ocr is not None:
         resolved: list[ImageEvidence] = []
         for image in images:
-            if image.method == "reviewed_overlay":
+            if image.method in ("reviewed_overlay", "research_observation"):
                 resolved.append(image)
                 continue
             # OCR is never source truth and is kept separately as unreviewed evidence.
@@ -723,13 +871,19 @@ def extract_candidate(
     )
 
 
+def _effective_review(image: ImageEvidence, occ: ImageOccurrence) -> str:
+    if occ.observation_id is not None:
+        return occ.review_status or "needs_review"
+    return image.review_status
+
+
 def reading_blocks(book: BookText) -> Iterator[ReadingBlock]:
-    """Yield source and recovered-image text in original block order, without changing raw data."""
-    images = {item.asset_sha256: item for item in book.images}
+    """Source-ordered linear view; image diagram geometry is never inferred."""
+    images = {image.asset_sha256: image for image in book.images}
     occurrences = {
-        (image.asset_sha256, occurrence.anchor): occurrence
+        (image.asset_sha256, item.anchor, item.source_path): item
         for image in book.images
-        for occurrence in image.occurrences
+        for item in image.occurrences
     }
     for block in book.blocks:
         if block.kind != "image":
@@ -743,54 +897,144 @@ def reading_blocks(book: BookText) -> Iterator[ReadingBlock]:
             )
             continue
         digest = block.asset_sha256
-        if digest is None or digest not in images or (digest, block.anchor) not in occurrences:
-            raise ExtractionError("ordered image block is missing source occurrence evidence")
-        evidence = images[digest]
-        origin: Literal["reviewed_image", "machine_ocr", "unrecovered_image"]
-        if evidence.review_status == "reviewed":
-            origin = "reviewed_image"
-        elif evidence.review_status == "machine_unreviewed":
-            origin = "machine_ocr"
+        if digest is None or digest not in images:
+            raise ExtractionError("ordered image block missing asset evidence")
+        item = occurrences.get((digest, block.anchor, block.source_path))
+        if item is None:
+            raise ExtractionError("ordered image block missing exact path/anchor evidence")
+        image = images[digest]
+        status = _effective_review(image, item)
+        provenance = "missing"
+        origin: Literal[
+            "reviewed_image",
+            "machine_ocr",
+            "unrecovered_image",
+            "normalized_research",
+            "original_research_unreviewed",
+        ]
+        if item.observation_id is not None:
+            if item.normalized_transcription is not None:
+                text = item.normalized_transcription
+                origin = "normalized_research"
+                provenance = "image_normalized"
+            else:
+                text = item.original_transcription or ""
+                origin = (
+                    "reviewed_image" if status == "reviewed" else "original_research_unreviewed"
+                )
+                provenance = "image_original"
+            original = item.original_transcription
+            notes = item.normalization_notes
         else:
-            origin = "unrecovered_image"
+            original = image.original_transcription
+            notes = image.normalization_notes
+            text = image.normalized_transcription or original or ""
+            if image.review_status == "reviewed":
+                origin = "reviewed_image"
+                provenance = (
+                    "image_normalized"
+                    if image.normalized_transcription is not None
+                    else "image_original"
+                )
+            elif image.review_status == "machine_unreviewed":
+                origin = "machine_ocr"
+                provenance = "machine_ocr"
+            else:
+                origin = "unrecovered_image"
         yield ReadingBlock(
             block.anchor,
             block.section_id,
             block.source_path,
-            evidence.normalized_transcription or evidence.original_transcription or "",
+            text,
             origin,
             asset_sha256=digest,
-            original_image_text=evidence.original_transcription,
-            normalization_notes=evidence.normalization_notes,
-            review_status=evidence.review_status,
+            original_image_text=original,
+            normalization_notes=notes,
+            review_status=status,
+            text_provenance=provenance,
+            research_origin=item.research_origin,
+            research_author=item.research_author,
         )
 
 
 def image_reconciliation(book: BookText) -> dict[str, Any]:
-    """Non-content inventory, keyed by actual asset digests and source-order occurrences."""
-    records = [
-        {
-            "asset_sha256": image.asset_sha256,
-            "byte_count": image.byte_count,
-            "review_status": image.review_status,
-            "method": image.method,
-            "occurrences": [
-                {"anchor": item.anchor, "source_path": item.source_path}
-                for item in image.occurrences
-            ],
-        }
-        for image in book.images
-    ]
+    """Non-content per-occurrence inventory; no asset or page can be auto-approved."""
+    records: list[dict[str, Any]] = []
+    reviewed_assets = 0
+    reviewed_occurrences = 0
+    normalized_only = 0
+    linked_occurrences = 0
+    unresolved_occurrences = 0
+    for image in book.images:
+        occurrences: list[dict[str, Any]] = []
+        all_reviewed = bool(image.occurrences)
+        for occ in image.occurrences:
+            status = _effective_review(image, occ)
+            reviewed = status == "reviewed"
+            all_reviewed = all_reviewed and reviewed
+            reviewed_occurrences += int(reviewed)
+            linked = occ.observation_id is not None
+            normalized = (
+                linked
+                and occ.original_transcription is None
+                and occ.normalized_transcription is not None
+            )
+            linked_occurrences += int(linked)
+            normalized_only += int(normalized)
+            missing = not linked and image.original_transcription is None
+            unresolved_occurrences += int(missing)
+            occurrences.append(
+                {
+                    "anchor": occ.anchor,
+                    "source_path": occ.source_path,
+                    "review_status": status,
+                    "observation_id": occ.observation_id,
+                    "research_sha256": occ.research_sha256,
+                    "resolution_reason": (
+                        "source occurrence lacks recovery evidence"
+                        if missing
+                        else "research observation not independently reviewed"
+                        if linked and not reviewed
+                        else None
+                    ),
+                    "evidence_kind": (
+                        "normalized_only"
+                        if normalized
+                        else "reviewed_observation"
+                        if linked and reviewed
+                        else "unreviewed_observation"
+                        if linked
+                        else "unresolved"
+                        if missing
+                        else image.method
+                    ),
+                }
+            )
+        reviewed_assets += int(all_reviewed)
+        records.append(
+            {
+                "asset_sha256": image.asset_sha256,
+                "byte_count": image.byte_count,
+                "review_status": image.review_status,
+                "method": image.method,
+                "occurrences": occurrences,
+            }
+        )
+    total_occurrences = sum(len(x.occurrences) for x in book.images)
     return {
-        "schema": "clipper-book-image-reconciliation-v1",
+        "schema": "clipper-book-image-reconciliation-v2",
         "source_sha256": book.content_sha256,
         "parser_version": book.parser_version,
         "unique_assets": len(book.images),
-        "total_occurrences": sum(len(x.occurrences) for x in book.images),
-        "unreviewed_assets": sum(x.review_status != "reviewed" for x in book.images),
-        "unreviewed_occurrences": sum(
-            len(x.occurrences) for x in book.images if x.review_status != "reviewed"
-        ),
+        "total_occurrences": total_occurrences,
+        "reviewed_assets": reviewed_assets,
+        "reviewed_occurrences": reviewed_occurrences,
+        "unreviewed_assets": len(book.images) - reviewed_assets,
+        "unreviewed_occurrences": total_occurrences - reviewed_occurrences,
+        "linked_occurrences": linked_occurrences,
+        "normalized_only_occurrences": normalized_only,
+        "unresolved_occurrences": unresolved_occurrences,
+        "rejected_observations": 0,
         "assets": records,
     }
 
@@ -803,6 +1047,11 @@ def convert_research_observations(book: BookText, payload: bytes) -> tuple[bytes
         document: object = json.loads(payload)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ExtractionError("private research observations are invalid JSON") from exc
+    if (
+        isinstance(document, dict)
+        and document.get("schema") == "clipper-book-research-observations-v2"
+    ):
+        return _convert_research_v2(book, payload, document)
     if (
         not isinstance(document, dict)
         or set(document) != {"schema", "source_sha256", "entries"}
@@ -863,3 +1112,90 @@ def convert_research_observations(book: BookText, payload: bytes) -> tuple[bytes
     ).encode()
     _, evidence = _overlay(book.content_sha256, book.blocks, book.images, serialized)
     return serialized, image_reconciliation(replace(book, images=evidence))
+
+
+def _convert_research_v2(
+    book: BookText, payload: bytes, document: dict[str, Any]
+) -> tuple[bytes, dict[str, Any]]:
+    """Bind a separate legacy inventory and observations by exact asset/path/anchor."""
+    if set(document) != {
+        "schema",
+        "source_sha256",
+        "research_origin",
+        "research_author",
+        "occurrence_inventory",
+        "observations",
+    }:
+        raise ExtractionError("v2 research input fields mismatch")
+    if (
+        document["source_sha256"] != book.content_sha256
+        or book.source.source_kind != "archive_candidate"
+    ):
+        raise ExtractionError("v2 research raw source identity mismatch")
+    inventory = document["occurrence_inventory"]
+    observations = document["observations"]
+    if not isinstance(inventory, list) or not isinstance(observations, list):
+        raise ExtractionError("v2 research inventory/observations must be arrays")
+    expected = {
+        (image.asset_sha256, occ.anchor, occ.source_path)
+        for image in book.images
+        for occ in image.occurrences
+    }
+    acknowledged: set[tuple[str, str, str]] = set()
+    for row in inventory:
+        if not isinstance(row, dict) or set(row) != {"asset_sha256", "anchor", "source_path"}:
+            raise ExtractionError("v2 research inventory entry fields mismatch")
+        key = (row["asset_sha256"], row["anchor"], row["source_path"])
+        if (
+            not all(isinstance(value, str) for value in key)
+            or key not in expected
+            or key in acknowledged
+        ):
+            raise ExtractionError("v2 research inventory unknown/duplicate occurrence")
+        acknowledged.add(key)
+    entries: list[dict[str, Any]] = []
+    used: set[tuple[str, str, str]] = set()
+    for row in observations:
+        if not isinstance(row, dict) or set(row) != {
+            "observation_id",
+            "asset_sha256",
+            "anchor",
+            "source_path",
+            "original_transcription",
+            "normalized_transcription",
+            "normalization_notes",
+            "reviewed_by",
+            "reviewed_at",
+            "review_status",
+        }:
+            raise ExtractionError("v2 research observation fields mismatch")
+        key = (row["asset_sha256"], row["anchor"], row["source_path"])
+        if (
+            not all(isinstance(value, str) for value in key)
+            or key not in acknowledged
+            or key in used
+        ):
+            raise ExtractionError("v2 research observation not uniquely in path inventory")
+        used.add(key)
+        entries.append(dict(row))
+    overlay: dict[str, Any] = {
+        "schema": "clipper-book-image-overlay-v2",
+        "source_sha256": book.content_sha256,
+        "research_sha256": hashlib.sha256(payload).hexdigest(),
+        "research_origin": document["research_origin"],
+        "research_author": document["research_author"],
+        "entries": entries,
+    }
+    serialized = (
+        json.dumps(overlay, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    _, images = _overlay(book.content_sha256, book.blocks, book.images, serialized)
+    report = image_reconciliation(replace(book, images=images))
+    report["source_research_sha256"] = overlay["research_sha256"]
+    report["research_origin"] = overlay["research_origin"]
+    report["research_author"] = overlay["research_author"]
+    report["inventory_occurrences"] = len(acknowledged)
+    report["linked_observations"] = len(entries)
+    report["inventory_without_observation"] = len(acknowledged - used)
+    report["unmatched_source_occurrences"] = len(expected - used)
+    return serialized, report

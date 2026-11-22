@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
@@ -15,7 +16,7 @@ import pytest
 from PIL import Image
 
 from clipper.books.acquisition import ReviewedCandidate, load_registry
-from clipper.books.contracts import BookSource, OCRIdentity
+from clipper.books.contracts import BookSource, BookText, OCRIdentity
 from clipper.books.faithful import (
     ExtractionError,
     _xml,
@@ -154,7 +155,7 @@ def _pdf(*, with_raster: bool = False, author: str = "Cal Newport") -> bytes:
 def test_epub_source_order_and_text_image_separation() -> None:
     raw = _epub()
     book = extract_candidate(_source(raw, _candidate(raw)), raw, _candidate(raw))
-    assert book.parser_version == "clipper-book-ordered-extract-v1"
+    assert book.parser_version == "clipper-book-ordered-extract-v2"
     assert len(book.sections) == 4
     assert book.sections[0].heading == "Cover"
     assert "proscribed" in "\n".join(block.text for block in book.blocks)
@@ -824,3 +825,240 @@ def test_invalid_ocr_identity_rejected_before_processing() -> None:
     ):
         with pytest.raises(ExtractionError, match="requires deterministic identity"):
             ocr_contract(lambda _p, _m: "source words", identity)
+
+
+def _research_v2(book: BookText) -> dict[str, object]:
+    image = book.images[0]
+    inventory = [
+        {
+            "asset_sha256": image.asset_sha256,
+            "anchor": occ.anchor,
+            "source_path": occ.source_path,
+        }
+        for occ in image.occurrences
+    ]
+    return {
+        "schema": "clipper-book-research-observations-v2",
+        "source_sha256": book.content_sha256,
+        "research_origin": "synthetic legacy annotation ledger",
+        "research_author": None,
+        "occurrence_inventory": inventory,
+        "observations": [],
+    }
+
+
+def _observation(
+    inventory: dict[str, str],
+    *,
+    observation_id: str,
+    original: str | None = None,
+    normalized: str | None = "40, 10, 60",
+    reviewed_by: str | None = None,
+    reviewed_at: str | None = None,
+    review_status: str | None = None,
+) -> dict[str, object]:
+    return {
+        **inventory,
+        "observation_id": observation_id,
+        "original_transcription": original,
+        "normalized_transcription": normalized,
+        "normalization_notes": "Editorial commas and chart grouping",
+        "reviewed_by": reviewed_by,
+        "reviewed_at": reviewed_at,
+        "review_status": review_status,
+    }
+
+
+def test_normalized_only_legacy_observations_are_linked_not_reviewed() -> None:
+    raw = _epub()
+    selected = _candidate(raw)
+    book = extract_candidate(_source(raw, selected), raw, selected)
+    research = _research_v2(book)
+    inventory = research["occurrence_inventory"]
+    assert isinstance(inventory, list)
+    research["observations"] = [
+        _observation(inventory[0], observation_id="chart-1"),
+        _observation(inventory[1], observation_id="chart-2", normalized="Grouped label"),
+    ]
+    overlay, report = convert_research_observations(book, json.dumps(research).encode())
+    assert json.loads(overlay)["schema"] == "clipper-book-image-overlay-v2"
+    assert report["linked_observations"] == 2
+    assert report["normalized_only_occurrences"] == 2
+    assert report["unreviewed_occurrences"] == 3
+    assert report["reviewed_occurrences"] == 0
+    assert report["unmatched_source_occurrences"] == 1
+    assert report["rejected_observations"] == 0
+    recovered = extract_candidate(book.source, raw, selected, overlay=overlay)
+    assert recovered.recovery_status == "incomplete_recovery"
+    assert recovered.images[0].original_transcription is None
+    assert recovered.images[0].review_status == "needs_review"
+    assert recovered.images[0].occurrences[0].reviewed_at is None
+    assert recovered.images[0].occurrences[0].research_author is None
+    view = list(reading_blocks(recovered))
+    assert [x.anchor for x in view] == [x.anchor for x in book.blocks]
+    assert len(view) == len(book.blocks)
+    linked = [x for x in view if x.origin == "normalized_research"]
+    assert [x.text for x in linked] == ["40, 10, 60", "Grouped label"]
+    assert all(x.original_image_text is None for x in linked)
+    assert all(x.review_status == "needs_review" for x in linked)
+    assert all(x.text_provenance == "image_normalized" for x in linked)
+    assert all(x.diagram_geometry_verified is False for x in linked)
+    assert len([x for x in view if x.origin == "unrecovered_image"]) == 1
+    assert not any(x.text == "Automaticity 40 10 60" for x in view)
+    assert recovered.blocks == book.blocks
+    assert recovered.sections == book.sections
+
+
+def test_repeated_asset_occurrences_allow_distinct_reviewed_observations() -> None:
+    raw = _epub()
+    selected = _candidate(raw)
+    book = extract_candidate(_source(raw, selected), raw, selected)
+    research = _research_v2(book)
+    inventory = research["occurrence_inventory"]
+    assert isinstance(inventory, list)
+    research["research_author"] = "synthetic annotator"
+    research["observations"] = [
+        _observation(
+            item,
+            observation_id=f"occurrence-{index}",
+            original=f"original source label {index}",
+            normalized=f"editorial grouped label {index}",
+            reviewed_by="fixture human checker",
+            review_status="reviewed",
+        )
+        for index, item in enumerate(inventory)
+    ]
+    overlay, report = convert_research_observations(book, json.dumps(research).encode())
+    assert report["reviewed_assets"] == 1
+    assert report["reviewed_occurrences"] == 3
+    assert report["linked_occurrences"] == 3
+    assert report["normalized_only_occurrences"] == 0
+    extracted = extract_candidate(book.source, raw, selected, overlay=overlay)
+    assert extracted.images[0].review_status == "reviewed"
+    assert extracted.images[0].original_transcription is None
+    assert extracted.images[0].occurrences[1].original_transcription == "original source label 1"
+    assert extracted.images[0].occurrences[1].reviewed_by == "fixture human checker"
+    assert extracted.images[0].occurrences[1].reviewed_at is None
+    view = [x for x in reading_blocks(extracted) if x.origin == "normalized_research"]
+    assert len(view) == 3
+    assert view[1].original_image_text == "original source label 1"
+    assert view[1].review_status == "reviewed"
+    assert view[1].research_author == "synthetic annotator"
+    assert view[1].normalization_notes == "Editorial commas and chart grouping"
+    assert extracted.parser_config_sha256 != book.parser_config_sha256
+    assert extracted.source.authorization_status == "unverified"
+
+
+def test_legacy_v2_rejects_wrong_book_unknown_path_duplicates_and_false_review() -> None:
+    raw = _epub()
+    book = extract_candidate(_source(raw, _candidate(raw)), raw, _candidate(raw))
+    baseline = _research_v2(book)
+    inventory = baseline["occurrence_inventory"]
+    assert isinstance(inventory, list)
+    baseline["observations"] = [_observation(inventory[0], observation_id="one")]
+    for index in range(12):
+        item = copy.deepcopy(baseline)
+        pairs = item["occurrence_inventory"]
+        observations = item["observations"]
+        assert isinstance(pairs, list)
+        assert isinstance(observations, list)
+        entry = observations[0]
+        if index == 0:
+            item["source_sha256"] = "0" * 64
+        elif index == 1:
+            pairs[0]["asset_sha256"] = "0" * 64
+        elif index == 2:
+            pairs[0]["source_path"] = "OPS/fake/cover.xhtml"
+        elif index == 3:
+            pairs[0]["anchor"] = "not-a-source-anchor"
+        elif index == 4:
+            pairs.append(copy.deepcopy(pairs[0]))
+        elif index == 5:
+            entry["asset_sha256"] = "0" * 64
+        elif index == 6:
+            observations.append(copy.deepcopy(entry))
+        elif index == 7:
+            entry["review_status"] = "reviewed"
+        elif index == 8:
+            entry["normalization_notes"] = None
+        elif index == 9:
+            entry["original_transcription"] = ""
+        elif index == 10:
+            entry["observation_id"] = ""
+        else:
+            observations.append(
+                {**copy.deepcopy(entry), "observation_id": "one", **inventory[1]}
+            )
+        with pytest.raises(ExtractionError):
+            convert_research_observations(book, json.dumps(item).encode())
+
+
+def test_private_research_missing_cover_is_not_invented_or_approved() -> None:
+    raw = _mutate_epub(
+        _epub(),
+        replacements={
+            "OPS/content.opf": (
+                '<item id="chart"',
+                '<item id="extra-cover" href="Images/cover.png" media-type="image/png"/>'
+                '<item id="chart"',
+            ),
+            "OPS/Text/cover.xhtml": (
+                "<p>Short front matter.</p>",
+                '<p>Short front matter.</p><img src="../Images/cover.png" alt="Cover"/>',
+            ),
+        },
+        additions={"OPS/Images/cover.png": b"\x89PNG\r\n\x1a\nSYNTHETIC-COVER"},
+    )
+    selected = _candidate(raw)
+    book = extract_candidate(_source(raw, selected), raw, selected)
+    assert len(book.images) == 2
+    research = _research_v2(book)
+    chart = next(image for image in book.images if len(image.occurrences) == 3)
+    research["occurrence_inventory"] = [
+        {
+            "asset_sha256": chart.asset_sha256,
+            "anchor": occ.anchor,
+            "source_path": occ.source_path,
+        }
+        for occ in chart.occurrences
+    ]
+    inventory = research["occurrence_inventory"]
+    assert isinstance(inventory, list)
+    research["observations"] = [_observation(inventory[0], observation_id="chart-1")]
+    overlay, report = convert_research_observations(book, json.dumps(research).encode())
+    assert report["unique_assets"] == 2
+    assert report["total_occurrences"] == 4
+    assert report["linked_occurrences"] == 1
+    assert report["unmatched_source_occurrences"] == 3
+    assert report["unreviewed_assets"] == 2
+    recovered = extract_candidate(book.source, raw, selected, overlay=overlay)
+    cover = next(image for image in recovered.images if len(image.occurrences) == 1)
+    assert cover.review_status == "needs_review"
+    view = list(reading_blocks(recovered))
+    cover_view = [x for x in view if x.asset_sha256 == cover.asset_sha256]
+    assert len(cover_view) == 1
+    assert cover_view[0].origin == "unrecovered_image"
+    assert cover_view[0].text == ""
+    assert recovered.recovery_status == "incomplete_recovery"
+
+
+def test_v2_overlay_rejects_provenance_tampering_and_stale_observation_id() -> None:
+    raw = _epub()
+    selected = _candidate(raw)
+    book = extract_candidate(_source(raw, selected), raw, selected)
+    research = _research_v2(book)
+    inventory = research["occurrence_inventory"]
+    assert isinstance(inventory, list)
+    research["observations"] = [_observation(inventory[0], observation_id="test-one")]
+    overlay, _report = convert_research_observations(book, json.dumps(research).encode())
+    base = json.loads(overlay)
+    for broken in (
+        {**base, "source_sha256": "0" * 64},
+        {**base, "research_sha256": "bad"},
+        {**base, "research_origin": ""},
+        {**base, "entries": [{**base["entries"][0], "source_path": "wrong"}]},
+        {**base, "entries": base["entries"] * 2},
+        {**base, "entries": [{**base["entries"][0], "review_status": "reviewed"}]},
+    ):
+        with pytest.raises(ExtractionError):
+            extract_candidate(book.source, raw, selected, overlay=json.dumps(broken).encode())
