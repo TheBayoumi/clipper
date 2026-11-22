@@ -765,25 +765,31 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
         # space+quote+comma+quote, which is not a legal single JSON-string
         # token to LMFE. A tokenization path is not an authored raw reply:
         # preserve EVERY raw byte while splitting only this token boundary.
-        assert tokenizer.decode(
-            [15553], skip_special_tokens=True, clean_up_tokenization_spaces=False
-        ) == ' ","'
+        assert (
+            tokenizer.decode([15553], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+            == ' ","'
+        )
         replacement = [
             330,
             *tokenizer.encode(',"', add_special_tokens=False),
         ]
-        assert tokenizer.decode(
-            replacement, skip_special_tokens=True, clean_up_tokenization_spaces=False
-        ) == ' ","'
+        assert (
+            tokenizer.decode(
+                replacement, skip_special_tokens=True, clean_up_tokenization_spaces=False
+            )
+            == ' ","'
+        )
         assert 15553 in wide_tokens
         alternate_tokens = [
-            part for token in wide_tokens
-            for part in (replacement if token == 15553 else [token])
+            part for token in wide_tokens for part in (replacement if token == 15553 else [token])
         ]
         assert len(alternate_tokens) <= 960
-        assert tokenizer.decode(
-            alternate_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
-        ) == wide_raw
+        assert (
+            tokenizer.decode(
+                alternate_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
+            )
+            == wide_raw
+        )
         wide_callback = constrained.prefix_for(wide_request, tokenizer, scripting.SCRIPT_REVISION)
         wide_prefix = [tokenizer.eos_token_id]
         wide_start = time.perf_counter()
