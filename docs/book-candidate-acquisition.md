@@ -292,3 +292,32 @@ DagStore consumers retain their existing behavior; the book-DAG root restriction
 also prevents non-owner traversal of sibling book stages. These are local
 filesystem permission controls, not protection against another owner-equivalent
 process or a filesystem without POSIX permission enforcement.
+
+### Immutable import reports and bounded evidence
+
+The common evidence boundary in `faithful.MAX_EVIDENCE_BYTES` limits each
+research export and image overlay to 2,000,000 bytes, including direct byte
+APIs and cached research. Opened files are read up to the limit plus one byte;
+oversized input is rejected before hashing, persistence or JSON decoding.
+Oversized research receives a typed non-content diagnostic only: no truncated
+raw copy, invented digest, rejection dossier keyed to partial bytes or overlay.
+Within the limit, malformed JSON (including unsupported numeric tokens, duplicate
+members and invalid Unicode) retains the exact raw research and records its
+source-bound rejection as before. Valid v1/v2 evidence contains no numeric tokens.
+
+Import reports now use `research-import/<book_id>/report-<identity>.json`.
+The deterministic identity binds the import-report contract version,
+reconciliation schema, extraction parser version, candidate fingerprint, source,
+raw research and overlay digests. The report includes this identity and its
+material; future semantic changes must advance the relevant version. Overlay
+byte identity is independent: the same overlay can have distinct report
+generations. Legacy overlay-hash-named reports are left untouched. Repeated
+identical current imports reuse the same path and bytes; an actual same-identity
+conflict remains an error. The CLI prints the actual report path. The import
+root and evidence subdirectories retain owner-only access on POSIX.
+
+Initial DAG claim/RUNNING publication failures release the owned claim while
+holding the local write lock, or through the existing owner-bound distributed
+release API. Operation execution cannot begin until initial publication succeeds.
+No leases or retry timing are changed. These changes do not alter accepted
+parser-v3 extraction identities or establish source fidelity or authorization.

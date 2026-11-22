@@ -255,7 +255,7 @@ class BookOrchestrator:
         if overlay_path is not None:
             if not overlay_path.is_file():
                 raise BookRunError(f"reviewed image overlay missing: {overlay_path}")
-            overlay = overlay_path.read_bytes()
+            overlay = faithful.read_evidence(overlay_path)
             if not overlay:
                 raise faithful.ExtractionError("explicit image overlay is empty")
             declared_digest = faithful.research_digest(overlay)
@@ -268,12 +268,7 @@ class BookOrchestrator:
                     / f"{declared_digest}.json"
                 )
                 if research_path.exists():
-                    with research_path.open("rb") as handle:
-                        research_payload = handle.read(2_000_001)
-                    if len(research_payload) > 2_000_000:
-                        raise faithful.ExtractionError(
-                            "cached research exceeds bounded import size"
-                        )
+                    research_payload = faithful.read_evidence(research_path)
                     if hashlib.sha256(research_payload).hexdigest() != declared_digest:
                         raise faithful.ExtractionError("cached research bytes do not match digest")
         configuration = {

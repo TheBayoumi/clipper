@@ -314,25 +314,29 @@ class DagStore:
             if cached is not None:
                 return cached, True
             if coordinator.claim(identity, owner_id, self.execution_lease_seconds):
-                coordinator.reload()
-                cached = self.cached_output(identity)
-                if cached is not None:
+                try:
+                    coordinator.reload()
+                    cached = self.cached_output(identity)
+                    if cached is not None:
+                        self._release_lease_best_effort(coordinator, identity, owner_id)
+                        return cached, True
+                    attempt = self.attempt_count(identity) + 1
+                    started = _now()
+                    running = StageRecord(
+                        identity=identity,
+                        status="RUNNING",
+                        attempt_count=attempt,
+                        started_at=started,
+                        completed_at=None,
+                        output_fingerprint=None,
+                        usage={},
+                        cost_usd=0.0,
+                    )
+                    self._write_json(self._record_path(identity), running.to_dict())
+                    coordinator.commit()
+                except BaseException:
                     self._release_lease_best_effort(coordinator, identity, owner_id)
-                    return cached, True
-                attempt = self.attempt_count(identity) + 1
-                started = _now()
-                running = StageRecord(
-                    identity=identity,
-                    status="RUNNING",
-                    attempt_count=attempt,
-                    started_at=started,
-                    completed_at=None,
-                    output_fingerprint=None,
-                    usage={},
-                    cost_usd=0.0,
-                )
-                self._write_json(self._record_path(identity), running.to_dict())
-                coordinator.commit()
+                    raise
                 break
             time.sleep(self.follower_poll_seconds)
 
@@ -431,25 +435,36 @@ class DagStore:
                 if self._claim_expired(claim, now=now):
                     attempt = self.attempt_count(identity) + 1
                     started = _now()
-                    self._write_json(
-                        self._execution_claim_path(identity),
-                        {
-                            "owner_id": owner_id,
-                            "claimed_at": now,
-                            "expires_at": now + self.execution_lease_seconds,
-                        },
-                    )
-                    running = StageRecord(
-                        identity=identity,
-                        status="RUNNING",
-                        attempt_count=attempt,
-                        started_at=started,
-                        completed_at=None,
-                        output_fingerprint=None,
-                        usage={},
-                        cost_usd=0.0,
-                    )
-                    self._write_json(self._record_path(identity), running.to_dict())
+                    try:
+                        self._write_json(
+                            self._execution_claim_path(identity),
+                            {
+                                "owner_id": owner_id,
+                                "claimed_at": now,
+                                "expires_at": now + self.execution_lease_seconds,
+                            },
+                        )
+                        running = StageRecord(
+                            identity=identity,
+                            status="RUNNING",
+                            attempt_count=attempt,
+                            started_at=started,
+                            completed_at=None,
+                            output_fingerprint=None,
+                            usage={},
+                            cost_usd=0.0,
+                        )
+                        self._write_json(self._record_path(identity), running.to_dict())
+                    except BaseException:
+                        # The write lock is still held; never remove a different owner's claim.
+                        try:
+                            if self._claim_owner(self._read_execution_claim(identity)) == owner_id:
+                                self._execution_claim_path(identity).unlink(missing_ok=True)
+                        except OSError:
+                            LOGGER.warning(
+                                "DAG initial claim cleanup failed for %s", identity.stage_name
+                            )
+                        raise
                     claimed = True
 
             if claimed:

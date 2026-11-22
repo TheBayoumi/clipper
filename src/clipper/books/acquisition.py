@@ -279,10 +279,14 @@ def _response(result: HTTPResult, *, limit: int, kind: str) -> None:
         raise AcquisitionError(f"Archive {kind} returned HTML rather than expected data")
 
 
+def _private_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
+
+
 def _private_write(path: Path, data: bytes) -> None:
     """Publish complete immutable bytes with an exclusive atomic link, never replace."""
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(path.parent, 0o700)
+    _private_directory(path.parent)
     if path.exists():
         os.chmod(path, 0o600)
         if path.read_bytes() != data:

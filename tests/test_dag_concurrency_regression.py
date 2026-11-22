@@ -199,3 +199,72 @@ def test_private_dag_output_rename_failure_removes_temporary_file(
         assert store._record_path(identity).stat().st_mode & 0o777 == 0o600
     finally:
         os.umask(previous)
+
+
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("replacement_owner", [False, True])
+def test_initial_running_rename_failure_releases_only_owned_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    private: bool,
+    replacement_owner: bool,
+) -> None:
+    identity = StageIdentity(
+        stage_name="books.ingest", source_hash="source-hash", contract_hash="contract-hash"
+    )
+    store = DagStore(
+        tmp_path / "dag",
+        private_stages=frozenset({identity.stage_name}) if private else frozenset(),
+    )
+    original_replace = Path.replace
+    calls: list[int] = []
+
+    def operation() -> object:
+        calls.append(1)
+        return {"synthetic": True}
+
+    def fail_running(path: Path, target: Path) -> Path:
+        if target.name == "stage.json":
+            assert store._execution_claim_path(identity).is_file()
+            if private:
+                assert path.stat().st_mode & 0o777 == 0o600
+                assert store._execution_claim_path(identity).stat().st_mode & 0o777 == 0o600
+            if replacement_owner:
+                store._write_json(
+                    store._execution_claim_path(identity),
+                    {"owner_id": "other-owner", "expires_at": time.time() + 86_400},
+                )
+            raise OSError("synthetic initial RUNNING rename failure")
+        return original_replace(path, target)
+
+    previous = os.umask(0)
+    try:
+        monkeypatch.setattr(Path, "replace", fail_running)
+        with pytest.raises(OSError, match="initial RUNNING rename failure"):
+            store.execute(identity, operation)
+        directory = store._directory(identity)
+        assert calls == []
+        assert not store._record_path(identity).exists()
+        assert not store._output_path(identity).exists()
+        assert not (directory / ".write-lock").exists()
+        assert not list(directory.glob(".*.tmp"))
+        if replacement_owner:
+            claim = store._read_execution_claim(identity)
+            assert claim is not None
+            assert claim["owner_id"] == "other-owner"
+            return
+        assert not store._execution_claim_path(identity).exists()
+        if private:
+            assert directory.stat().st_mode & 0o777 == 0o700
+        monkeypatch.setattr(Path, "replace", original_replace)
+        # A stranded claim would enter the wait path; never wait for the lease.
+
+        def unexpected_sleep(_seconds: float) -> None:
+            raise AssertionError("retry waited on a stranded claim")
+
+        monkeypatch.setattr(time, "sleep", unexpected_sleep)
+        assert store.execute(identity, operation) == ({"synthetic": True}, False)
+        assert calls == [1]
+        assert not store._execution_claim_path(identity).exists()
+    finally:
+        os.umask(previous)

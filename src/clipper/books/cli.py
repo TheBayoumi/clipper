@@ -10,11 +10,14 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from clipper.stage_contracts import content_fingerprint
+
 from . import acquisition, faithful, ingest, mining, scripting, selection, storyboards
 from .contracts import SourceUnresolved
 from .orchestrator import BookOrchestrator, BookRunError
 
 DEFAULT_CONFIG = Path("niches/book-lessons.yaml")
+IMPORT_REPORT_VERSION = "clipper-book-research-import-report-v1"
 
 
 def configure_books_parser(subparsers: Any) -> None:
@@ -142,19 +145,11 @@ def dispatch_books(args: argparse.Namespace) -> int:
         if isinstance(recovered, SourceUnresolved):
             print(json.dumps(asdict(recovered), ensure_ascii=False))
             return 1
-        if args.research.stat().st_size > 2_000_000:
-            raise faithful.ExtractionError(
-                "private research observations exceed bounded import size"
-            )
-        research_bytes = args.research.read_bytes()
+        research_bytes = faithful.read_evidence(args.research)
         research_digest = hashlib.sha256(research_bytes).hexdigest()
-        raw_research_path = (
-            args.artifact_root
-            / "book-candidates"
-            / "research-import"
-            / "source"
-            / f"{research_digest}.json"
-        )
+        import_root = args.artifact_root / "book-candidates" / "research-import"
+        acquisition._private_directory(import_root)
+        raw_research_path = import_root / "source" / f"{research_digest}.json"
         acquisition._private_write(raw_research_path, research_bytes)
         try:
             overlay_bytes, report = faithful.convert_research_observations(
@@ -169,30 +164,33 @@ def dispatch_books(args: argparse.Namespace) -> int:
                 "status": "rejected",
                 "reason": str(exc),
             }
+            rejection_root = import_root / "rejections"
+            acquisition._private_directory(rejection_root)
             rejection_path = (
-                args.artifact_root
-                / "book-candidates"
-                / "research-import"
-                / "rejections"
-                / recovered.candidate.fingerprint
-                / f"{research_digest}.json"
+                rejection_root / recovered.candidate.fingerprint / f"{research_digest}.json"
             )
             acquisition._private_write(
                 rejection_path,
                 (json.dumps(rejection, sort_keys=True, indent=2) + "\n").encode(),
             )
             raise
-        acquisition._private_write(args.output, overlay_bytes)
-        report_path = (
-            args.artifact_root
-            / "book-candidates"
-            / "research-import"
-            / recovered.candidate.book_id
-            / f"{hashlib.sha256(overlay_bytes).hexdigest()}.json"
-        )
+        report_material = {
+            "schema": IMPORT_REPORT_VERSION,
+            "reconciliation_schema": report["schema"],
+            "parser_version": report["parser_version"],
+            "candidate_fingerprint": recovered.candidate.fingerprint,
+            "source_sha256": recovered.book.content_sha256,
+            "research_sha256": research_digest,
+            "overlay_sha256": hashlib.sha256(overlay_bytes).hexdigest(),
+        }
+        report_identity = content_fingerprint(report_material)
+        report["import_report_identity"] = report_identity
+        report["import_report_material"] = report_material
+        report_path = import_root / recovered.candidate.book_id / f"report-{report_identity}.json"
         acquisition._private_write(
             report_path, (json.dumps(report, sort_keys=True, indent=2) + "\n").encode()
         )
+        acquisition._private_write(args.output, overlay_bytes)
         print(
             json.dumps(
                 {

@@ -19,6 +19,7 @@ import zipfile
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, replace
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Literal
 
 from clipper.stage_contracts import content_fingerprint
@@ -40,6 +41,8 @@ PARSER_VERSION = "clipper-book-ordered-extract-v3"
 MAX_MEMBERS = 1500
 MAX_TOTAL_UNCOMPRESSED = 100_000_000
 MAX_ITEM_BYTES = 20_000_000
+# Research exports and derived/standalone overlays share this byte budget.
+MAX_EVIDENCE_BYTES = 2_000_000
 BLOCK_TAGS = {
     "p",
     "h1",
@@ -563,12 +566,39 @@ def _unique_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _check_evidence_size(payload: bytes) -> None:
+    if len(payload) > MAX_EVIDENCE_BYTES:
+        raise ExtractionError("private evidence exceeds bounded size")
+
+
+def read_evidence(path: Path) -> bytes:
+    """Bound the opened file, not a potentially stale stat result."""
+    with path.open("rb") as handle:
+        payload = handle.read(MAX_EVIDENCE_BYTES + 1)
+    _check_evidence_size(payload)
+    return payload
+
+
+def _unsupported_number(_token: str) -> Any:
+    # Both evidence schemas use strings/null and containers, never numeric values.
+    raise ExtractionError("private evidence contains unsupported numeric token")
+
+
 def evidence_json(payload: bytes) -> object:
-    """Reject ambiguous objects and non-UTF-8-representable strings at every depth."""
+    """Bound bytes and reject ambiguous objects, numeric tokens and invalid Unicode."""
+    _check_evidence_size(payload)
     try:
-        document: object = json.loads(payload, object_pairs_hook=_unique_members)
+        document: object = json.loads(
+            payload,
+            object_pairs_hook=_unique_members,
+            parse_int=_unsupported_number,
+            parse_float=_unsupported_number,
+            parse_constant=_unsupported_number,
+        )
         json.dumps(document, ensure_ascii=False).encode("utf-8")
-    except (UnicodeError, json.JSONDecodeError, RecursionError):
+    except ExtractionError:
+        raise
+    except (ValueError, RecursionError):
         raise ExtractionError("private evidence is invalid JSON or Unicode") from None
     return document
 
@@ -814,6 +844,10 @@ def extract_candidate(
     ocr: OCR | None = None,
     ocr_identity: OCRIdentity | None = None,
 ) -> BookText:
+    if overlay is not None:
+        _check_evidence_size(overlay)
+    if research_payload is not None:
+        _check_evidence_size(research_payload)
     producer_fingerprint = ocr_contract(ocr, ocr_identity)
     if source.source_kind != "archive_candidate":
         raise ExtractionError("faithful extraction requires an explicit Archive candidate")
@@ -1126,8 +1160,6 @@ def image_reconciliation(book: BookText) -> dict[str, Any]:
 
 def convert_research_observations(book: BookText, payload: bytes) -> tuple[bytes, dict[str, Any]]:
     """Convert explicit private research observations; never synthesize missing review."""
-    if len(payload) > 2_000_000:
-        raise ExtractionError("private research observations exceed bounded import size")
     document = evidence_json(payload)
     if (
         isinstance(document, dict)

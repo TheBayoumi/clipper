@@ -14,9 +14,10 @@ from unittest.mock import Mock
 import pytest
 
 from clipper import cli
-from clipper.books import acquisition
+from clipper.books import acquisition, faithful
 from clipper.books.contracts import OCRIdentity, SourceUnresolved
 from clipper.books.orchestrator import BookOrchestrator, BookRunError
+from clipper.stage_contracts import content_fingerprint
 
 
 def _fixture(
@@ -673,11 +674,19 @@ def test_empty_overlay_cannot_alias_omitted_overlay_cache(tmp_path: Path, offlin
             )
 
 
-def test_malformed_unicode_rejections_are_immutable_and_source_bound(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "data",
+    [
+        b'{"private":"secret\\ud800"}',
+        b'{"nested":{"private":"secret","number":' + b"9" * 4301 + b"}}",
+    ],
+)
+def test_malformed_rejections_are_immutable_and_source_bound(
+    tmp_path: Path, data: bytes, caplog: pytest.LogCaptureFixture
+) -> None:
     root = tmp_path / "private"
     runner = BookOrchestrator(root)
     input_path = tmp_path / "malformed.json"
-    data = b'{"private":"secret\\ud800"}'
     input_path.write_bytes(data)
     digest = hashlib.sha256(data).hexdigest()
     reports: list[Path] = []
@@ -717,10 +726,265 @@ def test_malformed_unicode_rejections_are_immutable_and_source_bound(tmp_path: P
             assert json.loads(saved)["candidate_fingerprint"] == candidate.fingerprint
             assert rejection.stat().st_mode & 0o777 == 0o600
             assert rejection.parent.stat().st_mode & 0o777 == 0o700
+            assert rejection.parent.parent.stat().st_mode & 0o777 == 0o700
+            assert base.stat().st_mode & 0o777 == 0o700
             assert not output.exists()
             assert (base / "source" / f"{digest}.json").read_bytes() == data
             assert (base / "source" / f"{digest}.json").stat().st_mode & 0o777 == 0o600
+            assert (base / "source").stat().st_mode & 0o777 == 0o700
+            assert "secret" not in caplog.text
+            assert "9" * 4301 not in caplog.text
             reports.append(rejection)
         assert len(set(reports)) == 2
     finally:
         os.umask(previous)
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_legacy_import_report_coexists_with_current_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], version: int
+) -> None:
+    candidate, transport, registry = _fixture(tmp_path)
+    root = tmp_path / "private"
+    runner = BookOrchestrator(root)
+    first = runner.ingest_candidate(candidate.title, registry=(candidate,), transport=transport)
+    assert not isinstance(first, SourceUnresolved)
+    image = first.book.images[0]
+    occ = image.occurrences[0]
+    text_fields = {
+        "original_transcription": "synthetic café",
+        "normalized_transcription": None,
+        "normalization_notes": None,
+        "reviewed_by": "fixture reviewer",
+        "reviewed_at": None,
+        "review_status": "reviewed",
+    }
+    identity = {"asset_sha256": image.asset_sha256, "anchor": occ.anchor}
+    occurrence = {**identity, "source_path": occ.source_path}
+    research = {
+        "schema": f"clipper-book-research-observations-v{version}",
+        "source_sha256": first.book.content_sha256,
+    }
+    if version == 1:
+        research["entries"] = [
+            {
+                "asset_sha256": image.asset_sha256,
+                "occurrences": [{"anchor": occ.anchor, "source_path": occ.source_path}],
+                **text_fields,
+            }
+        ]
+    else:
+        research.update(
+            research_origin="synthetic ledger",
+            research_author=None,
+            occurrence_inventory=[occurrence],
+            observations=[{**occurrence, "observation_id": "fixture", **text_fields}],
+        )
+    payload = json.dumps(research, ensure_ascii=False).encode()
+    overlay, report = faithful.convert_research_observations(first.book, payload)
+    overlay_digest = hashlib.sha256(overlay).hexdigest()
+    raw_digest = hashlib.sha256(payload).hexdigest()
+    # Reconstruct only the non-content v2 report contract, from synthetic evidence.
+    legacy = {
+        **report,
+        "schema": "clipper-book-image-reconciliation-v2",
+        "parser_version": "clipper-book-ordered-extract-v2",
+    }
+    for field in ("verified_research_links", "unverified_research_links", "machine_occurrences"):
+        legacy.pop(field)
+    for asset in legacy["assets"]:
+        for record in asset["occurrences"]:
+            record.pop("research_link_status")
+    older_bytes = (json.dumps(legacy, sort_keys=True, indent=2) + "\n").encode()
+    base = root / "book-candidates" / "research-import"
+    older_path = base / candidate.book_id / f"{overlay_digest}.json"
+    source = base / "source" / f"{raw_digest}.json"
+    research_path = tmp_path / "research.json"
+    output = tmp_path / "sidecar" / "overlay.json"
+    research_path.write_bytes(payload)
+    previous = os.umask(0)
+    try:
+        acquisition._private_write(older_path, older_bytes)
+        acquisition._private_write(source, payload)
+        acquisition._private_write(output, overlay)
+        cmd = [
+            "books",
+            "overlay-import",
+            "--title",
+            candidate.title,
+            "--registry",
+            str(registry),
+            "--artifact-root",
+            str(root),
+            "--research",
+            str(research_path),
+            "--output",
+            str(output),
+        ]
+        assert cli.main(cmd) == 0
+        current_path = Path(json.loads(capsys.readouterr().out)["report_path"])
+        current_bytes = current_path.read_bytes()
+        current = json.loads(current_bytes)
+        material = current["import_report_material"]
+        report_id = content_fingerprint(material)
+        assert current["import_report_identity"] == report_id
+        assert current_path.name == f"report-{report_id}.json"
+        assert material["schema"] == "clipper-book-research-import-report-v1"
+        assert material["source_sha256"] == first.book.content_sha256
+        assert material["research_sha256"] == raw_digest
+        assert material["overlay_sha256"] == overlay_digest
+        assert material["candidate_fingerprint"] == candidate.fingerprint
+        assert current["schema"] == "clipper-book-image-reconciliation-v3"
+        assert current["parser_version"] == faithful.PARSER_VERSION
+        assert current["verified_research_links"] == (1 if version == 2 else 0)
+        assert current_path != older_path
+        assert older_path.read_bytes() == older_bytes
+        assert output.read_bytes() == overlay
+        assert source.read_bytes() == payload
+        assert cli.main(cmd) == 0
+        assert Path(json.loads(capsys.readouterr().out)["report_path"]) == current_path
+        assert current_path.read_bytes() == current_bytes
+        for path in (older_path, current_path, source, output):
+            assert path.stat().st_mode & 0o777 == 0o600
+            assert path.parent.stat().st_mode & 0o777 == 0o700
+        assert base.stat().st_mode & 0o777 == 0o700
+        normal = runner.ingest_candidate(
+            candidate.title, registry=(candidate,), transport=transport, overlay_path=output
+        )
+        offline = runner.ingest_candidate(
+            candidate.title, registry=(candidate,), offline=True, overlay_path=output
+        )
+        assert not isinstance(normal, SourceUnresolved)
+        assert not isinstance(offline, SourceUnresolved)
+        assert normal.stage_key == offline.stage_key
+        assert normal.book == offline.book
+        # A genuinely conflicting current report must not be overwritten or bypassed.
+        conflict = b'{"synthetic":"conflict"}'
+        current_path.write_bytes(conflict)
+        absent_output = output.with_name("must-not-exist.json")
+        assert cli.main([*cmd[:-1], str(absent_output)]) == 1
+        assert current_path.read_bytes() == conflict
+        assert older_path.read_bytes() == older_bytes
+        assert output.read_bytes() == overlay
+        assert not absent_output.exists()
+    finally:
+        os.umask(previous)
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_oversized_overlay_cannot_resume_cached_ingest(tmp_path: Path, offline: bool) -> None:
+    candidate, transport, _ = _fixture(tmp_path)
+    runner = BookOrchestrator(tmp_path / "private")
+    runner.acquire_candidate(candidate.title, registry=(candidate,), transport=transport)
+    overlay_path = tmp_path / "overlay.json"
+    overlay = json.dumps(
+        {
+            "schema": "clipper-book-image-overlay-v1",
+            "source_sha256": candidate.expected_sha256,
+            "entries": [],
+        }
+    ).encode()
+    valid = overlay + b" " * (faithful.MAX_EVIDENCE_BYTES - len(overlay))
+    for warmed in (False, True):
+        if warmed:
+            overlay_path.write_bytes(valid)
+            accepted = runner.ingest_candidate(
+                candidate.title, registry=(candidate,), offline=True, overlay_path=overlay_path
+            )
+            assert not isinstance(accepted, SourceUnresolved)
+        overlay_path.write_bytes(valid + b" ")
+        with pytest.raises(faithful.ExtractionError, match="exceeds bounded size"):
+            runner.ingest_candidate(
+                candidate.title,
+                registry=(candidate,),
+                transport=transport,
+                offline=offline,
+                overlay_path=overlay_path,
+            )
+
+
+def test_growing_research_file_is_bounded_at_opened_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    candidate, transport, registry = _fixture(tmp_path)
+    root = tmp_path / "private"
+    runner = BookOrchestrator(root)
+    recovered = runner.ingest_candidate(candidate.title, registry=(candidate,), transport=transport)
+    assert not isinstance(recovered, SourceUnresolved)
+    research = tmp_path / "growing.json"
+    research.write_bytes(b"{}")
+    output = tmp_path / "must-not-exist.json"
+    original_open = Path.open
+    read_sizes: list[int] = []
+
+    class GrowingReader(io.BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            read_sizes.append(size)
+            assert size == faithful.MAX_EVIDENCE_BYTES + 1
+            return super().read(size)
+
+    def open_grown(path: Path, *args, **kwargs):
+        if path == research:
+            return GrowingReader(b" " * (faithful.MAX_EVIDENCE_BYTES + 2))
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_grown)
+    assert (
+        cli.main(
+            [
+                "books",
+                "overlay-import",
+                "--title",
+                candidate.title,
+                "--registry",
+                str(registry),
+                "--artifact-root",
+                str(root),
+                "--research",
+                str(research),
+                "--output",
+                str(output),
+            ]
+        )
+        == 1
+    )
+    assert read_sizes == [faithful.MAX_EVIDENCE_BYTES + 1]
+    assert "exceeds bounded size" in caplog.text
+    assert not (root / "book-candidates" / "research-import").exists()
+    assert not output.exists()
+
+
+def test_oversized_cached_research_is_rejected_before_hashing(tmp_path: Path) -> None:
+    candidate, transport, _ = _fixture(tmp_path)
+    root = tmp_path / "private"
+    runner = BookOrchestrator(root)
+    first = runner.ingest_candidate(candidate.title, registry=(candidate,), transport=transport)
+    assert not isinstance(first, SourceUnresolved)
+    research = {
+        "schema": "clipper-book-research-observations-v2",
+        "source_sha256": first.book.content_sha256,
+        "research_origin": "fixture",
+        "research_author": None,
+        "occurrence_inventory": [],
+        "observations": [],
+    }
+    payload = json.dumps(research).encode()
+    overlay, _ = faithful.convert_research_observations(first.book, payload)
+    overlay_path = tmp_path / "overlay.json"
+    overlay_path.write_bytes(overlay)
+    path = (
+        root
+        / "book-candidates"
+        / "research-import"
+        / "source"
+        / f"{hashlib.sha256(payload).hexdigest()}.json"
+    )
+    acquisition._private_write(path, payload)
+    runner.ingest_candidate(
+        candidate.title, registry=(candidate,), offline=True, overlay_path=overlay_path
+    )
+    path.write_bytes(b" " * (faithful.MAX_EVIDENCE_BYTES + 1))
+    with pytest.raises(faithful.ExtractionError, match="exceeds bounded size"):
+        runner.ingest_candidate(
+            candidate.title, registry=(candidate,), offline=True, overlay_path=overlay_path
+        )

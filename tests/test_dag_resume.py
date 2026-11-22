@@ -573,3 +573,64 @@ def test_coordinated_helpers_fail_closed_without_coordinator(tmp_path: Path) -> 
         store._coordinated_cached_output(identity)
     with pytest.raises(RuntimeError, match="coordinator is unavailable"):
         store._execute_coordinated(identity, lambda: {"value": 1})
+
+
+@pytest.mark.parametrize("failure", ["rename", "commit"])
+def test_coordinated_initial_publication_releases_claim_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    active = {"owner": ""}
+    calls: list[int] = []
+    fail = True
+    original_replace = Path.replace
+
+    def claim(_identity, owner: str, _ttl: float) -> bool:
+        if active["owner"]:
+            return False
+        active["owner"] = owner
+        return True
+
+    def renew(_identity, owner: str, _ttl: float) -> bool:
+        return active["owner"] == owner
+
+    def release(_identity, owner: str) -> bool:
+        if active["owner"] != owner:
+            return False
+        active["owner"] = ""
+        return True
+
+    def commit() -> None:
+        if fail and failure == "commit":
+            raise OSError("initial publication failed")
+
+    def replace_record(path: Path, target: Path) -> Path:
+        if fail and failure == "rename" and target.name == "stage.json":
+            raise OSError("initial publication failed")
+        return original_replace(path, target)
+
+    coordinator = DagLeaseCoordinator(
+        claim=claim,
+        renew=renew,
+        release=release,
+        commit=commit,
+        reload=lambda: None,
+    )
+    store = DagStore(tmp_path, coordinator=coordinator)
+    identity = _identity("distributed-initial-failure")
+
+    def operation() -> object:
+        calls.append(1)
+        return {"synthetic": True}
+
+    monkeypatch.setattr(Path, "replace", replace_record)
+    with pytest.raises(OSError, match="initial publication failed"):
+        store.execute(identity, operation)
+    assert not active["owner"]
+    assert not calls
+    assert not store._output_path(identity).exists()
+    assert store.cached_output(identity) is None
+    assert not list(store._directory(identity).glob(".*.tmp"))
+    fail = False
+    assert store.execute(identity, operation) == ({"synthetic": True}, False)
+    assert calls == [1]
+    assert not active["owner"]

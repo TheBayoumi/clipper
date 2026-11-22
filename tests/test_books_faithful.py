@@ -18,10 +18,12 @@ from PIL import Image
 from clipper.books.acquisition import ReviewedCandidate, load_registry
 from clipper.books.contracts import BookSource, BookText, OCRIdentity
 from clipper.books.faithful import (
+    MAX_EVIDENCE_BYTES,
     ExtractionError,
     _xml,
     convert_research_observations,
     cpu_tesseract,
+    evidence_json,
     extract_candidate,
     image_reconciliation,
     ocr_contract,
@@ -1387,3 +1389,55 @@ def test_valid_v2_research_envelope_rejects_unpaired_surrogate_in_observation() 
     with pytest.raises(ExtractionError, match="invalid JSON or Unicode") as error:
         convert_research_observations(book, payload)
     assert "secret" not in str(error.value)
+
+
+@pytest.mark.parametrize("reader", ["research", "overlay"])
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("token", [b"9" * 4301, b"NaN", b"Infinity", b"-Infinity", b"1e9999"])
+def test_evidence_numeric_tokens_are_typed_and_content_free(
+    reader: str, version: int, token: bytes
+) -> None:
+    raw = _epub()
+    candidate = _candidate(raw)
+    book = extract_candidate(_source(raw, candidate), raw, candidate)
+    kind = "research-observations" if reader == "research" else "image-overlay"
+    schema = f"clipper-book-{kind}-v{version}"
+    prefix = b'{"schema":' + json.dumps(schema).encode()
+    payload = prefix + b',"nested":[{"private":"synthetic-secret","number":' + token + b"}]}"
+    with pytest.raises(ExtractionError, match="unsupported numeric token") as error:
+        if reader == "research":
+            convert_research_observations(book, payload)
+        else:
+            extract_candidate(book.source, raw, candidate, overlay=payload)
+    assert "synthetic-secret" not in str(error.value)
+    assert len(str(error.value)) < 100
+
+
+@pytest.mark.parametrize("delta", [-1, 0, 1])
+def test_direct_evidence_size_boundary(delta: int) -> None:
+    raw = _epub()
+    candidate = _candidate(raw)
+    book = extract_candidate(_source(raw, candidate), raw, candidate)
+    research = _research_v2(book)
+    prefix = json.dumps(research, ensure_ascii=False).encode()
+    overlay, _ = convert_research_observations(book, prefix)
+
+    def pad(payload: bytes) -> bytes:
+        return payload + b" " * (MAX_EVIDENCE_BYTES + delta - len(payload))
+
+    if delta > 0:
+        with pytest.raises(ExtractionError, match="exceeds bounded size"):
+            evidence_json(pad(prefix))
+        with pytest.raises(ExtractionError, match="exceeds bounded size"):
+            convert_research_observations(book, pad(prefix))
+        with pytest.raises(ExtractionError, match="exceeds bounded size"):
+            extract_candidate(book.source, raw, candidate, overlay=pad(overlay))
+        with pytest.raises(ExtractionError, match="exceeds bounded size"):
+            extract_candidate(
+                book.source, raw, candidate, overlay=overlay, research_payload=pad(prefix)
+            )
+    else:
+        assert evidence_json(pad(prefix)) == research
+        padded_overlay, _ = convert_research_observations(book, pad(prefix))
+        extracted = extract_candidate(book.source, raw, candidate, overlay=pad(padded_overlay))
+        assert extracted.content_sha256 == book.content_sha256
