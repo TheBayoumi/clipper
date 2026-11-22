@@ -697,7 +697,28 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
         wide_prefix = [tokenizer.eos_token_id]
         wide_start = time.perf_counter()
         for index, token in enumerate(wide_tokens):
-            assert token in wide_callback(0, torch.tensor(wide_prefix)), index
+            admitted = wide_callback(0, torch.tensor(wide_prefix))
+            if token not in admitted:
+                prefix_text = tokenizer.decode(
+                    wide_prefix[1:], skip_special_tokens=True, clean_up_tokenization_spaces=False
+                )
+                next_text = tokenizer.decode(
+                    [token], skip_special_tokens=True, clean_up_tokenization_spaces=False
+                )
+                pytest.fail(
+                    "Four-400-field canonical token path rejected: "
+                    + json.dumps(
+                        {
+                            "index": index,
+                            "token_id": token,
+                            "token_text": next_text,
+                            "raw_prefix_tail": prefix_text[-45:],
+                            "raw_prefix_chars": len(prefix_text),
+                            "allowed_count": len(admitted),
+                        },
+                        ensure_ascii=True,
+                    )
+                )
             wide_prefix.append(token)
         wide_seconds = time.perf_counter() - wide_start
         assert tokenizer.eos_token_id in wide_callback(0, torch.tensor(wide_prefix))
