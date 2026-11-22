@@ -71,10 +71,7 @@ def span_pool(text: str, evidence_field: str) -> dict[str, object]:
             reason: str | None = None
             if len(value) > MAX_FIELD_CHARS:
                 reason = "overlong"
-            elif (
-                any(c in value for c in ('"', "\\"))
-                or any(ord(c) < 32 for c in value)
-            ):
+            elif any(c in value for c in ('"', "\\")) or any(ord(c) < 32 for c in value):
                 reason = "escaping"
             elif value in seen:
                 reason = "duplicate"

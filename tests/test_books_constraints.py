@@ -84,9 +84,7 @@ def test_shipped_parser_requires_object_with_lessons_and_all_fields() -> None:
     with pytest.raises(mining.BookMiningError, match="duplicate JSON"):
         whole_book.load_strict_reply('{"lessons":[],"lessons":[]}')
     with pytest.raises(mining.BookMiningError, match="duplicate JSON"):
-        whole_book.load_strict_reply(
-            '{"lessons":[{"id":"first","id":"second"}]}'
-        )
+        whole_book.load_strict_reply('{"lessons":[{"id":"first","id":"second"}]}')
 
 
 def test_real_released_token_enforcer_restricts_root_and_terminal_eos() -> None:
@@ -288,9 +286,7 @@ def test_decoder_wrong_version_and_missing_transformers_integration(
 
     with monkeypatch.context() as patch:
         patch.setattr(constrained, "version", lambda _package: "0.11.3")
-        patch.setattr(
-            constrained, "importlib", SimpleNamespace(import_module=not_available)
-        )
+        patch.setattr(constrained, "importlib", SimpleNamespace(import_module=not_available))
         with pytest.raises(constrained.DecoderUnavailable, match="integration"):
             constrained._decoder()
 
@@ -298,9 +294,7 @@ def test_decoder_wrong_version_and_missing_transformers_integration(
 def test_no_eligible_span_rejects_before_any_model_initialization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        scripting, "_script_pipeline", lambda: pytest.fail("no model may load")
-    )
+    monkeypatch.setattr(scripting, "_script_pipeline", lambda: pytest.fail("no model may load"))
     with pytest.raises(constrained.NoEligibleSpans):
         scripting._local_book_completion(_request("X" * 401))
 

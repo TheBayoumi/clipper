@@ -245,20 +245,21 @@ def test_incomplete_constrained_generation_preserves_raw_before_rejection(
 ) -> None:
     runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
     raw = '{"lessons":[]}'
+
     def incomplete(_request: dict[str, object]) -> str:
         raise scripting.IncompleteConstrainedResponse(raw)
 
     result = runner.mine_candidate(
-        acquired.analysis_ref_path, local_cpu=True, max_new_units=1,
+        acquired.analysis_ref_path,
+        local_cpu=True,
+        max_new_units=1,
         local_completion=incomplete,
     )
     assert result["status"] == "incomplete"
     assert result["counts"]["failed"] == 1
     progress = json.loads(Path(result["progress_path"]).read_bytes())
     assert progress["progress"][0]["failure_category"] == "incomplete_constrained_generation"
-    raws = list(
-        (tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt")
-    )
+    raws = list((tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt"))
     assert len(raws) == 1
     assert raws[0].read_bytes() == raw.encode("utf-8")
 
