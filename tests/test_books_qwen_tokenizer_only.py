@@ -13,11 +13,13 @@ import tempfile
 import time
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from clipper.books import constrained, scripting, whole_book
+from clipper.books.contracts import BookText
 
 PUBLIC_TOKENIZER_FILES = (
     "added_tokens.json",
@@ -185,7 +187,22 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
         )
         fetched_seconds = time.perf_counter() - start
         tokenizer = AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
-        assert tokenizer.eos_token_id is not None
+        assert tokenizer.eos_token_id == 151645
+        model_config = json.loads((snapshot / "config.json").read_text(encoding="utf-8"))
+        tokenizer_config = json.loads(
+            (snapshot / "tokenizer_config.json").read_text(encoding="utf-8")
+        )
+        generation_config = json.loads(
+            (snapshot / "generation_config.json").read_text(encoding="utf-8")
+        )
+        assert model_config["max_position_embeddings"] == 40960
+        assert tokenizer_config["model_max_length"] == 131072
+        assert generation_config["eos_token_id"] == [151645, 151643]
+        effective_context = min(
+            model_config["max_position_embeddings"], tokenizer_config["model_max_length"]
+        )
+        assert effective_context == 40960
+        assert constrained.PINNED_TOKENIZER_SHA256 == PINNED_TOKENIZER_SHA256
 
         constrained._tokenizer_data.cache_clear()
         cases = {
@@ -365,15 +382,82 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
             for language in ("latin", "cjk", "arabic")
         }
         cases["bounded_350_spans"] = " ".join(f"authored{index:03d}." for index in range(350))
+        cases["bounded_400_spans"] = " ".join(f"authored{index:03d}." for index in range(400))
+        cases["mixed_emoji_combining"] = " ".join(
+            f'Source {i} combines café é, 🧪, "quotation", and Arabic العربية.'
+            for i in range(24)
+        )
         for case_name, source in cases.items():
             request = _request(source)
             pool = request["constraints"]
-            expected_span_count = 350 if case_name == "bounded_350_spans" else 24
+            expected_span_count = {
+                "bounded_400_spans": 400,
+                "bounded_350_spans": 350,
+            }.get(case_name, 24)
             assert len(pool["spans"]) == expected_span_count
             assert pool["coverage"]["omitted_fragment_chars"] == 0
+            # Measure cold vocabulary construction separately from warm/fresh
+            # parser construction; never confuse per-prefix cache with cold cost.
+            constrained._tokenizer_data.cache_clear()
+            cold_start = time.perf_counter()
+            cold_callback = constrained.prefix_for(request, tokenizer, scripting.SCRIPT_REVISION)
+            cold_time = time.perf_counter() - cold_start
             setup = time.perf_counter()
             callback = constrained.prefix_for(request, tokenizer, scripting.SCRIPT_REVISION)
             build_time = time.perf_counter() - setup
+            assert callback is not cold_callback
+
+            # Use the real canonical production prompt, including context and the
+            # COMPLETE source-choice menu, not the short synthetic parser request.
+            unit = whole_book.WorkUnit(
+                ordinal=0,
+                anchor="synthetic-only",
+                section_id="test",
+                source_path="synthetic.txt",
+                word_offset=0,
+                evidence_field="native_text",
+                origin="native_text",
+                review_status="unreviewed",
+                asset_sha256=None,
+                research_link_status="unreviewed",
+                text=source,
+            )
+            book_stub = cast(
+                BookText,
+                SimpleNamespace(
+                    source=SimpleNamespace(title="Synthetic Title", author="Synthetic Author"),
+                    edition_identity="synthetic-edition",
+                    content_sha256=hashlib.sha256(source.encode()).hexdigest(),
+                ),
+            )
+            full_request = whole_book._request_for_identity(
+                book_stub, unit, "synthetic-fingerprint"
+            )
+            prompt_ids = tokenizer.apply_chat_template(
+                full_request["messages"],
+                tokenize=True,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+            assert len(prompt_ids) + 960 <= effective_context
+            print(
+                "QWEN_FULL_CANONICAL_PROMPT_BUDGET "
+                + json.dumps(
+                    {
+                        "case": case_name,
+                        "source_chars": len(source),
+                        "selectable_spans": expected_span_count,
+                        "prompt_tokens": len(prompt_ids),
+                        "reserved_reply_tokens": 960,
+                        "effective_context": effective_context,
+                        "cold_adapter_seconds": round(cold_time, 3),
+                        "warm_fresh_adapter_seconds": round(build_time, 3),
+                        "model_initialized": False,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
             parser_alphabet = callback.token_enforcer.root_parser.config.alphabet
             if case_name == "cjk":
                 assert "漢" in parser_alphabet
@@ -433,6 +517,8 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                                 "fits_960_tokens": token_count <= 960,
                                 "fits_16k_raw": raw_bytes <= 16_384,
                                 "adapter_setup_seconds": round(build_time, 3),
+                                "cold_setup_seconds": round(cold_time, 3),
+                                "per_checked_token_ms": round(seconds * 1000 / max(tested, 1), 2),
                                 "prefix_checked": tested,
                                 "prefix_seconds": round(seconds, 3),
                                 "first_rejected_token": first_rejected,
@@ -459,9 +545,56 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                             flush=True,
                         )
                     if (
-                        case_name in {"latin", "arabic", "bounded_350_spans"}
+                        case_name in {
+                            "latin", "arabic", "bounded_350_spans", "bounded_400_spans"
+                        }
                         and count == 1
                         and not ascii_only
                     ):
                         assert allowed and complete
+            if case_name == "cjk":
+                # The pinned vocabulary has no complete token containing 彙.
+                # Mixing only its JSON Unicode escape with direct 漢字語
+                # produces a genuine full seven-field tokenizable reply.
+                mixed = _pool_reply(request, count=1, ascii_only=False).replace(
+                    "彙", json.dumps("彙", ensure_ascii=True)[1:-1]
+                )
+                assert "漢字語" in mixed and "\\u" in mixed
+                mixed_tokens = tokenizer.encode(mixed, add_special_tokens=False)
+                assert len(mixed_tokens) <= 960
+                assert len(mixed.encode("utf-8")) <= 16_384
+                mixed_callback = constrained.prefix_for(
+                    request, tokenizer, scripting.SCRIPT_REVISION
+                )
+                prefix = [tokenizer.eos_token_id]
+                started = time.perf_counter()
+                for i, token in enumerate(mixed_tokens):
+                    assert token in mixed_callback(0, torch.tensor(prefix)), (
+                        "real adapter rejected the mixed CJK token at index " + str(i)
+                    )
+                    prefix.append(token)
+                seconds = time.perf_counter() - started
+                assert tokenizer.eos_token_id in mixed_callback(0, torch.tensor(prefix))
+                assert whole_book.load_strict_reply(mixed) == json.loads(mixed)
+                constrained.validate_local_choice(
+                    whole_book.load_strict_reply(mixed)["lessons"], request
+                )
+                print(
+                    "QWEN_PRODUCTION_MIXED_CJK_PROOF "
+                    + json.dumps(
+                        {
+                            "source_chars": len(source),
+                            "full_reply_tokens": len(mixed_tokens),
+                            "raw_reply_bytes": len(mixed.encode("utf-8")),
+                            "prefix_seconds": round(seconds, 3),
+                            "full_path_accepted": True,
+                            "final_eos_allowed": True,
+                            "source_exact": True,
+                            "model_loaded": False,
+                            "generate_called": False,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
         constrained._tokenizer_data.cache_clear()

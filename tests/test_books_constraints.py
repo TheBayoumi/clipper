@@ -516,3 +516,128 @@ def test_incomplete_generation_raw_is_not_a_valid_completion() -> None:
     assert failure.raw == raw
     assert "without EOS" in str(failure)
     assert not isinstance(failure, str)
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("it was I. Then he left.", 2),
+        ("it was I. then he left.", 2),
+        ("the plan B. Then we left.", 2),
+        ("the plan B. then we left.", 2),
+        ("He said no. Then we left.", 2),
+        ("He said no. then we left.", 2),
+        ("See No. 5 for the details. Then leave.", 2),
+        ("Dr. Ada saw A. Smith. Then she left.", 2),
+        ("U.S. trials succeeded. Dr. Lin agreed.", 2),
+        ("第一句。第二句！第三句？", 3),
+        ("سؤال؟ جواب. ثم غادر.", 3),
+    ],
+)
+def test_sentence_final_initials_no_and_multilingual_boundaries(
+    source: str, expected: int
+) -> None:
+    pool = constrained.span_pool(source, "native_text")
+    assert len(pool["spans"]) == expected
+    assert pool["coverage"]["omitted_fragment_chars"] == 0
+    assert sum(len(span["text"]) for span in pool["spans"]) + (
+        pool["coverage"]["split_separator_chars"]
+    ) == len(source)
+
+
+def test_character_mixed_escaped_literal_is_one_unchanged_cjk_source() -> None:
+    source = "漢字語彙" * 97 + "."
+    request = _request(source)
+    assert len(request["constraints"]["spans"]) == 1
+    span = request["constraints"]["spans"][0]
+    lesson = {
+        "id": span["id"],
+        "topic": "One test",
+        "claim": "This is a synthetic claim",
+        "hook_angle": "Display test evidence",
+        "visual_action": "Point at a source card",
+        "evidence": source,
+        "evidence_field": "native_text",
+    }
+    escaped_character = json.dumps("彙", ensure_ascii=True)[1:-1]
+    raw = json.dumps({"lessons": [lesson]}, ensure_ascii=False, separators=(",", ":"))
+    mixed = raw.replace("彙", escaped_character)
+    assert "漢字語" in mixed
+    assert escaped_character in mixed
+    assert mixed != raw
+    assert whole_book.load_strict_reply(mixed) == {"lessons": [lesson]}
+    _drive(_guard(request), mixed)
+    constrained.validate_local_choice([lesson], request)
+    assert request["constraints"]["coverage"]["verified_feasible_span_count"] is None
+
+
+@pytest.mark.parametrize("field", ["topic", "claim", "hook_angle", "visual_action"])
+@pytest.mark.parametrize("blank", ["   ", "\\u0020\\u0020"])
+def test_public_grammar_blocks_creative_whitespace_only(
+    field: str, blank: str
+) -> None:
+    request = _request("A sentence of exact source evidence.")
+    span = request["constraints"]["spans"][0]
+    lesson = {
+        "id": span["id"],
+        "topic": "Topic",
+        "claim": "A claim",
+        "hook_angle": "Inspect the claim",
+        "visual_action": "Show two cards",
+        "evidence": span["text"],
+        "evidence_field": "native_text",
+    }
+    raw = json.dumps({"lessons": [lesson]}, ensure_ascii=True)
+    original = json.dumps(lesson[field])
+    rewritten = raw.replace('"' + field + '": ' + original, '"' + field + '": "' + blank + '"')
+    assert rewritten != raw
+    parser = _guard(request)
+    for character in rewritten:
+        if character not in parser.get_allowed_characters():
+            break
+        parser = parser.add_character(character)
+    else:
+        assert not parser.can_end(), "whitespace-only creative field must not finish"
+
+
+def test_duplicate_ids_rejected_in_grammar_and_independent_raw_choice() -> None:
+    request = _request("Same quote. Same quote.")
+    first, second = request["constraints"]["spans"]
+    assert first["text"] == second["text"] and first["id"] != second["id"]
+
+    def candidate(span: dict[str, object]) -> dict[str, str]:
+        return {
+            "id": str(span["id"]),
+            "topic": "Test",
+            "claim": "Same exact sentence",
+            "hook_angle": "Consider the sentence",
+            "visual_action": "Show a document",
+            "evidence": str(span["text"]),
+            "evidence_field": "native_text",
+        }
+
+    distinct = [candidate(first), candidate(second)]
+    _drive(_guard(request), json.dumps({"lessons": distinct}))
+    constrained.validate_local_choice(distinct, request)
+    duplicated = [candidate(first), candidate(first)]
+    with pytest.raises(constrained.ConstraintError, match="duplicate"):
+        constrained.validate_local_choice(duplicated, request)
+    raw = json.dumps({"lessons": duplicated})
+    parser = _guard(request)
+    for char in raw:
+        if char not in parser.get_allowed_characters():
+            break
+        parser = parser.add_character(char)
+    else:
+        assert not parser.can_end(), "a second use of the same ID must be blocked"
+
+
+def test_coverage_counts_never_claim_unverified_feasibility() -> None:
+    record = constrained.coverage_record(constrained.span_pool("One. Two.", "native_text"))
+    assert len(record["selectable_spans"]) == 2
+    assert record["coverage"]["source_selectable_span_count"] == 2
+    assert record["coverage"]["verified_feasible_span_count"] is None
+    assert record["coverage"]["verified_feasible_full_reply_count"] is None
+    summary = constrained.coverage_summary([record])
+    assert summary["selectable_span_count"] == 2
+    assert summary["verified_feasible_span_count"] is None

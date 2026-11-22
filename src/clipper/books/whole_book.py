@@ -24,7 +24,7 @@ WINDOW_UNITS = 32
 MAX_PLAN_UNITS = 20_000
 MAX_RECORDED_REPLY_BYTES = 16_384
 LOCAL_COMPLETION_SCHEMA = "clipper-book-local-completion-v1"
-LOCAL_PRODUCER_CONTRACT = "clipper-book-cpu-qwen-paired-direct-escaped-v4"
+LOCAL_PRODUCER_CONTRACT = "clipper-book-cpu-qwen-token-mixed-literal-v5"
 LOCAL_GENERATION = {
     "model": scripting.SCRIPT_MODEL,
     "revision": scripting.SCRIPT_REVISION,
@@ -64,6 +64,8 @@ def local_producer_material() -> dict[str, object]:
             "pool_schema": constrained.POOL_SCHEMA,
             "tokenizer_model": scripting.SCRIPT_MODEL,
             "tokenizer_revision": scripting.SCRIPT_REVISION,
+            "tokenizer_json_sha256": constrained.PINNED_TOKENIZER_SHA256,
+            "literal_spelling": "per-codepoint-direct-or-json-escaped-v1",
         },
     }
 

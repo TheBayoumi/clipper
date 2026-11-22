@@ -253,7 +253,7 @@ def test_incomplete_constrained_generation_preserves_raw_before_rejection(
     tmp_path: Path,
 ) -> None:
     runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
-    raw = '{"lessons":[]}'
+    raw = '{"lessons":[{"id":"a","topic":"unfinished"'
 
     def incomplete(_request: dict[str, object]) -> str:
         raise scripting.IncompleteConstrainedResponse(raw)
