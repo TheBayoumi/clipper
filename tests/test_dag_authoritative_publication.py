@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from clipper.dag import DagLeaseCoordinator, DagStore, StageClaim, StageRecord
-from clipper.stage_contracts import StageContract, stage_identity
+from clipper.stage_contracts import StageContract, content_fingerprint, stage_identity
 
 
 def _identity():
@@ -432,3 +432,186 @@ def test_endpoint_legacy_committed_pass_reuses_without_mutation(
     assert snapshot["record"]["status"] == "PASS"
     assert call(_request(identity, "claim", "a" * 32))["acquired"] is False
     assert all(volume.durable[k] == data for k, data in original_files.items())
+
+
+def test_authoritative_primary_operation_failure_records_failed_then_retries(
+    tmp_path: Path,
+) -> None:
+    authority = FakeAuthority()
+    identity = _identity()
+    store = authority.store(tmp_path)
+    primary = ValueError("synthetic primary operation failure")
+    operations: list[int] = []
+
+    def fail() -> object:
+        operations.append(1)
+        raise primary
+
+    with pytest.raises(ValueError) as caught:
+        store.execute(identity, fail)
+    assert caught.value is primary
+    assert authority.durable is not None
+    assert authority.durable["record"]["status"] == "FAILED"
+    assert authority.durable["record"]["error_type"] == "ValueError"
+    assert authority.publish_calls == 1
+    assert authority.owner == ""
+    assert store.cached_output(identity) is None
+    assert store.execute(identity, lambda: operations.append(2) or {"ready": True}) == (
+        {"ready": True},
+        False,
+    )
+    assert operations == [1, 2]
+    assert authority.durable["record"]["attempt_count"] == 2
+
+
+@pytest.mark.parametrize("mode", ["ack-lost", "invalid-receipt", "zero-attempt", "bad-read"])
+def test_authoritative_claim_boundary_cleanup_preserves_errors(
+    tmp_path: Path, mode: str
+) -> None:
+    authority = FakeAuthority()
+    identity = _identity()
+    primary = KeyboardInterrupt("synthetic claim acknowledgement lost")
+    original_claim = authority.claim
+    original_read = authority.read
+    operations: list[int] = []
+
+    def claim(_identity, owner: str, ttl: float):
+        receipt = original_claim(_identity, owner, ttl)
+        if mode == "ack-lost":
+            raise primary
+        if mode == "invalid-receipt":
+            return True
+        if mode == "zero-attempt":
+            return StageClaim(True, 0)
+        return receipt
+
+    def read(_identity):
+        if mode == "bad-read" and authority.claim_calls > 0:
+            raise OSError("synthetic post-claim read failure")
+        return original_read(_identity)
+
+    authority.claim = claim
+    authority.read = read
+    store = authority.store(tmp_path)
+    if mode == "ack-lost":
+        with pytest.raises(KeyboardInterrupt) as error:
+            store.execute(identity, lambda: operations.append(1))
+        assert error.value is primary
+    else:
+        with pytest.raises((RuntimeError, OSError)):
+            store.execute(identity, lambda: operations.append(1))
+    assert operations == []
+    assert authority.owner == ""
+    authority.claim = original_claim
+    authority.read = original_read
+    assert authority.store(tmp_path).execute(identity, lambda: {"success": True}) == (
+        {"success": True},
+        False,
+    )
+
+
+def test_authoritative_recheck_catches_pass_published_during_claim(tmp_path: Path) -> None:
+    authority = FakeAuthority()
+    identity = _identity()
+    output = {"winner": True}
+    original_claim = authority.claim
+    operations: list[int] = []
+
+    def claim(_identity, owner: str, ttl: float) -> StageClaim:
+        receipt = original_claim(_identity, owner, ttl)
+        record = StageRecord(
+            identity=identity,
+            status="PASS",
+            attempt_count=receipt.attempt_count,
+            started_at="before",
+            completed_at="after",
+            output_fingerprint=content_fingerprint(output),
+            usage={},
+            cost_usd=0.0,
+        )
+        authority.durable = {"record": record.to_dict(), "output": output}
+        return receipt
+
+    authority.claim = claim
+    store = authority.store(tmp_path)
+    assert store.execute(identity, lambda: operations.append(1)) == (output, True)
+    assert not operations
+    assert authority.owner == ""
+
+
+@pytest.mark.parametrize("malformed", ["envelope", "record", "identity", "fingerprint"])
+def test_authoritative_bad_committed_evidence_stops_without_operation(
+    tmp_path: Path, malformed: str
+) -> None:
+    authority = FakeAuthority()
+    identity = _identity()
+    output = {"value": 1}
+    record = StageRecord(
+        identity=identity,
+        status="PASS",
+        attempt_count=1,
+        started_at="start",
+        completed_at="end",
+        output_fingerprint=content_fingerprint(output),
+        usage={},
+        cost_usd=0.0,
+    ).to_dict()
+    if malformed == "envelope":
+        snapshot: dict[str, Any] = {"record": record}
+    elif malformed == "record":
+        snapshot = {"record": None, "output": output}
+    else:
+        if malformed == "identity":
+            record["identity"] = {"source_hash": "foreign"}
+        else:
+            record["output_fingerprint"] = "0" * 64
+        snapshot = {"record": record, "output": output}
+    authority.durable = snapshot
+    with pytest.raises(RuntimeError, match="DAG committed"):
+        authority.store(tmp_path).execute(
+            identity, lambda: pytest.fail("operation must not run")
+        )
+
+
+@pytest.mark.parametrize("termination", ["false", "error", "cancel"])
+def test_authoritative_background_lease_loss_or_termination_is_not_success(
+    tmp_path: Path, termination: str
+) -> None:
+    authority = FakeAuthority()
+    original_renew = authority.renew
+    executing = threading.current_thread()
+    worker_called = threading.Event()
+    primary = KeyboardInterrupt("synthetic renewal termination")
+
+    def renew(_identity, owner: str, ttl: float) -> bool:
+        if threading.current_thread() is not executing:
+            worker_called.set()
+            if termination == "error":
+                raise OSError("synthetic transport error")
+            if termination == "cancel":
+                raise primary
+            return False
+        return original_renew(_identity, owner, ttl)
+
+    authority.renew = renew
+    store = authority.store(tmp_path)
+    store.execution_lease_seconds = 1.5
+    identity = _identity()
+
+    def operation() -> object:
+        assert worker_called.wait(3), "background renewal was never observed"
+        return {"not_committed": True}
+
+    expected = KeyboardInterrupt if termination == "cancel" else RuntimeError
+    with pytest.raises(expected) as caught:
+        store.execute(identity, operation)
+    if termination == "cancel":
+        assert caught.value is primary
+    assert authority.owner == ""
+    if termination == "cancel":
+        assert authority.durable is not None
+        assert authority.durable["record"]["status"] == "FAILED"
+        assert authority.publish_calls == 1
+    else:
+        assert authority.durable is None
+        assert authority.publish_calls == 0
