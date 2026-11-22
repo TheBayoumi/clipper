@@ -646,8 +646,9 @@ def test_cli_bad_v2_research_preserves_exact_input_and_rejection_reason(
     digest = hashlib.sha256(data).hexdigest()
     base = root / "book-candidates" / "research-import"
     assert (base / "source" / f"{digest}.json").read_bytes() == data
-    rejection = base / "rejections" / candidate.fingerprint / f"{digest}.json"
+    (rejection,) = (base / "rejections" / candidate.fingerprint).glob("diagnostic-*.json")
     rejected = json.loads(rejection.read_text())
+    assert rejected["research_sha256"] == digest
     assert rejected["status"] == "rejected"
     assert "review provenance invalid" in rejected["reason"]
     assert rejected["source_sha256"] == first.book.content_sha256
@@ -717,8 +718,10 @@ def test_malformed_rejections_are_immutable_and_source_bound(
             ]
             assert cli.main(cmd) == 1
             base = root / "book-candidates" / "research-import"
-            rejection = base / "rejections" / candidate.fingerprint / f"{digest}.json"
+            directory = base / "rejections" / candidate.fingerprint
+            (rejection,) = directory.glob("diagnostic-*.json")
             saved = rejection.read_bytes()
+            assert json.loads(saved)["research_sha256"] == digest
             assert cli.main(cmd) == 1
             assert rejection.read_bytes() == saved
             assert b"secret" not in saved
@@ -988,3 +991,130 @@ def test_oversized_cached_research_is_rejected_before_hashing(tmp_path: Path) ->
         runner.ingest_candidate(
             candidate.title, registry=(candidate,), offline=True, overlay_path=overlay_path
         )
+
+
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("book_id", ["atomic-habits", "psychology-of-money"])
+def test_legacy_rejection_coexists_with_changed_numeric_diagnostic(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, version: int, book_id: str
+) -> None:
+    candidate, transport, registry = _fixture(tmp_path, book_id=book_id)
+    root = tmp_path / "private"
+    runner = BookOrchestrator(root)
+    first = runner.ingest_candidate(candidate.title, registry=(candidate,), transport=transport)
+    assert not isinstance(first, SourceUnresolved)
+    image = first.book.images[0]
+    occ = image.occurrences[0]
+    fields = {
+        "original_transcription": 137,
+        "normalized_transcription": "synthetic-secret",
+        "normalization_notes": "fixture correction note",
+        "reviewed_by": "fixture reviewer",
+        "reviewed_at": None,
+        "review_status": "reviewed",
+    }
+    occurrence = {
+        "asset_sha256": image.asset_sha256,
+        "anchor": occ.anchor,
+        "source_path": occ.source_path,
+    }
+    research = {
+        "schema": f"clipper-book-research-observations-v{version}",
+        "source_sha256": first.book.content_sha256,
+    }
+    if version == 1:
+        research["entries"] = [
+            {
+                "asset_sha256": image.asset_sha256,
+                "occurrences": [{"anchor": occ.anchor, "source_path": occ.source_path}],
+                **fields,
+            }
+        ]
+        old_reason = "reviewed image overlay text, anchors or review state invalid"
+    else:
+        research.update(
+            research_origin="synthetic ledger",
+            research_author=None,
+            occurrence_inventory=[occurrence],
+            observations=[{**occurrence, "observation_id": "fixture", **fields}],
+        )
+        old_reason = "v2 image overlay observation/review provenance invalid"
+    data = json.dumps(research).encode()
+    digest = hashlib.sha256(data).hexdigest()
+    base = root / "book-candidates" / "research-import"
+    source = base / "source" / f"{digest}.json"
+    directory = base / "rejections" / candidate.fingerprint
+    old_path = directory / f"{digest}.json"
+    old_report = {
+        "schema": "clipper-book-research-import-rejection-v2",
+        "research_sha256": digest,
+        "source_sha256": first.book.content_sha256,
+        "candidate_fingerprint": candidate.fingerprint,
+        "status": "rejected",
+        "reason": old_reason,
+    }
+    old_bytes = (json.dumps(old_report, sort_keys=True, indent=2) + "\n").encode()
+    old_hash = hashlib.sha256(old_bytes).hexdigest()
+    input_path = tmp_path / "research.json"
+    input_path.write_bytes(data)
+    output = tmp_path / "overlay.json"
+    cmd = [
+        "books",
+        "overlay-import",
+        "--title",
+        candidate.title,
+        "--registry",
+        str(registry),
+        "--artifact-root",
+        str(root),
+        "--research",
+        str(input_path),
+        "--output",
+        str(output),
+    ]
+    previous = os.umask(0)
+    try:
+        acquisition._private_write(source, data)
+        acquisition._private_write(old_path, old_bytes)
+        assert cli.main(cmd) == 1
+        (current_path,) = directory.glob("diagnostic-*.json")
+        saved = current_path.read_bytes()
+        current = json.loads(saved)
+        diagnostic_id = current.pop("diagnostic_identity")
+        assert current == {
+            **old_report,
+            "schema": "clipper-book-research-import-rejection-v3",
+            "reason": "private evidence contains unsupported numeric token",
+        }
+        assert diagnostic_id == content_fingerprint(current)
+        assert current_path.name == f"diagnostic-{diagnostic_id}.json"
+        assert current_path != old_path
+        assert "unsupported numeric token" in caplog.text
+        assert "immutable artifact conflicts" not in caplog.text
+        assert "synthetic-secret" not in caplog.text
+        assert b"synthetic-secret" not in saved
+        assert cli.main(cmd) == 1
+        assert list(directory.glob("diagnostic-*.json")) == [current_path]
+        assert current_path.read_bytes() == saved
+        assert hashlib.sha256(old_path.read_bytes()).hexdigest() == old_hash
+        assert old_path.read_bytes() == old_bytes
+        assert source.read_bytes() == data
+        assert input_path.read_bytes() == data
+        for path in (source, old_path, current_path):
+            assert path.stat().st_mode & 0o777 == 0o600
+            assert path.parent.stat().st_mode & 0o777 == 0o700
+        assert base.stat().st_mode & 0o777 == 0o700
+        assert directory.parent.stat().st_mode & 0o777 == 0o700
+        assert not output.exists()
+        conflict = b'{"synthetic":"conflict"}'
+        current_path.write_bytes(conflict)
+        caplog.clear()
+        assert cli.main(cmd) == 1
+        assert "immutable artifact conflicts" in caplog.text
+        assert "synthetic-secret" not in caplog.text
+        assert current_path.read_bytes() == conflict
+        assert old_path.read_bytes() == old_bytes
+        assert source.read_bytes() == data
+        assert not output.exists()
+    finally:
+        os.umask(previous)

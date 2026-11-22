@@ -634,3 +634,119 @@ def test_coordinated_initial_publication_releases_claim_on_failure(
     assert store.execute(identity, operation) == ({"synthetic": True}, False)
     assert calls == [1]
     assert not active["owner"]
+
+
+@pytest.mark.parametrize("ownership", ["persisted", "unclaimed", "another-owner"])
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+def test_coordinated_claim_lost_acknowledgement_releases_only_owned_lease(
+    tmp_path: Path, ownership: str, cleanup_failure: bool
+) -> None:
+    initial_owner = "another-owner" if ownership == "another-owner" else ""
+    active = {"owner": initial_owner}
+    recorded: list[str] = []
+    released: list[str] = []
+    operations: list[int] = []
+    commit_calls: list[int] = []
+    lose_ack = True
+    claim_failure = OSError("synthetic lost claim acknowledgement")
+
+    def claim(_identity, owner: str, ttl: float) -> bool:
+        assert ttl == 120.0
+        recorded.append(owner)
+        if lose_ack:
+            if ownership == "persisted":
+                active["owner"] = owner
+            raise claim_failure
+        if active["owner"]:
+            return False
+        active["owner"] = owner
+        return True
+
+    def renew(_identity, owner: str, _ttl: float) -> bool:
+        return active["owner"] == owner
+
+    def release(_identity, owner: str) -> bool:
+        released.append(owner)
+        if cleanup_failure:
+            raise OSError("synthetic release unavailable")
+        if active["owner"] != owner:
+            return False
+        active["owner"] = ""
+        return True
+
+    coordinator = DagLeaseCoordinator(
+        claim=claim,
+        renew=renew,
+        release=release,
+        commit=lambda: commit_calls.append(1),
+        reload=lambda: None,
+    )
+    store = DagStore(tmp_path, coordinator=coordinator, execution_lease_seconds=120.0)
+    identity = _identity("lost-acknowledgement")
+
+    def operation() -> object:
+        operations.append(1)
+        return {"synthetic": True}
+
+    with (
+        patch("clipper.dag.time.sleep"),
+        pytest.raises(OSError, match="lost claim acknowledgement") as error,
+    ):
+        store.execute(identity, operation)
+    assert error.value is claim_failure
+    assert len(recorded) == 1
+    expected_release_calls = 1 if ownership == "persisted" and not cleanup_failure else 3
+    assert released == [recorded[0]] * expected_release_calls
+    assert not operations
+    assert not commit_calls
+    assert not store._record_path(identity).exists()
+    assert not store._output_path(identity).exists()
+    assert store.cached_output(identity) is None
+    if initial_owner:
+        assert active["owner"] == initial_owner
+    elif ownership == "persisted" and cleanup_failure:
+        assert active["owner"] == recorded[0]
+    else:
+        assert not active["owner"]
+        lose_ack = False
+        cleanup_failure = False
+        with patch("clipper.dag.time.sleep", side_effect=AssertionError("unexpected wait")):
+            assert store.execute(identity, operation) == ({"synthetic": True}, False)
+        assert len(recorded) == 2
+        assert recorded[1] != recorded[0]
+        assert operations == [1]
+        assert len(commit_calls) == 2
+        assert not active["owner"]
+        assert store.cached_output(identity) == {"synthetic": True}
+
+
+def test_coordinated_false_claim_keeps_follower_polling_without_release(tmp_path: Path) -> None:
+    identity = _identity("false-claim-follower")
+    writer = DagStore(tmp_path)
+    claims: list[str] = []
+    releases: list[str] = []
+    operations: list[int] = []
+
+    def claim(_identity, owner: str, _ttl: float) -> bool:
+        claims.append(owner)
+        return False
+
+    coordinator = DagLeaseCoordinator(
+        claim=claim,
+        renew=lambda *_args: False,
+        release=lambda _identity, owner: releases.append(owner) or False,
+        commit=lambda: None,
+        reload=lambda: None,
+    )
+    follower = DagStore(tmp_path, coordinator=coordinator)
+
+    def publish_winner(_seconds: float) -> None:
+        writer.execute(identity, lambda: {"winner": True})
+
+    with patch("clipper.dag.time.sleep", side_effect=publish_winner) as sleep:
+        result = follower.execute(identity, lambda: operations.append(1))
+    assert result == ({"winner": True}, True)
+    assert len(claims) == 1
+    assert not releases
+    assert not operations
+    sleep.assert_called_once_with(follower.follower_poll_seconds)

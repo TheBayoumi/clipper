@@ -18,6 +18,7 @@ from .orchestrator import BookOrchestrator, BookRunError
 
 DEFAULT_CONFIG = Path("niches/book-lessons.yaml")
 IMPORT_REPORT_VERSION = "clipper-book-research-import-report-v1"
+REJECTION_REPORT_VERSION = "clipper-book-research-import-rejection-v3"
 
 
 def configure_books_parser(subparsers: Any) -> None:
@@ -157,17 +158,21 @@ def dispatch_books(args: argparse.Namespace) -> int:
             )
         except faithful.ExtractionError as exc:
             rejection = {
-                "schema": "clipper-book-research-import-rejection-v2",
+                "schema": REJECTION_REPORT_VERSION,
                 "research_sha256": research_digest,
                 "source_sha256": recovered.book.content_sha256,
                 "candidate_fingerprint": recovered.candidate.fingerprint,
                 "status": "rejected",
                 "reason": str(exc),
             }
+            diagnostic_identity = content_fingerprint(rejection)
+            rejection["diagnostic_identity"] = diagnostic_identity
             rejection_root = import_root / "rejections"
             acquisition._private_directory(rejection_root)
             rejection_path = (
-                rejection_root / recovered.candidate.fingerprint / f"{research_digest}.json"
+                rejection_root
+                / recovered.candidate.fingerprint
+                / f"diagnostic-{diagnostic_identity}.json"
             )
             acquisition._private_write(
                 rejection_path,

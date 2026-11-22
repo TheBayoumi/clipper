@@ -275,8 +275,8 @@ the private source directory and deterministic conversion matches the overlay.
 The raw research digest (or its absence) is part of the extraction cache identity.
 Parser v3 invalidates v2 extraction identities; no old review state is promoted.
 
-An explicit empty overlay fails before DAG reuse. Rejection dossiers are keyed by
-candidate fingerprint and research digest (v2 rejection schema). Partial v2
+An explicit empty overlay fails before DAG reuse. Legacy v2 rejection dossiers
+were keyed by candidate fingerprint and research digest. Partial v2
 coverage permits explicitly requested OCR once per asset, with machine evidence
 projected only at unlinked occurrences. OCR remains unreviewed and diagram
 geometry remains unverified. V1 empty normalized values project original text
@@ -321,3 +321,31 @@ holding the local write lock, or through the existing owner-bound distributed
 release API. Operation execution cannot begin until initial publication succeeds.
 No leases or retry timing are changed. These changes do not alter accepted
 parser-v3 extraction identities or establish source fidelity or authorization.
+
+### Rejection identity and immutable destination comparisons
+
+Rejection schema v3 stores `rejections/<candidate-fingerprint>/diagnostic-<identity>.json`.
+The identity fingerprints the complete diagnostic before adding its identity
+field: schema, candidate fingerprint, source and raw-research digests, rejection
+status and bounded reason. Identical input with a changed diagnostic reason can
+therefore coexist with earlier reports, including legacy digest-named v2 files.
+Advance the rejection schema for future diagnostic contract changes; reason
+changes also change the identity. Raw bytes remain independently keyed by their
+exact SHA-256. Identical current diagnostics repeat immutably; an actual conflict
+at the new identity still fails closed. The successful import-report contract is
+unchanged. Oversized inputs still have no full-input digest or stored raw copy.
+
+The shared immutable writer reads at most the expected byte count plus one
+from an opened existing destination, including the exclusive-link race loser.
+A shorter value, unequal value or trailing byte is a conflict, not an overwrite.
+This is a relative comparison budget, not the research input limit: larger raw
+and extracted artifacts retain their existing contract. Mode restrictions and
+atomic exclusive publication are unchanged. These operations assume an
+owner-controlled artifact root and output directory, not hostile ancestors or
+arbitrary filesystem mutation by another owner-equivalent process.
+
+Coordinated acquisition attempts owner-bound best-effort release even when
+claim acknowledgement raises: persisted ownership may precede the reply. Normal
+false claims still follow the existing polling path. The existing coordinator
+refuses release for a mismatched owner; no lease duration or production wiring
+changes. Cleanup cannot guarantee release when the storage service is unavailable.

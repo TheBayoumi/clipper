@@ -284,12 +284,18 @@ def _private_directory(path: Path) -> None:
     os.chmod(path, 0o700)
 
 
+def _matches_immutable_bytes(path: Path, data: bytes) -> bool:
+    """Compare exact bytes, including EOF, without trusting destination size."""
+    with path.open("rb") as handle:
+        return handle.read(len(data) + 1) == data
+
+
 def _private_write(path: Path, data: bytes) -> None:
     """Publish complete immutable bytes with an exclusive atomic link, never replace."""
     _private_directory(path.parent)
     if path.exists():
         os.chmod(path, 0o600)
-        if path.read_bytes() != data:
+        if not _matches_immutable_bytes(path, data):
             raise AcquisitionError(f"immutable artifact conflicts with recorded bytes: {path.name}")
         return
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
@@ -305,7 +311,7 @@ def _private_write(path: Path, data: bytes) -> None:
         try:
             os.link(temporary, path)
         except FileExistsError as exc:
-            if path.read_bytes() != data:
+            if not _matches_immutable_bytes(path, data):
                 raise AcquisitionError(
                     f"immutable artifact conflicts with recorded bytes: {path.name}"
                 ) from exc

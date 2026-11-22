@@ -67,6 +67,8 @@ class StageRecord:
 
 @dataclass(frozen=True, slots=True)
 class DagLeaseCoordinator:
+    """Owner-bound lease callbacks; release must refuse a different owner's lease."""
+
     claim: Callable[[StageIdentity, str, float], bool]
     renew: Callable[[StageIdentity, str, float], bool]
     release: Callable[[StageIdentity, str], bool]
@@ -313,7 +315,13 @@ class DagStore:
             cached = self._coordinated_cached_output(identity)
             if cached is not None:
                 return cached, True
-            if coordinator.claim(identity, owner_id, self.execution_lease_seconds):
+            try:
+                claimed = coordinator.claim(identity, owner_id, self.execution_lease_seconds)
+            except BaseException:
+                # A failed acknowledgement does not prove ownership was never persisted.
+                self._release_lease_best_effort(coordinator, identity, owner_id)
+                raise
+            if claimed:
                 try:
                     coordinator.reload()
                     cached = self.cached_output(identity)

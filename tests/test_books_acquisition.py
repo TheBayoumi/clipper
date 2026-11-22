@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
@@ -17,6 +19,7 @@ from clipper.books.acquisition import (
     HTTPResult,
     ReviewedCandidate,
     _check_public_dns,
+    _private_write,
     _validate_url,
     discover,
     load_registry,
@@ -508,3 +511,127 @@ def test_concurrent_acquisition_cannot_replace_first_evidence(tmp_path: Path) ->
     assert len(list((tmp_path / "raw").glob("**/*.epub"))) == 1
     assert len(list((tmp_path / "manifests").glob("*.json"))) == 1
     assert service.acquire(candidate, offline=True).cache_hit is True
+
+
+@pytest.mark.parametrize("race", [False, True])
+@pytest.mark.parametrize(
+    ("expected", "existing"),
+    [
+        (b"", b""),
+        (b"", b"x"),
+        (b"abc", b"abc"),
+        (b"abc", b"ab"),
+        (b"abc", b"abd"),
+        (b"abc", b"abc" + b"x" * 4096),
+    ],
+)
+def test_immutable_writer_bounds_existing_and_concurrent_winner_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    race: bool,
+    expected: bytes,
+    existing: bytes,
+) -> None:
+    directory = tmp_path / "private"
+    directory.mkdir()
+    destination = directory / "artifact.json"
+    winner = tmp_path / "winner.json"
+    winner.write_bytes(existing)
+    winner.chmod(0o600)
+    original_link = os.link
+    original_open = Path.open
+    read_sizes: list[int] = []
+
+    def link_with_winner(source, target) -> None:
+        # Another writer publishes first; the actual exclusive link then fails.
+        if Path(target) == destination:
+            original_link(winner, destination)
+        original_link(source, target)
+
+    @contextmanager
+    def checked_open(path: Path, *args, **kwargs):
+        with original_open(path, *args, **kwargs) as handle:
+            if path == destination:
+                original_read = handle.read
+
+                def bounded_read(size: int = -1) -> bytes:
+                    read_sizes.append(size)
+                    assert size == len(expected) + 1
+                    return original_read(size)
+
+                yield Mock(wraps=handle, read=bounded_read)
+            else:
+                yield handle
+
+    previous = os.umask(0)
+    try:
+        if race:
+            monkeypatch.setattr(os, "link", link_with_winner)
+        else:
+            original_link(winner, destination)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(Path, "open", checked_open)
+            if expected == existing:
+                _private_write(destination, expected)
+            else:
+                with pytest.raises(AcquisitionError, match="immutable artifact conflicts"):
+                    _private_write(destination, expected)
+        assert read_sizes == [len(expected) + 1]
+        saved = destination.read_bytes()
+        assert saved == existing
+        assert hashlib.sha256(saved).digest() == hashlib.sha256(existing).digest()
+        assert winner.read_bytes() == existing
+        assert destination.stat().st_mode & 0o777 == 0o600
+        assert directory.stat().st_mode & 0o777 == 0o700
+        assert list(directory.iterdir()) == [destination]
+    finally:
+        os.umask(previous)
+
+
+@pytest.mark.parametrize("race", [False, True])
+def test_immutable_writer_detects_destination_growth_at_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, race: bool
+) -> None:
+    destination = tmp_path / "private" / "artifact.json"
+    destination.parent.mkdir()
+    expected = b"expected"
+    winner = tmp_path / "winner.json"
+    winner.write_bytes(expected)
+    original_link = os.link
+    original_open = Path.open
+    observed: list[int] = []
+
+    def link_with_winner(source, target) -> None:
+        if Path(target) == destination:
+            original_link(winner, destination)
+        original_link(source, target)
+
+    @contextmanager
+    def grow_before_read(path: Path, *args, **kwargs):
+        if path == destination:
+            with original_open(path, "ab") as growing:
+                growing.write(b"trailing" * 512)
+        with original_open(path, *args, **kwargs) as handle:
+            if path == destination:
+
+                def bounded_read(size: int = -1) -> bytes:
+                    observed.append(size)
+                    assert size == len(expected) + 1
+                    return handle.read(size)
+
+                yield Mock(wraps=handle, read=bounded_read)
+            else:
+                yield handle
+
+    if race:
+        monkeypatch.setattr(os, "link", link_with_winner)
+    else:
+        original_link(winner, destination)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "open", grow_before_read)
+        with pytest.raises(AcquisitionError, match="immutable artifact conflicts"):
+            _private_write(destination, expected)
+    assert observed == [len(expected) + 1]
+    assert destination.read_bytes() == expected + b"trailing" * 512
+    assert destination.read_bytes() == winner.read_bytes()
+    assert list(destination.parent.iterdir()) == [destination]
