@@ -1222,9 +1222,13 @@ def test_pinned_local_qwen_cpu_loader_uses_one_fake_model_without_weight_downloa
     ("kind", "message"),
     [
         ("missing", "offline cache"),
+        ("missing-directory", "snapshot is missing"),
         ("incomplete", "incomplete"),
+        ("tokenizer-empty", "incomplete"),
         ("wrong-revision", "identity mismatch"),
         ("shard-missing", "incomplete"),
+        ("bad-index", "incomplete"),
+        ("unsafe-shard", "incomplete"),
     ],
 )
 def test_pinned_qwen_offline_snapshot_fails_closed_without_metadata_or_download(
@@ -1235,16 +1239,25 @@ def test_pinned_qwen_offline_snapshot_fails_closed_without_metadata_or_download(
     model_cache = tmp_path / "cache" / "hub" / "models--Qwen--Qwen3-1.7B" / "snapshots"
     revision = "f" * 40 if kind == "wrong-revision" else scripting.SCRIPT_REVISION
     snapshot = model_cache / revision
-    if kind != "missing":
+    if kind not in ("missing", "missing-directory"):
         snapshot.mkdir(parents=True)
         for name in ("config.json", "tokenizer_config.json", "tokenizer.json"):
             (snapshot / name).write_bytes(b"synthetic")
+        if kind == "tokenizer-empty":
+            (snapshot / "tokenizer.json").write_bytes(b"")
         if kind == "wrong-revision":
             (snapshot / "model.safetensors").write_bytes(b"synthetic")
-        if kind == "shard-missing":
-            (snapshot / "model.safetensors.index.json").write_text(
-                json.dumps({"weight_map": {"layer": "model-00001-of-00002.safetensors"}})
-            )
+        if kind in ("shard-missing", "bad-index", "unsafe-shard"):
+            index = snapshot / "model.safetensors.index.json"
+            if kind == "bad-index":
+                index.write_text("{")
+            else:
+                name = (
+                    "../wrong.safetensors"
+                    if kind == "unsafe-shard"
+                    else "model-00001-of-00002.safetensors"
+                )
+                index.write_text(json.dumps({"weight_map": {"layer": name}}))
 
     def snapshot_download(*, repo_id, revision, local_files_only):
         assert (repo_id, revision) == (scripting.SCRIPT_MODEL, scripting.SCRIPT_REVISION)
@@ -1307,6 +1320,52 @@ def test_pinned_qwen_pre_cache_and_explicit_public_download_use_exact_revision(
         patch.setattr(scripting.importlib, "import_module", injected)
         assert scripting._pinned_qwen_snapshot() == snapshot
         assert calls == [True, False]
+
+
+def test_pinned_qwen_download_failure_is_sanitized_and_no_revision_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    calls: list[bool] = []
+
+    def snapshot_download(*, repo_id, revision, local_files_only):
+        assert repo_id == scripting.SCRIPT_MODEL
+        assert revision == scripting.SCRIPT_REVISION
+        calls.append(local_files_only)
+        if local_files_only:
+            raise FileNotFoundError("synthetic offline snapshot not cached")
+        raise OSError("synthetic network unavailable")
+
+    hub = SimpleNamespace(snapshot_download=snapshot_download)
+    original_import = scripting.importlib.import_module
+
+    def injected(name: str):
+        return hub if name == "huggingface_hub" else original_import(name)
+
+    with monkeypatch.context() as patch:
+        patch.delenv("HF_HUB_OFFLINE", raising=False)
+        patch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+        patch.setattr(scripting.importlib, "import_module", injected)
+        with pytest.raises(scripting.PinnedQwenSnapshotError, match="download failed"):
+            scripting._pinned_qwen_snapshot()
+    assert calls == [True, False]
+
+
+def test_pinned_qwen_missing_optional_hub_dependency_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = scripting.importlib.import_module
+
+    def injected(name: str):
+        if name == "huggingface_hub":
+            raise ImportError("synthetic no hub installed")
+        return original_import(name)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(scripting.importlib, "import_module", injected)
+        with pytest.raises(scripting.NicheVideoError, match="niche-models"):
+            scripting._pinned_qwen_snapshot()
 
 
 def test_local_cached_evidence_reprotects_reused_private_hierarchy(

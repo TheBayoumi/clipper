@@ -105,10 +105,21 @@ def test_fake_optional_qwen_loader_and_completion_preserve_pinned_request(
         AutoModelForCausalLM=SimpleNamespace(from_pretrained=Mock(return_value=model)),
     )
     loaded: list[str] = []
+    snapshot = (
+        tmp_path
+        / "hub"
+        / "models--Qwen--Qwen3-1.7B"
+        / "snapshots"
+        / scripting.SCRIPT_REVISION
+    )
+    snapshot.mkdir(parents=True)
+    for name in ("config.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors"):
+        (snapshot / name).write_bytes(b"synthetic")
+    hub = SimpleNamespace(snapshot_download=Mock(return_value=str(snapshot)))
 
     def fake_import(name: str) -> object:
         loaded.append(name)
-        return {"torch": torch, "transformers": transformers}[name]
+        return {"torch": torch, "transformers": transformers, "huggingface_hub": hub}[name]
 
     monkeypatch.setattr(scripting, "importlib", SimpleNamespace(import_module=fake_import))
     scripting._script_pipeline.cache_clear()
@@ -119,9 +130,21 @@ def test_fake_optional_qwen_loader_and_completion_preserve_pinned_request(
         script_model, script_tokenizer = scripting._script_pipeline()
         assert script_model is model and script_tokenizer is tokenizer
         assert transformers.AutoModelForCausalLM.from_pretrained.call_count == 1
-        assert transformers.AutoTokenizer.from_pretrained.call_args.kwargs["revision"] == (
-            scripting.SCRIPT_REVISION
-        )
+        assert transformers.AutoTokenizer.from_pretrained.call_args.args == (snapshot,)
+        assert transformers.AutoTokenizer.from_pretrained.call_args.kwargs == {
+            "local_files_only": True
+        }
+        assert transformers.AutoModelForCausalLM.from_pretrained.call_args.args == (snapshot,)
+        assert transformers.AutoModelForCausalLM.from_pretrained.call_args.kwargs == {
+            "local_files_only": True,
+            "dtype": "auto",
+        }
+        assert hub.snapshot_download.call_args.kwargs == {
+            "repo_id": scripting.SCRIPT_MODEL,
+            "revision": scripting.SCRIPT_REVISION,
+            "local_files_only": True,
+        }
+        assert loaded.count("huggingface_hub") == 1
         assert loaded.count("transformers") == 1
         torch.manual_seed.assert_called_once_with(42)
         assert model.generate.call_args.kwargs["max_new_tokens"] == 960

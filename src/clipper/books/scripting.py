@@ -340,7 +340,7 @@ def _pinned_qwen_snapshot() -> Path:
         index = path / "model.safetensors.index.json"
         try:
             if not index.is_file() or index.stat().st_size > 2_000_000:
-                raise PinnedQwenSnapshotError("pinned Qwen weight index is missing or oversized")
+                raise PinnedQwenSnapshotError("pinned Qwen snapshot incomplete: weight index missing or oversized")
             index_data = json.loads(index.read_text(encoding="utf-8"))
             mapping = index_data["weight_map"]
             if not isinstance(mapping, dict) or not mapping:
