@@ -249,9 +249,7 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
             traversal_started = time.perf_counter()
             ids = tokenizer.encode(wire, add_special_tokens=False)
             assert (
-                tokenizer.decode(
-                    ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                )
+                tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
                 == wire
             )
             for position, token in enumerate(ids):
@@ -798,9 +796,7 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
 
         # Exactly TWO unchanged English synthetic fixture units. This is a
         # model-free local grammar test, NOT a third CPU model run or a book.
-        fixture_root = (
-            Path(__file__).resolve().parents[1] / "acceptance/book-local-cpu-smoke"
-        )
+        fixture_root = Path(__file__).resolve().parents[1] / "acceptance/book-local-cpu-smoke"
         fixture_bytes = (fixture_root / "public-original-synthetic.txt").read_bytes()
         consumed_bytes = (fixture_root / "run-request.json").read_bytes()
 
@@ -858,14 +854,10 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
             ids = tokenizer.encode(raw, add_special_tokens=False)
             assert len(ids) <= 960 and len(raw_bytes) <= 16_384
             assert (
-                tokenizer.decode(
-                    ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                )
+                tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
                 == raw
             )
-            callback = constrained.prefix_for(
-                actual_request, tokenizer, scripting.SCRIPT_REVISION
-            )
+            callback = constrained.prefix_for(actual_request, tokenizer, scripting.SCRIPT_REVISION)
             candidate_sent = [tokenizer.eos_token_id]
             callback(0, torch.tensor(candidate_sent))
             started = time.perf_counter()
