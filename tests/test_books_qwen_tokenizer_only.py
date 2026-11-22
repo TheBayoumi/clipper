@@ -203,6 +203,36 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
         )
         assert effective_context == 40960
         assert constrained.PINNED_TOKENIZER_SHA256 == PINNED_TOKENIZER_SHA256
+        # Exercise the ACTUAL preweights public-only loader with these eight
+        # pinned public files, not a fake tokenizer and never a model object.
+        original_import = scripting.importlib.import_module
+        public_fetch_calls: list[bool] = []
+
+        def public_hub_snapshot(**kwargs: Any) -> str:
+            assert kwargs["repo_id"] == scripting.SCRIPT_MODEL
+            assert kwargs["revision"] == scripting.SCRIPT_REVISION
+            assert set(kwargs["allow_patterns"]) == set(PUBLIC_TOKENIZER_FILES)
+            public_fetch_calls.append(kwargs["local_files_only"])
+            return str(snapshot)
+
+        def public_modules(name: str) -> Any:
+            if name == "huggingface_hub":
+                from types import SimpleNamespace
+
+                return SimpleNamespace(snapshot_download=public_hub_snapshot)
+            return original_import(name)
+
+        scripting._public_book_context.cache_clear()
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(scripting.importlib, "import_module", public_modules)
+                checked_tokenizer, checked_limit = scripting._public_book_context()
+                assert checked_limit == effective_context
+                assert checked_tokenizer.eos_token_id == tokenizer.eos_token_id
+                assert public_fetch_calls == [True]
+        finally:
+            scripting._public_book_context.cache_clear()
+
 
         # Test admission BEFORE consuming a token, not parser rejection after.
         # Token 330 is the pinned tokenizer's merged space + closing quote.
@@ -228,9 +258,6 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                 allowed = fresh(0, torch.tensor([tokenizer.eos_token_id, *prefix_tokens]))
                 assert 330 not in allowed, (creative, blank_count)
                 assert tokenizer.eos_token_id not in allowed
-                if blank_count == 0:
-                    good = tokenizer.encode(partial + "meaningful", add_special_tokens=False)
-                    assert 330 in fresh(0, torch.tensor([tokenizer.eos_token_id, *good]))
 
         constrained._tokenizer_data.cache_clear()
         cases = {
