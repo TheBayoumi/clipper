@@ -314,9 +314,7 @@ def _script_pipeline() -> tuple[Any, Any]:
     return model, tokenizer
 
 
-def _run_pinned_qwen(
-    request: dict[str, object], *, normalize_script: bool
-) -> str:
+def _run_pinned_qwen(request: dict[str, object], *, normalize_script: bool) -> str:
     """Decode exact generated tokens; book mode retains unmodified raw response."""
     torch = importlib.import_module("torch")
 

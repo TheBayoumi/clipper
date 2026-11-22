@@ -51,7 +51,7 @@ def local_producer_material() -> dict[str, object]:
     return {
         "contract": LOCAL_PRODUCER_CONTRACT,
         "schema": LOCAL_COMPLETION_SCHEMA,
-        "generation": LOCAL_GENERATION,
+        "generation": {**LOCAL_GENERATION, **scripting.QWEN_GENERATION_SETTINGS},
         "runtime": runtime,
         "request_schema": PLAN_SCHEMA,
         "reply_max_bytes": MAX_RECORDED_REPLY_BYTES,
@@ -66,7 +66,6 @@ class LocalReplyFailure(RuntimeError):
         self.category = category
         self.raw_sha256 = raw_sha256
         super().__init__(f"local candidate completion {category}")
-
 
 
 @dataclass(frozen=True, slots=True)

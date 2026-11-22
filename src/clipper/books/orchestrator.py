@@ -842,9 +842,11 @@ class BookOrchestrator:
         else:
             if max_new_units is not None or local_completion is not None:
                 raise BookRunError("local generation options require explicit local CPU mode")
-            if not isinstance(responses, dict) or not isinstance(
-                response_file_sha256, str
-            ) or re.fullmatch(r"[0-9a-f]{64}", response_file_sha256) is None:
+            if (
+                not isinstance(responses, dict)
+                or not isinstance(response_file_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", response_file_sha256) is None
+            ):
                 raise BookRunError(
                     "candidate analysis requires a recorded response mapping and digest"
                 )
@@ -889,7 +891,9 @@ class BookOrchestrator:
                         ),
                         dependency_output_hashes=(book_fingerprint,),
                         model_revision=scripting.SCRIPT_REVISION,
-                        decoding_parameters=whole_book.LOCAL_GENERATION,
+                        decoding_parameters=cast(
+                            dict[str, object], producer_material["generation"]
+                        ),
                     )
                     generation_key = identity_local.cache_key
                     tried = 0
@@ -981,7 +985,11 @@ class BookOrchestrator:
                                 "max_new_tokens": 960,
                                 "chunk_words": mining.CHUNK_WORDS,
                                 "evidence_field": unit.evidence_field,
-                                **(whole_book.LOCAL_GENERATION if local_cpu else {}),
+                                **(
+                                    cast(dict[str, object], producer_material["generation"])
+                                    if local_cpu
+                                    else {}
+                                ),
                             },
                         )
 

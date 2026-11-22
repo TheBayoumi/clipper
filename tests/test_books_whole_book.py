@@ -783,9 +783,10 @@ def test_local_cpu_limited_resume_private_raw_and_exact_cache_replay(
         assert progress["completion_mode"] == "local_cpu"
         assert progress["response_file_sha256"] is None
         assert progress["counts"]["failed"] == 0
-        assert export["progress_sha256"] == hashlib.sha256(
-            Path(current["progress_path"]).read_bytes()
-        ).hexdigest()
+        assert (
+            export["progress_sha256"]
+            == hashlib.sha256(Path(current["progress_path"]).read_bytes()).hexdigest()
+        )
         assert export["publish_eligible"] is False
         assert export["books"][0]["lessons"][0]["evidence_anchor"]["field"] == "native_text"
         assert all(row["completion_origin"] == "local_cpu" for row in progress["progress"])
@@ -818,9 +819,10 @@ def test_local_cpu_limited_resume_private_raw_and_exact_cache_replay(
             local_completion=must_not_generate,
         )
         assert replay == current
-        assert Path(replay["progress_path"]).read_bytes() == Path(
-            current["progress_path"]
-        ).read_bytes()
+        assert (
+            Path(replay["progress_path"]).read_bytes()
+            == Path(current["progress_path"]).read_bytes()
+        )
         assert len(generated) == len(units)
     finally:
         os.umask(old_umask)
@@ -866,9 +868,7 @@ def test_recorded_empty_does_not_alias_real_local_completion(tmp_path: Path) -> 
     "kind",
     ["invalid-json", "invalid-quote", "oversized", "runtime", "nontext"],
 )
-def test_local_failure_retains_bounded_evidence_then_retries(
-    tmp_path: Path, kind: str
-) -> None:
+def test_local_failure_retains_bounded_evidence_then_retries(tmp_path: Path, kind: str) -> None:
     runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
     units = whole_book.plan_for(acquired.book).units
     responses = responses_for(acquired.book)
@@ -909,9 +909,7 @@ def test_local_failure_retains_bounded_evidence_then_retries(
     assert failure_event["category"] == progress["progress"][0]["failure_category"]
     assert "synthetic secret" not in failure_files[0].read_text()
     assert failure_files[0].stat().st_mode & 0o777 == 0o600
-    raw_files = list(
-        (tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt")
-    )
+    raw_files = list((tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt"))
     assert len(raw_files) == (0 if kind in ("runtime", "nontext") else 1)
     assert all(p.stat().st_size <= whole_book.MAX_RECORDED_REPLY_BYTES for p in raw_files)
     if kind == "oversized":
@@ -982,9 +980,7 @@ def test_cached_local_raw_tamper_fails_closed_without_regeneration(
     runner.mine_candidate(
         acquired.analysis_ref_path, local_cpu=True, max_new_units=3, local_completion=fake
     )
-    evidence = next(
-        (tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt")
-    )
+    evidence = next((tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt"))
     evidence.write_text("tampered fixture")
     with pytest.raises(BookRunError, match="raw evidence changed"):
         runner.mine_candidate(
