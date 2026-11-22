@@ -295,7 +295,9 @@ def test_workflow_github_context_rules_and_dormant_trigger_are_explicit() -> Non
     # The shell step can use the default RUNNER_TEMP environment variable.
     assert not any("runner." in str(value) for value in job["env"].values())
     steps = job["steps"]
-    gate_index = next(i for i, step in enumerate(steps) if step["name"].startswith("Enforce one-commit"))
+    gate_index = next(
+        i for i, step in enumerate(steps) if step["name"].startswith("Enforce one-commit")
+    )
     cache_index = next(i for i, step in enumerate(steps) if "ephemeral HF cache" in step["name"])
     install_index = next(i for i, step in enumerate(steps) if "CPU-only pinned" in step["name"])
     assert gate_index < cache_index < install_index
@@ -557,7 +559,7 @@ def test_model_free_two_unit_dry_run_in_fresh_process() -> None:
     prefix = "PUBLIC_BOOK_CPU_SMOKE_DRY_RUN "
     lines = [line for line in result.stdout.splitlines() if line.startswith(prefix)]
     assert len(lines) == 1
-    payload = json.loads(lines[0][len(prefix):])
+    payload = json.loads(lines[0][len(prefix) :])
     assert payload == {
         "label": smoke.LABEL,
         "unit_count": 2,
