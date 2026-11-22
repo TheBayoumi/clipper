@@ -290,9 +290,7 @@ def test_local_raw_unselected_substring_fails_without_repair(
     assert row["evidence_coverage"]["policy"] == constrained.SPAN_POLICY
     assert row["evidence_coverage"]["selectable_spans"][0]["sha256"] == selected["sha256"]
     assert "text" not in row["evidence_coverage"]["selectable_spans"][0]
-    original = list(
-        (tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt")
-    )
+    original = list((tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt"))
     assert len(original) == 1
     assert original[0].read_bytes() == raw.encode("utf-8")
 

@@ -29,9 +29,7 @@ PUBLIC_TOKENIZER_FILES = (
     "tokenizer_config.json",
     "vocab.json",
 )
-PINNED_TOKENIZER_SHA256 = (
-    "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
-)
+PINNED_TOKENIZER_SHA256 = "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("CLIPPER_TOKENIZER_ONLY_PROBE") != "1",
@@ -134,9 +132,12 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
             assert tokenizer.eos_token_id not in initial
 
             tokens = tokenizer.encode(raw, add_special_tokens=False)
-            assert tokenizer.decode(
-                tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
-            ) == raw
+            assert (
+                tokenizer.decode(
+                    tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                )
+                == raw
+            )
             first_prefix = time.perf_counter()
             for index, token in enumerate(tokens):
                 allowed = callback(0, torch.tensor(prefix_ids))

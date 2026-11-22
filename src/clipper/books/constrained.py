@@ -135,6 +135,7 @@ def span_pool(text: str, evidence_field: str) -> dict[str, object]:
         },
     }
 
+
 def coverage_record(pool: dict[str, object]) -> dict[str, object]:
     """Report all private source offsets/hashes without duplicating passage text."""
     spans = cast(list[dict[str, object]], pool["spans"])
@@ -163,8 +164,7 @@ def coverage_summary(records: list[dict[str, object]]) -> dict[str, object]:
             len(cast(list[object], record["selectable_spans"])) for record in records
         ),
         "covered_fragment_chars": sum(
-            int(cast(dict[str, object], record["coverage"])["covered_chars"])
-            for record in records
+            int(cast(dict[str, object], record["coverage"])["covered_chars"]) for record in records
         ),
         "split_separator_chars": sum(
             int(cast(dict[str, object], record["coverage"])["split_separator_chars"])
@@ -394,9 +394,7 @@ def _literal_evidence_guard(parser: Any, values: list[str], base_type: Any) -> A
     return EvidenceGuard(parser, parser_config=parser.config)
 
 
-def validate_local_choice(
-    lessons: list[dict[str, str]], request: dict[str, object]
-) -> None:
+def validate_local_choice(lessons: list[dict[str, str]], request: dict[str, object]) -> None:
     """Independent raw-derived local evidence choice check, also run on replay."""
     decode_schema(request)
     choices = request["constraints"]["spans"]

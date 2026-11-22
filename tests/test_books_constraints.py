@@ -164,9 +164,9 @@ def test_boundary_cap_duplicate_and_overlong_coverage_are_explicit() -> None:
     )
     assert larger["coverage"]["omitted"]["pool_cap"] == 1
     with pytest.raises(constrained.NoEligibleSpans, match="coverage"):
-        constrained.decode_schema(_request(" ".join(
-            f"Sentence {i}." for i in range(constrained.MAX_SPANS + 1)
-        )))
+        constrained.decode_schema(
+            _request(" ".join(f"Sentence {i}." for i in range(constrained.MAX_SPANS + 1)))
+        )
     huge = constrained.span_pool("a" * (constrained.MAX_SOURCE_CHARS + 1), "native_text")
     assert huge["coverage"]["oversized_source"] is True
     assert huge["spans"] == []
@@ -398,8 +398,8 @@ def test_private_coverage_record_reports_separators_and_boundaries() -> None:
     assert report["selectable_spans"][-1]["end"] == report["source_chars"]
     assert all("text" not in span for span in report["selectable_spans"])
     total = constrained.coverage_summary([report])
-    assert total["covered_fragment_chars"] + total["split_separator_chars"] == (
-        total["source_chars"]
+    assert (
+        total["covered_fragment_chars"] + total["split_separator_chars"] == (total["source_chars"])
     )
     assert total["units_fail_closed_for_coverage"] == 0
     assert total["unit_start_context_unknown"] == 1
