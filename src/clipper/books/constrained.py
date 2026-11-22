@@ -164,14 +164,14 @@ def coverage_summary(records: list[dict[str, object]]) -> dict[str, object]:
             len(cast(list[object], record["selectable_spans"])) for record in records
         ),
         "covered_fragment_chars": sum(
-            int(cast(dict[str, object], record["coverage"])["covered_chars"]) for record in records
+            cast(int, cast(dict[str, object], record["coverage"])["covered_chars"]) for record in records
         ),
         "split_separator_chars": sum(
-            int(cast(dict[str, object], record["coverage"])["split_separator_chars"])
+            cast(int, cast(dict[str, object], record["coverage"])["split_separator_chars"])
             for record in records
         ),
         "omitted_fragment_chars": sum(
-            int(cast(dict[str, object], record["coverage"])["omitted_fragment_chars"])
+            cast(int, cast(dict[str, object], record["coverage"])["omitted_fragment_chars"])
             for record in records
         ),
         "units_fail_closed_for_coverage": sum(
@@ -207,7 +207,7 @@ def decode_schema(request: dict[str, object]) -> dict[str, object]:
         if metadata != expected:
             raise ValueError("source span identity mismatch")
         spans = cast(list[dict[str, object]], expected["spans"])
-        if expected["coverage"]["fail_closed_for_coverage"]:
+        if cast(dict[str, object], expected["coverage"])["fail_closed_for_coverage"]:
             raise NoEligibleSpans("source clauses exceed bounded evidence coverage")
         if not spans:
             raise NoEligibleSpans("no eligible exact source span for constrained mining")
@@ -287,7 +287,7 @@ def _literal_evidence_guard(parser: Any, values: list[str], base_type: Any) -> A
             node = node.setdefault(character, {})
         node[terminal] = True
 
-    class EvidenceGuard(base_type):
+    class EvidenceGuard(base_type):  # type: ignore[misc]
         def __init__(
             self,
             inner: Any,
@@ -397,7 +397,7 @@ def _literal_evidence_guard(parser: Any, values: list[str], base_type: Any) -> A
 def validate_local_choice(lessons: list[dict[str, str]], request: dict[str, object]) -> None:
     """Independent raw-derived local evidence choice check, also run on replay."""
     decode_schema(request)
-    choices = request["constraints"]["spans"]
+    choices = cast(list[dict[str, str]], cast(dict[str, object], request["constraints"])["spans"])
     evidence = {span["text"] for span in choices}
     ids = {span["id"] for span in choices}
     for lesson in lessons:
@@ -409,7 +409,8 @@ def prefix_for(request: dict[str, object], tokenizer: Any, revision: str) -> Any
     """Fresh per-request LMFE parser/enforcer; scripts remain unaffected."""
     schema = decode_schema(request)
     module, integration = _decoder()
-    values = [str(span["text"]) for span in request["constraints"]["spans"]]
+    spans = cast(list[dict[str, object]], cast(dict[str, object], request["constraints"])["spans"])
+    values = [str(span["text"]) for span in spans]
     parser = _literal_evidence_guard(
         module.JsonSchemaParser(schema), values, module.CharacterLevelParser
     )
