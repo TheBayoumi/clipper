@@ -175,7 +175,13 @@ def test_canonical_prompt_states_existing_strict_validator_contract(
     ):
         assert requirement in prompt
     for field in (
-        "id", "topic", "claim", "hook_angle", "visual_action", "evidence", "evidence_field"
+        "id",
+        "topic",
+        "claim",
+        "hook_angle",
+        "visual_action",
+        "evidence",
+        "evidence_field",
     ):
         assert f'"{field}"' in prompt
     supplied = json.loads(request["messages"][1]["content"])
@@ -208,9 +214,7 @@ def test_whole_book_validator_keeps_exact_bounded_unreviewed_evidence(
 
 
 @pytest.mark.parametrize("kind", ["markdown-fence", "colon-id", "overlong-claim"])
-def test_local_raw_invalid_response_is_not_repaired_or_accepted(
-    tmp_path: Path, kind: str
-) -> None:
+def test_local_raw_invalid_response_is_not_repaired_or_accepted(tmp_path: Path, kind: str) -> None:
     runner, acquired, _transport = ingested(tmp_path, paragraphs=3, with_image=False)
     unit = whole_book.plan_for(acquired.book).units[0]
     lesson = dict(response_for(unit)["lessons"][0])
@@ -231,9 +235,7 @@ def test_local_raw_invalid_response_is_not_repaired_or_accepted(
     assert result["counts"]["failed"] == 1
     progress = json.loads(Path(result["progress_path"]).read_text())
     assert progress["progress"][0]["failure_category"] == "invalid_reply"
-    raws = list(
-        (tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt")
-    )
+    raws = list((tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt"))
     assert len(raws) == 1
     assert raws[0].read_bytes() == raw.encode("utf-8")
 
