@@ -24,9 +24,30 @@ MAX_FIELD_CHARS = 400
 FIELDS = ("id", "topic", "claim", "hook_angle", "visual_action", "evidence", "evidence_field")
 CREATIVE_FIELDS = frozenset({"topic", "claim", "hook_angle", "visual_action"})
 SENTENCE_STARTERS = frozenset(
-    {"then", "we", "he", "she", "they", "it", "the", "a", "an", "but",
-     "however", "this", "that", "there", "i", "you", "later", "next",
-     "finally", "also", "now", "meanwhile"}
+    {
+        "then",
+        "we",
+        "he",
+        "she",
+        "they",
+        "it",
+        "the",
+        "a",
+        "an",
+        "but",
+        "however",
+        "this",
+        "that",
+        "there",
+        "i",
+        "you",
+        "later",
+        "next",
+        "finally",
+        "also",
+        "now",
+        "meanwhile",
+    }
 )
 SPLIT = re.compile(
     r"(?<=[.!?;:\u3002\uFF01\uFF1F\u061B\u061F])\s+"
@@ -546,8 +567,10 @@ def _literal_evidence_guard(parser: Any, spans: list[dict[str, object]], base_ty
                     last_key = key_buffer
                 elif in_candidate and field == "id":
                     selected_id = json.loads('"' + value_buffer + '"')
-                    if selected_id not in pairs or selected_id in used_ids or (
-                        selected_quote is not None and pairs[selected_id] != selected_quote
+                    if (
+                        selected_id not in pairs
+                        or selected_id in used_ids
+                        or (selected_quote is not None and pairs[selected_id] != selected_quote)
                     ):
                         raise ConstraintError("source ID/evidence pair mismatch")
                 elif in_candidate and field == "evidence":

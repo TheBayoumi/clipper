@@ -384,8 +384,7 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
         cases["bounded_350_spans"] = " ".join(f"authored{index:03d}." for index in range(350))
         cases["bounded_400_spans"] = " ".join(f"authored{index:03d}." for index in range(400))
         cases["mixed_emoji_combining"] = " ".join(
-            f'Source {i} combines café é, 🧪, "quotation", and Arabic العربية.'
-            for i in range(24)
+            f'Source {i} combines café é, 🧪, "quotation", and Arabic العربية.' for i in range(24)
         )
         for case_name, source in cases.items():
             request = _request(source)
@@ -545,9 +544,7 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                             flush=True,
                         )
                     if (
-                        case_name in {
-                            "latin", "arabic", "bounded_350_spans", "bounded_400_spans"
-                        }
+                        case_name in {"latin", "arabic", "bounded_350_spans", "bounded_400_spans"}
                         and count == 1
                         and not ascii_only
                     ):

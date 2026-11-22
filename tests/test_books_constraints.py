@@ -530,13 +530,11 @@ def test_incomplete_generation_raw_is_not_a_valid_completion() -> None:
         ("See No. 5 for the details. Then leave.", 2),
         ("Dr. Ada saw A. Smith. Then she left.", 2),
         ("U.S. trials succeeded. Dr. Lin agreed.", 2),
-        ("第一句。第二句\uFF01第三句\uFF1F", 3),
+        ("第一句。第二句\uff01第三句\uff1f", 3),
         ("سؤال؟ جواب. ثم غادر.", 3),
     ],
 )
-def test_sentence_final_initials_no_and_multilingual_boundaries(
-    source: str, expected: int
-) -> None:
+def test_sentence_final_initials_no_and_multilingual_boundaries(source: str, expected: int) -> None:
     pool = constrained.span_pool(source, "native_text")
     assert len(pool["spans"]) == expected
     assert pool["coverage"]["omitted_fragment_chars"] == 0
@@ -573,9 +571,7 @@ def test_character_mixed_escaped_literal_is_one_unchanged_cjk_source() -> None:
 
 @pytest.mark.parametrize("field", ["topic", "claim", "hook_angle", "visual_action"])
 @pytest.mark.parametrize("blank", ["   ", "\\u0020\\u0020"])
-def test_public_grammar_blocks_creative_whitespace_only(
-    field: str, blank: str
-) -> None:
+def test_public_grammar_blocks_creative_whitespace_only(field: str, blank: str) -> None:
     request = _request("A sentence of exact source evidence.")
     span = request["constraints"]["spans"][0]
     lesson = {

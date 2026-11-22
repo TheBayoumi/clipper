@@ -437,17 +437,20 @@ def test_fake_existing_generation_path_accepts_multi_eos_and_rejects_incomplete(
 
         def decode(self, _tokens: object, *, skip_special_tokens: bool) -> str:
             assert skip_special_tokens
+            if isinstance(_tokens, list) and _tokens and _tokens[0] == 222:
+                return '{"lessons":[{"id":"unfinished"'
             return '{"lessons":[]}'
 
     class FakeModel:
         generation_config = SimpleNamespace(eos_token_id=[0, 42])
 
-        def __init__(self, terminal: int) -> None:
+        def __init__(self, terminal: int, *, partial: bool = False) -> None:
             self.terminal = terminal
+            self.partial = partial
 
         def generate(self, **_kwargs: object) -> list[list[int]]:
-            # Synthetic fixed-token output, NOT a real model inference.
-            return [[999, 111, self.terminal]]
+            # Pure fake token output, not a loaded model or real inference.
+            return [[999, 222 if self.partial else 111, self.terminal]]
 
     actual_import = scripting.importlib.import_module
     fake_torch = SimpleNamespace(
@@ -467,6 +470,13 @@ def test_fake_existing_generation_path_accepts_multi_eos_and_rejects_incomplete(
         for last in (0, 42):
             patch.setattr(scripting, "_script_pipeline", lambda last=last: (FakeModel(last), tok))
             assert scripting._run_pinned_qwen(request, normalize_script=False) == ('{"lessons":[]}')
+        # The injected configured EOS checks post-generation recognition only.
+        # It does not claim the production LMFE callback permits this EOS.
+        patch.setattr(scripting, "_script_pipeline", lambda: (FakeModel(42, partial=True), tok))
+        partial = scripting._run_pinned_qwen(request, normalize_script=False)
+        assert partial == '{"lessons":[{"id":"unfinished"'
+        with pytest.raises(ValueError):
+            whole_book.load_strict_reply(partial)
         patch.setattr(scripting, "_script_pipeline", lambda: (FakeModel(777), tok))
         with pytest.raises(scripting.IncompleteConstrainedResponse) as exc:
             scripting._run_pinned_qwen(request, normalize_script=False)
