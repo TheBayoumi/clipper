@@ -202,6 +202,24 @@ def test_private_write_restricts_new_parents_without_touching_shared_paths(
         assert tmp_path.stat().st_mode & 0o777 == 0o755
         assert previous_file.read_bytes() == previous_bytes
 
+        # Reject links at both newly created and reused path boundaries,
+        # including a linked destination file, without changing its bytes.
+        linked_directory = shared / "linked-directory"
+        linked_directory.symlink_to(shared, target_is_directory=True)
+        with pytest.raises(acquisition.AcquisitionError, match="symlink"):
+            acquisition._private_write(linked_directory / "payload.json", b"no")
+        dangling = shared / "dangling-directory"
+        dangling.symlink_to(shared / "missing-target", target_is_directory=True)
+        with pytest.raises(acquisition.AcquisitionError, match="symlink"):
+            acquisition._private_write(dangling / "payload.json", b"no")
+        linked_file = shared / "linked-file.json"
+        linked_file.symlink_to(previous_file)
+        with pytest.raises(acquisition.AcquisitionError, match="symlink"):
+            acquisition._private_write(linked_file, b"no")
+        with pytest.raises(acquisition.AcquisitionError, match="escapes owned root"):
+            acquisition._private_write(
+                private_root / ".." / "escape.json", b"no", private_root=private_root
+            )
         with pytest.raises(acquisition.AcquisitionError, match="outside owned root"):
             acquisition._private_write(shared / "escape.json", b"no", private_root=private_root)
         outside = shared / "outside"
