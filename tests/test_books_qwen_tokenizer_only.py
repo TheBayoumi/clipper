@@ -233,7 +233,6 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
         finally:
             scripting._public_book_context.cache_clear()
 
-
         # Test admission BEFORE consuming a token, not parser rejection after.
         # Token 330 is the pinned tokenizer's merged space + closing quote.
         assert (
