@@ -643,9 +643,7 @@ def test_empty_overlay_cannot_alias_omitted_overlay_cache(tmp_path: Path, offlin
     runner.acquire_candidate("Atomic Habits", registry=(candidate,), transport=transport)
     for warmed in (False, True):
         if warmed:
-            normal = runner.ingest_candidate(
-                "Atomic Habits", registry=(candidate,), offline=True
-            )
+            normal = runner.ingest_candidate("Atomic Habits", registry=(candidate,), offline=True)
             assert not isinstance(normal, SourceUnresolved)
         with pytest.raises(ValueError, match="explicit image overlay is empty"):
             runner.ingest_candidate(

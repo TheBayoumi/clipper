@@ -192,9 +192,7 @@ class BookOrchestrator:
 
     def __init__(self, artifact_root: Path) -> None:
         self.root = artifact_root
-        self.dag = DagStore(
-            artifact_root / "book-dag", private_stages=frozenset({"books-ingest"})
-        )
+        self.dag = DagStore(artifact_root / "book-dag", private_stages=frozenset({"books-ingest"}))
         self.script_cache_root = artifact_root / "book-script-cache"
 
     def acquire_candidate(

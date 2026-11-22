@@ -1339,9 +1339,7 @@ def test_v1_projection_provenance_labels_actual_text(normalized: str | None) -> 
             }
         ],
     }
-    extracted = extract_candidate(
-        book.source, raw, candidate, overlay=json.dumps(overlay).encode()
-    )
+    extracted = extract_candidate(book.source, raw, candidate, overlay=json.dumps(overlay).encode())
     image_view = [x for x in reading_blocks(extracted) if x.asset_sha256 is not None]
     assert all(x.text == (normalized or "original") for x in image_view)
     expected = "image_normalized" if normalized else "image_original"

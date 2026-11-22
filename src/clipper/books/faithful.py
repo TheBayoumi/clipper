@@ -1006,9 +1006,7 @@ def reading_blocks(book: BookText) -> Iterator[ReadingBlock]:
             if image.review_status == "reviewed":
                 origin = "reviewed_image"
                 provenance = (
-                    "image_normalized"
-                    if image.normalized_transcription
-                    else "image_original"
+                    "image_normalized" if image.normalized_transcription else "image_original"
                 )
             elif image.review_status == "machine_unreviewed":
                 origin = "machine_ocr"
