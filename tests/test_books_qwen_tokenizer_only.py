@@ -114,7 +114,7 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
             "quoted": 'The "qualification" must remain within the evidence.',
             "escape_control": "The path C:\\work\\notes includes a tab\tand newline\n.",
             "mixed_script": "Unicode café 漢字 العربية remains exact.",
-            "emoji_curly": "Curly ‘quote’ and emoji 🧪 remain unchanged.",
+            "emoji_curly": "Curly \u2018quote\u2019 and emoji 🧪 remain unchanged.",
         }
         for case, source in cases.items():
             request = _request(source)

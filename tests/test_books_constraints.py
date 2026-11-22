@@ -95,7 +95,7 @@ def test_shipped_parser_requires_object_with_lessons_and_all_fields() -> None:
 
 
 def test_real_released_token_enforcer_restricts_root_and_terminal_eos() -> None:
-    _request_data, schema = _decode_request("One short source statement.")
+    _request_data, _schema = _decode_request("One short source statement.")
     data = _synthetic_tokens()
     enforcer = TokenEnforcer(data, _guard(_request("One short source statement.")))
     initial = enforcer.get_allowed_tokens([999]).allowed_tokens
@@ -217,7 +217,7 @@ def test_unavailable_optional_decoder_and_bad_requests_fail_without_script_leak(
 
 def test_released_parser_rejects_nonselected_quotes_extra_keys_and_bounds() -> None:
     text = "A supported sentence. Another supported sentence!"
-    _req, schema = _decode_request(text)
+    _req, _schema = _decode_request(text)
     spans = constrained.span_pool(text, "native_text")["spans"]
     lesson = {
         "id": spans[0]["id"],
@@ -329,7 +329,7 @@ def test_no_eligible_span_rejects_before_any_model_initialization(
         r"The literal backslash \ remains essential.",
         "A control tab\tand newline\nretain exact meaning.",
         "Unicode café 漢字 العربية remains exact.",
-        "A curly quote ‘and’ emoji 🚀 remain verbatim.",
+        "A curly quote \u2018and\u2019 emoji 🚀 remain verbatim.",
     ],
 )
 def test_released_json_parser_accepts_exact_escaped_source_literal(
