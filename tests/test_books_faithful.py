@@ -986,9 +986,7 @@ def test_legacy_v2_rejects_wrong_book_unknown_path_duplicates_and_false_review()
         elif index == 10:
             entry["observation_id"] = ""
         else:
-            observations.append(
-                {**copy.deepcopy(entry), "observation_id": "one", **inventory[1]}
-            )
+            observations.append({**copy.deepcopy(entry), "observation_id": "one", **inventory[1]})
         with pytest.raises(ExtractionError):
             convert_research_observations(book, json.dumps(item).encode())
 
@@ -1062,3 +1060,117 @@ def test_v2_overlay_rejects_provenance_tampering_and_stale_observation_id() -> N
     ):
         with pytest.raises(ExtractionError):
             extract_candidate(book.source, raw, selected, overlay=json.dumps(broken).encode())
+
+
+def test_original_research_observation_with_unknown_review_is_not_approved() -> None:
+    raw = _epub()
+    selected = _candidate(raw)
+    book = extract_candidate(_source(raw, selected), raw, selected)
+    research = _research_v2(book)
+    inventory = research["occurrence_inventory"]
+    assert isinstance(inventory, list)
+    research["observations"] = [
+        _observation(
+            inventory[0],
+            observation_id="original-only",
+            original="Unmodified synthetic axis label",
+            normalized=None,
+        )
+    ]
+    overlay, report = convert_research_observations(book, json.dumps(research).encode())
+    assert report["linked_occurrences"] == 1
+    assert report["normalized_only_occurrences"] == 0
+    assert report["reviewed_occurrences"] == 0
+    extracted = extract_candidate(book.source, raw, selected, overlay=overlay)
+    observed = [
+        x for x in reading_blocks(extracted) if x.origin == "original_research_unreviewed"
+    ]
+    assert len(observed) == 1
+    assert observed[0].text == "Unmodified synthetic axis label"
+    assert observed[0].text_provenance == "image_original"
+    assert observed[0].original_image_text == "Unmodified synthetic axis label"
+    assert observed[0].review_status == "needs_review"
+    assert extracted.recovery_status == "incomplete_recovery"
+
+
+def test_v2_overlay_rejects_malformed_entry_provenance_and_review_payloads() -> None:
+    raw = _epub()
+    selected = _candidate(raw)
+    book = extract_candidate(_source(raw, selected), raw, selected)
+    research = _research_v2(book)
+    inventory = research["occurrence_inventory"]
+    assert isinstance(inventory, list)
+    research["observations"] = [
+        _observation(inventory[0], observation_id="only", normalized="Grouped chart note")
+    ]
+    overlay, _report = convert_research_observations(book, json.dumps(research).encode())
+    baseline = json.loads(overlay)
+    invalid_roots = [
+        {**baseline, "extra": "unsupported"},
+        {**baseline, "research_author": 32},
+        {**baseline, "entries": "not-array"},
+        {**baseline, "research_origin": "x" * 201},
+    ]
+    for payload in invalid_roots:
+        with pytest.raises(ExtractionError):
+            extract_candidate(book.source, raw, selected, overlay=json.dumps(payload).encode())
+    invalid_entries = [
+        {"unknown": "schema"},
+        {**baseline["entries"][0], "observation_id": ""},
+        {**baseline["entries"][0], "normalized_transcription": ""},
+        {**baseline["entries"][0], "normalized_transcription": None},
+        {**baseline["entries"][0], "original_transcription": ""},
+        {**baseline["entries"][0], "normalization_notes": None},
+        {**baseline["entries"][0], "reviewed_by": 123},
+        {**baseline["entries"][0], "reviewed_at": ""},
+        {**baseline["entries"][0], "review_status": "automatically_reviewed"},
+    ]
+    for entry in invalid_entries:
+        payload = {**baseline, "entries": [entry]}
+        with pytest.raises(ExtractionError):
+            extract_candidate(book.source, raw, selected, overlay=json.dumps(payload).encode())
+
+
+def test_v2_converter_rejects_missing_inventory_evidence_and_schema_drift() -> None:
+    raw = _epub()
+    book = extract_candidate(_source(raw, _candidate(raw)), raw, _candidate(raw))
+    reference = _research_v2(book)
+    inventory = reference["occurrence_inventory"]
+    assert isinstance(inventory, list)
+    reference["observations"] = [
+        _observation(inventory[0], observation_id="synthetic-evidence")
+    ]
+    invalid = [
+        {**reference, "extra_field": 1},
+        {**reference, "occurrence_inventory": "wrong"},
+        {**reference, "observations": "wrong"},
+        {**reference, "occurrence_inventory": [{"anchor": "missing"}]},
+        {**reference, "observations": [{"other": "shape"}]},
+        {**reference, "occurrence_inventory": []},
+    ]
+    for payload in invalid:
+        with pytest.raises(ExtractionError):
+            convert_research_observations(book, json.dumps(payload).encode())
+
+
+def test_reading_projection_rejects_corrupt_anchor_path_and_ocr_is_unreviewed() -> None:
+    raw = _epub()
+    selected = _candidate(raw)
+    book = extract_candidate(_source(raw, selected), raw, selected)
+    image_block = next(x for x in book.blocks if x.kind == "image")
+    corrupt = replace(book, blocks=(replace(image_block, source_path="wrong.xhtml"),))
+    with pytest.raises(ExtractionError, match="exact path/anchor"):
+        list(reading_blocks(corrupt))
+    broken = replace(book, blocks=(replace(image_block, asset_sha256=None),))
+    with pytest.raises(ExtractionError, match="missing asset"):
+        list(reading_blocks(broken))
+    machine = extract_candidate(
+        book.source,
+        raw,
+        selected,
+        ocr=lambda _image, _type: "Machine only",
+        ocr_identity=OCRIdentity("fixture", "1"),
+    )
+    assert any(x.origin == "machine_ocr" for x in reading_blocks(machine))
+    assert image_reconciliation(machine)["reviewed_occurrences"] == 0
+    assert image_reconciliation(machine)["unresolved_occurrences"] == 0

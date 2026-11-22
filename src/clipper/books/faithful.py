@@ -728,14 +728,8 @@ def _overlay_v2(
                 and normalized != original
                 and (not isinstance(notes, str) or not notes.strip())
             )
-            or (
-                reviewer is not None
-                and (not isinstance(reviewer, str) or not reviewer.strip())
-            )
-            or (
-                timestamp is not None
-                and (not isinstance(timestamp, str) or not timestamp.strip())
-            )
+            or (reviewer is not None and (not isinstance(reviewer, str) or not reviewer.strip()))
+            or (timestamp is not None and (not isinstance(timestamp, str) or not timestamp.strip()))
             or status not in (None, "needs_review", "reviewed")
             or (status == "reviewed" and (original is None or reviewer is None))
         ):
