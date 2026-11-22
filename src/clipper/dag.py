@@ -265,6 +265,7 @@ class DagStore:
         """OS-managed lock: death/cancellation closes the descriptor, not a mkdir lease."""
         self._prepare_private_stage(identity)
         directory = self._directory(identity)
+        directory.mkdir(parents=True, exist_ok=True)
         legacy = directory / ".write-lock"
         path = directory / ".write-lock-file"
         deadline = time.monotonic() + timeout_seconds
