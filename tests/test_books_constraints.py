@@ -7,7 +7,7 @@ import json
 from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -724,7 +724,7 @@ def test_released_token_enforcer_cannot_cache_away_choice_restrictions() -> None
         ("They left etc. Zelda returned.", 2),
         ('He said "I." Zelda left.', 2),
         ('He said "no." Zelda left.', 2),
-        ("第一句。第二句\\uff01第三句\\uff1f", 3),
+        ("第一句。第二句\uff01第三句\uff1f", 3),
         ("السؤال؟ الجواب؛ ثم غادر.", 3),
     ],
 )
@@ -917,3 +917,83 @@ def test_synthetic_public_book_prefix_wrapper_and_escape_paths() -> None:
         parsed: Any = whole_book.load_strict_reply(raw)
         assert parsed == {"lessons": [lesson]}
         constrained.validate_local_choice(parsed["lessons"], request)
+
+
+def test_blank_safe_public_wrapper_rejects_invalid_prefix_states_model_free() -> None:
+    """Real public CharacterLevelParser; synthetic tokens and callbacks only."""
+    request = _request("A synthetic exact source.")
+    root = _guard(request)
+    regular_tokens = [
+        (9, '"', False),
+        (10, '\\"', False),
+        (11, '\t"', False),
+    ]
+    data = SimpleNamespace(regular_tokens=regular_tokens, decoder=lambda _ids: "")
+    invalid = constrained._blank_closing_token_ids(data)
+    assert {9, 11}.issubset(invalid)
+    assert 10 not in invalid
+
+    def make(decoder: Any) -> Any:
+        tokenizer_data = SimpleNamespace(regular_tokens=regular_tokens, decoder=decoder)
+        return constrained._BlankSafePrefixFn(
+            lambda _batch, _tokens: [9, 10, 11], root, tokenizer_data
+        )
+
+    changed = make(lambda _ids: "")
+    assert changed(0, [999]) == [9, 10, 11]
+    with pytest.raises(constrained.ConstraintError, match="prompt changed"):
+        changed(0, [998])
+
+    invalid_decode = make(lambda _ids: 123)
+    invalid_decode(0, [999])
+    with pytest.raises(constrained.ConstraintError, match="decoder returned invalid"):
+        invalid_decode(0, [999, 1])
+
+    invalid_prefix = make(lambda _ids: "[")
+    invalid_prefix(0, [999])
+    with pytest.raises(constrained.ConstraintError, match="invalid generated book JSON prefix"):
+        invalid_prefix(0, [999, 1])
+
+    # Contextual decoding can retract a suffix. It must rebuild the public
+    # parser rather than trust stale incremental state or repair generated raw.
+    retract = make(lambda ids: "{" if ids == [1] else "")
+    retract(0, [999])
+    assert retract(0, [999, 1]) == [9, 10, 11]
+    assert retract(0, [999, 1, 2]) == [9, 10, 11]
+
+    # A candidate token with a quote may finish an illegal pending escape.
+    # The filter must inspect that token's contextual decoded characters.
+    partial = '{"lessons":[{"topic":"' + "\\"
+
+    def decode_quote(ids: list[int]) -> str:
+        if ids == [1]:
+            return partial
+        if ids == [1, 9]:
+            return "not-a-prefix"
+        return partial + "x"
+
+    escaped = make(decode_quote)
+    escaped(0, [999])
+    allowed = escaped(0, [999, 1])
+    assert 9 not in allowed
+    assert 10 not in allowed
+
+
+def test_full_context_preflight_rejects_malformed_public_encodings() -> None:
+    request = _request("A synthetic exact source.")
+    request["max_new_tokens"] = 960
+
+    class Encoded:
+        def __init__(self, result: object) -> None:
+            self.result = result
+
+        def apply_chat_template(self, *_args: object, **_kwargs: object) -> object:
+            return self.result
+
+    for invalid in ("not-a-token-list", [1, "not-an-integer"]):
+        with pytest.raises(constrained.ConstraintError, match="invalid pinned tokenizer"):
+            constrained.check_prompt_context(request, Encoded(invalid), 40_960)
+    with pytest.raises(constrained.ConstraintError, match="model context limit"):
+        constrained.check_prompt_context(request, Encoded([1]), 960)
+    with pytest.raises(constrained.ConstraintError, match="preflight failed"):
+        constrained.check_prompt_context({"max_new_tokens": 960}, Encoded([1]), 40_960)
