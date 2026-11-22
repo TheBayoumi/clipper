@@ -638,6 +638,8 @@ class BookOrchestrator:
                 self.root / "book-dag" / "books-ingest" / ref.ingest_stage_key / "stage.json"
             )
             record = _bounded_candidate_json(stage_path, max_bytes=2_000_000)
+            if not isinstance(record, dict):
+                raise ValueError("candidate ingest DAG record malformed")
             identity_data = record["identity"]
             if not isinstance(identity_data, dict):
                 raise ValueError("candidate ingest DAG identity missing")
