@@ -325,7 +325,9 @@ def test_smoke_gate_model_replay_and_collect_share_push_before_sha() -> None:
     for command in commands:
         matches = [step for step in steps if command in str(step.get("run", ""))]
         assert len(matches) == 1, command
-        assert matches[0].get("env", {}).get("SMOKE_PUSH_BEFORE_SHA") == "${{ github.event.before }}"
+        assert (
+            matches[0].get("env", {}).get("SMOKE_PUSH_BEFORE_SHA") == "${{ github.event.before }}"
+        )
 
 
 @pytest.mark.parametrize("request_present", [False, True])
