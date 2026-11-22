@@ -25,7 +25,6 @@ jobs:
       PYTHONUNBUFFERED: "1"
       PIP_NO_CACHE_DIR: "1"
       HF_HUB_DISABLE_TELEMETRY: "1"
-      HF_HOME: ${{ runner.temp }}/clipper-public-book-cpu-smoke-hf
       CUDA_VISIBLE_DEVICES: "-1"
       TOKENIZERS_PARALLELISM: "false"
     steps:
@@ -43,6 +42,11 @@ jobs:
         env:
           SMOKE_PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: python scripts/book_local_cpu_smoke.py gate
+      - name: Configure ephemeral HF cache on the runner after the request gate
+        shell: bash
+        run: |
+          test -n "$RUNNER_TEMP"
+          printf 'HF_HOME=%s/clipper-public-book-cpu-smoke-hf\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Install CPU-only pinned lean runtime (no Kokoro, Modal, or CUDA wheels)
         run: |
           python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 'torch==2.6.0+cpu'

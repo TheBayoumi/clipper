@@ -10,6 +10,7 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import pytest
+import yaml
 
 from clipper.books import scripting
 
@@ -19,6 +20,12 @@ if _SPEC is None or _SPEC.loader is None:
     raise RuntimeError("public smoke harness file could not be loaded")
 smoke = module_from_spec(_SPEC)
 _SPEC.loader.exec_module(smoke)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_synthetic_job_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may append a synthetic 'real execution' summary to Actions CI."""
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
 
 
 def _request() -> dict[str, object]:
@@ -193,7 +200,7 @@ def test_bounded_reconstructable_log_evidence_ignores_unrelated_paths(tmp_path: 
     secret.write_text("NEVER_COLLECT_PRIVATE_INPUT")
     records = smoke.encoded_evidence(root)
     assert len(records) >= 4
-    assert all(row["execution"] == "REAL_EXECUTION" for row in records)
+    assert all(row["execution"] == "SYNTHETIC_OR_UNGATED_NO_MODEL" for row in records)
     assert all(row["label"] == smoke.LABEL for row in records)
     assert not any("private-book-input" in row["path"] for row in records)
     groups: dict[str, list[dict[str, object]]] = {}
@@ -266,3 +273,38 @@ def test_optional_model_markers_do_not_log_prompts_when_disabled_or_enabled(
     monkeypatch.setenv("CLIPPER_PUBLIC_BOOK_CPU_SMOKE", "1")
     scripting._public_cpu_smoke_phase("cpu_weight_loading_start")
     assert capsys.readouterr().out.strip() == "PUBLIC_BOOK_CPU_MODEL_PHASE cpu_weight_loading_start"
+
+
+def test_workflow_github_context_rules_and_dormant_trigger_are_explicit() -> None:
+    workflow_path = smoke.REPO / ".github/workflows/book-local-cpu-smoke.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    # PyYAML 1.1 treats the GitHub Actions on key as boolean True.
+    triggers = workflow.get("on", workflow.get(True))
+    assert set(triggers) == {"push"}
+    assert triggers["push"]["branches"] == [smoke.BRANCH]
+    assert triggers["push"]["paths"] == [smoke.RUN_REQUEST]
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["concurrency"]["cancel-in-progress"] is False
+    job = workflow["jobs"]["public-synthetic-only-cpu"]
+    assert job["runs-on"] == "ubuntu-24.04"
+    assert job["timeout-minutes"] == 45
+    assert "HF_HOME" not in job["env"]
+    # GitHub context rules: jobs.<id>.env cannot use the runner context.
+    # The shell step can use the default RUNNER_TEMP environment variable.
+    assert not any("runner." in str(value) for value in job["env"].values())
+    steps = job["steps"]
+    gate_index = next(i for i, step in enumerate(steps) if "request gate" in step["name"])
+    cache_index = next(i for i, step in enumerate(steps) if "ephemeral HF cache" in step["name"])
+    install_index = next(i for i, step in enumerate(steps) if "CPU-only pinned" in step["name"])
+    assert gate_index < cache_index < install_index
+    setup = steps[cache_index]["run"]
+    assert '"$RUNNER_TEMP"' in setup
+    assert '"$GITHUB_ENV"' in setup
+    assert "HF_HOME=%s/clipper-public-book-cpu-smoke-hf" in setup
+    content = workflow_path.read_text(encoding="utf-8")
+    assert "runner.temp" not in content
+    assert "actions/cache" not in content
+    assert "upload-artifact" not in content
+    assert not (smoke.REPO / smoke.RUN_REQUEST).exists()
+
+
