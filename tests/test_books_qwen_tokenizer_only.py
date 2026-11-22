@@ -85,6 +85,72 @@ def _pool_reply(request: dict[str, object], *, count: int, ascii_only: bool) -> 
     return json.dumps({"lessons": lessons}, ensure_ascii=ascii_only, separators=(",", ":"))
 
 
+def _bounded_alternative_token_probe(
+    callback: Any,
+    tokenizer: Any,
+    torch: Any,
+    target: str,
+    accepted: list[int],
+) -> dict[str, object]:
+    """Depth-two token reachability only; NEVER proof of a complete reply path."""
+
+    def decoded(ids: list[int]) -> str:
+        # LMFE's published adapter drops trailing Unicode replacement
+        # characters when decoding incomplete byte-level token sequences.
+        return tokenizer.decode(
+            ids[1:],
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        ).rstrip("\ufffd")
+
+    base = decoded(accepted)
+    if not target.startswith(base):
+        return {"prefix_matches": False}
+    first_allowed = callback(0, torch.tensor(accepted))
+    explored_first = min(len(first_allowed), 2048)
+    candidates: list[tuple[int, int]] = []
+    for token in first_allowed[:explored_first]:
+        next_text = decoded([*accepted, token])
+        if next_text.startswith(base) and target.startswith(next_text):
+            candidates.append((token, len(next_text) - len(base)))
+    progressed_first = sum(advance > 0 for _, advance in candidates)
+    progressed_second = 0
+    explored_second = 0
+    for first_token, _advance in candidates[:12]:
+        extended = [*accepted, first_token]
+        allowed_second = callback(0, torch.tensor(extended))
+        for token in allowed_second[:512]:
+            explored_second += 1
+            next_text = decoded([*extended, token])
+            if target.startswith(next_text) and len(next_text) > len(base):
+                progressed_second += 1
+    required_char = target[len(base) : len(base) + 1]
+    tokenizer_data = callback.token_enforcer
+    regular = tokenizer_data.regular_tokens
+    return {
+        "prefix_matches": True,
+        "required_next_char_codepoint": (
+            ord(required_char) if required_char else None
+        ),
+        "parser_alphabet_contains_next": (
+            required_char in callback.token_enforcer.root_parser.config.alphabet
+        ),
+        "registered_tokens_starting_with_next_char": sum(
+            token_string.startswith(required_char)
+            for _, token_string, _ in regular
+        ),
+        "first_allowed_tokens": len(first_allowed),
+        "first_scanned": explored_first,
+        "prefix_compatible_first_choices": len(candidates),
+        "first_choices_advancing_text": progressed_first,
+        "second_scanned": explored_second,
+        "second_choices_advancing_text": progressed_second,
+        "max_depth": 2,
+        "exhaustive": False,
+        "proves_complete_reply_path": False,
+    }
+
+
 def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -381,6 +447,20 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                         ),
                         flush=True,
                     )
+                    if (
+                        case_name == "cjk"
+                        and count == 1
+                        and not ascii_only
+                        and first_rejected is not None
+                    ):
+                        probe = _bounded_alternative_token_probe(
+                            callback, tokenizer, torch, raw, prefix
+                        )
+                        print(
+                            "QWEN_PRODUCTION_ALT_PATH_DIAGNOSTIC "
+                            + json.dumps(probe, sort_keys=True),
+                            flush=True,
+                        )
                     if (
                         case_name in {"latin", "arabic", "bounded_350_spans"}
                         and count == 1
