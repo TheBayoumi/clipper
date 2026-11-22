@@ -6,8 +6,8 @@ import hashlib
 import json
 from importlib.metadata import version
 from pathlib import Path
-from typing import cast
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
@@ -807,7 +807,9 @@ def test_public_book_context_preflight_is_pinned_and_weight_free(
     (snapshot / "tokenizer.json").write_bytes(synthetic_tokenizer_bytes)
     model_limit = 40_959 if fault == "wrong-model-limit" else 40_960
     tokenizer_limit = 131_071 if fault == "wrong-tokenizer-limit" else 131_072
-    (snapshot / "config.json").write_text(json.dumps({"max_position_embeddings": model_limit}))
+    (snapshot / "config.json").write_text(
+        json.dumps({"max_position_embeddings": model_limit})
+    )
     (snapshot / "tokenizer_config.json").write_text(
         json.dumps({"model_max_length": tokenizer_limit})
     )
