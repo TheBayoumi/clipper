@@ -1112,7 +1112,19 @@ def test_pinned_local_qwen_cpu_loader_uses_one_fake_model_without_weight_downloa
     _runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
     unit = whole_book.plan_for(acquired.book).units[0]
     request = whole_book.request_for(acquired.book, unit)
+    snapshot = (
+        tmp_path
+        / "cache"
+        / "hub"
+        / "models--Qwen--Qwen3-1.7B"
+        / "snapshots"
+        / scripting.SCRIPT_REVISION
+    )
+    snapshot.mkdir(parents=True)
+    for name in ("config.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors"):
+        (snapshot / name).write_bytes(b"synthetic model-cache placeholder")
     loaded: list[str] = []
+    hub_calls: list[bool] = []
     seeds: list[int] = []
     generated: list[dict[str, object]] = []
     decoded = ' {"lessons": []} '
@@ -1146,20 +1158,30 @@ def test_pinned_local_qwen_cpu_loader_uses_one_fake_model_without_weight_downloa
 
     class AutoTokenizer:
         @staticmethod
-        def from_pretrained(name, *, revision):
+        def from_pretrained(location, *, local_files_only):
+            # This rejects the old repository-ID call that causes the
+            # Transformers 4.57.3 tokenizer metadata lookup while offline.
+            assert Path(location) == snapshot
+            assert local_files_only is True
             loaded.append("tokenizer")
-            assert name == scripting.SCRIPT_MODEL
-            assert revision == scripting.SCRIPT_REVISION
             return tokenizer
 
     class AutoModel:
         @staticmethod
-        def from_pretrained(name, *, revision, dtype):
-            loaded.append("model")
-            assert name == scripting.SCRIPT_MODEL
-            assert revision == scripting.SCRIPT_REVISION
+        def from_pretrained(location, *, local_files_only, dtype):
+            assert Path(location) == snapshot
+            assert local_files_only is True
             assert dtype == "auto"
+            loaded.append("model")
             return model
+
+    def snapshot_download(*, repo_id, revision, local_files_only):
+        assert repo_id == scripting.SCRIPT_MODEL
+        assert revision == scripting.SCRIPT_REVISION
+        hub_calls.append(local_files_only)
+        if not local_files_only:
+            pytest.fail("offline pinned model cache must never query the Hub")
+        return str(snapshot)
 
     fake_torch = SimpleNamespace(
         set_num_threads=lambda count: None,
@@ -1167,6 +1189,7 @@ def test_pinned_local_qwen_cpu_loader_uses_one_fake_model_without_weight_downloa
         inference_mode=lambda: nullcontext(),
     )
     fake_transformers = SimpleNamespace(AutoTokenizer=AutoTokenizer, AutoModelForCausalLM=AutoModel)
+    fake_hub = SimpleNamespace(snapshot_download=snapshot_download)
     real_import = scripting.importlib.import_module
 
     def injected(name: str):
@@ -1174,14 +1197,18 @@ def test_pinned_local_qwen_cpu_loader_uses_one_fake_model_without_weight_downloa
             return fake_torch
         if name == "transformers":
             return fake_transformers
+        if name == "huggingface_hub":
+            return fake_hub
         return real_import(name)
 
     scripting._script_pipeline.cache_clear()
     try:
         with monkeypatch.context() as patch:
+            patch.setenv("HF_HUB_OFFLINE", "1")
             patch.setattr(scripting.importlib, "import_module", injected)
             assert scripting._local_book_completion(request) == decoded
             assert scripting._local_book_completion(request) == decoded
+            assert hub_calls == [True]
             assert loaded == ["tokenizer", "model"]
             assert seeds == [42, 42]
             assert len(generated) == 2
@@ -1189,3 +1216,247 @@ def test_pinned_local_qwen_cpu_loader_uses_one_fake_model_without_weight_downloa
             assert all(call["max_new_tokens"] == 960 for call in generated)
     finally:
         scripting._script_pipeline.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("kind", "message"),
+    [
+        ("missing", "offline cache"),
+        ("incomplete", "incomplete"),
+        ("wrong-revision", "identity mismatch"),
+        ("shard-missing", "incomplete"),
+    ],
+)
+def test_pinned_qwen_offline_snapshot_fails_closed_without_metadata_or_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, message: str
+) -> None:
+    from types import SimpleNamespace
+
+    model_cache = tmp_path / "cache" / "hub" / "models--Qwen--Qwen3-1.7B" / "snapshots"
+    revision = "f" * 40 if kind == "wrong-revision" else scripting.SCRIPT_REVISION
+    snapshot = model_cache / revision
+    if kind != "missing":
+        snapshot.mkdir(parents=True)
+        for name in ("config.json", "tokenizer_config.json", "tokenizer.json"):
+            (snapshot / name).write_bytes(b"synthetic")
+        if kind == "wrong-revision":
+            (snapshot / "model.safetensors").write_bytes(b"synthetic")
+        if kind == "shard-missing":
+            (snapshot / "model.safetensors.index.json").write_text(
+                json.dumps({"weight_map": {"layer": "model-00001-of-00002.safetensors"}})
+            )
+
+    def snapshot_download(*, repo_id, revision, local_files_only):
+        assert (repo_id, revision) == (scripting.SCRIPT_MODEL, scripting.SCRIPT_REVISION)
+        assert local_files_only is True
+        if kind == "missing":
+            raise FileNotFoundError("synthetic missing pinned snapshot")
+        return str(snapshot)
+
+    hub = SimpleNamespace(snapshot_download=snapshot_download)
+    original_import = scripting.importlib.import_module
+
+    def injected(name: str):
+        return hub if name == "huggingface_hub" else original_import(name)
+
+    with monkeypatch.context() as patch:
+        patch.setenv("HF_HUB_OFFLINE", "1")
+        patch.setattr(scripting.importlib, "import_module", injected)
+        with pytest.raises(scripting.PinnedQwenSnapshotError, match=message):
+            scripting._pinned_qwen_snapshot()
+
+
+def test_pinned_qwen_pre_cache_and_explicit_public_download_use_exact_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    snapshot = (
+        tmp_path
+        / "cache"
+        / "hub"
+        / "models--Qwen--Qwen3-1.7B"
+        / "snapshots"
+        / scripting.SCRIPT_REVISION
+    )
+    snapshot.mkdir(parents=True)
+    for name in ("config.json", "tokenizer_config.json", "tokenizer.json"):
+        (snapshot / name).write_bytes(b"synthetic")
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"layer": "model-00001-of-00002.safetensors"}})
+    )
+    (snapshot / "model-00001-of-00002.safetensors").write_bytes(b"synthetic shard")
+    calls: list[bool] = []
+
+    def snapshot_download(*, repo_id, revision, local_files_only):
+        assert (repo_id, revision) == (scripting.SCRIPT_MODEL, scripting.SCRIPT_REVISION)
+        calls.append(local_files_only)
+        if local_files_only:
+            raise FileNotFoundError("synthetic absent cache entry")
+        return str(snapshot)
+
+    hub = SimpleNamespace(snapshot_download=snapshot_download)
+    original_import = scripting.importlib.import_module
+
+    def injected(name: str):
+        return hub if name == "huggingface_hub" else original_import(name)
+
+    with monkeypatch.context() as patch:
+        patch.delenv("HF_HUB_OFFLINE", raising=False)
+        patch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+        patch.setattr(scripting.importlib, "import_module", injected)
+        assert scripting._pinned_qwen_snapshot() == snapshot
+        assert calls == [True, False]
+
+
+def test_local_cached_evidence_reprotects_reused_private_hierarchy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=4, with_image=False)
+    count = len(whole_book.plan_for(acquired.book).units)
+    recorded = responses_for(acquired.book)
+
+    def fake(request: dict[str, object]) -> str:
+        return json.dumps(recorded[content_fingerprint(request)], sort_keys=True)
+
+    initial = runner.mine_candidate(
+        acquired.analysis_ref_path, local_cpu=True, max_new_units=count, local_completion=fake
+    )
+    assert initial["status"] == "complete"
+    artifact_root = tmp_path / "artifacts"
+    private_root = artifact_root / "book-candidates"
+    raw_files = list((private_root / "analysis/completions").glob("**/*.txt"))
+    files = [*raw_files, Path(initial["progress_path"]), Path(initial["export_path"])]
+    assert raw_files
+    originals = {file: file.read_bytes() for file in files}
+    shared = tmp_path / "unrelated-shared"
+    shared.mkdir()
+    tmp_path.chmod(0o755)
+    artifact_root.chmod(0o755)
+    shared.chmod(0o755)
+    dirs: set[Path] = set()
+    for file in files:
+        file.chmod(0o666)
+        current = file.parent
+        while current != private_root.parent:
+            dirs.add(current)
+            current = current.parent
+    for directory in dirs:
+        directory.chmod(0o777)
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("completed cache replay must not load a model or network")
+
+    monkeypatch.setattr("clipper.books.scripting._script_pipeline", forbidden)
+    monkeypatch.setattr("urllib.request.urlopen", forbidden)
+    previous = os.umask(0)
+    try:
+        repeated = runner.mine_candidate(
+            acquired.analysis_ref_path,
+            local_cpu=True,
+            max_new_units=1,
+            local_completion=forbidden,
+        )
+    finally:
+        os.umask(previous)
+    assert repeated == initial
+    for directory in dirs:
+        assert directory.stat().st_mode & 0o777 == 0o700, directory
+    for file, original in originals.items():
+        assert file.read_bytes() == original
+        assert file.stat().st_mode & 0o777 == 0o600, file
+    assert tmp_path.stat().st_mode & 0o777 == 0o755
+    assert artifact_root.stat().st_mode & 0o777 == 0o755
+    assert shared.stat().st_mode & 0o777 == 0o755
+
+
+def test_local_cached_raw_evidence_missing_raises_book_domain_error(tmp_path: Path) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+    count = len(whole_book.plan_for(acquired.book).units)
+
+    def fake(request: dict[str, object]) -> str:
+        return json.dumps(responses_for(acquired.book)[content_fingerprint(request)])
+
+    result = runner.mine_candidate(
+        acquired.analysis_ref_path, local_cpu=True, max_new_units=count, local_completion=fake
+    )
+    assert result["status"] == "complete"
+    raw = next((tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt"))
+    record = next(
+        (tmp_path / "artifacts/book-dag/books-mining-local-completion-v1").glob("*/stage.json")
+    )
+    report_bytes = Path(result["progress_path"]).read_bytes()
+    raw.unlink()
+
+    def forbidden(_request: dict[str, object]) -> str:
+        pytest.fail("missing PASS raw bytes must never trigger regeneration")
+
+    with pytest.raises(BookRunError, match="cached local model raw evidence missing"):
+        runner.mine_candidate(
+            acquired.analysis_ref_path,
+            local_cpu=True,
+            max_new_units=1,
+            local_completion=forbidden,
+        )
+    assert not raw.exists()
+    assert json.loads(record.read_text())["status"] == "PASS"
+    assert Path(result["progress_path"]).read_bytes() == report_bytes
+
+
+def test_reused_failure_provenance_permissions_and_bytes_are_preserved(
+    tmp_path: Path,
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+
+    def invalid(_request: dict[str, object]) -> str:
+        return "{"
+
+    first = runner.mine_candidate(
+        acquired.analysis_ref_path, local_cpu=True, max_new_units=1, local_completion=invalid
+    )
+    assert first["counts"]["failed"] == 1
+    private_root = tmp_path / "artifacts/book-candidates"
+    events = list((private_root / "analysis/failures").glob("**/*.json"))
+    assert len(events) == 1
+    old = events[0]
+    original = old.read_bytes()
+    old.chmod(0o666)
+    directories: set[Path] = set()
+    current = old.parent
+    while current != private_root.parent:
+        directories.add(current)
+        current = current.parent
+    for directory in directories:
+        directory.chmod(0o777)
+
+    second = runner.mine_candidate(
+        acquired.analysis_ref_path, local_cpu=True, max_new_units=1, local_completion=invalid
+    )
+    assert second["counts"]["failed"] == 1
+    assert first["progress_path"] == second["progress_path"]
+    assert old.read_bytes() == original
+    assert old.stat().st_mode & 0o777 == 0o600
+    for directory in directories:
+        assert directory.stat().st_mode & 0o777 == 0o700
+    assert len(list((private_root / "analysis/failures").glob("**/*.json"))) == 2
+
+
+def test_local_offline_missing_cache_is_failed_not_zero_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+    attempts: list[int] = []
+
+    def unavailable(_request: dict[str, object]) -> str:
+        attempts.append(1)
+        raise scripting.PinnedQwenSnapshotError("pinned Qwen snapshot unavailable in offline cache")
+
+    monkeypatch.setattr(scripting, "_local_book_completion", unavailable)
+    outcome = runner.mine_candidate(acquired.analysis_ref_path, local_cpu=True, max_new_units=1)
+    assert len(attempts) == 1
+    assert outcome["status"] == "incomplete"
+    assert outcome["counts"]["failed"] == 1
+    assert outcome["counts"]["zero_candidate"] == 0
+    assert outcome["export_path"] is None
+    progress = json.loads(Path(outcome["progress_path"]).read_text())
+    assert progress["progress"][0]["failure_category"] == "pinned_model_cache_unavailable"

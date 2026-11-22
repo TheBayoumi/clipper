@@ -691,6 +691,8 @@ class BookOrchestrator:
         """Store bounded raw model evidence before validating; failed DAG stages can retry."""
         try:
             response = completion(request)
+        except scripting.PinnedQwenSnapshotError as exc:
+            raise whole_book.LocalReplyFailure("pinned_model_cache_unavailable") from exc
         except Exception as exc:
             raise whole_book.LocalReplyFailure("runtime_error") from exc
         if not isinstance(response, str):
@@ -761,14 +763,25 @@ class BookOrchestrator:
             / f"{digest}.txt"
         )
         private_root = self.root / "book-candidates"
-        current = path
+        current = path.parent
         while current != private_root:
             if current.is_symlink():
                 raise BookRunError("cached local model evidence is a symlink")
+            if not current.is_dir():
+                raise BookRunError("cached local model evidence directory missing")
             current = current.parent
-        if private_root.is_symlink():
+        if private_root.is_symlink() or path.is_symlink():
             raise BookRunError("cached local model evidence is a symlink")
-        raw = acquisition._read_bounded_file(path, whole_book.MAX_RECORDED_REPLY_BYTES + 1)
+        if not path.is_file():
+            raise BookRunError("cached local model raw evidence missing")
+        # A cache PASS must not bypass private permissions. Tighten only
+        # application-owned ancestors and the reused leaf, never shared roots.
+        acquisition._private_directory(path.parent, private_root=private_root)
+        try:
+            path.chmod(0o600)
+            raw = acquisition._read_bounded_file(path, whole_book.MAX_RECORDED_REPLY_BYTES + 1)
+        except FileNotFoundError as exc:
+            raise BookRunError("cached local model raw evidence missing") from exc
         if (
             len(raw) > whole_book.MAX_RECORDED_REPLY_BYTES
             or hashlib.sha256(raw).hexdigest() != digest
@@ -804,17 +817,26 @@ class BookOrchestrator:
             "raw_sha256": failure.raw_sha256,
         }
         event_key = content_fingerprint(event)
-        acquisition._private_write(
+        failure_path = (
             self.root
             / "book-candidates"
             / "analysis"
             / "failures"
             / ref.book_id
             / identity.cache_key
-            / f"{event_key}.json",
+            / f"{event_key}.json"
+        )
+        acquisition._private_write(
+            failure_path,
             (json.dumps(event, sort_keys=True) + "\n").encode(),
             private_root=self.root / "book-candidates",
         )
+        # Earlier attempts in this same private evidence chain may have had
+        # their modes relaxed. Tighten them without changing immutable bytes.
+        for previous in failure_path.parent.glob("*.json"):
+            if previous.is_symlink() or not previous.is_file():
+                raise BookRunError("private local failure evidence is invalid")
+            previous.chmod(0o600)
 
     def mine_candidate(
         self,

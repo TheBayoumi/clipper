@@ -296,9 +296,100 @@ def _script_request(config: NicheConfig) -> dict[str, object]:
     }
 
 
+class PinnedQwenSnapshotError(NicheVideoError):
+    """Missing or incomplete exact-revision model cache, without revision fallback."""
+
+
+def _pinned_qwen_snapshot() -> Path:
+    """Resolve the exact HF snapshot locally before calling Transformers.
+
+    Transformers 4.57.3 can query Hub metadata while patching tokenizer
+    regexes if given a repository ID, even when its files are cached.
+    A local snapshot path avoids that lookup for both tokenizer and weights.
+    """
+    try:
+        hub = importlib.import_module("huggingface_hub")
+    except ImportError as exc:
+        raise NicheVideoError(
+            "Install the [niche-models] runtime for pinned Qwen inference"
+        ) from exc
+    offline = any(
+        os.environ.get(key, "").strip().casefold() in {"1", "true", "yes", "on"}
+        for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    )
+
+    def verify(snapshot_path: str | Path) -> Path:
+        try:
+            path = Path(snapshot_path).resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise PinnedQwenSnapshotError("pinned Qwen snapshot is missing") from exc
+        if (
+            not path.is_dir()
+            or path.name != SCRIPT_REVISION
+            or path.parent.name != "snapshots"
+            or path.parent.parent.name != "models--" + SCRIPT_MODEL.replace("/", "--")
+        ):
+            raise PinnedQwenSnapshotError("pinned Qwen snapshot identity mismatch")
+        for name in ("config.json", "tokenizer_config.json", "tokenizer.json"):
+            file = path / name
+            if not file.is_file() or file.stat().st_size == 0:
+                raise PinnedQwenSnapshotError("pinned Qwen snapshot is incomplete")
+        single = path / "model.safetensors"
+        if single.is_file() and single.stat().st_size:
+            return path
+        index = path / "model.safetensors.index.json"
+        try:
+            if not index.is_file() or index.stat().st_size > 2_000_000:
+                raise PinnedQwenSnapshotError("pinned Qwen weight index is missing or oversized")
+            index_data = json.loads(index.read_text(encoding="utf-8"))
+            mapping = index_data["weight_map"]
+            if not isinstance(mapping, dict) or not mapping:
+                raise ValueError("empty model shard mapping")
+            shard_names = set(mapping.values())
+            if any(
+                not isinstance(name, str)
+                or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]*\.safetensors", name)
+                for name in shard_names
+            ):
+                raise ValueError("unsafe model shard reference")
+            if any(
+                not (path / name).is_file() or (path / name).stat().st_size == 0
+                for name in shard_names
+            ):
+                raise ValueError("missing model weight shard")
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise PinnedQwenSnapshotError("pinned Qwen snapshot is incomplete") from exc
+        return path
+
+    try:
+        locally_cached = hub.snapshot_download(
+            repo_id=SCRIPT_MODEL, revision=SCRIPT_REVISION, local_files_only=True
+        )
+        return verify(locally_cached)
+    except PinnedQwenSnapshotError:
+        if offline:
+            raise
+    except Exception as exc:
+        if offline:
+            raise PinnedQwenSnapshotError(
+                "pinned Qwen snapshot unavailable in offline cache"
+            ) from exc
+    # Only explicit inference can reach this branch; a network-enabled
+    # invocation may acquire public pinned weights, never another revision.
+    try:
+        downloaded = hub.snapshot_download(
+            repo_id=SCRIPT_MODEL, revision=SCRIPT_REVISION, local_files_only=False
+        )
+        return verify(downloaded)
+    except PinnedQwenSnapshotError:
+        raise
+    except Exception as exc:
+        raise PinnedQwenSnapshotError("pinned Qwen snapshot download failed") from exc
+
+
 @lru_cache(maxsize=1)
 def _script_pipeline() -> tuple[Any, Any]:
-    """Load Qwen3 weights only once, even when a revision is required."""
+    """Lazy, single initialization using an exact local Qwen snapshot path."""
     try:
         torch = importlib.import_module("torch")
         transformers = importlib.import_module("transformers")
@@ -306,10 +397,11 @@ def _script_pipeline() -> tuple[Any, Any]:
         raise NicheVideoError(
             "Install the [niche-models] runtime for open-weight inference"
         ) from exc
+    snapshot = _pinned_qwen_snapshot()
     torch.set_num_threads(min(4, os.cpu_count() or 1))
-    tokenizer = transformers.AutoTokenizer.from_pretrained(SCRIPT_MODEL, revision=SCRIPT_REVISION)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
     model = transformers.AutoModelForCausalLM.from_pretrained(
-        SCRIPT_MODEL, revision=SCRIPT_REVISION, dtype="auto"
+        snapshot, local_files_only=True, dtype="auto"
     ).eval()
     return model, tokenizer
 
