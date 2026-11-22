@@ -181,9 +181,11 @@ def test_owner_fence_blocks_reassigned_or_expired_claim(
         published.append(1)
         return {"stale": True}
 
-    with patch("clipper.dag.time.sleep"):
-        with pytest.raises(RuntimeError, match="owner-fenced PASS publication rejected"):
-            store.execute(identity, operation)
+    with (
+        patch("clipper.dag.time.sleep"),
+        pytest.raises(RuntimeError, match="owner-fenced PASS publication rejected"),
+    ):
+        store.execute(identity, operation)
     assert published == [1]
     assert old_owner and authority.owner == "new-owner"
     assert authority.durable is None
@@ -323,7 +325,9 @@ def _load_endpoint(root: Path, *, implicit: bool):
         "_TERMINAL_SCHEMA": "clipper-dag-authoritative-terminal-v1",
         "_assert_expected_git_sha": lambda payload: None,
     }
-    exec(compile(tree, "scripts/modal_pipeline.py", "exec"), namespace)
+    exec(  # noqa: S102 - only static, selected repo AST functions; no user-supplied code
+        compile(tree, "scripts/modal_pipeline.py", "exec"), namespace
+    )
     return namespace["dag_execution_lease"], volume
 
 
