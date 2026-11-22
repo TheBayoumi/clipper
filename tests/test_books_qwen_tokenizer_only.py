@@ -806,7 +806,7 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
 
         def git_blob(value: bytes) -> str:
             payload = b"blob " + str(len(value)).encode() + b"\0" + value
-            return hashlib.sha1(payload).hexdigest()
+            return hashlib.sha1(payload, usedforsecurity=False).hexdigest()
 
         assert git_blob(fixture_bytes) == "07ff45bac97ebef4c73cc8804db78bd4425aa5c2"
         assert git_blob(consumed_bytes) == "5ba1c40d28833e4993d1f017dfa925ec784bbf19"
