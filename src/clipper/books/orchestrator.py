@@ -676,20 +676,179 @@ class BookOrchestrator:
                 "candidate analysis reference or pinned evidence is invalid"
             ) from exc
 
+    def _produce_local_unit(
+        self,
+        *,
+        ref: whole_book.CandidateAnalysisRef,
+        identity: StageIdentity,
+        request: dict[str, object],
+        request_sha256: str,
+        unit: whole_book.WorkUnit,
+        producer_fingerprint: str,
+        completion: Callable[[dict[str, object]], str],
+    ) -> dict[str, object]:
+        """Store bounded raw model evidence before validating; failed DAG stages can retry."""
+        try:
+            response = completion(request)
+        except Exception as exc:
+            raise whole_book.LocalReplyFailure("runtime_error") from exc
+        if not isinstance(response, str):
+            raise whole_book.LocalReplyFailure("non_text_reply")
+        try:
+            payload = response.encode("utf-8")
+        except UnicodeError as exc:
+            raise whole_book.LocalReplyFailure("invalid_utf8") from exc
+        digest = hashlib.sha256(payload).hexdigest()
+        path = (
+            self.root
+            / "book-candidates"
+            / "analysis"
+            / "completions"
+            / ref.book_id
+            / identity.cache_key
+            / f"{digest}.txt"
+        )
+        acquisition._private_write(
+            path,
+            payload[: whole_book.MAX_RECORDED_REPLY_BYTES],
+            private_root=self.root / "book-candidates",
+        )
+        if len(payload) > whole_book.MAX_RECORDED_REPLY_BYTES:
+            raise whole_book.LocalReplyFailure("oversized_reply", digest)
+        try:
+            lessons = whole_book.validate_reply(json.loads(response), unit)
+        except (ValueError, TypeError, RecursionError) as exc:
+            raise whole_book.LocalReplyFailure("invalid_reply", digest) from exc
+        return {
+            "schema": whole_book.LOCAL_COMPLETION_SCHEMA,
+            "request_sha256": request_sha256,
+            "producer_fingerprint": producer_fingerprint,
+            "raw_sha256": digest,
+            "lessons": lessons,
+        }
+
+    def _read_local_unit(
+        self,
+        *,
+        ref: whole_book.CandidateAnalysisRef,
+        identity: StageIdentity,
+        request_sha256: str,
+        unit: whole_book.WorkUnit,
+        producer_fingerprint: str,
+        stored: object,
+    ) -> tuple[dict[str, object], str]:
+        """Fail closed if raw immutable completion and validated DAG output diverge."""
+        if (
+            not isinstance(stored, dict)
+            or set(stored)
+            != {"schema", "request_sha256", "producer_fingerprint", "raw_sha256", "lessons"}
+            or stored["schema"] != whole_book.LOCAL_COMPLETION_SCHEMA
+            or stored["request_sha256"] != request_sha256
+            or stored["producer_fingerprint"] != producer_fingerprint
+            or not isinstance(stored["raw_sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", stored["raw_sha256"]) is None
+        ):
+            raise BookRunError("cached local model output identity mismatch")
+        digest = stored["raw_sha256"]
+        path = (
+            self.root
+            / "book-candidates"
+            / "analysis"
+            / "completions"
+            / ref.book_id
+            / identity.cache_key
+            / f"{digest}.txt"
+        )
+        if path.is_symlink() or path.parent.is_symlink():
+            raise BookRunError("cached local model evidence is a symlink")
+        raw = acquisition._read_bounded_file(path, whole_book.MAX_RECORDED_REPLY_BYTES + 1)
+        if (
+            len(raw) > whole_book.MAX_RECORDED_REPLY_BYTES
+            or hashlib.sha256(raw).hexdigest() != digest
+        ):
+            raise BookRunError("cached local model raw evidence changed")
+        try:
+            value: object = json.loads(raw)
+            lessons = whole_book.validate_reply(value, unit)
+        except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+            raise BookRunError("cached local model response is invalid") from exc
+        if not isinstance(value, dict) or lessons != stored["lessons"]:
+            raise BookRunError("cached local model validation evidence mismatch")
+        return value, digest
+
+    def _record_local_failure(
+        self,
+        *,
+        ref: whole_book.CandidateAnalysisRef,
+        identity: StageIdentity,
+        request_sha256: str,
+        producer_fingerprint: str,
+        failure: whole_book.LocalReplyFailure,
+    ) -> None:
+        """Preserve sanitized per-attempt failure provenance without prompt/log leakage."""
+        event = {
+            "schema": "clipper-book-local-failure-v1",
+            "book_id": ref.book_id,
+            "generation_stage_key": identity.cache_key,
+            "request_sha256": request_sha256,
+            "producer_fingerprint": producer_fingerprint,
+            "attempt": self.dag.attempt_count(identity),
+            "category": failure.category,
+            "raw_sha256": failure.raw_sha256,
+        }
+        event_key = content_fingerprint(event)
+        acquisition._private_write(
+            self.root
+            / "book-candidates"
+            / "analysis"
+            / "failures"
+            / ref.book_id
+            / identity.cache_key
+            / f"{event_key}.json",
+            (json.dumps(event, sort_keys=True) + "\n").encode(),
+            private_root=self.root / "book-candidates",
+        )
+
     def mine_candidate(
         self,
         ref_path: Path,
         *,
-        responses: dict[str, object],
-        response_file_sha256: str,
+        responses: dict[str, object] | None = None,
+        response_file_sha256: str | None = None,
         book_id: str | None = None,
+        local_cpu: bool = False,
+        max_new_units: int | None = None,
+        local_completion: Callable[[dict[str, object]], str] | None = None,
     ) -> dict[str, Any]:
-        """Process every faithful unit in bounded windows using recorded replies only."""
+        """Process the same faithful work plan with recorded or opt-in local completions."""
         ref, book = self.load_candidate_for_analysis(ref_path, book_id=book_id)
-        if not isinstance(responses, dict) or not re.fullmatch(
-            r"[0-9a-f]{64}", response_file_sha256
-        ):
-            raise BookRunError("candidate analysis requires a recorded response mapping and digest")
+        if local_cpu:
+            if responses is not None or response_file_sha256 is not None:
+                raise BookRunError("local CPU and recorded response modes are exclusive")
+            budget = 8 if max_new_units is None else max_new_units
+            if (
+                not isinstance(budget, int)
+                or isinstance(budget, bool)
+                or not 1 <= budget <= whole_book.MAX_PLAN_UNITS
+            ):
+                raise BookRunError("local CPU max-new-units must be between 1 and 20000")
+            producer_material = whole_book.local_producer_material()
+            producer_fingerprint = content_fingerprint(producer_material)
+            producer = local_completion or scripting._local_book_completion
+            generation_contract = StageContract(
+                "books.mining.local-completion.v1", producer_material
+            )
+            self.dag.protect_stage(generation_contract.name)
+        else:
+            if max_new_units is not None or local_completion is not None:
+                raise BookRunError("local generation options require explicit local CPU mode")
+            if not isinstance(responses, dict) or not isinstance(
+                response_file_sha256, str
+            ) or re.fullmatch(r"[0-9a-f]{64}", response_file_sha256) is None:
+                raise BookRunError(
+                    "candidate analysis requires a recorded response mapping and digest"
+                )
+            producer_fingerprint = ""
         work = whole_book.plan_for(book)
         # plan_for derived this fingerprint from the already validated BookText.
         book_fingerprint = work.book_fingerprint
@@ -701,6 +860,7 @@ class BookOrchestrator:
         progress: list[dict[str, Any]] = []
         lessons: list[dict[str, Any]] = []
         used_ids: set[str] = set()
+        local_attempts = 0
         for window_index, offset in enumerate(range(0, len(work.units), whole_book.WINDOW_UNITS)):
             window = work.units[offset : offset + whole_book.WINDOW_UNITS]
             for unit in window:
@@ -710,8 +870,80 @@ class BookOrchestrator:
                 status = "unresolved"
                 count = 0
                 response_digest: str | None = None
-                answer = whole_book.recorded_answer(responses, request)
-                if request_key in responses:
+                raw_sha256: str | None = None
+                failure_category: str | None = None
+                generation_key: str | None = None
+                answer: object | None = None
+                has_answer = False
+                if local_cpu:
+                    identity_local = stage_identity(
+                        generation_contract,
+                        source_hash=content_fingerprint(
+                            {
+                                "book": book_fingerprint,
+                                "projection": plan_fingerprint,
+                                "unit": unit_fingerprint,
+                                "request": request_key,
+                                "producer": producer_fingerprint,
+                            }
+                        ),
+                        dependency_output_hashes=(book_fingerprint,),
+                        model_revision=scripting.SCRIPT_REVISION,
+                        decoding_parameters=whole_book.LOCAL_GENERATION,
+                    )
+                    generation_key = identity_local.cache_key
+                    tried = 0
+
+                    def generate() -> object:
+                        nonlocal tried
+                        tried += 1
+                        return self._produce_local_unit(
+                            ref=ref,
+                            identity=identity_local,
+                            request=request,
+                            request_sha256=request_key,
+                            unit=unit,
+                            producer_fingerprint=producer_fingerprint,
+                            completion=producer,
+                        )
+
+                    try:
+                        if local_attempts >= budget:
+                            hit, stored_local = self.dag._cache_hit(identity_local)
+                            if not hit:
+                                stored_local = None
+                        else:
+                            stored_local, _reused = self.dag.execute(identity_local, generate)
+                            hit = True
+                        if hit:
+                            answer, raw_sha256 = self._read_local_unit(
+                                ref=ref,
+                                identity=identity_local,
+                                request_sha256=request_key,
+                                unit=unit,
+                                producer_fingerprint=producer_fingerprint,
+                                stored=stored_local,
+                            )
+                            response_digest = content_fingerprint(answer)
+                            has_answer = True
+                    except whole_book.LocalReplyFailure as exc:
+                        failure_category = exc.category
+                        raw_sha256 = exc.raw_sha256
+                        status = "failed"
+                        self._record_local_failure(
+                            ref=ref,
+                            identity=identity_local,
+                            request_sha256=request_key,
+                            producer_fingerprint=producer_fingerprint,
+                            failure=exc,
+                        )
+                    finally:
+                        local_attempts += tried
+                else:
+                    assert responses is not None
+                    answer = whole_book.recorded_answer(responses, request)
+                    has_answer = request_key in responses
+                if has_answer:
                     try:
                         serialized = json.dumps(answer, ensure_ascii=False, sort_keys=True)
                         if len(serialized.encode("utf-8")) > whole_book.MAX_RECORDED_REPLY_BYTES:
@@ -726,6 +958,14 @@ class BookOrchestrator:
                                     "unit": unit_fingerprint,
                                     "request": request_key,
                                     "used_completion": response_digest,
+                                    **(
+                                        {
+                                            "completion_origin": "local_cpu",
+                                            "generation_stage_key": generation_key,
+                                        }
+                                        if local_cpu
+                                        else {}
+                                    ),
                                 }
                             ),
                             dependency_output_hashes=(book_fingerprint,),
@@ -735,6 +975,7 @@ class BookOrchestrator:
                                 "max_new_tokens": 960,
                                 "chunk_words": mining.CHUNK_WORDS,
                                 "evidence_field": unit.evidence_field,
+                                **(whole_book.LOCAL_GENERATION if local_cpu else {}),
                             },
                         )
 
@@ -789,6 +1030,16 @@ class BookOrchestrator:
                         "used_completion_sha256": response_digest,
                         "status": status,
                         "candidate_count": count,
+                        **(
+                            {
+                                "completion_origin": "local_cpu" if has_answer else None,
+                                "generation_stage_key": generation_key,
+                                "raw_completion_sha256": raw_sha256,
+                                "failure_category": failure_category,
+                            }
+                            if local_cpu
+                            else {}
+                        ),
                     }
                 )
         counts = {
@@ -809,6 +1060,15 @@ class BookOrchestrator:
             "window_size": whole_book.WINDOW_UNITS,
             "total_work_units": len(work.units),
             "response_file_sha256": response_file_sha256,
+            **(
+                {
+                    "completion_mode": "local_cpu",
+                    "producer_fingerprint": producer_fingerprint,
+                    "producer": producer_material,
+                }
+                if local_cpu
+                else {}
+            ),
             "recovery_status": book.recovery_status,
             "authorization_status": book.source.authorization_status,
             "parser_version": book.parser_version,
@@ -827,7 +1087,8 @@ class BookOrchestrator:
         # must publish a distinct report, never overwrite the earlier one.
         progress_bytes = (json.dumps(ledger, ensure_ascii=False, sort_keys=True) + "\n").encode()
         progress_sha256 = hashlib.sha256(progress_bytes).hexdigest()
-        artifact_name = f"{plan_fingerprint}-{response_file_sha256}-{progress_sha256}.json"
+        response_identity = producer_fingerprint if local_cpu else response_file_sha256
+        artifact_name = f"{plan_fingerprint}-{response_identity}-{progress_sha256}.json"
         progress_path = base / "progress" / ref.book_id / artifact_name
         acquisition._private_write(
             progress_path, progress_bytes, private_root=self.root / "book-candidates"

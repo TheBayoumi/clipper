@@ -71,7 +71,9 @@ def configure_books_parser(subparsers: Any) -> None:
     private_import.add_argument("--research", type=Path, required=True)
     private_import.add_argument("--output", type=Path, required=True)
 
-    mine_cmd = actions.add_parser("mine", help="mine recorded responses, never infer live")
+    mine_cmd = actions.add_parser(
+        "mine", help="mine recorded replies or explicitly opt into local CPU Qwen inference"
+    )
     mine_cmd.add_argument(
         "--book-id", help="legacy owner-file book id or candidate ref cross-check"
     )
@@ -80,7 +82,18 @@ def configure_books_parser(subparsers: Any) -> None:
         type=Path,
         help="exact immutable title-only ingest analysis ref; never discover or fetch",
     )
-    mine_cmd.add_argument("--responses", type=Path, required=True)
+    mode = mine_cmd.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--responses", type=Path, help="offline recorded response JSON")
+    mode.add_argument(
+        "--local-cpu",
+        action="store_true",
+        help="explicit local pinned Qwen CPU inference (may download pinned weights)",
+    )
+    mine_cmd.add_argument(
+        "--max-new-units",
+        type=int,
+        help="local CPU only; maximum uncached model attempts this invocation (default 8)",
+    )
     mine_cmd.add_argument("--artifact-root", type=Path, default=Path("artifacts/books"))
 
     validate = actions.add_parser("validate", help="validate catalog and niche configuration")
@@ -316,6 +329,17 @@ def dispatch_books(args: argparse.Namespace) -> int:
         runner = BookOrchestrator(args.artifact_root)
         if args.candidate_ref is None and args.book_id is None:
             raise BookRunError("books mine requires --book-id or --candidate-ref")
+        if args.candidate_ref is not None and args.local_cpu:
+            result = runner.mine_candidate(
+                args.candidate_ref,
+                book_id=args.book_id,
+                local_cpu=True,
+                max_new_units=args.max_new_units,
+            )
+            print(json.dumps(result, sort_keys=True))
+            return 0 if result["status"] == "complete" else 2
+        if args.local_cpu or args.max_new_units is not None:
+            raise BookRunError("--local-cpu and --max-new-units require --candidate-ref")
         if args.candidate_ref is not None:
             # Bounded input bytes; recorded replies cannot be an unbounded private dump.
             data = acquisition._read_bounded_file(args.responses, 64_000_001)

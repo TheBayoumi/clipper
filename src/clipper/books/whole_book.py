@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from clipper.stage_contracts import content_fingerprint
@@ -22,6 +23,50 @@ RESULT_SCHEMA = "clipper-book-whole-analysis-v1"
 WINDOW_UNITS = 32
 MAX_PLAN_UNITS = 20_000
 MAX_RECORDED_REPLY_BYTES = 16_384
+LOCAL_COMPLETION_SCHEMA = "clipper-book-local-completion-v1"
+LOCAL_PRODUCER_CONTRACT = "clipper-book-cpu-qwen-generate-validate-v1"
+LOCAL_GENERATION = {
+    "model": scripting.SCRIPT_MODEL,
+    "revision": scripting.SCRIPT_REVISION,
+    "seed": 42,
+    "max_new_tokens": 960,
+    "do_sample": True,
+    "temperature": 0.7,
+    "top_p": 0.8,
+    "enable_thinking": False,
+    "dtype": "auto",
+    "device": "cpu",
+    "cpu_threads_max": 4,
+}
+
+
+def local_producer_material() -> dict[str, object]:
+    """Resolve installed runtime versions without importing torch or loading weights."""
+    runtime: dict[str, str] = {}
+    for package in ("torch", "transformers"):
+        try:
+            runtime[package] = version(package)
+        except PackageNotFoundError:
+            runtime[package] = "not-installed"
+    return {
+        "contract": LOCAL_PRODUCER_CONTRACT,
+        "schema": LOCAL_COMPLETION_SCHEMA,
+        "generation": LOCAL_GENERATION,
+        "runtime": runtime,
+        "request_schema": PLAN_SCHEMA,
+        "reply_max_bytes": MAX_RECORDED_REPLY_BYTES,
+        "validator": "exact-quote-evidence-field-and-0-to-3-lessons-v1",
+    }
+
+
+class LocalReplyFailure(RuntimeError):
+    """A sanitized producer/response failure; never includes private content."""
+
+    def __init__(self, category: str, raw_sha256: str | None = None) -> None:
+        self.category = category
+        self.raw_sha256 = raw_sha256
+        super().__init__(f"local candidate completion {category}")
+
 
 
 @dataclass(frozen=True, slots=True)

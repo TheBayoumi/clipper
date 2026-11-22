@@ -727,3 +727,316 @@ def test_whole_book_fingerprint_traversals_are_constant_per_invocation(
     # units; unit-local SHA operations are intentionally not restricted.
     assert counts["book"] <= 3
     assert counts["plan"] == 1
+
+
+def test_local_cpu_limited_resume_private_raw_and_exact_cache_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=9, with_image=False)
+    units = whole_book.plan_for(acquired.book).units
+    replies = responses_for(acquired.book)
+    generated: list[str] = []
+    root = tmp_path / "artifacts"
+
+    def fake(request: dict[str, object]) -> str:
+        key = content_fingerprint(request)
+        generated.append(key)
+        return json.dumps(replies[key], sort_keys=True)
+
+    def forbidden(*_a: object, **_k: object) -> None:
+        pytest.fail("no model initialization or network allowed for injected producer")
+
+    monkeypatch.setattr("urllib.request.urlopen", forbidden)
+    monkeypatch.setattr("clipper.books.scripting._script_pipeline", forbidden)
+    old_umask = os.umask(0)
+    try:
+        first = runner.mine_candidate(
+            acquired.analysis_ref_path,
+            local_cpu=True,
+            max_new_units=2,
+            local_completion=fake,
+        )
+        assert first["status"] == "incomplete"
+        assert first["counts"]["complete"] == 2
+        assert first["counts"]["unresolved"] == len(units) - 2
+        assert first["export_path"] is None
+        first_bytes = Path(first["progress_path"]).read_bytes()
+        assert first_bytes
+        assert len(generated) == 2
+        for _ in range(len(units)):
+            current = runner.mine_candidate(
+                acquired.analysis_ref_path,
+                local_cpu=True,
+                max_new_units=2,
+                local_completion=fake,
+            )
+            if current["status"] == "complete":
+                break
+        assert current["status"] == "complete"
+        assert len(generated) == len(units)
+        assert current["candidate_count"] == len(units)
+        assert first["progress_path"] != current["progress_path"]
+        assert Path(first["progress_path"]).read_bytes() == first_bytes
+
+        progress = json.loads(Path(current["progress_path"]).read_bytes())
+        export = json.loads(Path(current["export_path"]).read_bytes())
+        assert progress["completion_mode"] == "local_cpu"
+        assert progress["response_file_sha256"] is None
+        assert progress["counts"]["failed"] == 0
+        assert export["progress_sha256"] == hashlib.sha256(
+            Path(current["progress_path"]).read_bytes()
+        ).hexdigest()
+        assert export["publish_eligible"] is False
+        assert export["books"][0]["lessons"][0]["evidence_anchor"]["field"] == "native_text"
+        assert all(row["completion_origin"] == "local_cpu" for row in progress["progress"])
+        assert all(row["raw_completion_sha256"] for row in progress["progress"])
+        completion_root = root / "book-candidates/analysis/completions"
+        raw_files = list(completion_root.glob("**/*.txt"))
+        assert len(raw_files) == len(units)
+        for raw in raw_files:
+            assert raw.stat().st_mode & 0o777 == 0o600
+            parent = raw.parent
+            while parent != root / "book-candidates":
+                assert parent.stat().st_mode & 0o777 == 0o700, parent
+                parent = parent.parent
+        for report in (Path(first["progress_path"]), Path(current["progress_path"])):
+            assert report.stat().st_mode & 0o777 == 0o600
+        assert Path(current["export_path"]).stat().st_mode & 0o777 == 0o600
+        generation_root = root / "book-dag/books-mining-local-completion-v1"
+        stages = list(generation_root.glob("*/stage.json"))
+        assert len(stages) == len(units)
+        assert all(p.stat().st_mode & 0o777 == 0o600 for p in stages)
+        assert all(p.parent.stat().st_mode & 0o777 == 0o700 for p in stages)
+
+        def must_not_generate(_request: dict[str, object]) -> str:
+            pytest.fail("completed local generation must be reused")
+
+        replay = runner.mine_candidate(
+            acquired.analysis_ref_path,
+            local_cpu=True,
+            max_new_units=1,
+            local_completion=must_not_generate,
+        )
+        assert replay == current
+        assert Path(replay["progress_path"]).read_bytes() == Path(
+            current["progress_path"]
+        ).read_bytes()
+        assert len(generated) == len(units)
+    finally:
+        os.umask(old_umask)
+
+
+def test_recorded_empty_does_not_alias_real_local_completion(tmp_path: Path) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+    units = whole_book.plan_for(acquired.book).units
+    recorded = responses_for(acquired.book, count=0)
+    saved = runner.mine_candidate(
+        acquired.analysis_ref_path,
+        responses=recorded,
+        response_file_sha256=content_fingerprint(recorded),
+    )
+    assert saved["status"] == "complete" and saved["candidate_count"] == 0
+    expected = responses_for(acquired.book)
+    seen: list[str] = []
+
+    def producer(request: dict[str, object]) -> str:
+        key = content_fingerprint(request)
+        seen.append(key)
+        return json.dumps(expected[key])
+
+    result = runner.mine_candidate(
+        acquired.analysis_ref_path,
+        local_cpu=True,
+        max_new_units=len(units),
+        local_completion=producer,
+    )
+    assert result["status"] == "complete"
+    assert result["candidate_count"] == len(units)
+    assert len(seen) == len(units)
+    assert result["progress_path"] != saved["progress_path"]
+    assert result["export_path"] != saved["export_path"]
+    assert json.loads(Path(saved["export_path"]).read_text())["books"][0]["lessons"] == []
+    assert all(
+        row["completion_origin"] == "local_cpu"
+        for row in json.loads(Path(result["progress_path"]).read_text())["progress"]
+    )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["invalid-json", "invalid-quote", "oversized", "runtime", "nontext"],
+)
+def test_local_failure_retains_bounded_evidence_then_retries(
+    tmp_path: Path, kind: str
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+    units = whole_book.plan_for(acquired.book).units
+    responses = responses_for(acquired.book)
+
+    def failing(request: dict[str, object]) -> str:
+        if kind == "runtime":
+            raise RuntimeError("synthetic secret must not enter logs")
+        if kind == "nontext":
+            return None  # type: ignore[return-value]
+        if kind == "oversized":
+            return "a" * (whole_book.MAX_RECORDED_REPLY_BYTES + 1)
+        if kind == "invalid-json":
+            return "{"
+        invalid = dict(responses[content_fingerprint(request)])
+        lesson = dict(invalid["lessons"][0])
+        lesson["evidence"] = "invented not in source"
+        invalid["lessons"] = [lesson]
+        return json.dumps(invalid)
+
+    failed = runner.mine_candidate(
+        acquired.analysis_ref_path,
+        local_cpu=True,
+        max_new_units=1,
+        local_completion=failing,
+    )
+    assert failed["status"] == "incomplete"
+    assert failed["counts"]["failed"] == 1
+    assert failed["counts"]["unresolved"] == len(units) - 1
+    assert failed["export_path"] is None
+    failure_bytes = Path(failed["progress_path"]).read_bytes()
+    progress = json.loads(failure_bytes)
+    assert progress["progress"][0]["failure_category"]
+    failure_files = list(
+        (tmp_path / "artifacts/book-candidates/analysis/failures").glob("**/*.json")
+    )
+    assert len(failure_files) == 1
+    failure_event = json.loads(failure_files[0].read_bytes())
+    assert failure_event["category"] == progress["progress"][0]["failure_category"]
+    assert "synthetic secret" not in failure_files[0].read_text()
+    assert failure_files[0].stat().st_mode & 0o777 == 0o600
+    raw_files = list(
+        (tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt")
+    )
+    assert len(raw_files) == (0 if kind in ("runtime", "nontext") else 1)
+    assert all(p.stat().st_size <= whole_book.MAX_RECORDED_REPLY_BYTES for p in raw_files)
+    if kind == "oversized":
+        assert raw_files[0].stat().st_size == whole_book.MAX_RECORDED_REPLY_BYTES
+
+    def corrected(request: dict[str, object]) -> str:
+        return json.dumps(responses[content_fingerprint(request)])
+
+    done = runner.mine_candidate(
+        acquired.analysis_ref_path,
+        local_cpu=True,
+        max_new_units=len(units),
+        local_completion=corrected,
+    )
+    assert done["status"] == "complete"
+    assert done["counts"]["failed"] == 0
+    assert done["candidate_count"] == len(units)
+    assert Path(failed["progress_path"]).read_bytes() == failure_bytes
+    generation_root = tmp_path / "artifacts/book-dag/books-mining-local-completion-v1"
+    first_stage = generation_root / progress["progress"][0]["generation_stage_key"]
+    assert json.loads((first_stage / "stage.json").read_text())["attempt_count"] == 2
+    assert failure_files[0].is_file()
+
+
+def test_local_producer_identity_change_invalidates_only_generated_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+    responses = responses_for(acquired.book)
+    calls: list[str] = []
+
+    def fake(request: dict[str, object]) -> str:
+        key = content_fingerprint(request)
+        calls.append(key)
+        return json.dumps(responses[key])
+
+    first = runner.mine_candidate(
+        acquired.analysis_ref_path,
+        local_cpu=True,
+        max_new_units=3,
+        local_completion=fake,
+    )
+    assert first["status"] == "complete"
+    before = Path(first["progress_path"]).read_bytes()
+    monkeypatch.setattr(whole_book, "LOCAL_PRODUCER_CONTRACT", "synthetic-new-producer-v2")
+    second = runner.mine_candidate(
+        acquired.analysis_ref_path,
+        local_cpu=True,
+        max_new_units=3,
+        local_completion=fake,
+    )
+    assert second["status"] == "complete"
+    assert len(calls) == 6
+    assert first["progress_path"] != second["progress_path"]
+    assert first["export_path"] != second["export_path"]
+    assert Path(first["progress_path"]).read_bytes() == before
+
+
+def test_cached_local_raw_tamper_fails_closed_without_regeneration(
+    tmp_path: Path,
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+    responses = responses_for(acquired.book)
+
+    def fake(request: dict[str, object]) -> str:
+        return json.dumps(responses[content_fingerprint(request)])
+
+    runner.mine_candidate(
+        acquired.analysis_ref_path, local_cpu=True, max_new_units=3, local_completion=fake
+    )
+    evidence = next(
+        (tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt")
+    )
+    evidence.write_text("tampered fixture")
+    with pytest.raises(BookRunError, match="raw evidence changed"):
+        runner.mine_candidate(
+            acquired.analysis_ref_path,
+            local_cpu=True,
+            max_new_units=3,
+            local_completion=lambda _: pytest.fail("cache must not invoke model"),
+        )
+    assert evidence.read_text() == "tampered fixture"
+
+
+def test_cli_recorded_and_opt_in_cpu_modes_are_exclusive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+    source = tmp_path / "responses.json"
+    replies = responses_for(acquired.book, count=0)
+    _write_responses(source, replies)
+
+    def forbidden(*_a: object, **_k: object) -> None:
+        pytest.fail("recorded CLI may not load model weights or call network")
+
+    monkeypatch.setattr("clipper.books.scripting._script_pipeline", forbidden)
+    monkeypatch.setattr("urllib.request.urlopen", forbidden)
+    common = [
+        "books",
+        "mine",
+        "--candidate-ref",
+        str(acquired.analysis_ref_path),
+        "--artifact-root",
+        str(tmp_path / "artifacts"),
+    ]
+    assert cli.main([*common, "--responses", str(source)]) == 0
+    recorded = json.loads(capsys.readouterr().out)
+    assert recorded["candidate_count"] == 0
+
+    def fake(request: dict[str, object]) -> str:
+        assert request["model"] == "Qwen/Qwen3-1.7B"
+        assert request["revision"] == "8d4744f9e13072f4920c326350fa81eedb74eae9"
+        return json.dumps({"lessons": []})
+
+    monkeypatch.setattr("clipper.books.scripting._local_book_completion", fake)
+    assert cli.main([*common, "--local-cpu", "--max-new-units", "1"]) == 2
+    local = json.loads(capsys.readouterr().out)
+    assert local["status"] == "incomplete"
+    assert local["counts"]["zero_candidate"] == 1
+    assert local["counts"]["unresolved"] > 0
+    assert cli.main([*common, "--responses", str(source), "--max-new-units", "1"]) == 1
+    assert cli.main(["books", "mine", "--book-id", "legacy", "--local-cpu"]) == 1
+    with pytest.raises(SystemExit):
+        cli._parser().parse_args([*common, "--responses", str(source), "--local-cpu"])
+    with pytest.raises(SystemExit):
+        cli._parser().parse_args(common)

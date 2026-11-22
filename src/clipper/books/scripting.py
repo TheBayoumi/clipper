@@ -29,6 +29,11 @@ VOICE_REVISION = "v1.0"
 SCRIPT_CONTRACT = "niche-scenes-open-v3"
 BOOK_EDIT_CONTRACT = "book-lesson-complete-sentences-v2"
 MAX_SCRIPT_ATTEMPTS = 3
+QWEN_GENERATION_SETTINGS: dict[str, object] = {
+    "do_sample": True,
+    "temperature": 0.7,
+    "top_p": 0.8,
+}
 VOICE_CONTRACT = "kokoro-24khz-wav-v1"
 VOICES = frozenset({"af_heart", "af_bella", "am_adam", "am_michael", "bf_emma"})
 
@@ -309,8 +314,10 @@ def _script_pipeline() -> tuple[Any, Any]:
     return model, tokenizer
 
 
-def _local_script_completion(request: dict[str, object]) -> str:
-    """Generate locally; keep the weights resident for bounded repair attempts."""
+def _run_pinned_qwen(
+    request: dict[str, object], *, normalize_script: bool
+) -> str:
+    """Decode exact generated tokens; book mode retains unmodified raw response."""
     torch = importlib.import_module("torch")
 
     model, tokenizer = _script_pipeline()
@@ -327,16 +334,29 @@ def _local_script_completion(request: dict[str, object]) -> str:
         output = model.generate(
             **inputs,
             max_new_tokens=int(cast(int, request["max_new_tokens"])),
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.8,
+            **QWEN_GENERATION_SETTINGS,
             pad_token_id=tokenizer.eos_token_id,
         )
     output_ids = output[0][inputs["input_ids"].shape[-1] :]
-    result: str = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
-    if result.startswith(chr(96) * 3):
-        result = "\n".join(result.splitlines()[1:-1]).strip()
+    result: str = tokenizer.decode(output_ids, skip_special_tokens=True)
+    if normalize_script:
+        result = result.strip()
+        if result.startswith(chr(96) * 3):
+            result = "\n".join(result.splitlines()[1:-1]).strip()
     return result
+
+
+def _local_script_completion(request: dict[str, object]) -> str:
+    """Generate locally; keep weights resident for bounded script repair."""
+    return _run_pinned_qwen(request, normalize_script=True)
+
+
+def _local_book_completion(request: dict[str, object]) -> str:
+    """Opt-in only: execute pinned Qwen on CPU and retain raw decoded output."""
+    model, _tokenizer = _script_pipeline()
+    if str(model.device) != "cpu":
+        raise NicheVideoError("local book completion requires CPU-resident pinned Qwen weights")
+    return _run_pinned_qwen(request, normalize_script=False)
 
 
 def _script_feedback(raw: object, error: Exception) -> str:
