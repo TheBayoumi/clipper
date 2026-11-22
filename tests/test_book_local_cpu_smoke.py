@@ -310,10 +310,7 @@ def test_workflow_github_context_rules_and_dormant_trigger_are_explicit() -> Non
 
 def _sample_progress(root: Path) -> Path:
     progress = (
-        root
-        / "private/book-candidates/analysis/progress"
-        / smoke.BOOK_ID
-        / f"{'a' * 64}.json"
+        root / "private/book-candidates/analysis/progress" / smoke.BOOK_ID / f"{'a' * 64}.json"
     )
     progress.parent.mkdir(parents=True, exist_ok=True)
     progress.write_bytes(b'{"label":"PUBLIC_SYNTHETIC_FIXTURE_NOT_A_BOOK"}\n')
@@ -497,7 +494,8 @@ def test_public_gated_phase_classification_has_no_fake_completion(
     phases = root / "evidence/model-phases.jsonl"
     smoke._write(phases, b'{"phase":"cpu_weight_loading_start"}\n')
     assert (
-        smoke._evidence_state(root)["outcome"] == "MODEL_LOADING_STARTED_WITHOUT_ACCEPTED_COMPLETION"
+        smoke._evidence_state(root)["outcome"]
+        == "MODEL_LOADING_STARTED_WITHOUT_ACCEPTED_COMPLETION"
     )
     smoke._write(
         phases,

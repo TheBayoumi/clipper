@@ -460,10 +460,7 @@ def _capture_paths(root: Path) -> dict[str, str]:
     result: dict[str, str] = {}
     for path, data in _public_evidence_files(root):
         relative = path.relative_to(root).as_posix()
-        if any(
-            f"/analysis/{name}/" in relative
-            for name in ("completions", "progress", "exports")
-        ):
+        if any(f"/analysis/{name}/" in relative for name in ("completions", "progress", "exports")):
             result[relative] = _digest(data)
     return result
 
@@ -583,12 +580,7 @@ def _confined(root: Path, path: Path, *, directory: bool) -> None:
     Reject every symlink ancestor, including parents of the dedicated root,
     then require strict resolved containment. Do not traverse foreign roots.
     """
-    if (
-        not root.is_absolute()
-        or not path.is_absolute()
-        or ".." in root.parts
-        or ".." in path.parts
-    ):
+    if not root.is_absolute() or not path.is_absolute() or ".." in root.parts or ".." in path.parts:
         raise SmokeError("public evidence path must be absolute and canonical")
     try:
         relative = path.relative_to(root)
