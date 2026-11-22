@@ -241,22 +241,92 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
         )
         blank_request = _request("A synthetic exact source sentence.")
         template = _canonical_reply("A synthetic exact source sentence.", blank_request)
+
+        def reach_public_state(callback: Any, wire: str) -> tuple[list[int], float]:
+            """Walk ACTUAL generated tokens from the prompt, never prime with a full prefix."""
+            sent = [tokenizer.eos_token_id]
+            callback(0, torch.tensor(sent))
+            traversal_started = time.perf_counter()
+            ids = tokenizer.encode(wire, add_special_tokens=False)
+            assert (
+                tokenizer.decode(
+                    ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                )
+                == wire
+            )
+            for position, token in enumerate(ids):
+                allowed = callback(0, torch.tensor(sent))
+                assert token in allowed, (position, token, len(sent))
+                assert tokenizer.eos_token_id not in allowed
+                sent.append(token)
+            return sent, time.perf_counter() - traversal_started
+
+        # These twelve states are reached incrementally through the released
+        # adapter. A one-shot full-prefix first callback only initializes the
+        # adapter's prompt state and does NOT test the blank-field guard.
         for creative in ("topic", "claim", "hook_angle", "visual_action"):
             marker = '"' + creative + '":"'
             assert marker in template
             for blank_count in (0, 1, 2):
                 partial = template.split(marker, 1)[0] + marker + " " * blank_count
-                prefix_tokens = tokenizer.encode(partial, add_special_tokens=False)
-                assert (
-                    tokenizer.decode(
-                        prefix_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                    )
-                    == partial
-                )
+                setup_started = time.perf_counter()
                 fresh = constrained.prefix_for(blank_request, tokenizer, scripting.SCRIPT_REVISION)
-                allowed = fresh(0, torch.tensor([tokenizer.eos_token_id, *prefix_tokens]))
+                setup_seconds = time.perf_counter() - setup_started
+                sent, traversal_seconds = reach_public_state(fresh, partial)
+                started = time.perf_counter()
+                allowed = fresh(0, torch.tensor(sent))
+                callback_seconds = time.perf_counter() - started
                 assert 330 not in allowed, (creative, blank_count)
                 assert tokenizer.eos_token_id not in allowed
+                assert callback_seconds < 5, "reached blank callback latency regression"
+                assert not any(
+                    quote_token in allowed
+                    for quote_token in tokenizer.encode('"', add_special_tokens=False)
+                )
+                # Scoped: the fast path must remain usable after actual
+                # nonblank text, not merely reject bad blank closings.
+                if blank_count == 0:
+                    positive = constrained.prefix_for(
+                        blank_request, tokenizer, scripting.SCRIPT_REVISION
+                    )
+                    positive_sent, _ = reach_public_state(positive, partial + "meaningful")
+                    assert 330 in positive(0, torch.tensor(positive_sent))
+                print(
+                    "QWEN_REACHED_CREATIVE_BLANK_STATE "
+                    + json.dumps(
+                        {
+                            "field": creative,
+                            "blanks": blank_count,
+                            "setup_seconds": round(setup_seconds, 4),
+                            "prefix_traversal_seconds": round(traversal_seconds, 4),
+                            "blank_callback_seconds": round(callback_seconds, 4),
+                            "merged_quote_admitted": False,
+                            "model_loaded": False,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+
+        # JSON escaped SPACE and NBSP are semantically whitespace even though
+        # their raw spelling contains letters/digits; they may not close empty.
+        for encoded_space in (r"\u0020", r"\u00a0"):
+            marker = '"topic":"'
+            partial = template.split(marker, 1)[0] + marker + encoded_space
+            fresh = constrained.prefix_for(blank_request, tokenizer, scripting.SCRIPT_REVISION)
+            sent, _ = reach_public_state(fresh, partial)
+            started = time.perf_counter()
+            allowed = fresh(0, torch.tensor(sent))
+            elapsed = time.perf_counter() - started
+            assert 330 not in allowed and tokenizer.eos_token_id not in allowed
+            print(
+                "QWEN_ESCAPED_WHITESPACE_BLANK_STATE "
+                + json.dumps(
+                    {"space": encoded_space, "callback_seconds": round(elapsed, 4)},
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
 
         constrained._tokenizer_data.cache_clear()
         cases = {
@@ -275,7 +345,7 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
             setup = time.perf_counter()
             callback = constrained.prefix_for(request, tokenizer, scripting.SCRIPT_REVISION)
             build_seconds = time.perf_counter() - setup
-            assert callback.__class__.__name__ == "TransformersPrefixAllowedTokensFn"
+            assert callback.__class__.__name__ == "_BlankSafePrefixFn"
             # The model prompt is a sentinel, not a generated token.
             prefix_ids = [tokenizer.eos_token_id]
             open_ids = tokenizer.encode("[", add_special_tokens=False)
@@ -697,28 +767,7 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
         wide_prefix = [tokenizer.eos_token_id]
         wide_start = time.perf_counter()
         for index, token in enumerate(wide_tokens):
-            admitted = wide_callback(0, torch.tensor(wide_prefix))
-            if token not in admitted:
-                prefix_text = tokenizer.decode(
-                    wide_prefix[1:], skip_special_tokens=True, clean_up_tokenization_spaces=False
-                )
-                next_text = tokenizer.decode(
-                    [token], skip_special_tokens=True, clean_up_tokenization_spaces=False
-                )
-                pytest.fail(
-                    "Four-400-field canonical token path rejected: "
-                    + json.dumps(
-                        {
-                            "index": index,
-                            "token_id": token,
-                            "token_text": next_text,
-                            "raw_prefix_tail": prefix_text[-45:],
-                            "raw_prefix_chars": len(prefix_text),
-                            "allowed_count": len(admitted),
-                        },
-                        ensure_ascii=True,
-                    )
-                )
+            assert token in wide_callback(0, torch.tensor(wide_prefix)), index
             wide_prefix.append(token)
         wide_seconds = time.perf_counter() - wide_start
         assert tokenizer.eos_token_id in wide_callback(0, torch.tensor(wide_prefix))
@@ -746,4 +795,112 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
         }
         with pytest.raises(constrained.ConstraintError, match="exceeds context"):
             constrained.check_prompt_context(oversize, tokenizer, effective_context)
+
+        # Exactly TWO unchanged English synthetic fixture units. This is a
+        # model-free local grammar test, NOT a third CPU model run or a book.
+        fixture_root = (
+            Path(__file__).resolve().parents[1] / "acceptance/book-local-cpu-smoke"
+        )
+        fixture_bytes = (fixture_root / "public-original-synthetic.txt").read_bytes()
+        consumed_bytes = (fixture_root / "run-request.json").read_bytes()
+
+        def git_blob(value: bytes) -> str:
+            payload = b"blob " + str(len(value)).encode() + b"\0" + value
+            return hashlib.sha1(payload).hexdigest()
+
+        assert git_blob(fixture_bytes) == "07ff45bac97ebef4c73cc8804db78bd4425aa5c2"
+        assert git_blob(consumed_bytes) == "5ba1c40d28833e4993d1f017dfa925ec784bbf19"
+        consumed = json.loads(consumed_bytes)
+        assert consumed["max_new_units"] == 2
+        assert hashlib.sha256(fixture_bytes).hexdigest() == consumed["fixture_sha256"]
+        original_sections = fixture_bytes.decode("utf-8").split("\n\n")
+        assert original_sections[0] == "PUBLIC_SYNTHETIC_FIXTURE_NOT_A_BOOK"
+        assert len(original_sections) == 3
+        fixture_book = cast(
+            BookText,
+            SimpleNamespace(
+                source=SimpleNamespace(
+                    title="PUBLIC_SYNTHETIC_FIXTURE_NOT_A_BOOK",
+                    author="Synthetic test only",
+                ),
+                edition_identity="synthetic-fixture",
+                content_sha256=hashlib.sha256(fixture_bytes).hexdigest(),
+            ),
+        )
+        for index, text_unit in enumerate(original_sections[1:]):
+            unit = whole_book.WorkUnit(
+                ordinal=index,
+                anchor=f"synthetic-unit-{index}",
+                section_id=f"synthetic-{index}",
+                source_path="public-original-synthetic.txt",
+                word_offset=0,
+                evidence_field="native_text",
+                origin="native_text",
+                review_status="unreviewed",
+                asset_sha256=None,
+                research_link_status="unreviewed",
+                text=text_unit,
+            )
+            actual_request = whole_book._request_for_identity(
+                fixture_book, unit, "public-synthetic-fixture"
+            )
+            pool = actual_request["constraints"]
+            assert len(pool["spans"]) > 0
+            assert pool["coverage"]["omitted_fragment_chars"] == 0
+            assert pool["coverage"]["fail_closed_for_coverage"] is False
+            prompt_count = constrained.check_prompt_context(
+                actual_request, tokenizer, effective_context
+            )
+            # This is an explicitly authored seven-field candidate, never
+            # host-repaired output or a model claim of editorial support.
+            raw = _pool_reply(actual_request, count=1, ascii_only=True)
+            raw_bytes = raw.encode("utf-8")
+            ids = tokenizer.encode(raw, add_special_tokens=False)
+            assert len(ids) <= 960 and len(raw_bytes) <= 16_384
+            assert (
+                tokenizer.decode(
+                    ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                )
+                == raw
+            )
+            callback = constrained.prefix_for(
+                actual_request, tokenizer, scripting.SCRIPT_REVISION
+            )
+            candidate_sent = [tokenizer.eos_token_id]
+            callback(0, torch.tensor(candidate_sent))
+            started = time.perf_counter()
+            for pos, token in enumerate(ids):
+                allowed = callback(0, torch.tensor(candidate_sent))
+                assert token in allowed, (index, pos, token)
+                assert tokenizer.eos_token_id not in allowed, (index, pos)
+                candidate_sent.append(token)
+            full_path_seconds = time.perf_counter() - started
+            assert tokenizer.eos_token_id in callback(0, torch.tensor(candidate_sent))
+            payload = whole_book.load_strict_reply(raw)
+            assert len(payload["lessons"]) == 1
+            assert len(payload["lessons"][0]) == 7
+            validated = whole_book.validate_reply(payload, unit)
+            constrained.validate_local_choice(validated, actual_request)
+            assert payload == json.loads(raw)
+            print(
+                "QWEN_UNCHANGED_TWO_UNIT_FIXTURE_MODEL_FREE "
+                + json.dumps(
+                    {
+                        "unit_index": index,
+                        "source_chars": len(text_unit),
+                        "eligible_spans": len(pool["spans"]),
+                        "omitted_chars": 0,
+                        "prompt_tokens": prompt_count,
+                        "reply_tokens": len(ids),
+                        "raw_reply_bytes": len(raw_bytes),
+                        "full_callback_seconds": round(full_path_seconds, 4),
+                        "canonical_eos_accepted": True,
+                        "seven_fields_unchanged": True,
+                        "model_loaded": False,
+                        "generate_called": False,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
         constrained._tokenizer_data.cache_clear()
