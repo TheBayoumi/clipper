@@ -218,9 +218,12 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                     and len(tokens) <= 960
                     and tokenizer.eos_token_id in adapter(0, torch.tensor(prefix))
                 )
-                assert tokenizer.decode(
-                    tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                ) == output
+                assert (
+                    tokenizer.decode(
+                        tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                    )
+                    == output
+                )
                 print(
                     "QWEN_TOKENIZER_ONLY_BUDGET_DIAGNOSTIC "
                     + json.dumps(
@@ -243,13 +246,10 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                     flush=True,
                 )
         for count, span_length in ((24, 390), (400, 12)):
-            fragments = [
-                (f"{i:03d}" + "漢字" * span_length)[:span_length]
-                for i in range(count)
-            ]
-            pool = constrained.span_pool(" ".join(
-                fragment + "." for fragment in fragments
-            ), "native_text")
+            fragments = [(f"{i:03d}" + "漢字" * span_length)[:span_length] for i in range(count)]
+            pool = constrained.span_pool(
+                " ".join(fragment + "." for fragment in fragments), "native_text"
+            )
             print(
                 "QWEN_TOKENIZER_ONLY_POOL_DIAGNOSTIC "
                 + json.dumps(
