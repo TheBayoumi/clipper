@@ -292,7 +292,13 @@ def prepare(root: Path) -> dict[str, object]:
             if url == candidate.record_url:
                 metadata = {
                     "metadata": {"identifier": "clipper-public-synthetic-no-real-record"},
-                    "files": [{"name": candidate.filename, "size": str(len(epub)), "source": "original"}],
+                    "files": [
+                        {
+                            "name": candidate.filename,
+                            "size": str(len(epub)),
+                            "source": "original",
+                        }
+                    ],
                 }
                 payload = json.dumps(metadata, sort_keys=True).encode()
                 if len(payload) > limit:
@@ -700,7 +706,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     "PUBLIC_BOOK_CPU_SMOKE_DRY_RUN "
                     + json.dumps(
-                        {"label": LABEL, "unit_count": len(manifest["work_units"]), "no_inference": True}
+                        {
+                            "label": LABEL,
+                            "unit_count": len(manifest["work_units"]),
+                            "no_inference": True,
+                        }
                     )
                 )
         elif args.action == "run":

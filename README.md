@@ -245,6 +245,10 @@ private, separate `MINED_UNREVIEWED` candidate and progress artifacts;
 no editorial claim is approved, no lesson count is targeted, and no
 downstream stage runs.
 
+A separate [public synthetic CPU smoke staging guide](docs/book-local-cpu-smoke.md)
+describes the dormant, path-gated GitHub runner test. It has **not** executed
+the model and requires a separate one-file trigger commit after review.
+
 The legacy explicit-owner-file ingest and `books mine --book-id ...`
 interfaces remain available. See [whole-book recorded/local analysis and handoff](docs/book-whole-analysis.md),
 [candidate acquisition and faithful ingest](docs/book-candidate-acquisition.md),
