@@ -541,7 +541,6 @@ class BookOrchestrator:
                 "edition_identity": candidate.edition_identity,
                 "raw_sha256": ref.raw_sha256,
                 "raw_bytes": candidate.expected_bytes,
-                "candidate_fingerprint": ref.candidate_fingerprint,
                 "acquisition_fingerprint": ref.acquisition_fingerprint,
                 "source_fingerprint": ref.source_fingerprint,
                 "extract_stage_key": ref.ingest_stage_key,

@@ -104,7 +104,7 @@ def plan_for(book: BookText) -> WorkPlan:
     skipped: list[dict[str, Any]] = []
     for block in faithful.reading_blocks(book):
         field = fields[block.origin]
-        if block.text_provenance == "image_normalized":
+        if block.origin == "reviewed_image" and block.text_provenance == "image_normalized":
             field = "normalized_image_text"
         if block.text_provenance == "machine_ocr":
             field = "machine_ocr_text"
