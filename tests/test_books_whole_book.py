@@ -1573,7 +1573,9 @@ def test_pinned_local_qwen_cpu_loader_uses_one_fake_model_without_weight_downloa
 
         def apply_chat_template(self, *args, **kwargs):
             assert kwargs["enable_thinking"] is False
-            return {"input_ids": Inputs()}
+            if kwargs.get("return_dict"):
+                return {"input_ids": Inputs()}
+            return [0]
 
         def decode(self, tokens, *, skip_special_tokens: bool):
             assert tokens == [7, 0] and skip_special_tokens
@@ -1637,6 +1639,7 @@ def test_pinned_local_qwen_cpu_loader_uses_one_fake_model_without_weight_downloa
             )
             patch.setenv("HF_HUB_OFFLINE", "1")
             patch.setattr(scripting.importlib, "import_module", injected)
+            patch.setattr(scripting, "_public_book_context", lambda: (tokenizer, 40_960))
             assert scripting._local_book_completion(request) == decoded
             assert scripting._local_book_completion(request) == decoded
             assert hub_calls == [True]

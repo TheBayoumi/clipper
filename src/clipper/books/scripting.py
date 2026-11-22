@@ -417,6 +417,85 @@ def _public_cpu_smoke_phase(phase: str) -> None:
             path.chmod(0o600)
 
 
+
+@lru_cache(maxsize=1)
+def _public_book_context() -> tuple[Any, int]:
+    """Validate pinned public-only tokenizer/config before loading book weights."""
+    from . import constrained
+
+    try:
+        hub = importlib.import_module("huggingface_hub")
+        transformers = importlib.import_module("transformers")
+    except ImportError as exc:
+        raise PinnedQwenSnapshotError("pinned public book tokenizer runtime missing") from exc
+    offline = any(
+        os.environ.get(key, "").strip().casefold() in {"1", "true", "yes", "on"}
+        for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    )
+    public = (
+        "added_tokens.json",
+        "config.json",
+        "generation_config.json",
+        "merges.txt",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json",
+    )
+
+    def fetch(*, local_files_only: bool) -> Path:
+        return Path(
+            hub.snapshot_download(
+                repo_id=SCRIPT_MODEL,
+                revision=SCRIPT_REVISION,
+                allow_patterns=list(public),
+                local_files_only=local_files_only,
+            )
+        )
+
+    try:
+        try:
+            snapshot = fetch(local_files_only=True)
+        except Exception:
+            if offline:
+                raise PinnedQwenSnapshotError("pinned public tokenizer unavailable offline")
+            snapshot = fetch(local_files_only=False)
+        snapshot = snapshot.resolve(strict=True)
+        if (
+            snapshot.name != SCRIPT_REVISION
+            or snapshot.parent.name != "snapshots"
+            or snapshot.parent.parent.name != "models--" + SCRIPT_MODEL.replace("/", "--")
+        ):
+            raise PinnedQwenSnapshotError("pinned public tokenizer snapshot mismatch")
+        if hashlib.sha256((snapshot / "tokenizer.json").read_bytes()).hexdigest() != (
+            constrained.PINNED_TOKENIZER_SHA256
+        ):
+            raise PinnedQwenSnapshotError("pinned public tokenizer hash mismatch")
+        model_config = json.loads((snapshot / "config.json").read_text(encoding="utf-8"))
+        tokenizer_config = json.loads(
+            (snapshot / "tokenizer_config.json").read_text(encoding="utf-8")
+        )
+        model_limit = model_config["max_position_embeddings"]
+        tokenizer_limit = tokenizer_config["model_max_length"]
+        if (
+            type(model_limit) is not int
+            or type(tokenizer_limit) is not int
+            or model_limit != 40_960
+            or tokenizer_limit != 131_072
+        ):
+            raise PinnedQwenSnapshotError("pinned public context limits mismatch")
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            snapshot, local_files_only=True
+        )
+        if tokenizer.model_max_length != tokenizer_limit:
+            raise PinnedQwenSnapshotError("pinned tokenizer context metadata mismatch")
+        return tokenizer, min(model_limit, tokenizer_limit)
+    except PinnedQwenSnapshotError:
+        raise
+    except Exception as exc:
+        raise PinnedQwenSnapshotError("pinned public context preflight unavailable") from exc
+
+
 @lru_cache(maxsize=1)
 def _script_pipeline() -> tuple[Any, Any]:
     """Lazy, single initialization using an exact local Qwen snapshot path."""
@@ -512,6 +591,8 @@ def _local_book_completion(request: dict[str, object]) -> str:
     # No eligible source span must never quietly disable constrained decoding.
     constrained.decode_schema(request)
     constrained._decoder()
+    public_tokenizer, context_limit = _public_book_context()
+    constrained.check_prompt_context(request, public_tokenizer, context_limit)
     model, _tokenizer = _script_pipeline()
     if str(model.device) != "cpu":
         raise NicheVideoError("local book completion requires CPU-resident pinned Qwen weights")

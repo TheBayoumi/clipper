@@ -23,34 +23,9 @@ MAX_SPANS = 400
 MAX_FIELD_CHARS = 400
 FIELDS = ("id", "topic", "claim", "hook_angle", "visual_action", "evidence", "evidence_field")
 CREATIVE_FIELDS = frozenset({"topic", "claim", "hook_angle", "visual_action"})
-SENTENCE_STARTERS = frozenset(
-    {
-        "then",
-        "we",
-        "he",
-        "she",
-        "they",
-        "it",
-        "the",
-        "a",
-        "an",
-        "but",
-        "however",
-        "this",
-        "that",
-        "there",
-        "i",
-        "you",
-        "later",
-        "next",
-        "finally",
-        "also",
-        "now",
-        "meanwhile",
-    }
-)
+CLOSING_MARKS = frozenset({'"', "'", "”", "’", ")", "]"})
 SPLIT = re.compile(
-    r"(?<=[.!?;:\u3002\uFF01\uFF1F\u061B\u061F])\s+"
+    r"""(?<=[.!?;:\u3002\uFF01\uFF1F\u061B\u061F])["'\u201D\u2019)\]]*\s+"""
     r"|(?<=[\u3002\uFF01\uFF1F\u061B\u061F])(?=\S)"
 )
 ABBREVIATIONS = frozenset(
@@ -93,22 +68,44 @@ def _boundaries(text: str) -> tuple[list[tuple[int, int]], int, int]:
     prevented = 0
     for match in SPLIT.finditer(text):
         left, right = match.span()
-        if text[left - 1] == ".":
-            previous_token = text[max(0, text.rfind(" ", 0, left) + 1) : left]
-            # Standalone "no." is a sentence; "No. 5" is a numbered reference.
+        punctuation_left = left
+        while left < right and text[left] in CLOSING_MARKS:
+            left += 1
+        if text[punctuation_left - 1] == ".":
+            # Only protect an initial when its LEFT context resembles a name.
+            # The NEXT token's capital alone is never proof of a name:
+            # "it was I. Xylophone..." must split independently of the
+            # next word's spelling or capitalization.
+            words = text[previous:punctuation_left].split()
+            previous_token = words[-1] if words else ""
+            before_initial = words[-2] if len(words) > 1 else ""
+            next_words = text[right:].split(maxsplit=1)
+            next_word = next_words[0].lstrip('"' + chr(39) + "“‘(") if next_words else ""
+            follows_name = bool(next_word and next_word[0].isupper())
             initials = INITIAL.fullmatch(previous_token) is not None
-            next_token = text[right:].split(maxsplit=1)
-            follows_name = bool(next_token and next_token[0][0].isupper())
-            sentence_start = bool(
-                next_token and next_token[0].strip(",;:").casefold() in SENTENCE_STARTERS
+            name_left_context = (
+                len(words) == 1
+                or INITIAL.fullmatch(before_initial) is not None
+                or before_initial.casefold() in ABBREVIATIONS
+                or (len(before_initial) > 1 and before_initial[0].isupper())
+                # An isolated "I." or label "B." after ordinary prose is
+                # especially likely to close a clause. Other initials remain
+                # ambiguous; do not infer sentencehood solely from a word list.
+                or previous_token[0:1].casefold() not in {"i", "b"}
             )
             numbered = previous_token.casefold() == "no." and bool(
-                next_token and re.match(r"[#0-9]", next_token[0])
+                next_word and re.match(r"[#0-9]", next_word)
             )
-            if not sentence_start and (
-                previous_token.casefold() in ABBREVIATIONS
-                or numbered
-                or (initials and (previous_token.count(".") > 1 or follows_name))
+            ordinary_abbreviation = previous_token.casefold() in ABBREVIATIONS
+            # Standalone etc. can terminate a sentence before a new
+            # capitalized phrase, unlike the internal abbreviation e.g.
+            if previous_token.casefold() == "etc." and follows_name:
+                ordinary_abbreviation = False
+            if ordinary_abbreviation or numbered or (
+                initials and (
+                    previous_token.count(".") > 1
+                    or (follows_name and name_left_context)
+                )
             ):
                 prevented += 1
                 continue
@@ -337,6 +334,29 @@ def decode_schema(request: dict[str, object]) -> dict[str, object]:
         "required": ["lessons"],
         "additionalProperties": False,
     }
+
+
+def check_prompt_context(request: dict[str, object], tokenizer: Any, context_limit: int) -> int:
+    """Check FULL canonical chat prompt plus all 960 reserved tokens, preweights."""
+    try:
+        messages = request["messages"]
+        reserve = request["max_new_tokens"]
+        if not isinstance(messages, list) or type(reserve) is not int or reserve != 960:
+            raise ConstraintError("invalid pinned book prompt budget")
+        if type(context_limit) is not int or context_limit <= reserve:
+            raise ConstraintError("invalid pinned model context limit")
+        tokens = tokenizer.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=True, enable_thinking=False
+        )
+        if not isinstance(tokens, list) or any(type(token) is not int for token in tokens):
+            raise ConstraintError("invalid pinned tokenizer prompt encoding")
+        if len(tokens) + reserve > context_limit:
+            raise ConstraintError("canonical book prompt plus reserved reply exceeds context")
+        return len(tokens)
+    except ConstraintError:
+        raise
+    except (ValueError, TypeError, AttributeError, KeyError, RecursionError) as exc:
+        raise ConstraintError("canonical book prompt context preflight failed") from exc
 
 
 def _decoder() -> tuple[Any, Any]:
@@ -640,7 +660,21 @@ def _literal_evidence_guard(parser: Any, spans: list[dict[str, object]], base_ty
             return not self.in_string and self.active is None and self.inner.can_end()
 
         def shortcut_key(self) -> Any:
-            return None if self.active is not None else self.inner.shortcut_key()
+            # LMFE's public json_freetext fast path admits a combined
+            # space+closing-quote token without asking add_character()
+            # whether the completed creative field is nonblank.
+            # Disable only INSIDE creative strings, not for all JSON text.
+            if (
+                self.active is not None
+                or (
+                    self.in_candidate
+                    and self.in_string
+                    and not self.is_key
+                    and self.field in CREATIVE_FIELDS
+                )
+            ):
+                return None
+            return self.inner.shortcut_key()
 
         def cache_key(self) -> Any:
             # The inner JSON parser has no knowledge of selected IDs or a

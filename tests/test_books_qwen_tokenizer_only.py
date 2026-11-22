@@ -204,6 +204,33 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
         assert effective_context == 40960
         assert constrained.PINNED_TOKENIZER_SHA256 == PINNED_TOKENIZER_SHA256
 
+        # Test admission BEFORE consuming a token, not parser rejection after.
+        # Token 330 is the pinned tokenizer's merged space + closing quote.
+        assert tokenizer.decode(
+            [330], skip_special_tokens=True, clean_up_tokenization_spaces=False
+        ) == ' "'
+        blank_request = _request("A synthetic exact source sentence.")
+        template = _canonical_reply("A synthetic exact source sentence.", blank_request)
+        for creative in ("topic", "claim", "hook_angle", "visual_action"):
+            marker = '"' + creative + '":"'
+            assert marker in template
+            for blank_count in (0, 1, 2):
+                partial = template.split(marker, 1)[0] + marker + " " * blank_count
+                prefix_tokens = tokenizer.encode(partial, add_special_tokens=False)
+                assert tokenizer.decode(
+                    prefix_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                ) == partial
+                fresh = constrained.prefix_for(
+                    blank_request, tokenizer, scripting.SCRIPT_REVISION
+                )
+                allowed = fresh(0, torch.tensor([tokenizer.eos_token_id, *prefix_tokens]))
+                assert 330 not in allowed, (creative, blank_count)
+                assert tokenizer.eos_token_id not in allowed
+                if blank_count == 0:
+                    good = tokenizer.encode(partial + "meaningful", add_special_tokens=False)
+                    assert 330 in fresh(0, torch.tensor([tokenizer.eos_token_id, *good]))
+
+
         constrained._tokenizer_data.cache_clear()
         cases = {
             "ascii": "One concise evidence statement.",
@@ -439,6 +466,10 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                 enable_thinking=False,
             )
             assert len(prompt_ids) + 960 <= effective_context
+            assert (
+                constrained.check_prompt_context(full_request, tokenizer, effective_context)
+                == len(prompt_ids)
+            )
             print(
                 "QWEN_FULL_CANONICAL_PROMPT_BUDGET "
                 + json.dumps(
@@ -494,6 +525,11 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                         whole_book.load_strict_reply(raw)["lessons"] == (json.loads(raw)["lessons"])
                     )
                     allowed = token_count <= 960 and raw_bytes <= 16_384
+                    fresh_start = time.perf_counter()
+                    callback = constrained.prefix_for(
+                        request, tokenizer, scripting.SCRIPT_REVISION
+                    )
+                    fresh_path_setup = time.perf_counter() - fresh_start
                     if allowed:
                         prefix = [tokenizer.eos_token_id]
                         tested = 0
@@ -530,6 +566,8 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                                 "fits_960_tokens": token_count <= 960,
                                 "fits_16k_raw": raw_bytes <= 16_384,
                                 "adapter_setup_seconds": round(build_time, 3),
+                                "fresh_path_setup_seconds": round(fresh_path_setup, 3),
+                                "cross_variant_callback_reused": False,
                                 "cold_setup_seconds": round(cold_time, 3),
                                 "per_checked_token_ms": round(seconds * 1000 / max(tested, 1), 2),
                                 "prefix_checked": tested,
@@ -559,9 +597,8 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                         )
                     if (
                         case_name in {"latin", "arabic", "bounded_350_spans", "bounded_400_spans"}
-                        and count == 1
                         and not ascii_only
-                    ) or (case_name == "mixed_emoji_combining" and count == 1 and ascii_only):
+                    ) or (case_name == "mixed_emoji_combining" and ascii_only):
                         assert allowed and complete
             if case_name == "cjk":
                 # The pinned vocabulary has no complete token containing 彙.
@@ -608,4 +645,59 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                     ),
                     flush=True,
                 )
+
+        wide_request = _request("Fully synthetic evidence only.")
+        wide_span = wide_request["constraints"]["spans"][0]
+        wide_text = ("Detailed fabricated perspective and specific steps. " * 20)[:400]
+        assert len(wide_text) == 400
+        wide_lesson = {
+            "id": wide_span["id"],
+            "topic": wide_text,
+            "claim": wide_text,
+            "hook_angle": wide_text,
+            "visual_action": wide_text,
+            "evidence": wide_span["text"],
+            "evidence_field": "native_text",
+        }
+        wide_raw = json.dumps({"lessons": [wide_lesson]}, separators=(",", ":"))
+        wide_tokens = tokenizer.encode(wide_raw, add_special_tokens=False)
+        assert len(wide_tokens) <= 960
+        assert len(wide_raw.encode("utf-8")) <= 16_384
+        assert tokenizer.decode(
+            wide_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        ) == wide_raw
+        wide_callback = constrained.prefix_for(
+            wide_request, tokenizer, scripting.SCRIPT_REVISION
+        )
+        wide_prefix = [tokenizer.eos_token_id]
+        wide_start = time.perf_counter()
+        for index, token in enumerate(wide_tokens):
+            assert token in wide_callback(0, torch.tensor(wide_prefix)), index
+            wide_prefix.append(token)
+        wide_seconds = time.perf_counter() - wide_start
+        assert tokenizer.eos_token_id in wide_callback(0, torch.tensor(wide_prefix))
+        assert whole_book.load_strict_reply(wide_raw) == {"lessons": [wide_lesson]}
+        constrained.validate_local_choice([wide_lesson], wide_request)
+        print(
+            "QWEN_FOUR_400_CHAR_FIELDS "
+            + json.dumps(
+                {
+                    "whole_reply_tokens": len(wide_tokens),
+                    "prefix_seconds": round(wide_seconds, 3),
+                    "complete_path": True,
+                    "model_loaded": False,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        oversize = {
+            **full_request,
+            "messages": [
+                {"role": "system", "content": "long synthetic " * 50_000},
+                {"role": "user", "content": "unchanged exact source"},
+            ],
+        }
+        with pytest.raises(constrained.ConstraintError, match="exceeds context"):
+            constrained.check_prompt_context(oversize, tokenizer, effective_context)
         constrained._tokenizer_data.cache_clear()

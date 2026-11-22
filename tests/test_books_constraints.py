@@ -702,3 +702,89 @@ def test_released_token_enforcer_cannot_cache_away_choice_restrictions() -> None
     assert reachable(json.dumps({"lessons": [first_lesson, second_lesson]}))
     assert not reachable(json.dumps({"lessons": [first_lesson, first_lesson]}))
     assert not reachable(json.dumps({"lessons": [{**first_lesson, "topic": "  "}]}))
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("it was I. Xylophone arrived.", 2),
+        ("it was I. Zelda arrived.", 2),
+        ("the plan B. Xylophone arrived.", 2),
+        ("the plan B. Zelda arrived.", 2),
+        ("Dr. Then reported a result. Zelda left.", 2),
+        ("Dr. Ada saw A. Smith. Zoe followed.", 2),
+        ("B. Smith went home. Another visitor arrived.", 2),
+        ("John B. Smith visited. Another person arrived.", 2),
+        ("The U.S. Army gathered. Another person arrived.", 2),
+        ("The U.S. economy grew. Another person arrived.", 2),
+        ("See No. 5 in the table. Then continue.", 2),
+        ("He answered no. Zelda left.", 2),
+        ("They left etc. Zelda returned.", 2),
+        ('He said "I." Zelda left.', 2),
+        ('He said "no." Zelda left.', 2),
+        ("第一句。第二句\\uff01第三句\\uff1f", 3),
+        ("السؤال؟ الجواب؛ ثم غادر.", 3),
+    ],
+)
+def test_contextual_initial_and_quoted_punctuation_boundaries(
+    source: str, expected: int
+) -> None:
+    pool = constrained.span_pool(source, "native_text")
+    assert len(pool["spans"]) == expected
+    coverage = pool["coverage"]
+    assert coverage["omitted_fragment_chars"] == 0
+    assert sum(len(span["text"]) for span in pool["spans"]) + (
+        coverage["split_separator_chars"]
+    ) == len(source)
+    for span in pool["spans"]:
+        assert source[span["start"] : span["end"]] == span["text"]
+
+
+def test_full_chat_context_budget_fail_closed_with_synthetic_tokenizer() -> None:
+    request = _request("Synthetic source.")
+    request["max_new_tokens"] = 960
+    class SyntheticTokenizer:
+        def __init__(self, prompt_length: int) -> None:
+            self.prompt_length = prompt_length
+
+        def apply_chat_template(self, messages: object, **options: object) -> list[int]:
+            assert messages == request["messages"]
+            assert options == {
+                "tokenize": True,
+                "add_generation_prompt": True,
+                "enable_thinking": False,
+            }
+            return [1] * self.prompt_length
+
+    assert (
+        constrained.check_prompt_context(request, SyntheticTokenizer(40_000), 40_960)
+        == 40_000
+    )
+    with pytest.raises(constrained.ConstraintError, match="exceeds context"):
+        constrained.check_prompt_context(request, SyntheticTokenizer(40_001), 40_960)
+    with pytest.raises(constrained.ConstraintError, match="pinned book prompt budget"):
+        constrained.check_prompt_context(
+            {**request, "max_new_tokens": 959}, SyntheticTokenizer(1), 40_960
+        )
+
+
+def test_oversized_full_prompt_is_rejected_before_book_model_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request("Synthetic source sentence.")
+    request["max_new_tokens"] = 960
+
+    class OversizedPublicTokenizer:
+        def apply_chat_template(self, _messages: object, **_kwargs: object) -> list[int]:
+            return [1] * 40_001
+
+    monkeypatch.setattr(
+        scripting, "_public_book_context", lambda: (OversizedPublicTokenizer(), 40_960)
+    )
+    monkeypatch.setattr(
+        scripting,
+        "_script_pipeline",
+        lambda: pytest.fail("oversized canonical prompt may not load model weights"),
+    )
+    with pytest.raises(constrained.ConstraintError, match="exceeds context"):
+        scripting._local_book_completion(request)
