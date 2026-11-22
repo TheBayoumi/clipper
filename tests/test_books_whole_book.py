@@ -1109,7 +1109,7 @@ def test_pinned_local_qwen_cpu_loader_uses_one_fake_model_without_weight_downloa
     from contextlib import nullcontext
     from types import SimpleNamespace
 
-    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+    _runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
     unit = whole_book.plan_for(acquired.book).units[0]
     request = whole_book.request_for(acquired.book, unit)
     loaded: list[str] = []
