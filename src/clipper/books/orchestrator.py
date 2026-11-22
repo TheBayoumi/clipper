@@ -819,9 +819,7 @@ class BookOrchestrator:
         # Progress is immutable evidence of this *observed* outcome. A retry
         # with the same response file but a different failed/complete state
         # must publish a distinct report, never overwrite the earlier one.
-        progress_bytes = (
-            json.dumps(ledger, ensure_ascii=False, sort_keys=True) + "\n"
-        ).encode()
+        progress_bytes = (json.dumps(ledger, ensure_ascii=False, sort_keys=True) + "\n").encode()
         progress_sha256 = hashlib.sha256(progress_bytes).hexdigest()
         artifact_name = f"{plan_fingerprint}-{response_file_sha256}-{progress_sha256}.json"
         progress_path = base / "progress" / ref.book_id / artifact_name

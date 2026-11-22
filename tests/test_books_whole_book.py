@@ -450,12 +450,7 @@ def test_candidate_json_over_budget_rejects_complete_prefix_before_work(
             / "artifacts/book-candidates/manifests"
             / f"{result.candidate.fingerprint}.json"
         ),
-        "stage": (
-            tmp_path
-            / "artifacts/book-dag/books-ingest"
-            / result.stage_key
-            / "stage.json"
-        ),
+        "stage": (tmp_path / "artifacts/book-dag/books-ingest" / result.stage_key / "stage.json"),
     }
     target_path = paths[target]
     max_bytes = 131_072 if target == "ref" else 2_000_000
@@ -601,9 +596,7 @@ def test_whole_book_fingerprint_traversals_are_constant_per_invocation(
     monkeypatch: pytest.MonkeyPatch,
     paragraphs: int,
 ) -> None:
-    runner, result, _ = ingested(
-        tmp_path, paragraphs=paragraphs, with_image=False
-    )
+    runner, result, _ = ingested(tmp_path, paragraphs=paragraphs, with_image=False)
     replies = responses_for(result.book)
     counts = {"book": 0, "plan": 0}
     actual_book = BookText.fingerprint.fget
