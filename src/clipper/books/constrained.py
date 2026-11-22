@@ -69,9 +69,14 @@ def _boundaries(text: str) -> tuple[list[tuple[int, int]], int, int]:
         if text[left - 1] == ".":
             previous_token = text[max(0, text.rfind(" ", 0, left) + 1) : left]
             # Includes dotted initials (U.S.) and conventional abbreviations.
+            initials = INITIAL.fullmatch(previous_token) is not None
+            next_token = text[right:].split(maxsplit=1)
+            # Single initials require a plausible following name; a. a.
+            # must remain two independent clauses, not one overlong string.
+            follows_name = bool(next_token and next_token[0][0].isupper())
             if (
                 previous_token.casefold() in ABBREVIATIONS
-                or INITIAL.fullmatch(previous_token) is not None
+                or (initials and (previous_token.count(".") > 1 or follows_name))
             ):
                 prevented += 1
                 continue

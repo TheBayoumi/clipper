@@ -167,7 +167,7 @@ def test_canonical_prompt_states_existing_strict_validator_contract(
         '"source_evidence_choices"',
         "one exact paired entry",
         "Do not change either",
-        "do not repeat in one reply",
+        "must not repeat in one reply",
         "specific claim",
         "selected entry exactly",
         '"evidence_field" must exactly repeat',
