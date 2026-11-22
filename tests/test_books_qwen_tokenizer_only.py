@@ -215,12 +215,12 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
             public_fetch_calls.append(kwargs["local_files_only"])
             return str(snapshot)
 
-        def public_modules(name: str) -> Any:
+        def public_modules(name: str, package: str | None = None) -> Any:
             if name == "huggingface_hub":
                 from types import SimpleNamespace
 
                 return SimpleNamespace(snapshot_download=public_hub_snapshot)
-            return original_import(name)
+            return original_import(name, package)
 
         scripting._public_book_context.cache_clear()
         try:

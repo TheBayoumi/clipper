@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 from importlib.metadata import version
+from pathlib import Path
+from typing import cast
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -784,3 +786,86 @@ def test_oversized_full_prompt_is_rejected_before_book_model_loading(
     )
     with pytest.raises(constrained.ConstraintError, match="exceeds context"):
         scripting._local_book_completion(request)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["none", "wrong-hash", "wrong-model-limit", "wrong-tokenizer-limit", "missing-public"],
+)
+def test_public_book_context_preflight_is_pinned_and_weight_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+
+    snapshot = (
+        tmp_path
+        / "models--Qwen--Qwen3-1.7B"
+        / "snapshots"
+        / scripting.SCRIPT_REVISION
+    )
+    snapshot.mkdir(parents=True)
+    synthetic_tokenizer_bytes = b'{"synthetic":"no model, no weights"}'
+    (snapshot / "tokenizer.json").write_bytes(synthetic_tokenizer_bytes)
+    model_limit = 40_959 if fault == "wrong-model-limit" else 40_960
+    tokenizer_limit = 131_071 if fault == "wrong-tokenizer-limit" else 131_072
+    (snapshot / "config.json").write_text(json.dumps({"max_position_embeddings": model_limit}))
+    (snapshot / "tokenizer_config.json").write_text(
+        json.dumps({"model_max_length": tokenizer_limit})
+    )
+
+    download_calls: list[dict[str, object]] = []
+
+    def public_download(**kwargs: object) -> str:
+        download_calls.append(kwargs)
+        if fault == "missing-public":
+            raise OSError("synthetic public tokenizer unavailable")
+        return str(snapshot)
+
+    class FakeTokenizer:
+        model_max_length = 131_072
+        eos_token_id = 151645
+
+    def fake_tokenizer_load(location: object, *, local_files_only: bool) -> object:
+        assert location == snapshot
+        assert local_files_only
+        return FakeTokenizer()
+
+    original_import = scripting.importlib.import_module
+
+    def injected(name: str) -> object:
+        if name == "huggingface_hub":
+            return SimpleNamespace(snapshot_download=public_download)
+        if name == "transformers":
+            return SimpleNamespace(
+                AutoTokenizer=SimpleNamespace(from_pretrained=fake_tokenizer_load)
+            )
+        return original_import(name)
+
+    expected_hash = hashlib.sha256(synthetic_tokenizer_bytes).hexdigest()
+    scripting._public_book_context.cache_clear()
+    try:
+        with monkeypatch.context() as patch:
+            patch.setenv("HF_HUB_OFFLINE", "1")
+            patch.setattr(scripting.importlib, "import_module", injected)
+            patch.setattr(
+                constrained,
+                "PINNED_TOKENIZER_SHA256",
+                "0" * 64 if fault == "wrong-hash" else expected_hash,
+            )
+            if fault == "none":
+                public_tokenizer, limit = scripting._public_book_context()
+                assert public_tokenizer.eos_token_id == 151645
+                assert limit == 40_960
+            else:
+                with pytest.raises(scripting.PinnedQwenSnapshotError):
+                    scripting._public_book_context()
+    finally:
+        scripting._public_book_context.cache_clear()
+
+    assert download_calls
+    assert all(call["repo_id"] == scripting.SCRIPT_MODEL for call in download_calls)
+    assert all(call["revision"] == scripting.SCRIPT_REVISION for call in download_calls)
+    assert all(call["local_files_only"] is True for call in download_calls)
+    assert all(
+        "model.safetensors" not in cast(list[str], call["allow_patterns"])
+        for call in download_calls
+    )
