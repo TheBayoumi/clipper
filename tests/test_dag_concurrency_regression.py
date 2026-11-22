@@ -468,3 +468,127 @@ def test_local_secondary_temp_cleanup_error_preserves_output_failure(
     assert store.cached_output(identity) is None
     assert not store._execution_claim_path(identity).exists()
     assert not list(store._directory(identity).glob(".*.tmp"))
+
+
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("primary_type", [OSError, KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("publication", ["valid", "pre-replace", "corrupt", "missing", "foreign"])
+def test_local_pass_boundary_uses_published_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    private: bool,
+    primary_type: type[BaseException],
+    publication: str,
+) -> None:
+    identity = StageIdentity(
+        stage_name="books.ingest", source_hash="source-hash", contract_hash="contract-hash"
+    )
+    store = DagStore(
+        tmp_path / "dag",
+        private_stages=frozenset({identity.stage_name}) if private else frozenset(),
+    )
+    primary = primary_type("synthetic PASS publication failure")
+    original_replace = Path.replace
+    original_unlink = Path.unlink
+    operations: list[int] = []
+    pass_temporary: Path | None = None
+    injected = False
+
+    def operation() -> object:
+        operations.append(1)
+        return {"synthetic": True}
+
+    def replace(path: Path, target: Path) -> Path:
+        nonlocal pass_temporary, injected
+        if (
+            target == store._record_path(identity)
+            and json.loads(path.read_text())["status"] == "PASS"
+            and not injected
+        ):
+            pass_temporary = path
+            if publication == "pre-replace":
+                injected = True
+                assert store.cached_output(identity) is None
+                raise primary
+        return original_replace(path, target)
+
+    def unlink(path: Path, *args, **kwargs):
+        nonlocal injected
+        if path == pass_temporary and not injected:
+            assert not path.exists()
+            assert store.cached_output(identity) == {"synthetic": True}
+            injected = True
+            if publication == "corrupt":
+                store._output_path(identity).write_text('{"synthetic":false}')
+            elif publication == "missing":
+                original_unlink(store._output_path(identity))
+            elif publication == "foreign":
+                record = json.loads(store._record_path(identity).read_text())
+                record["identity"]["source_hash"] = "different-source-retaining-cache-key"
+                store._record_path(identity).write_text(json.dumps(record))
+            raise primary
+        return original_unlink(path, *args, **kwargs)
+
+    previous = os.umask(0)
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(Path, "replace", replace)
+            scoped.setattr(Path, "unlink", unlink)
+            with pytest.raises(primary_type) as error:
+                store.execute(identity, operation)
+        assert error.value is primary
+        assert injected
+        assert operations == [1]
+        assert store.attempt_count(identity) == 1
+        assert not store._execution_claim_path(identity).exists()
+        assert not (store._directory(identity) / ".write-lock").exists()
+        assert not list(store._directory(identity).glob(".*.tmp"))
+        if private:
+            assert store._directory(identity).stat().st_mode & 0o777 == 0o700
+            assert store._record_path(identity).stat().st_mode & 0o777 == 0o600
+        if publication == "valid":
+            assert store.cached_output(identity) == {"synthetic": True}
+            assert store.execute(identity, operation) == ({"synthetic": True}, True)
+            assert operations == [1]
+        else:
+            assert store.cached_output(identity) is None
+            if publication != "foreign":
+                assert json.loads(store._record_path(identity).read_text())["status"] == "FAILED"
+            assert store.execute(identity, operation) == ({"synthetic": True}, False)
+            assert operations == [1, 1]
+            assert store.attempt_count(identity) == 2
+    finally:
+        os.umask(previous)
+
+
+def test_local_post_pass_cancellation_preserves_foreign_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    store = DagStore(tmp_path)
+    primary = KeyboardInterrupt("post-replace cancellation")
+    original_unlink = Path.unlink
+    foreign = {"owner_id": "other-owner", "expires_at": time.time() + 86_400}
+    injected = False
+
+    def unlink(path: Path, *args, **kwargs):
+        nonlocal injected
+        if (
+            not injected
+            and path.name.startswith(".stage.json.")
+            and not path.exists()
+            and store.cached_output(identity) == {"synthetic": True}
+        ):
+            injected = True
+            store._write_json(store._execution_claim_path(identity), foreign)
+            raise primary
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    with pytest.raises(KeyboardInterrupt) as error:
+        store.execute(identity, lambda: {"synthetic": True})
+    assert error.value is primary
+    assert store._read_execution_claim(identity) == foreign
+    assert store.cached_output(identity) == {"synthetic": True}
+    assert not (store._directory(identity) / ".write-lock").exists()
+    assert not list(store._directory(identity).glob(".*.tmp"))

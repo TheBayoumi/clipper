@@ -373,3 +373,33 @@ Release retries and lease durations are unchanged. Unavailable storage, failed
 lock cleanup, or unavailable release callbacks can prevent cleanup; there is no
 unconditional recovery guarantee. A failed report can leave RUNNING evidence
 without a reusable PASS, and the next owned attempt increments its count.
+
+### PASS publication acknowledgement and renewal termination
+
+A local stage's terminal boundary is its atomic PASS record with matching full
+stage identity and fingerprint-valid output, not the write helper's return.
+Post-replace errors propagate, but cleanup under the write lock preserves that
+valid PASS. Invalid or missing output is never reused. A failure before local
+PASS publication can still produce a FAILED record for the owned attempt.
+
+Coordinated PASS publication is unconfirmed until commit acknowledges or a
+reload establishes the durable snapshot. Error cleanup reloads before deciding
+whether FAILED is appropriate: a valid exact-identity PASS is preserved, an
+exact same-attempt RUNNING record permits owned failure reporting, and already
+FAILED, foreign, invalid or unavailable evidence is not overwritten to invent
+certainty. A failed acknowledgement is always propagated, even if reload
+confirms PASS. The current store suppresses direct snapshot reuse while a PASS
+is unconfirmed; coordinated execute always reloads before reuse. A successful
+reload must actually refresh durable state under the existing coordinator
+contract. If it is unavailable, no durable claim can be made from local bytes.
+
+The renewal worker transfers BaseException termination to the execution thread
+under a lock. Execution checks before final publication and after bounded
+shutdown/join, including while commit is in flight. Ordinary renew false or
+transport errors keep lease-loss semantics. An already-active primary error
+wins over secondary termination or cleanup errors. A newly observed termination
+after acknowledged PASS propagates without revoking valid completed work.
+The existing one-second join budget remains finite; an uncooperative worker
+cannot be forcibly killed, and failure to stop is reported rather than silently
+returning success. Owner-bound release remains best effort, without changing
+local or production lease durations or the coordinator API.

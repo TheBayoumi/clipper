@@ -945,3 +945,453 @@ def test_coordinated_new_release_cancellation_after_committed_success_propagates
     assert store.cached_output(identity) == {"valid": True}
     assert store.execute(identity, operation) == ({"valid": True}, True)
     assert operations == [1]
+
+
+@pytest.mark.parametrize("primary_type", [OSError, KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        "persisted",
+        "before-persistence",
+        "reload-fails-before",
+        "reload-fails-after",
+        "failed",
+        "foreign",
+        "corrupt",
+        "missing-output",
+    ],
+)
+def test_coordinated_pass_acknowledgement_reconciles_durable_snapshot(
+    tmp_path: Path, primary_type: type[BaseException], snapshot: str
+) -> None:
+    identity = _identity("durable-publication")
+    primary = primary_type("synthetic PASS acknowledgement failure")
+    active = {"owner": ""}
+    durable: dict[Path, bytes] = {}
+    commits: list[str] = []
+    operations: list[int] = []
+    releases: list[str] = []
+    fail_ack = True
+    reload_blocked = False
+
+    def claim(_identity, owner: str, _ttl: float) -> bool:
+        if active["owner"]:
+            return False
+        active["owner"] = owner
+        return True
+
+    def renew(_identity, owner: str, _ttl: float) -> bool:
+        return active["owner"] == owner
+
+    def release(_identity, owner: str) -> bool:
+        releases.append(owner)
+        if active["owner"] != owner:
+            return False
+        active["owner"] = ""
+        return True
+
+    def persist() -> None:
+        for path in (store._record_path(identity), store._output_path(identity)):
+            if path.is_file():
+                durable[path] = path.read_bytes()
+            else:
+                durable.pop(path, None)
+        commits.append(json.loads(durable[store._record_path(identity)])["status"])
+
+    def commit() -> None:
+        nonlocal reload_blocked
+        record_path = store._record_path(identity)
+        record = json.loads(record_path.read_text())
+        if record["status"] != "PASS" or not fail_ack:
+            persist()
+            return
+        assert store.cached_output(identity) is None
+        if snapshot not in {"before-persistence", "reload-fails-before"}:
+            persist()
+            if snapshot == "failed":
+                record.update(
+                    status="FAILED",
+                    output_fingerprint=None,
+                    error_type="SyntheticFailure",
+                    error="prior durable failure",
+                )
+                durable[record_path] = json.dumps(record).encode()
+                commits[-1] = "FAILED"
+            elif snapshot == "foreign":
+                record["identity"]["source_hash"] = "different-source-retaining-cache-key"
+                durable[record_path] = json.dumps(record).encode()
+            elif snapshot == "corrupt":
+                durable[store._output_path(identity)] = b'{"synthetic":false}'
+            elif snapshot == "missing-output":
+                durable.pop(store._output_path(identity))
+        reload_blocked = snapshot.startswith("reload-fails")
+        raise primary
+
+    def reload() -> None:
+        if reload_blocked:
+            raise OSError("synthetic reload unavailable")
+        for path in (store._record_path(identity), store._output_path(identity)):
+            if path in durable:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(durable[path])
+            else:
+                path.unlink(missing_ok=True)
+
+    coordinator = DagLeaseCoordinator(
+        claim=claim, renew=renew, release=release, commit=commit, reload=reload
+    )
+    store = DagStore(tmp_path, coordinator=coordinator, execution_lease_seconds=120.0)
+
+    def operation() -> object:
+        operations.append(1)
+        return {"synthetic": True}
+
+    with pytest.raises(primary_type) as error:
+        store.execute(identity, operation)
+    assert error.value is primary
+    assert len(releases) == 1
+    assert not active["owner"]
+    assert operations == [1]
+    assert not list(store._directory(identity).glob(".*.tmp"))
+    if snapshot == "persisted":
+        assert commits == ["RUNNING", "PASS"]
+        assert store.cached_output(identity) == {"synthetic": True}
+    elif snapshot == "before-persistence":
+        assert commits == ["RUNNING", "FAILED"]
+        assert store.cached_output(identity) is None
+    elif snapshot.startswith("reload-fails"):
+        assert commits == (
+            ["RUNNING", "PASS"] if snapshot == "reload-fails-after" else ["RUNNING"]
+        )
+        assert store.cached_output(identity) is None
+        with pytest.raises(OSError, match="reload unavailable"):
+            store.execute(identity, operation)
+        assert operations == [1]
+    else:
+        assert commits == ["RUNNING", "FAILED" if snapshot == "failed" else "PASS"]
+        assert store.cached_output(identity) is None
+    saved_record = durable[store._record_path(identity)]
+    fail_ack = False
+    reload_blocked = False
+    expected_reuse = snapshot in {"persisted", "reload-fails-after"}
+    with patch("clipper.dag.time.sleep", side_effect=AssertionError("unexpected wait")):
+        assert store.execute(identity, operation) == ({"synthetic": True}, expected_reuse)
+    if expected_reuse:
+        assert operations == [1]
+        assert durable[store._record_path(identity)] == saved_record
+        assert store.attempt_count(identity) == 1
+    else:
+        assert operations == [1, 1]
+        assert store.attempt_count(identity) == 2
+
+
+@pytest.mark.parametrize("release_mode", ["false", "raise", "cancel", "other-owner"])
+def test_confirmed_durable_pass_survives_failed_ack_and_release(
+    tmp_path: Path, release_mode: str
+) -> None:
+    identity = _identity("durable-release")
+    primary = KeyboardInterrupt("PASS acknowledgement")
+    active = {"owner": ""}
+    durable: dict[Path, bytes] = {}
+    commits: list[str] = []
+    releases: list[str] = []
+    acquired: list[str] = []
+    operations: list[int] = []
+
+    def claim(_identity, owner: str, _ttl: float) -> bool:
+        active["owner"] = owner
+        acquired.append(owner)
+        return True
+
+    def renew(_identity, owner: str, _ttl: float) -> bool:
+        return active["owner"] == owner
+
+    def release(_identity, owner: str) -> bool:
+        releases.append(owner)
+        if release_mode == "cancel":
+            raise SystemExit("secondary release cancellation")
+        if release_mode == "raise":
+            raise OSError("secondary release failure")
+        return False
+
+    def commit() -> None:
+        for path in (store._record_path(identity), store._output_path(identity)):
+            if path.is_file():
+                durable[path] = path.read_bytes()
+        commits.append(json.loads(durable[store._record_path(identity)])["status"])
+        if commits[-1] == "PASS":
+            if release_mode == "other-owner":
+                active["owner"] = "replacement-owner"
+            raise primary
+
+    def reload() -> None:
+        for path, data in durable.items():
+            path.write_bytes(data)
+
+    coordinator = DagLeaseCoordinator(
+        claim=claim, renew=renew, release=release, commit=commit, reload=reload
+    )
+    store = DagStore(tmp_path, coordinator=coordinator)
+
+    def operation() -> object:
+        operations.append(1)
+        return {"synthetic": True}
+
+    with patch("clipper.dag.time.sleep"), pytest.raises(KeyboardInterrupt) as error:
+        store.execute(identity, operation)
+    assert error.value is primary
+    assert commits == ["RUNNING", "PASS"]
+    assert releases == acquired * (1 if release_mode == "cancel" else 3)
+    assert active["owner"] == (
+        "replacement-owner" if release_mode == "other-owner" else acquired[0]
+    )
+    saved_record = durable[store._record_path(identity)]
+    assert store.execute(identity, operation) == ({"synthetic": True}, True)
+    assert operations == [1]
+    assert durable[store._record_path(identity)] == saved_record
+
+
+@pytest.mark.parametrize("termination_type", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "operation",
+        "final-renew",
+        "commit",
+        "shutdown",
+        "operation-primary",
+        "output-primary",
+        "commit-release-cancel",
+    ],
+)
+def test_worker_termination_is_transferred_at_publication_boundaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    termination_type: type[BaseException],
+    phase: str,
+) -> None:
+    identity = _identity("renewal-termination")
+    termination = termination_type("synthetic background termination")
+    primary = OSError("synthetic active primary")
+    entered = threading.Event()
+    allow_termination = threading.Event()
+    workers: list[threading.Thread] = []
+    executing = threading.current_thread()
+    active = {"owner": ""}
+    commits: list[str] = []
+    operations: list[int] = []
+    release_calls: list[str] = []
+    original_join = threading.Thread.join
+    original_replace = Path.replace
+
+    def claim(_identity, owner: str, _ttl: float) -> bool:
+        active["owner"] = owner
+        return True
+
+    def renew(_identity, owner: str, _ttl: float) -> bool:
+        if threading.current_thread() is not executing:
+            workers.append(threading.current_thread())
+            entered.set()
+            assert allow_termination.wait(3), "test failed to signal renewal worker"
+            raise termination
+        if phase == "final-renew" and not allow_termination.is_set():
+            terminate_worker()
+            return False
+        return active["owner"] == owner
+
+    def release(_identity, owner: str) -> bool:
+        release_calls.append(owner)
+        if phase == "commit-release-cancel":
+            raise SystemExit("secondary release cancellation")
+        if active["owner"] != owner:
+            return False
+        active["owner"] = ""
+        return True
+
+    def terminate_worker() -> None:
+        allow_termination.set()
+        assert len(workers) == 1
+        original_join(workers[0], timeout=3)
+        assert not workers[0].is_alive()
+
+    def commit() -> None:
+        status = json.loads(store._record_path(identity).read_text())["status"]
+        if status == "PASS" and phase in {"commit", "commit-release-cancel"}:
+            terminate_worker()
+        commits.append(status)
+
+    def join(thread: threading.Thread, timeout=None) -> None:
+        if phase == "shutdown" and thread in workers:
+            assert commits == ["RUNNING", "PASS"]
+            allow_termination.set()
+        original_join(thread, timeout)
+
+    def replace(path: Path, target: Path) -> Path:
+        if phase == "output-primary" and target == store._output_path(identity):
+            terminate_worker()
+            raise primary
+        return original_replace(path, target)
+
+    coordinator = DagLeaseCoordinator(
+        claim=claim, renew=renew, release=release, commit=commit, reload=lambda: None
+    )
+    # Keep the normal worker loop and synchronize callbacks with events instead of sleeps.
+    store = DagStore(tmp_path, coordinator=coordinator, execution_lease_seconds=1.5)
+
+    def operation() -> object:
+        operations.append(1)
+        assert entered.wait(3), "renewal worker never entered callback"
+        if phase in {"operation", "operation-primary"}:
+            terminate_worker()
+            if phase == "operation-primary":
+                raise primary
+        return {"synthetic": True}
+
+    expected = primary if phase.endswith("-primary") else termination
+    monkeypatch.setattr(threading.Thread, "join", join)
+    monkeypatch.setattr(Path, "replace", replace)
+    try:
+        with pytest.raises(type(expected)) as error:
+            store.execute(identity, operation)
+        assert error.value is expected
+    finally:
+        allow_termination.set()
+        for worker in workers:
+            original_join(worker, timeout=3)
+    assert operations == [1]
+    assert len(workers) == 1 and not workers[0].is_alive()
+    assert len(release_calls) == 1
+    if phase == "commit-release-cancel":
+        assert active["owner"] == release_calls[0]
+    else:
+        assert not active["owner"]
+    if phase in {"commit", "shutdown", "commit-release-cancel"}:
+        assert commits == ["RUNNING", "PASS"]
+        assert store.execute(identity, operation) == ({"synthetic": True}, True)
+        assert operations == [1]
+    else:
+        assert commits == ["RUNNING", "FAILED"]
+        assert store.cached_output(identity) is None
+        assert not store._output_path(identity).exists()
+
+
+@pytest.mark.parametrize("failure_type", [OSError, KeyboardInterrupt, SystemExit])
+def test_main_thread_renew_failure_keeps_original_exception(
+    tmp_path: Path, failure_type: type[BaseException]
+) -> None:
+    identity = _identity("foreground-renew")
+    primary = failure_type("main renewal failure")
+    release_calls: list[str] = []
+    renew_calls: list[int] = []
+
+    def renew(*_args) -> bool:
+        renew_calls.append(1)
+        if len(renew_calls) == 1:
+            raise primary
+        return True
+
+    coordinator = DagLeaseCoordinator(
+        claim=lambda *_args: True,
+        renew=renew,
+        release=lambda _identity, owner: release_calls.append(owner) or True,
+        commit=lambda: None,
+        reload=lambda: None,
+    )
+    store = DagStore(tmp_path, coordinator=coordinator)
+    with pytest.raises(failure_type) as error:
+        store.execute(identity, lambda: {"synthetic": True})
+    assert error.value is primary
+    assert len(renew_calls) == 2
+    assert len(release_calls) == 1
+    assert store.cached_output(identity) is None
+    assert not store._output_path(identity).exists()
+
+
+@pytest.mark.parametrize("renewal", ["false", "transport"])
+def test_background_ordinary_renewal_failure_retains_lease_loss_semantics(
+    tmp_path: Path, renewal: str
+) -> None:
+    identity = _identity("ordinary-renewal-loss")
+    worker_entered = threading.Event()
+    workers: list[threading.Thread] = []
+    main = threading.current_thread()
+    released: list[str] = []
+
+    def renew(_identity, _owner: str, _ttl: float) -> bool:
+        assert threading.current_thread() is not main
+        workers.append(threading.current_thread())
+        worker_entered.set()
+        if renewal == "transport":
+            raise OSError("synthetic background transport failure")
+        return False
+
+    def operation() -> object:
+        assert worker_entered.wait(3)
+        workers[0].join(timeout=3)
+        assert not workers[0].is_alive()
+        return {"synthetic": True}
+
+    coordinator = DagLeaseCoordinator(
+        claim=lambda *_args: True,
+        renew=renew,
+        release=lambda _identity, owner: released.append(owner) or True,
+        commit=lambda: None,
+        reload=lambda: None,
+    )
+    store = DagStore(tmp_path, coordinator=coordinator, execution_lease_seconds=1.5)
+    with pytest.raises(RuntimeError, match="distributed execution lease lost"):
+        store.execute(identity, operation)
+    assert len(released) == 1
+    assert store.cached_output(identity) is None
+    assert not store._output_path(identity).exists()
+
+
+def test_uncooperative_renewal_worker_does_not_return_silent_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity("renewal-shutdown-timeout")
+    entered = threading.Event()
+    finish = threading.Event()
+    workers: list[threading.Thread] = []
+    executing = threading.current_thread()
+    release_calls: list[str] = []
+    original_join = threading.Thread.join
+
+    def renew(*_args) -> bool:
+        if threading.current_thread() is not executing:
+            workers.append(threading.current_thread())
+            entered.set()
+            assert finish.wait(3)
+        return True
+
+    def join(thread: threading.Thread, timeout=None) -> None:
+        if thread in workers:
+            assert timeout == 1.0
+            # Simulate the bounded join returning with an uncooperative callback.
+            assert thread.is_alive()
+            return
+        original_join(thread, timeout)
+
+    def operation() -> object:
+        assert entered.wait(3)
+        return {"synthetic": True}
+
+    coordinator = DagLeaseCoordinator(
+        claim=lambda *_args: True,
+        renew=renew,
+        release=lambda _identity, owner: release_calls.append(owner) or True,
+        commit=lambda: None,
+        reload=lambda: None,
+    )
+    store = DagStore(tmp_path, coordinator=coordinator, execution_lease_seconds=1.5)
+    monkeypatch.setattr(threading.Thread, "join", join)
+    try:
+        with pytest.raises(RuntimeError, match="did not stop within the shutdown budget"):
+            store.execute(identity, operation)
+        assert len(release_calls) == 1
+        assert store.cached_output(identity) == {"synthetic": True}
+    finally:
+        finish.set()
+        for worker in workers:
+            original_join(worker, timeout=3)
+            assert not worker.is_alive()
