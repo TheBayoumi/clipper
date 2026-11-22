@@ -23,7 +23,7 @@ MAX_SPANS = 400
 MAX_FIELD_CHARS = 400
 FIELDS = ("id", "topic", "claim", "hook_angle", "visual_action", "evidence", "evidence_field")
 CREATIVE_FIELDS = frozenset({"topic", "claim", "hook_angle", "visual_action"})
-CLOSING_MARKS = frozenset({'"', "'", "”", "’", ")", "]"})
+CLOSING_MARKS = frozenset({'"', "'", "\u201d", "\u2019", ")", "]"})
 SPLIT = re.compile(
     r"""(?<=[.!?;:\u3002\uFF01\uFF1F\u061B\u061F])["'\u201D\u2019)\]]*\s+"""
     r"|(?<=[\u3002\uFF01\uFF1F\u061B\u061F])(?=\S)"
@@ -80,7 +80,7 @@ def _boundaries(text: str) -> tuple[list[tuple[int, int]], int, int]:
             previous_token = words[-1] if words else ""
             before_initial = words[-2] if len(words) > 1 else ""
             next_words = text[right:].split(maxsplit=1)
-            next_word = next_words[0].lstrip('"' + chr(39) + "“‘(") if next_words else ""
+            next_word = next_words[0].lstrip('"' + chr(39) + "\u201c\u2018(") if next_words else ""
             follows_name = bool(next_word and next_word[0].isupper())
             initials = INITIAL.fullmatch(previous_token) is not None
             name_left_context = (
@@ -660,20 +660,25 @@ def _literal_evidence_guard(parser: Any, spans: list[dict[str, object]], base_ty
             return not self.in_string and self.active is None and self.inner.can_end()
 
         def shortcut_key(self) -> Any:
-            # LMFE's public json_freetext fast path admits a combined
-            # space+closing-quote token without asking add_character()
-            # whether the completed creative field is nonblank.
-            # Disable only INSIDE creative strings, not for all JSON text.
-            if (
-                self.active is not None
-                or (
-                    self.in_candidate
-                    and self.in_string
-                    and not self.is_key
-                    and self.field in CREATIVE_FIELDS
-                )
-            ):
+            # Public LMFE json_freetext shortcut can admit a single token
+            # containing only blanks plus the closing quote. Disable that
+            # shortcut only until a creative value contains real nonspace
+            # content; restore the optimized path immediately afterwards.
+            if self.active is not None:
                 return None
+            if (
+                self.in_candidate
+                and self.in_string
+                and not self.is_key
+                and self.field in CREATIVE_FIELDS
+            ):
+                if self.escaped:
+                    return None
+                try:
+                    if not json.loads('"' + self.value_buffer + '"').strip():
+                        return None
+                except ValueError:
+                    return None
             return self.inner.shortcut_key()
 
         def cache_key(self) -> Any:

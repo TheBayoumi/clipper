@@ -456,9 +456,11 @@ def _public_book_context() -> tuple[Any, int]:
     try:
         try:
             snapshot = fetch(local_files_only=True)
-        except Exception:
+        except Exception as exc:
             if offline:
-                raise PinnedQwenSnapshotError("pinned public tokenizer unavailable offline")
+                raise PinnedQwenSnapshotError(
+                    "pinned public tokenizer unavailable offline"
+                ) from exc
             snapshot = fetch(local_files_only=False)
         snapshot = snapshot.resolve(strict=True)
         if (
