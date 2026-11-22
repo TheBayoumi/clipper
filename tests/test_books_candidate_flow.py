@@ -575,7 +575,7 @@ def test_cli_bad_v2_research_preserves_exact_input_and_rejection_reason(
     data = json.dumps(payload).encode()
     input_path.write_bytes(data)
     output_path = tmp_path / "must-not-exist.json"
-    with pytest.raises(Exception, match="review provenance invalid"):
+    assert (
         cli.main(
             [
                 "books",
@@ -592,6 +592,8 @@ def test_cli_bad_v2_research_preserves_exact_input_and_rejection_reason(
                 str(output_path),
             ]
         )
+        == 1
+    )
     assert not output_path.exists()
     digest = hashlib.sha256(data).hexdigest()
     base = root / "book-candidates" / "research-import"

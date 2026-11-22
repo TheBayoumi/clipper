@@ -211,7 +211,11 @@ The new research input has these exact top-level keys: `schema`,
 `source_sha256`, `research_origin`, `research_author` (nullable),
 `occurrence_inventory` and `observations`. The inventory is a list of
 `{asset_sha256, anchor, source_path}` records originating from the exact
-extracted source (not index-based guesses). An observation repeats these
+extracted source (not index-based guesses). For EPUB, the occurrence
+`source_path` is the resolved image asset file; a reading `SourceBlock` has a
+different `source_path` for its containing XHTML file. The ordered
+`ReadingBlock` retains both (`source_path` and `asset_source_path`) and
+joins by unique source anchor plus asset hash, without equating these paths. An observation repeats these
 three identity fields and adds `observation_id`, nullable
 `original_transcription`, nullable `normalized_transcription`,
 `normalization_notes`, nullable `reviewed_by`, nullable `reviewed_at`,

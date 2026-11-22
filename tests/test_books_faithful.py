@@ -897,6 +897,9 @@ def test_normalized_only_legacy_observations_are_linked_not_reviewed() -> None:
     view = list(reading_blocks(recovered))
     assert [x.anchor for x in view] == [x.anchor for x in book.blocks]
     assert len(view) == len(book.blocks)
+    first_image = next(x for x in view if x.asset_sha256 is not None)
+    assert first_image.asset_source_path == book.images[0].occurrences[0].source_path
+    assert first_image.source_path != first_image.asset_source_path
     linked = [x for x in view if x.origin == "normalized_research"]
     assert [x.text for x in linked] == ["40, 10, 60", "Grouped label"]
     assert all(x.original_image_text is None for x in linked)
@@ -1154,8 +1157,8 @@ def test_reading_projection_rejects_corrupt_anchor_path_and_ocr_is_unreviewed() 
     selected = _candidate(raw)
     book = extract_candidate(_source(raw, selected), raw, selected)
     image_block = next(x for x in book.blocks if x.kind == "image")
-    corrupt = replace(book, blocks=(replace(image_block, source_path="wrong.xhtml"),))
-    with pytest.raises(ExtractionError, match="exact path/anchor"):
+    corrupt = replace(book, blocks=(replace(image_block, anchor="wrong-anchor"),))
+    with pytest.raises(ExtractionError, match="exact asset/anchor"):
         list(reading_blocks(corrupt))
     broken = replace(book, blocks=(replace(image_block, asset_sha256=None),))
     with pytest.raises(ExtractionError, match="missing asset"):

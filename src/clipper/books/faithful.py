@@ -874,8 +874,10 @@ def _effective_review(image: ImageEvidence, occ: ImageOccurrence) -> str:
 def reading_blocks(book: BookText) -> Iterator[ReadingBlock]:
     """Source-ordered linear view; image diagram geometry is never inferred."""
     images = {image.asset_sha256: image for image in book.images}
+    # SourceBlock.source_path is the containing XHTML/PDF page; ImageOccurrence
+    # .source_path is the resolved image asset path (EPUB differs from XHTML).
     occurrences = {
-        (image.asset_sha256, item.anchor, item.source_path): item
+        (image.asset_sha256, item.anchor): item
         for image in book.images
         for item in image.occurrences
     }
@@ -893,9 +895,9 @@ def reading_blocks(book: BookText) -> Iterator[ReadingBlock]:
         digest = block.asset_sha256
         if digest is None or digest not in images:
             raise ExtractionError("ordered image block missing asset evidence")
-        item = occurrences.get((digest, block.anchor, block.source_path))
+        item = occurrences.get((digest, block.anchor))
         if item is None:
-            raise ExtractionError("ordered image block missing exact path/anchor evidence")
+            raise ExtractionError("ordered image block missing exact asset/anchor evidence")
         image = images[digest]
         status = _effective_review(image, item)
         provenance = "missing"
@@ -946,6 +948,7 @@ def reading_blocks(book: BookText) -> Iterator[ReadingBlock]:
             normalization_notes=notes,
             review_status=status,
             text_provenance=provenance,
+            asset_source_path=item.source_path,
             research_origin=item.research_origin,
             research_author=item.research_author,
         )

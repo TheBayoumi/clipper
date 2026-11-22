@@ -82,6 +82,7 @@ class ReadingBlock:
     normalization_notes: str | None = None
     review_status: str = "source_unverified"
     text_provenance: str = "source"
+    asset_source_path: str | None = None
     research_origin: str | None = None
     research_author: str | None = None
     diagram_geometry_verified: bool = False
