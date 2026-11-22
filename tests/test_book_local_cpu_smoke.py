@@ -6,6 +6,8 @@ import base64
 import hashlib
 import json
 import os
+import subprocess
+import sys
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
@@ -293,7 +295,7 @@ def test_workflow_github_context_rules_and_dormant_trigger_are_explicit() -> Non
     # The shell step can use the default RUNNER_TEMP environment variable.
     assert not any("runner." in str(value) for value in job["env"].values())
     steps = job["steps"]
-    gate_index = next(i for i, step in enumerate(steps) if "request gate" in step["name"])
+    gate_index = next(i for i, step in enumerate(steps) if step["name"].startswith("Enforce one-commit"))
     cache_index = next(i for i, step in enumerate(steps) if "ephemeral HF cache" in step["name"])
     install_index = next(i for i, step in enumerate(steps) if "CPU-only pinned" in step["name"])
     assert gate_index < cache_index < install_index
@@ -532,3 +534,34 @@ def test_model_phase_logging_is_public_and_bounded(
     assert capsys.readouterr().out.strip() == "PUBLIC_BOOK_CPU_MODEL_PHASE cpu_weight_loading_start"
     with pytest.raises(scripting.NicheVideoError, match="phase evidence path"):
         scripting._public_cpu_smoke_phase("contains unsafe data")
+
+
+def test_model_free_two_unit_dry_run_in_fresh_process() -> None:
+    """Exercise the actual standalone CLI with Hub in offline mode, no model loads."""
+    env = {
+        **os.environ,
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "CLIPPER_PUBLIC_BOOK_CPU_SMOKE": "0",
+    }
+    env.pop("GITHUB_STEP_SUMMARY", None)
+    result = subprocess.run(
+        [sys.executable, str(smoke.REPO / "scripts/book_local_cpu_smoke.py"), "dry-run"],
+        cwd=smoke.REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=45,
+    )
+    prefix = "PUBLIC_BOOK_CPU_SMOKE_DRY_RUN "
+    lines = [line for line in result.stdout.splitlines() if line.startswith(prefix)]
+    assert len(lines) == 1
+    payload = json.loads(lines[0][len(prefix):])
+    assert payload == {
+        "label": smoke.LABEL,
+        "unit_count": 2,
+        "no_inference": True,
+    }
+    assert "PUBLIC_BOOK_CPU_MODEL_PHASE" not in result.stdout
+    assert "PUBLIC_BOOK_CPU_SMOKE_COLLECTION" not in result.stdout
