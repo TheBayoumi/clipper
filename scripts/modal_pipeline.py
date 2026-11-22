@@ -989,15 +989,11 @@ def _dag_canonical_identity_matches(
         isinstance(item, str) for item in dependencies
     ):
         return False
-    if not isinstance(decoding, dict) or not all(
-        isinstance(key, str) for key in decoding
-    ):
+    if not isinstance(decoding, dict) or not all(isinstance(key, str) for key in decoding):
         return False
     if raw["model_revision"] is not None and not isinstance(raw["model_revision"], str):
         return False
-    if raw["relevant_policy_hash"] is not None and not isinstance(
-        raw["relevant_policy_hash"], str
-    ):
+    if raw["relevant_policy_hash"] is not None and not isinstance(raw["relevant_policy_hash"], str):
         return False
     try:
         canonical = StageIdentity(
