@@ -189,9 +189,9 @@ a prerequisite for inspecting the code.
 
 An ingest result now exposes `analysis_ref_path`: a private versioned,
 immutable handle to that exact extraction and dossier, not a request to copy
-source text into the legacy `book-text/<book-id>.json` path. After preparing
-**local recorded** response JSON for this exact work plan, offline analysis
-is explicit:
+source text into the legacy `book-text/<book-id>.json` path. Whole-book analysis offers mutually exclusive **recorded** and explicitly
+opted-in **local CPU** modes. Recorded mode uses a separately prepared local
+response JSON for the exact work plan; it never initializes inference:
 
 ```bash
 clipper books ingest --title "Atomic Habits" --offline --artifact-root artifacts/books
@@ -202,8 +202,29 @@ clipper books mine --candidate-ref artifacts/books/book-candidates/analysis-refs
 
 The first command can exit **2** for `incomplete_recovery`; it still emits
 the exact `analysis_ref_path` on successful artifact creation. Substitute
-the actual returned path, not a guessed or most-recent file. The second
-command never fetches content or loads a model. Per-unit recorded response
+the actual returned path, not a guessed or most-recent file. The recorded
+`--responses` command never fetches content or loads a model. The additional
+explicit CPU mode uses the **same exact reference** and pinned Qwen revision:
+
+```bash
+python -m pip install -e ".[niche-models]"
+clipper books mine --candidate-ref artifacts/books/book-candidates/analysis-refs/atomic-habits/EXACT_STAGE_KEY.json \
+  --book-id atomic-habits --local-cpu --max-new-units 8 \
+  --artifact-root artifacts/books
+```
+
+`--local-cpu` may download the pinned Qwen/Qwen3-1.7B model weights on its
+first uncached unit. This is **local CPU-only inference**, not a hosted API or
+GPU service; allow substantial memory (roughly 8–16 GB or more) and slow,
+possibly hours-to-days whole-book runtime. The limit counts **new producer
+attempts per invocation**, not total planned units; repeat the same command
+to resume without constructing a response-map file. Cache-only replays do not
+initialize the model. Missing, failed and interrupted units remain incomplete
+(exit 2); only actual valid empty model replies count as zero-candidate work.
+The generated answers, including image/research provenance, are private,
+bounded and unreviewed. This code milestone is tested with injected fake
+completions only; actual Qwen execution and semantic lesson quality remain
+separate acceptance gates. Per-unit recorded response
 keys must match the canonical SHA-256 of the requested field/provenance.
 The new path accounts for all ordered native and image evidence units across
 bounded 32-unit windows, with separate statuses for zero candidates, gaps,
@@ -216,7 +237,7 @@ no editorial claim is approved, no lesson count is targeted, and no
 downstream stage runs.
 
 The legacy explicit-owner-file ingest and `books mine --book-id ...`
-interfaces remain available. See [whole-book recorded analysis and handoff](docs/book-whole-analysis.md),
+interfaces remain available. See [whole-book recorded/local analysis and handoff](docs/book-whole-analysis.md),
 [candidate acquisition and faithful ingest](docs/book-candidate-acquisition.md),
 [offline ingest and legacy mining limits](docs/book-pipeline-phase3.md),
 [recorded narration and unported stages](docs/book-pipeline-phase1b.md) and

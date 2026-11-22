@@ -1,9 +1,10 @@
-# Whole-book candidate analysis — recorded, resumable and unreviewed
+# Whole-book candidate analysis — recorded or opt-in local CPU, resumable and unreviewed
 
-This is a **front-half-only**, CPU-only contract in
-`src/clipper/books/whole_book.py` and `BookOrchestrator.mine_candidate`.
-It connects the exact versioned title-only extraction to a provisional
-mining work plan. It does not perform acquisition, OCR, model inference,
+This is a **front-half-only** contract in `src/clipper/books/whole_book.py`
+and `BookOrchestrator.mine_candidate`. It connects the exact versioned
+title-only extraction to an ordered provisional mining work plan. Recorded
+mode never infers. The separate **explicit `--local-cpu`** mode invokes pinned
+open-weight Qwen on CPU only. Neither mode performs acquisition, OCR,
 creative review, episode planning, rendering or publishing.
 
 ## Exact input and compatibility
@@ -17,7 +18,32 @@ clipper books mine --candidate-ref \
   artifacts/books/book-candidates/analysis-refs/atomic-habits/EXACT_STAGE_KEY.json \
   --book-id atomic-habits --responses /local/recorded-responses.json \
   --artifact-root artifacts/books
+
+# Explicit alternative: no response-map file; local CPU inference only.
+python -m pip install -e ".[niche-models]"
+clipper books mine --candidate-ref \
+  artifacts/books/book-candidates/analysis-refs/atomic-habits/EXACT_STAGE_KEY.json \
+  --book-id atomic-habits --local-cpu --max-new-units 8 \
+  --artifact-root artifacts/books
 ```
+
+`--responses` and `--local-cpu` are mutually exclusive, and one is required.
+`--max-new-units` is valid only with `--local-cpu --candidate-ref`; default
+**8**, allowed **1–20,000**, counting only uncached generation attempts.
+Return code **0** means all eligible units completed, **2** means
+incomplete progress, and **1** means a command or validation error.
+The existing legacy owner-file `books mine --book-id ... --responses ...`
+interface stays recorded-only. Local CPU invocation may download the exact
+pinned `Qwen/Qwen3-1.7B` weights at revision
+`8d4744f9e13072f4920c326350fa81eedb74eae9` from Hugging Face when
+uncached; model fetch is **not** a remote inference service. Download and
+runtime initialization happen only upon first uncached eligible local
+unit. Install the optional `niche-models` dependencies explicitly and
+arrange network access for initial model download or pre-cache weights.
+The model is CPU-resident (no GPU fallback); allow substantial RAM
+(approximately 8–16 GB or more including transient allocations) and
+potentially very slow multi-hour/day full-book generation. Real model
+execution was **not performed by the repository's synthetic tests**.
 
 The versioned `CandidateAnalysisRef` is read in full with a 128 KiB
 byte limit plus a one-byte overflow probe; the acquisition dossier,
@@ -94,15 +120,35 @@ automatic claim approval.
 
 ## Interrupted work and output
 
-A successful unit is stored under the existing private
-`book-dag/books-mining-unit-v1/` DAG mechanism with a dedicated versioned
-contract, source/book/projection/request fingerprint, model revision,
-decoding settings and the **used answer fingerprint**. Different later
-response-file mappings do not invalidate an earlier identical unit answer.
-Changed source, projection, request, pinned model identity or used answer
-changes that unit's key. No model is loaded and missing responses never
-trigger inference. Failed units can be retried with corrected recorded
-answers; a different answer gets a new key.
+Every validated unit still uses the existing private
+`book-dag/books-mining-unit-v1/` DAG with source/book/projection/request
+fingerprints, model revision, decoding parameters and **used answer
+fingerprint**. The original recorded identity material remains unchanged;
+different recorded mappings can reuse identical replies. In recorded mode,
+missing answers never trigger inference and remain unresolved.
+
+The local producer first constructs an independent private
+`book-dag/books-mining-local-completion-v1/` stage key from the exact
+request, source/book/plan fingerprints, pinned model/revision, generation
+parameters, runtime package versions and producer/validator contract.
+This identity is knowable **before generation**; the cache is checked before
+model initialization, and the pinned Qwen pipeline loads at most once per
+process. A recorded empty-test reply never satisfies this local identity.
+Raw decoded completion text is retained under the private
+`analysis/completions/<book-id>/<generation-key>/<sha256>.txt` hierarchy
+before validation. The maximum is 16,384 UTF-8 bytes; oversize returns
+failed status and only the bounded prefix is retained with its original
+full-response SHA-256 in sanitized error provenance. Malformed JSON,
+invalid quotes/fields and runtime errors become **FAILED**, never
+successful zero-candidate results. Immutable sanitized failure events
+under `analysis/failures/` identify the generation stage, request hash,
+attempt number, category and raw hash when available, not source text or
+exception bodies. Failure stages can retry; valid returned
+`{"lessons":[]}` alone creates a zero-candidate result. Completed
+generated stages verify their original raw bytes/hash and the validator
+output on every reuse; changed generation settings, runtime version or
+source/request material get different keys. Storage errors and immutable
+byte conflicts remain errors, not successful mining.
 
 A private immutable progress report is published under
 `book-candidates/analysis/progress/<book-id>/`; it accounts for **every
@@ -114,9 +160,12 @@ exported. A successful pass across all eligible units produces a separate
 private `book-candidates/analysis/exports/<book-id>/` provisional catalog,
 even when there are **zero candidates**.
 
-The immutable report filename binds the work-plan fingerprint, the
-**complete** recorded-response file SHA-256 and the SHA-256 of the exact
-serialized progress bytes (including all per-unit outcomes). A transient
+The immutable report filename binds the work-plan fingerprint, either
+the **complete recorded-response file SHA-256** or the distinct **local
+producer fingerprint**, and the SHA-256 of exact serialized progress
+bytes (including all per-unit outcomes). Local progress also records
+completion origin, generation stage key, raw completion hash and sanitized
+failure category. It never fabricates a recorded response-file hash. A transient
 failure followed by a successful retry with the **same** response-file
 bytes therefore creates a *different* complete progress artifact without
 overwriting or deleting the earlier incomplete report. A replay with the
@@ -134,12 +183,16 @@ never overwritten. All candidates and exports remain
 `approved_facts` name is **not** an approval mechanism and the new path
 does not invoke it.
 
-The analysis status `complete` means every **eligible work unit** was
-accounted for. It does **not** upgrade source recovery, authenticate a
-publisher edition, authorize rights or certify every image word.
-`recovery_status=incomplete_recovery` and explicit skipped gaps can
-coexist with that analysis status. Producer calls require a separately
-provided complete recorded response mapping.
+The analysis status `complete` means every **eligible work unit** has
+a valid recorded or generated response; it is **not** a semantic lesson
+quality verdict. Exact quotation matching only checks structural grounding:
+it does not prove factual truth, usefulness, uniqueness, suitable
+storytelling, rights or human approval. This status does **not** upgrade
+source recovery, authenticate an edition, authorize rights, or certify
+original image words. `recovery_status=incomplete_recovery` and explicit
+skipped gaps can coexist with analysis completion. The CPU budget affects
+only *this invocation*; revisiting the exact command resumes all cached
+units and marks remaining work unresolved, without a partial catalog.
 
 ## Gates and verification
 
