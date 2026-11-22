@@ -213,10 +213,19 @@ clipper books mine --candidate-ref artifacts/books/book-candidates/analysis-refs
   --artifact-root artifacts/books
 ```
 
-`--local-cpu` may download the pinned Qwen/Qwen3-1.7B model weights on its
-first uncached unit. This is **local CPU-only inference**, not a hosted API or
-GPU service; allow substantial memory (roughly 8–16 GB or more) and slow,
-possibly hours-to-days whole-book runtime. The limit counts **new producer
+`--local-cpu` reuses the exact pinned local Hugging Face snapshot if
+complete, passing its local directory (not the repository ID) into
+Transformers 4.57.3. To pre-cache explicitly on an owner's network-enabled
+machine, call `huggingface_hub.snapshot_download` with model
+`Qwen/Qwen3-1.7B` and full revision
+`8d4744f9e13072f4920c326350fa81eedb74eae9`; then run the command
+with `HF_HUB_OFFLINE=1`. Missing/incomplete offline weights become a
+bounded failed unit, never another revision or remote inference. Without
+offline mode the first uncached unit may download public pinned weights.
+This remains **local CPU-only inference**, not a hosted API or GPU service.
+A separate ~2 GB RAM environment could not mmap the first 3.44 GB shard;
+allow substantially more memory (roughly 8–16 GB or more) and potentially
+hours-to-days for a book. The limit counts **new producer
 attempts per invocation**, not total planned units; repeat the same command
 to resume without constructing a response-map file. Cache-only replays do not
 initialize the model. Missing, failed and interrupted units remain incomplete

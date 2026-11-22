@@ -33,17 +33,39 @@ clipper books mine --candidate-ref \
 Return code **0** means all eligible units completed, **2** means
 incomplete progress, and **1** means a command or validation error.
 The existing legacy owner-file `books mine --book-id ... --responses ...`
-interface stays recorded-only. Local CPU invocation may download the exact
-pinned `Qwen/Qwen3-1.7B` weights at revision
-`8d4744f9e13072f4920c326350fa81eedb74eae9` from Hugging Face when
-uncached; model fetch is **not** a remote inference service. Download and
-runtime initialization happen only upon first uncached eligible local
-unit. Install the optional `niche-models` dependencies explicitly and
-arrange network access for initial model download or pre-cache weights.
-The model is CPU-resident (no GPU fallback); allow substantial RAM
-(approximately 8–16 GB or more including transient allocations) and
-potentially very slow multi-hour/day full-book generation. Real model
-execution was **not performed by the repository's synthetic tests**.
+interface stays recorded-only. Local CPU mode uses precisely the pinned
+`Qwen/Qwen3-1.7B` revision
+`8d4744f9e13072f4920c326350fa81eedb74eae9`.
+Install `.[niche-models]` first. At the **first uncached eligible unit only**,
+the loader asks Hugging Face Hub for the pinned *local* snapshot and passes
+its verified `.../models--Qwen--Qwen3-1.7B/snapshots/<exact-revision>`
+directory (not a repo ID) to Transformers 4.57.3. This avoids its
+tokenizer repository-metadata lookup in offline mode. The cached snapshot
+must contain its tokenizer/config files and all indexed safetensors shards.
+Missing or incomplete offline cache fails with a bounded
+`pinned_model_cache_unavailable` unit failure, not another revision or a
+fabricated zero-candidate PASS. Model loading still occurs only after
+the generated-unit DAG misses; recorded mode and completed cache replay
+do not resolve or initialize the model.
+
+To **pre-cache public weights explicitly** on a network-enabled owner
+machine, outside this repository's CI, use the exact revision:
+
+```bash
+python -c 'from huggingface_hub import snapshot_download; snapshot_download(repo_id="Qwen/Qwen3-1.7B", revision="8d4744f9e13072f4920c326350fa81eedb74eae9")'
+# Once that full snapshot is cached, run the --local-cpu command above with:
+HF_HUB_OFFLINE=1 clipper books mine --candidate-ref /exact/private/analysis-ref.json \
+  --book-id atomic-habits --local-cpu --max-new-units 8 --artifact-root artifacts/books
+```
+
+Without offline mode the explicitly opted-in local CPU path may download
+missing pinned public weights. All inference remains local; weight download
+is **not** a remote model inference service. The full pinned weights
+require substantially more than ~2 GB available RAM to initialize (the
+separate feasibility attempt failed at mmap of its first 3.44 GB shard).
+Plan for approximately 8–16 GB RAM or more including transient allocations
+and potentially multi-hour/day full-book inference; actual memory needs
+must be measured. No real weights were loaded in the coding CI.
 
 The versioned `CandidateAnalysisRef` is read in full with a 128 KiB
 byte limit plus a one-byte overflow probe; the acquisition dossier,
