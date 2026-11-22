@@ -496,12 +496,16 @@ def test_public_gated_phase_classification_has_no_fake_completion(
     assert smoke._evidence_state(root)["outcome"] == "GATED_FIXTURE_OR_PREFLIGHT_STAGE"
     phases = root / "evidence/model-phases.jsonl"
     smoke._write(phases, b'{"phase":"cpu_weight_loading_start"}\n')
-    assert smoke._evidence_state(root)["outcome"] == "MODEL_LOADING_STARTED_WITHOUT_ACCEPTED_COMPLETION"
+    assert (
+        smoke._evidence_state(root)["outcome"] == "MODEL_LOADING_STARTED_WITHOUT_ACCEPTED_COMPLETION"
+    )
     smoke._write(
         phases,
         b'{"phase":"cpu_weight_loading_start"}\n{"phase":"real_generation_start"}\n',
     )
-    assert smoke._evidence_state(root)["outcome"] == "GENERATION_STARTED_WITHOUT_ACCEPTED_COMPLETION"
+    assert (
+        smoke._evidence_state(root)["outcome"] == "GENERATION_STARTED_WITHOUT_ACCEPTED_COMPLETION"
+    )
     smoke._json(root / "evidence" / "outcome.json", {"result": {"status": "incomplete"}})
     assert smoke._evidence_state(root)["outcome"] == "INCOMPLETE_OR_INVALID_MODEL_RESULT"
     smoke._json(

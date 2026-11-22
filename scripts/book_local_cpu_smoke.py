@@ -483,7 +483,9 @@ def _execute(root: Path, *, replay: bool) -> None:
 
     gate_info = gate()
     if replay:
-        stored = json.loads(_bounded_public_bytes(root, root / "evidence" / "outcome.json", MAX_FILE_BYTES))
+        stored = json.loads(
+            _bounded_public_bytes(root, root / "evidence" / "outcome.json", MAX_FILE_BYTES)
+        )
         if stored["result"]["status"] != "complete":
             raise SmokeError("cannot replay a failed or incomplete real model invocation")
         existing = _capture_paths(root)
@@ -932,7 +934,12 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "PUBLIC_BOOK_CPU_SMOKE_ERROR "
             + json.dumps(
-                {"label": LABEL, "command": args.action, "execution": "UNVERIFIED_SMOKE_COMMAND", "error_type": type(exc).__name__},
+                {
+                    "label": LABEL,
+                    "command": args.action,
+                    "execution": "UNVERIFIED_SMOKE_COMMAND",
+                    "error_type": type(exc).__name__,
+                },
                 sort_keys=True,
             ),
             flush=True,

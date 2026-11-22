@@ -34,7 +34,10 @@ project install. No Kokoro/Modal/CUDA packages or paid/GPU runners.
 No secrets, upload-artifact or cache actions. The pinned public weight
 snapshot may download only in the **later gated real execution**. Both
 pip and HF model caches are confined to ephemeral runner storage.
-The job has a 45-minute hard timeout, a shorter 34-minute model-process
+The smoke workflow sets HF_HOME via the runner's RUNNER_TEMP shell variable
+and GITHUB_ENV in a step **after** the request gate. The runner context is
+not permitted in job-level env expressions; only step context/shell execution
+can access the runner temp location. The job has a 45-minute hard timeout, a shorter 34-minute model-process
 timeout and up to 2 minutes for a fresh-process completed-cache replay.
 
 The runtime checks at least 6 GiB available RAM and 10 GiB free ephemeral
@@ -113,19 +116,37 @@ The always-run collector reads **only** the known public smoke output root,
 allowlisting public evidence files, bounded generated completion/failure/
 progress/export files, and the two mining DAG stage/output files. It
 enforces at most 90 files, 96,000 raw bytes per file and 512,000 total
-raw bytes, with symlink rejection and no traversal of other artifacts,
-the HF cache, source repositories or private inputs. No upload-artifact,
-actions/cache, setup-python cache or committed output files are used.
-A failed collection does **not** prove a completed model run.
+raw bytes. Collection **and replay hashing** use one confined reader:
+every root/path ancestor must be non-symlink, the strict resolved path
+must stay under the dedicated public root, the source must be a regular
+file, and sizes must be checked **before** opening or allocating bytes.
+An opened file is stat-checked again and read at most remaining-budget+1
+bytes; growth, replacement, nonregular inputs, symlinks and total/file
+overruns fail, not leak or truncate output. No traversal of unrelated
+artifacts, the HF cache, source repositories or private inputs occurs.
+No upload-artifact, actions/cache, setup-python cache or committed output
+files are used. A failed collection does **not** prove a completed model run.
 
 Each evidence record is a JSON log line tagged
-`PUBLIC_BOOK_CPU_SMOKE_EVIDENCE_CHUNK_V1` with `execution=REAL_EXECUTION`,
-the public label, relative filename, 0-based ordered `index`,
+`PUBLIC_BOOK_CPU_SMOKE_EVIDENCE_CHUNK_V1` with a gate-derived `execution`
+and `outcome`, the public label, relative filename, 0-based `index`,
 `chunk_count`, original `byte_count`, full-file `sha256` and `data_b64`.
+Only a verified branch, one-file trigger, parent, and matching on-disk
+trigger trace can earn `execution=GATED_PUBLIC_CPU_ATTEMPT`. Synthetic,
+dry-run and failed-before-gate collection is labeled
+`SYNTHETIC_OR_UNGATED_NO_MODEL` (or a gated request **without**
+a model-execution trace). Neither asserts an actual completion.
+The outcome independently records preflight, snapshot/load start,
+generation start, invalid/incomplete reply, process timeout, validated
+zero-candidate completion or valid unreviewed candidates, and whether
+a fresh-process cache replay was verified. These statuses do **not**
+assert semantic lesson quality. Model loading/generation phase events
+are source-free and recorded privately in `model-phases.jsonl`.
 Each base64 chunk encodes **at most 600 raw bytes**, staying under normal
 GitHub log-line limits. This is exact original evidence, not a summary.
-The GitHub job summary includes file/record counts; no storage artifact is
-uploaded.
+An Actions job summary is written **only** after gate verification; synthetic
+pytest runs cannot append fake execution summaries to it. No storage artifact
+is uploaded.
 
 After downloading the later job's **raw text log** as `job.log`, use this
 standard-library reconstruction procedure:
@@ -145,7 +166,8 @@ for line in Path("job.log").read_text(encoding="utf-8").splitlines():
     item = json.loads(line[offset:])
     if item.get("kind") == "PUBLIC_BOOK_CPU_SMOKE_EVIDENCE_CHUNK_V1":
         assert item["label"] == "PUBLIC_SYNTHETIC_FIXTURE_NOT_A_BOOK"
-        assert item["execution"] == "REAL_EXECUTION"
+        assert item["execution"] == "GATED_PUBLIC_CPU_ATTEMPT"
+        assert item["outcome"] != "NO_VERIFIED_GATED_RUN"
         groups[item["path"]].append(item)
 
 root = Path("public-smoke-reconstruction")
