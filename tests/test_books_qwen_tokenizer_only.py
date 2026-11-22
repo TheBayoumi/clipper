@@ -39,6 +39,62 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+HISTORICAL_CONSUMED_REQUEST_PATH = (
+    Path(__file__).resolve().parent / "fixtures/books/consumed-run-request.json"
+)
+HISTORICAL_CONSUMED_REQUEST_BLOB = "5ba1c40d28833e4993d1f017dfa925ec784bbf19"
+ORIGINAL_SYNTHETIC_FIXTURE_BLOB = "07ff45bac97ebef4c73cc8804db78bd4425aa5c2"
+
+
+def _git_blob(value: bytes) -> str:
+    payload = b"blob " + str(len(value)).encode() + b"\0" + value
+    return hashlib.sha1(payload, usedforsecurity=False).hexdigest()
+
+
+def _historical_consumed_request() -> dict[str, object]:
+    # Exact historical evidence, never the live trigger (absent at prep HEAD).
+    consumed_bytes = HISTORICAL_CONSUMED_REQUEST_PATH.read_bytes()
+    assert _git_blob(consumed_bytes) == HISTORICAL_CONSUMED_REQUEST_BLOB
+    consumed = cast(dict[str, object], json.loads(consumed_bytes))
+    assert consumed == {
+        "schema": "clipper-public-book-local-cpu-smoke-run-request-v1",
+        "intent": "REAL_EXECUTION",
+        "branch": "review/unified-tts-cleanup",
+        "reviewed_code_sha": "92a97eb3f41966ea86d1987423a310031a27b4f2",
+        "fixture_label": "PUBLIC_SYNTHETIC_FIXTURE_NOT_A_BOOK",
+        "fixture_sha256": "eaa39fee22abeeec8df706d64a67d41f6a3c00a91add2c947ac02a1a6cce9d3d",
+        "max_new_units": 2,
+    }
+    return consumed
+
+
+@pytest.mark.parametrize("trigger_file_present", [False, True])
+def test_historical_request_independent_of_active_trigger(
+    tmp_path: Path, trigger_file_present: bool
+) -> None:
+    active_path = tmp_path / "acceptance/book-local-cpu-smoke/run-request.json"
+    assert not active_path.exists()
+    if trigger_file_present:
+        # Future one-file ADD carries a new reviewed code SHA; it is NOT history.
+        active_path.parent.mkdir(parents=True)
+        future_request = {**_historical_consumed_request(), "reviewed_code_sha": "f" * 40}
+        active_path.write_text(json.dumps(future_request), encoding="utf-8")
+        assert json.loads(active_path.read_bytes()) == future_request
+        assert _git_blob(active_path.read_bytes()) != HISTORICAL_CONSUMED_REQUEST_BLOB
+    else:
+        assert not active_path.exists()
+
+    consumed = _historical_consumed_request()
+    fixture_bytes = (
+        Path(__file__).resolve().parents[1]
+        / "acceptance/book-local-cpu-smoke/public-original-synthetic.txt"
+    ).read_bytes()
+    assert _git_blob(fixture_bytes) == ORIGINAL_SYNTHETIC_FIXTURE_BLOB
+    assert hashlib.sha256(fixture_bytes).hexdigest() == consumed["fixture_sha256"]
+    assert consumed["max_new_units"] == 2
+    assert consumed["reviewed_code_sha"] == "92a97eb3f41966ea86d1987423a310031a27b4f2"
+
+
 def _request(source: str) -> dict[str, object]:
     return {
         "messages": [
@@ -829,15 +885,8 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
         # model-free local grammar test, NOT a third CPU model run or a book.
         fixture_root = Path(__file__).resolve().parents[1] / "acceptance/book-local-cpu-smoke"
         fixture_bytes = (fixture_root / "public-original-synthetic.txt").read_bytes()
-        consumed_bytes = (fixture_root / "run-request.json").read_bytes()
-
-        def git_blob(value: bytes) -> str:
-            payload = b"blob " + str(len(value)).encode() + b"\0" + value
-            return hashlib.sha1(payload, usedforsecurity=False).hexdigest()
-
-        assert git_blob(fixture_bytes) == "07ff45bac97ebef4c73cc8804db78bd4425aa5c2"
-        assert git_blob(consumed_bytes) == "5ba1c40d28833e4993d1f017dfa925ec784bbf19"
-        consumed = json.loads(consumed_bytes)
+        consumed = _historical_consumed_request()
+        assert _git_blob(fixture_bytes) == ORIGINAL_SYNTHETIC_FIXTURE_BLOB
         assert consumed["max_new_units"] == 2
         assert hashlib.sha256(fixture_bytes).hexdigest() == consumed["fixture_sha256"]
         original_sections = fixture_bytes.decode("utf-8").split("\n\n")
