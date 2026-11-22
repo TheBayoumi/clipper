@@ -144,6 +144,187 @@ def response_for(unit: whole_book.WorkUnit, *, count: int = 1) -> dict[str, obje
     }
 
 
+def test_canonical_prompt_states_existing_strict_validator_contract(
+    tmp_path: Path,
+) -> None:
+    _runner, acquired, _transport = ingested(tmp_path, paragraphs=3, with_image=False)
+    unit = whole_book.plan_for(acquired.book).units[0]
+    request = whole_book.request_for(acquired.book, unit)
+    assert request == whole_book._request_for_identity(
+        acquired.book, unit, acquired.book.fingerprint
+    )
+    prompt = request["messages"][0]["content"]
+    for requirement in (
+        "one valid JSON object",
+        'key "lessons"',
+        "no prose, Markdown, or code fences",
+        "0 to 3 candidate objects",
+        "no supported candidate exists",
+        "never as useful-lesson success",
+        "nonempty string of at most 400 characters",
+        "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+        "fresh descriptive",
+        "unique within this reply",
+        'do not copy the supplied "anchor"',
+        "specific claim",
+        "exact continuous substring",
+        '"evidence_field" must exactly repeat',
+        "unreviewed",
+        "not approved or publishable",
+        "not authenticated original book prose",
+    ):
+        assert requirement in prompt
+    for field in (
+        "id", "topic", "claim", "hook_angle", "visual_action", "evidence", "evidence_field"
+    ):
+        assert f'"{field}"' in prompt
+    supplied = json.loads(request["messages"][1]["content"])
+    assert supplied["text"] == unit.text
+    assert supplied["evidence_field"] == unit.evidence_field
+    assert supplied["anchor"] == unit.anchor
+    assert request["max_new_tokens"] == 960
+
+
+def test_whole_book_validator_keeps_exact_bounded_unreviewed_evidence(
+    tmp_path: Path,
+) -> None:
+    _runner, acquired, _transport = ingested(tmp_path, paragraphs=3, with_image=False)
+    unit = replace(whole_book.plan_for(acquired.book).units[0], text="Z" * 401)
+    valid = dict(response_for(unit)["lessons"][0], evidence="Z" * 400)
+    assert whole_book.validate_reply({"lessons": [valid]}, unit) == [valid]
+    candidate = whole_book.candidate_for(acquired.book, unit, valid)
+    assert candidate["review_status"] == "MINED_UNREVIEWED"
+    assert candidate["publish_eligible"] is False
+    assert candidate["evidence_anchor"]["quote"] == "Z" * 400
+    for field in valid:
+        invalid = dict(valid, **{field: "Z" * 401})
+        with pytest.raises(mining.BookMiningError, match="bounded nonempty"):
+            whole_book.validate_reply({"lessons": [invalid]}, unit)
+    for unsafe in ("source:section", "Invalid-Uppercase", "two--hyphens", "under_score"):
+        with pytest.raises(mining.BookMiningError, match="invalid or duplicate"):
+            whole_book.validate_reply({"lessons": [dict(valid, id=unsafe)]}, unit)
+    with pytest.raises(mining.BookMiningError, match="invalid or duplicate"):
+        whole_book.validate_reply({"lessons": [valid, valid]}, unit)
+
+
+@pytest.mark.parametrize("kind", ["markdown-fence", "colon-id", "overlong-claim"])
+def test_local_raw_invalid_response_is_not_repaired_or_accepted(
+    tmp_path: Path, kind: str
+) -> None:
+    runner, acquired, _transport = ingested(tmp_path, paragraphs=3, with_image=False)
+    unit = whole_book.plan_for(acquired.book).units[0]
+    lesson = dict(response_for(unit)["lessons"][0])
+    if kind == "colon-id":
+        lesson["id"] = "source:anchor:0"
+    elif kind == "overlong-claim":
+        lesson["claim"] = "Z" * 401
+    raw = json.dumps({"lessons": [lesson]})
+    if kind == "markdown-fence":
+        raw = chr(96) * 3 + f"json\n{raw}\n" + chr(96) * 3
+    result = runner.mine_candidate(
+        acquired.analysis_ref_path,
+        local_cpu=True,
+        max_new_units=1,
+        local_completion=lambda _request: raw,
+    )
+    assert result["status"] == "incomplete"
+    assert result["counts"]["failed"] == 1
+    progress = json.loads(Path(result["progress_path"]).read_text())
+    assert progress["progress"][0]["failure_category"] == "invalid_reply"
+    raws = list(
+        (tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt")
+    )
+    assert len(raws) == 1
+    assert raws[0].read_bytes() == raw.encode("utf-8")
+
+
+def test_canonical_prompt_change_invalidates_cache_but_keeps_old_raw(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, acquired, _transport = ingested(tmp_path, paragraphs=3, with_image=False)
+    unit = whole_book.plan_for(acquired.book).units[0]
+    current_request = whole_book.request_for(acquired.book, unit)
+    legacy_prompt = (
+        'Return JSON only: {"lessons":[{"id":str,"topic":str,"claim":str,'
+        '"hook_angle":str,"visual_action":str,"evidence":str,'
+        '"evidence_field":str}]}. Return zero to three unreviewed candidates.'
+        " Quote an exact substring only from the supplied text field. "
+        "Repeat its evidence_field verbatim. Image/OCR/research wording is "
+        "not authenticated original book prose. Never assert approval."
+    )
+    legacy_request = {
+        **current_request,
+        "messages": [
+            {**current_request["messages"][0], "content": legacy_prompt},
+            current_request["messages"][1],
+        ],
+    }
+    old_key = content_fingerprint(legacy_request)
+    new_key = content_fingerprint(current_request)
+    assert old_key != new_key
+    assert whole_book.recorded_answer({old_key: {"lessons": []}}, current_request) is None
+    assert whole_book.recorded_answer({new_key: {"lessons": []}}, current_request) == {
+        "lessons": []
+    }
+    canonical_request = whole_book._request_for_identity
+
+    def old_request(
+        book: BookText, current_unit: whole_book.WorkUnit, fingerprint: str
+    ) -> dict[str, object]:
+        request = canonical_request(book, current_unit, fingerprint)
+        request["messages"][0]["content"] = legacy_prompt
+        return request
+
+    produced: list[str] = []
+
+    def synthetic_completion(request: dict[str, object]) -> str:
+        produced.append(content_fingerprint(request))
+        supplied = json.loads(request["messages"][1]["content"])
+        return json.dumps(
+            {
+                "lessons": [
+                    {
+                        "id": "repeat-synthetic-action",
+                        "topic": "Fabricated repetition",
+                        "claim": "An invented example repeats a fabricated action",
+                        "hook_angle": "Observe a repeated synthetic example",
+                        "visual_action": "An actor places a token twice",
+                        "evidence": supplied["text"][:35],
+                        "evidence_field": supplied["evidence_field"],
+                    }
+                ]
+            }
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(whole_book, "_request_for_identity", old_request)
+        earlier = runner.mine_candidate(
+            acquired.analysis_ref_path,
+            local_cpu=True,
+            max_new_units=1,
+            local_completion=synthetic_completion,
+        )
+    raw_root = tmp_path / "artifacts/book-candidates/analysis/completions"
+    historic_raw = {p: p.read_bytes() for p in raw_root.glob("**/*.txt")}
+    assert len(historic_raw) == 1
+    current = runner.mine_candidate(
+        acquired.analysis_ref_path,
+        local_cpu=True,
+        max_new_units=1,
+        local_completion=synthetic_completion,
+    )
+    assert produced == [old_key, new_key]
+    old_progress = json.loads(Path(earlier["progress_path"]).read_text())
+    new_progress = json.loads(Path(current["progress_path"]).read_text())
+    assert (
+        old_progress["progress"][0]["generation_stage_key"]
+        != new_progress["progress"][0]["generation_stage_key"]
+    )
+    assert earlier["progress_path"] != current["progress_path"]
+    assert len(list(raw_root.glob("**/*.txt"))) == 2
+    assert all(p.is_file() and p.read_bytes() == data for p, data in historic_raw.items())
+
+
 def responses_for(book: BookText, *, count: int = 1) -> dict[str, object]:
     plan = whole_book.plan_for(book)
     return {

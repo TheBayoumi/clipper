@@ -230,12 +230,27 @@ def _request_for_identity(
             {
                 "role": "system",
                 "content": (
-                    'Return JSON only: {"lessons":[{"id":str,"topic":str,"claim":str,'
-                    '"hook_angle":str,"visual_action":str,"evidence":str,'
-                    '"evidence_field":str}]}. Return zero to three unreviewed candidates.'
-                    " Quote an exact substring only from the supplied text field. "
-                    "Repeat its evidence_field verbatim. Image/OCR/research wording is "
-                    "not authenticated original book prose. Never assert approval."
+                    "Return exactly one valid JSON object with only the top-level "
+                    'key "lessons"; no prose, Markdown, or code fences. '
+                    '"lessons" must contain 0 to 3 candidate objects; use an empty '
+                    "array only when no supported candidate exists, never as "
+                    "useful-lesson success. Each candidate must contain exactly "
+                    'the keys "id", "topic", "claim", "hook_angle", '
+                    '"visual_action", "evidence", and "evidence_field" with no others. '
+                    "Every value must be a nonempty string of at most 400 characters. "
+                    'The "id" must be a fresh descriptive lowercase slug matching '
+                    "^[a-z0-9]+(?:-[a-z0-9]+)*$, unique within this reply; "
+                    'do not copy the supplied "anchor" or use colons. '
+                    'Write a specific claim supported by the supplied "text", '
+                    "not a generic topic or invented fact. Keep the topic, "
+                    "hook angle, and visual action grounded in that claim. "
+                    'The "evidence" must be a short exact continuous substring '
+                    'of the supplied "text" (maximum 400 characters), never '
+                    "paraphrased, shortened with ellipses, or invented. "
+                    'The "evidence_field" must exactly repeat the supplied '
+                    '"evidence_field" value. All candidates remain unreviewed '
+                    "and not approved or publishable. Image/OCR/research wording "
+                    "is not authenticated original book prose."
                 ),
             },
             {"role": "user", "content": json.dumps(evidence, sort_keys=True, ensure_ascii=False)},

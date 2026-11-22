@@ -1,9 +1,0 @@
-{
-  "schema": "clipper-public-book-local-cpu-smoke-run-request-v1",
-  "intent": "REAL_EXECUTION",
-  "branch": "review/unified-tts-cleanup",
-  "reviewed_code_sha": "278b9847e1e68c9f15de2679a94c5103884088f1",
-  "fixture_label": "PUBLIC_SYNTHETIC_FIXTURE_NOT_A_BOOK",
-  "fixture_sha256": "eaa39fee22abeeec8df706d64a67d41f6a3c00a91add2c947ac02a1a6cce9d3d",
-  "max_new_units": 2
-}
