@@ -1060,9 +1060,7 @@ def test_coordinated_pass_acknowledgement_reconciles_durable_snapshot(
         assert commits == ["RUNNING", "FAILED"]
         assert store.cached_output(identity) is None
     elif snapshot.startswith("reload-fails"):
-        assert commits == (
-            ["RUNNING", "PASS"] if snapshot == "reload-fails-after" else ["RUNNING"]
-        )
+        assert commits == (["RUNNING", "PASS"] if snapshot == "reload-fails-after" else ["RUNNING"])
         assert store.cached_output(identity) is None
         with pytest.raises(OSError, match="reload unavailable"):
             store.execute(identity, operation)
