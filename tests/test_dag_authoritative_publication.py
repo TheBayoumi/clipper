@@ -465,9 +465,7 @@ def test_authoritative_primary_operation_failure_records_failed_then_retries(
 
 
 @pytest.mark.parametrize("mode", ["ack-lost", "invalid-receipt", "zero-attempt", "bad-read"])
-def test_authoritative_claim_boundary_cleanup_preserves_errors(
-    tmp_path: Path, mode: str
-) -> None:
+def test_authoritative_claim_boundary_cleanup_preserves_errors(tmp_path: Path, mode: str) -> None:
     authority = FakeAuthority()
     identity = _identity()
     primary = KeyboardInterrupt("synthetic claim acknowledgement lost")
@@ -568,9 +566,7 @@ def test_authoritative_bad_committed_evidence_stops_without_operation(
         snapshot = {"record": record, "output": output}
     authority.durable = snapshot
     with pytest.raises(RuntimeError, match="DAG committed"):
-        authority.store(tmp_path).execute(
-            identity, lambda: pytest.fail("operation must not run")
-        )
+        authority.store(tmp_path).execute(identity, lambda: pytest.fail("operation must not run"))
 
 
 @pytest.mark.parametrize("termination", ["false", "error", "cancel"])
