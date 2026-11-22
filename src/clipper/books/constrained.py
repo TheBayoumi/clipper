@@ -380,14 +380,30 @@ def _literal_evidence_guard(parser: Any, spans: list[dict[str, object]], base_ty
     def trie_for(strings: set[str], *, escaped: bool) -> dict[str, Any]:
         """Build linear-size spelling DAGs instead of 2**N alternatives."""
 
-        def merge(target: dict[str, Any], other: dict[str, Any]) -> None:
-            for letter, suffix in other.items():
+        def merge(
+            left: dict[str, Any],
+            right: dict[str, Any],
+            memo: dict[tuple[int, int], dict[str, Any]],
+        ) -> dict[str, Any]:
+            # Persistent union: mutating a shared DAG suffix can introduce
+            # cycles and admit spurious paths for overlapping source quotes.
+            if left is right:
+                return left
+            key = (id(left), id(right))
+            if key in memo:
+                return memo[key]
+            result: dict[str, Any] = {}
+            memo[key] = result
+            for letter in sorted(set(left) | set(right)):
                 if letter == terminal:
-                    target[letter] = True
-                elif letter in target:
-                    merge(target[letter], suffix)
+                    result[letter] = True
+                elif letter in left and letter in right:
+                    result[letter] = merge(left[letter], right[letter], memo)
+                elif letter in left:
+                    result[letter] = left[letter]
                 else:
-                    target[letter] = suffix
+                    result[letter] = right[letter]
+            return result
 
         root: dict[str, Any] = {}
         for value in sorted(strings):
@@ -403,7 +419,7 @@ def _literal_evidence_guard(parser: Any, spans: list[dict[str, object]], base_ty
                         node = node.setdefault(symbol, {})
                     node[spelling[-1]] = suffix
                 suffix = prefix
-            merge(root, suffix)
+            root = merge(root, suffix, {})
         return root
 
     all_ids = trie_for(set(pairs), escaped=False)

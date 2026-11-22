@@ -637,3 +637,35 @@ def test_coverage_counts_never_claim_unverified_feasibility() -> None:
     summary = constrained.coverage_summary([record])
     assert summary["selectable_span_count"] == 2
     assert summary["verified_feasible_span_count"] is None
+
+
+def test_persistent_mixed_literal_union_on_repeated_cjk_spans() -> None:
+    source = " ".join("漢字語彙" * 96 + f"{i:03d}." for i in range(24))
+    request = _request(source)
+    spans = request["constraints"]["spans"]
+    assert len(spans) == 24
+    assert request["constraints"]["coverage"]["omitted_fragment_chars"] == 0
+    first = spans[0]
+    lesson = {
+        "id": first["id"],
+        "topic": "Test",
+        "claim": "Authored synthetic claim",
+        "hook_angle": "Check the source",
+        "visual_action": "Display evidence",
+        "evidence": first["text"],
+        "evidence_field": "native_text",
+    }
+    mixed = json.dumps({"lessons": [lesson]}, ensure_ascii=False).replace(
+        "彙", json.dumps("彙", ensure_ascii=True)[1:-1]
+    )
+    _drive(_guard(request), mixed)
+    assert whole_book.load_strict_reply(mixed) == {"lessons": [lesson]}
+    # A non-source literal must still fail despite sharing the CJK prefix.
+    bad = json.dumps({"lessons": [{**lesson, "evidence": "漢字語彙" * 96 + "999."}]})
+    parser = _guard(request)
+    for character in bad:
+        if character not in parser.get_allowed_characters():
+            break
+        parser = parser.add_character(character)
+    else:
+        assert not parser.can_end()
