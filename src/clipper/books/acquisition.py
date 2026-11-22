@@ -284,10 +284,21 @@ def _private_directory(path: Path) -> None:
     os.chmod(path, 0o700)
 
 
+def _read_bounded_file(path: Path, budget: int) -> bytes:
+    """Read at most budget raw bytes; a short read is not necessarily EOF."""
+    payload = bytearray()
+    with path.open("rb", buffering=0) as handle:
+        while len(payload) < budget:
+            chunk = handle.read(budget - len(payload))
+            if not chunk:
+                break
+            payload.extend(chunk)
+    return bytes(payload)
+
+
 def _matches_immutable_bytes(path: Path, data: bytes) -> bool:
     """Compare exact bytes, including EOF, without trusting destination size."""
-    with path.open("rb") as handle:
-        return handle.read(len(data) + 1) == data
+    return _read_bounded_file(path, len(data) + 1) == data
 
 
 def _private_write(path: Path, data: bytes) -> None:

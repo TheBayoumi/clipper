@@ -7,6 +7,7 @@ import json
 import os
 from contextlib import contextmanager
 from dataclasses import replace
+from io import FileIO
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -522,7 +523,8 @@ def test_concurrent_acquisition_cannot_replace_first_evidence(tmp_path: Path) ->
         (b"abc", b"abc"),
         (b"abc", b"ab"),
         (b"abc", b"abd"),
-        (b"abc", b"abc" + b"x" * 4096),
+        pytest.param(b"abc", b"abc" + b"x" * 32768, id="matching-prefix-with-trailing-data"),
+        pytest.param(b"x" * 2_000_001, b"x" * 2_000_001, id="larger-generic-artifact"),
     ],
 )
 def test_immutable_writer_bounds_existing_and_concurrent_winner_reads(
@@ -541,6 +543,7 @@ def test_immutable_writer_bounds_existing_and_concurrent_winner_reads(
     original_link = os.link
     original_open = Path.open
     read_sizes: list[int] = []
+    raw_offsets: list[int] = []
 
     def link_with_winner(source, target) -> None:
         # Another writer publishes first; the actual exclusive link then fails.
@@ -552,12 +555,18 @@ def test_immutable_writer_bounds_existing_and_concurrent_winner_reads(
     def checked_open(path: Path, *args, **kwargs):
         with original_open(path, *args, **kwargs) as handle:
             if path == destination:
-                original_read = handle.read
+                assert isinstance(handle, FileIO)
+                assert kwargs["buffering"] == 0
 
                 def bounded_read(size: int = -1) -> bytes:
+                    offset = handle.tell()
                     read_sizes.append(size)
-                    assert size == len(expected) + 1
-                    return original_read(size)
+                    assert size == len(expected) + 1 - offset
+                    # Inject short raw reads before EOF, including a matching prefix.
+                    chunk = handle.read(min(size, 65536 if len(expected) > 65536 else 1))
+                    assert handle.tell() - offset == len(chunk)
+                    raw_offsets.append(handle.tell())
+                    return chunk
 
                 yield Mock(wraps=handle, read=bounded_read)
             else:
@@ -576,7 +585,9 @@ def test_immutable_writer_bounds_existing_and_concurrent_winner_reads(
             else:
                 with pytest.raises(AcquisitionError, match="immutable artifact conflicts"):
                     _private_write(destination, expected)
-        assert read_sizes == [len(expected) + 1]
+        assert read_sizes[0] == len(expected) + 1
+        assert raw_offsets[-1] == min(len(existing), len(expected) + 1)
+        assert all(offset <= len(expected) + 1 for offset in raw_offsets)
         saved = destination.read_bytes()
         assert saved == existing
         assert hashlib.sha256(saved).digest() == hashlib.sha256(existing).digest()
@@ -600,6 +611,7 @@ def test_immutable_writer_detects_destination_growth_at_open(
     original_link = os.link
     original_open = Path.open
     observed: list[int] = []
+    raw_offsets: list[int] = []
 
     def link_with_winner(source, target) -> None:
         if Path(target) == destination:
@@ -615,9 +627,14 @@ def test_immutable_writer_detects_destination_growth_at_open(
             if path == destination:
 
                 def bounded_read(size: int = -1) -> bytes:
+                    assert isinstance(handle, FileIO)
+                    offset = handle.tell()
                     observed.append(size)
-                    assert size == len(expected) + 1
-                    return handle.read(size)
+                    assert size == len(expected) + 1 - offset
+                    chunk = handle.read(min(size, 2))
+                    assert handle.tell() - offset == len(chunk)
+                    raw_offsets.append(handle.tell())
+                    return chunk
 
                 yield Mock(wraps=handle, read=bounded_read)
             else:
@@ -631,7 +648,9 @@ def test_immutable_writer_detects_destination_growth_at_open(
         scoped.setattr(Path, "open", grow_before_read)
         with pytest.raises(AcquisitionError, match="immutable artifact conflicts"):
             _private_write(destination, expected)
-    assert observed == [len(expected) + 1]
+    assert observed[0] == len(expected) + 1
+    assert raw_offsets[-1] == len(expected) + 1
+    assert all(offset <= len(expected) + 1 for offset in raw_offsets)
     assert destination.read_bytes() == expected + b"trailing" * 512
     assert destination.read_bytes() == winner.read_bytes()
     assert list(destination.parent.iterdir()) == [destination]

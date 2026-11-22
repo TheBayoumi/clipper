@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -203,11 +204,13 @@ def test_private_dag_output_rename_failure_removes_temporary_file(
 
 @pytest.mark.parametrize("private", [False, True])
 @pytest.mark.parametrize("replacement_owner", [False, True])
+@pytest.mark.parametrize("failure_type", [OSError, KeyboardInterrupt])
 def test_initial_running_rename_failure_releases_only_owned_claim(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     private: bool,
     replacement_owner: bool,
+    failure_type: type[BaseException],
 ) -> None:
     identity = StageIdentity(
         stage_name="books.ingest", source_hash="source-hash", contract_hash="contract-hash"
@@ -234,13 +237,13 @@ def test_initial_running_rename_failure_releases_only_owned_claim(
                     store._execution_claim_path(identity),
                     {"owner_id": "other-owner", "expires_at": time.time() + 86_400},
                 )
-            raise OSError("synthetic initial RUNNING rename failure")
+            raise failure_type("synthetic initial RUNNING rename failure")
         return original_replace(path, target)
 
     previous = os.umask(0)
     try:
         monkeypatch.setattr(Path, "replace", fail_running)
-        with pytest.raises(OSError, match="initial RUNNING rename failure"):
+        with pytest.raises(failure_type, match="initial RUNNING rename failure"):
             store.execute(identity, operation)
         directory = store._directory(identity)
         assert calls == []
@@ -268,3 +271,200 @@ def test_initial_running_rename_failure_releases_only_owned_claim(
         assert not store._execution_claim_path(identity).exists()
     finally:
         os.umask(previous)
+
+
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("primary_at", ["operation", "output"])
+@pytest.mark.parametrize("primary_type", [OSError, KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("secondary_type", [OSError, KeyboardInterrupt])
+def test_local_double_fault_preserves_primary_and_releases_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    private: bool,
+    primary_at: str,
+    primary_type: type[BaseException],
+    secondary_type: type[BaseException],
+) -> None:
+    identity = StageIdentity(
+        stage_name="books.ingest", source_hash="source-hash", contract_hash="contract-hash"
+    )
+    store = DagStore(
+        tmp_path / "dag",
+        private_stages=frozenset({identity.stage_name}) if private else frozenset(),
+    )
+    primary = primary_type("synthetic primary")
+    original_replace = Path.replace
+    operations: list[int] = []
+    reports: list[int] = []
+
+    def operation() -> object:
+        operations.append(1)
+        if primary_at == "operation":
+            raise primary
+        return {"synthetic": True}
+
+    def fail_publication(path: Path, target: Path) -> Path:
+        if target.name == "output.json":
+            raise primary
+        if target.name == "stage.json" and json.loads(path.read_text())["status"] == "FAILED":
+            reports.append(1)
+            assert store._execution_claim_path(identity).exists()
+            raise secondary_type("synthetic secondary report failure")
+        return original_replace(path, target)
+
+    previous = os.umask(0)
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(Path, "replace", fail_publication)
+            with pytest.raises(primary_type) as error:
+                store.execute(identity, operation)
+        assert error.value is primary
+        assert operations == reports == [1]
+        assert store.attempt_count(identity) == 1
+        assert store.cached_output(identity) is None
+        assert not store._output_path(identity).exists()
+        assert not store._execution_claim_path(identity).exists()
+        directory = store._directory(identity)
+        assert not (directory / ".write-lock").exists()
+        assert not list(directory.glob(".*.tmp"))
+        if private:
+            assert directory.stat().st_mode & 0o777 == 0o700
+            assert store._record_path(identity).stat().st_mode & 0o777 == 0o600
+
+        def unexpected_sleep(_seconds: float) -> None:
+            raise AssertionError("retry waited on a stranded claim")
+
+        monkeypatch.setattr(time, "sleep", unexpected_sleep)
+        assert store.execute(identity, lambda: {"retry": True}) == ({"retry": True}, False)
+        assert store.attempt_count(identity) == 2
+        assert not store._execution_claim_path(identity).exists()
+    finally:
+        os.umask(previous)
+
+
+@pytest.mark.parametrize("cleanup", ["other-owner", "unlink", "lock"])
+def test_local_failure_cleanup_does_not_mask_primary_or_remove_foreign_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cleanup: str
+) -> None:
+    store = DagStore(tmp_path)
+    identity = _identity()
+    primary = KeyboardInterrupt("primary operation cancellation")
+    original_unlink = Path.unlink
+    original_rmdir = Path.rmdir
+    armed = False
+
+    def unlink(path: Path, *args, **kwargs):
+        if armed and cleanup == "unlink" and path == store._execution_claim_path(identity):
+            raise SystemExit("secondary unlink cancellation")
+        return original_unlink(path, *args, **kwargs)
+
+    def rmdir(path: Path):
+        if armed and cleanup == "lock" and path.name == ".write-lock":
+            original_rmdir(path)
+            raise OSError("secondary lock cleanup failure")
+        return original_rmdir(path)
+
+    def operation() -> object:
+        nonlocal armed
+        armed = True
+        if cleanup == "other-owner":
+            with store._write_lock(identity):
+                store._write_json(
+                    store._execution_claim_path(identity),
+                    {"owner_id": "other", "expires_at": time.time() + 86_400},
+                )
+        raise primary
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    monkeypatch.setattr(Path, "rmdir", rmdir)
+    with pytest.raises(KeyboardInterrupt) as error:
+        store.execute(identity, operation)
+    assert error.value is primary
+    assert store.cached_output(identity) is None
+    assert not (store._directory(identity) / ".write-lock").exists()
+    assert not list(store._directory(identity).glob(".*.tmp"))
+    claim = store._read_execution_claim(identity)
+    if cleanup == "other-owner":
+        assert claim is not None and claim["owner_id"] == "other"
+    elif cleanup == "unlink":
+        assert claim is not None
+    else:
+        assert claim is None
+
+
+@pytest.mark.parametrize("stage", ["initial", "terminal"])
+def test_local_lock_or_release_cancellation_propagates_without_stranding_owned_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    identity = _identity()
+    store = DagStore(tmp_path)
+    cancellation = KeyboardInterrupt("new cleanup cancellation")
+    original_rmdir = Path.rmdir
+    original_unlink = Path.unlink
+    operations: list[int] = []
+    raised = False
+
+    def rmdir(path: Path):
+        nonlocal raised
+        original_rmdir(path)
+        if stage == "initial" and path.name == ".write-lock" and not raised:
+            raised = True
+            raise cancellation
+
+    def unlink(path: Path, *args, **kwargs):
+        nonlocal raised
+        if stage == "terminal" and path == store._execution_claim_path(identity) and not raised:
+            raised = True
+            raise cancellation
+        return original_unlink(path, *args, **kwargs)
+
+    def operation() -> object:
+        operations.append(1)
+        return {"valid": True}
+
+    monkeypatch.setattr(Path, "rmdir", rmdir)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    with pytest.raises(KeyboardInterrupt) as error:
+        store.execute(identity, operation)
+    assert error.value is cancellation
+    assert not store._execution_claim_path(identity).exists()
+    assert not (store._directory(identity) / ".write-lock").exists()
+    if stage == "initial":
+        assert not operations
+        assert store.cached_output(identity) is None
+        assert store.execute(identity, operation) == ({"valid": True}, False)
+        assert store.attempt_count(identity) == 2
+    else:
+        assert store.cached_output(identity) == {"valid": True}
+        assert store.execute(identity, operation) == ({"valid": True}, True)
+    assert operations == [1]
+
+
+def test_local_secondary_temp_cleanup_error_preserves_output_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    store = DagStore(tmp_path)
+    primary = OSError("primary output rename failure")
+    original_replace = Path.replace
+    original_unlink = Path.unlink
+
+    def replace(path: Path, target: Path) -> Path:
+        if target == store._output_path(identity):
+            raise primary
+        return original_replace(path, target)
+
+    def unlink(path: Path, *args, **kwargs):
+        result = original_unlink(path, *args, **kwargs)
+        if path.name.startswith(".output.json."):
+            raise SystemExit("secondary temporary file cleanup cancellation")
+        return result
+
+    monkeypatch.setattr(Path, "replace", replace)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    with pytest.raises(OSError) as error:
+        store.execute(identity, lambda: {"synthetic": True})
+    assert error.value is primary
+    assert store.cached_output(identity) is None
+    assert not store._execution_claim_path(identity).exists()
+    assert not list(store._directory(identity).glob(".*.tmp"))

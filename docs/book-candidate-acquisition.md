@@ -349,3 +349,27 @@ claim acknowledgement raises: persisted ownership may precede the reply. Normal
 false claims still follow the existing polling path. The existing coordinator
 refuses release for a mismatched owner; no lease duration or production wiring
 changes. Cleanup cannot guarantee release when the storage service is unavailable.
+
+### Raw read budgets and terminal failure cleanup
+
+Both opened-file evidence reads and immutable destination comparisons share an
+unbuffered raw reader. It reads only the remaining budget, accumulates short
+reads until actual EOF or the budget, and never performs buffered read-ahead.
+Budgets remain evidence limit plus one and expected destination length plus one,
+respectively. Direct-byte validation and all report identities are unchanged.
+These are regular-file operations under the existing owner-controlled root
+assumption, not containment against hostile ancestors.
+
+DAG failure-record publication and owner-bound claim release are independent
+best-effort cleanup steps. Secondary exceptions, including cancellation during
+cleanup of an active primary failure, are logged without replacing that primary.
+Local failure cleanup retains the write lock and checks ownership; coordinated
+cleanup stops renewal, checks ownership before reporting failure and attempts
+owner-bound release even if reporting or renewal fails. An operation cancelled
+by a BaseException follows the same failed-stage cleanup and propagates the
+cancellation. New cancellation after committed success propagates rather than
+being returned as success; an already committed valid PASS is still reusable.
+Release retries and lease durations are unchanged. Unavailable storage, failed
+lock cleanup, or unavailable release callbacks can prevent cleanup; there is no
+unconditional recovery guarantee. A failed report can leave RUNNING evidence
+without a reusable PASS, and the next owned attempt increments its count.

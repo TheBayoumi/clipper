@@ -25,6 +25,15 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+@contextmanager
+def _preserve_primary(action: str) -> Iterator[None]:
+    """Guard secondary cleanup only while an exception is already active."""
+    try:
+        yield
+    except BaseException as exc:
+        LOGGER.warning("DAG %s failed during error cleanup: %s", action, type(exc).__name__)
+
+
 @dataclass(frozen=True, slots=True)
 class StageResult:
     output: object
@@ -199,7 +208,11 @@ class DagStore:
             else:
                 temporary.write_text(serialized, encoding="utf-8")
             temporary.replace(path)
-        finally:
+        except BaseException:
+            with _preserve_primary("temporary file removal"):
+                temporary.unlink(missing_ok=True)
+            raise
+        else:
             temporary.unlink(missing_ok=True)
 
     @contextmanager
@@ -228,7 +241,11 @@ class DagStore:
                 time.sleep(0.01)
         try:
             yield
-        finally:
+        except BaseException:
+            with _preserve_primary("write lock removal"):
+                lock.rmdir()
+            raise
+        else:
             lock.rmdir()
 
     def _read_record_payload(self, identity: StageIdentity) -> dict[str, Any] | None:
@@ -298,6 +315,7 @@ class DagStore:
                 )
             if release_attempt < 2:
                 time.sleep(0.05 * (release_attempt + 1))
+        LOGGER.warning("DAG lease cleanup not acknowledged for %s", identity.stage_name)
 
     def _execute_coordinated(
         self,
@@ -311,43 +329,6 @@ class DagStore:
         attempt = 0
         started = ""
 
-        while True:
-            cached = self._coordinated_cached_output(identity)
-            if cached is not None:
-                return cached, True
-            try:
-                claimed = coordinator.claim(identity, owner_id, self.execution_lease_seconds)
-            except BaseException:
-                # A failed acknowledgement does not prove ownership was never persisted.
-                self._release_lease_best_effort(coordinator, identity, owner_id)
-                raise
-            if claimed:
-                try:
-                    coordinator.reload()
-                    cached = self.cached_output(identity)
-                    if cached is not None:
-                        self._release_lease_best_effort(coordinator, identity, owner_id)
-                        return cached, True
-                    attempt = self.attempt_count(identity) + 1
-                    started = _now()
-                    running = StageRecord(
-                        identity=identity,
-                        status="RUNNING",
-                        attempt_count=attempt,
-                        started_at=started,
-                        completed_at=None,
-                        output_fingerprint=None,
-                        usage={},
-                        cost_usd=0.0,
-                    )
-                    self._write_json(self._record_path(identity), running.to_dict())
-                    coordinator.commit()
-                except BaseException:
-                    self._release_lease_best_effort(coordinator, identity, owner_id)
-                    raise
-                break
-            time.sleep(self.follower_poll_seconds)
-
         renewal_stop = threading.Event()
         lease_lost = threading.Event()
 
@@ -358,13 +339,60 @@ class DagStore:
                     if not coordinator.renew(identity, owner_id, self.execution_lease_seconds):
                         lease_lost.set()
                         return
-                except Exception:
+                except BaseException as exc:
                     lease_lost.set()
+                    LOGGER.warning("DAG renewal stopped: %s", type(exc).__name__)
                     return
 
         renewal_thread = threading.Thread(target=renew_lease, daemon=True)
-        renewal_thread.start()
+
+        def stop_renewal() -> None:
+            renewal_stop.set()
+            if renewal_thread.ident is not None:
+                renewal_thread.join(timeout=1.0)
+
+        while True:
+            cached = self._coordinated_cached_output(identity)
+            if cached is not None:
+                return cached, True
+            try:
+                claimed = coordinator.claim(identity, owner_id, self.execution_lease_seconds)
+            except BaseException:
+                # A failed acknowledgement does not prove ownership was never persisted.
+                with _preserve_primary("lease release"):
+                    self._release_lease_best_effort(coordinator, identity, owner_id)
+                raise
+            if claimed:
+                try:
+                    coordinator.reload()
+                    cached = self.cached_output(identity)
+                    if cached is None:
+                        attempt = self.attempt_count(identity) + 1
+                        started = _now()
+                        running = StageRecord(
+                            identity=identity,
+                            status="RUNNING",
+                            attempt_count=attempt,
+                            started_at=started,
+                            completed_at=None,
+                            output_fingerprint=None,
+                            usage={},
+                            cost_usd=0.0,
+                        )
+                        self._write_json(self._record_path(identity), running.to_dict())
+                        coordinator.commit()
+                except BaseException:
+                    with _preserve_primary("lease release"):
+                        self._release_lease_best_effort(coordinator, identity, owner_id)
+                    raise
+                if cached is not None:
+                    self._release_lease_best_effort(coordinator, identity, owner_id)
+                    return cached, True
+                break
+            time.sleep(self.follower_poll_seconds)
+
         try:
+            renewal_thread.start()
             raw_result = operation()
             result = raw_result if isinstance(raw_result, StageResult) else StageResult(raw_result)
             if lease_lost.is_set() or not coordinator.renew(
@@ -387,36 +415,50 @@ class DagStore:
             )
             self._write_json(self._record_path(identity), passed.to_dict())
             coordinator.commit()
-            renewal_stop.set()
-            renewal_thread.join(timeout=1.0)
+        except BaseException as exc:
+            with _preserve_primary("renewal shutdown"):
+                stop_renewal()
+            with _preserve_primary("FAILED record publication"):
+                if not lease_lost.is_set() and coordinator.renew(
+                    identity, owner_id, self.execution_lease_seconds
+                ):
+                    self._record_failure(identity, attempt, started, exc)
+                    coordinator.commit()
+            with _preserve_primary("lease release"):
+                self._release_lease_best_effort(coordinator, identity, owner_id)
+            raise
+        else:
+            # A committed PASS remains valid, but new cancellation must propagate.
+            try:
+                stop_renewal()
+            except BaseException:
+                with _preserve_primary("lease release"):
+                    self._release_lease_best_effort(coordinator, identity, owner_id)
+                raise
             self._release_lease_best_effort(coordinator, identity, owner_id)
             return result.output, False
-        except Exception as exc:
-            if not lease_lost.is_set():
-                try:
-                    owns_lease = coordinator.renew(identity, owner_id, self.execution_lease_seconds)
-                except Exception:
-                    owns_lease = False
-                if owns_lease:
-                    failed = StageRecord(
-                        identity=identity,
-                        status="FAILED",
-                        attempt_count=attempt,
-                        started_at=started,
-                        completed_at=_now(),
-                        output_fingerprint=None,
-                        usage={},
-                        cost_usd=0.0,
-                        error_type=type(exc).__name__,
-                        error=str(exc),
-                    )
-                    self._write_json(self._record_path(identity), failed.to_dict())
-                    coordinator.commit()
-                    self._release_lease_best_effort(coordinator, identity, owner_id)
-            raise
-        finally:
-            renewal_stop.set()
-            renewal_thread.join(timeout=1.0)
+
+    def _record_failure(
+        self, identity: StageIdentity, attempt: int, started: str, exc: BaseException
+    ) -> None:
+        failed = StageRecord(
+            identity=identity,
+            status="FAILED",
+            attempt_count=attempt,
+            started_at=started,
+            completed_at=_now(),
+            output_fingerprint=None,
+            usage={},
+            cost_usd=0.0,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        self._write_json(self._record_path(identity), failed.to_dict())
+
+    def _release_local_claim(self, identity: StageIdentity, owner_id: str) -> None:
+        """Called with the write lock held; never remove a different owner's claim."""
+        if self._claim_owner(self._read_execution_claim(identity)) == owner_id:
+            self._execution_claim_path(identity).unlink(missing_ok=True)
 
     def _execute_local(
         self,
@@ -433,52 +475,57 @@ class DagStore:
                 return cached, True
 
             claimed = False
-            with self._write_lock(identity):
-                cached = self.cached_output(identity)
-                if cached is not None:
-                    return cached, True
+            try:
+                with self._write_lock(identity):
+                    cached = self.cached_output(identity)
+                    if cached is not None:
+                        return cached, True
 
-                now = time.time()
-                claim = self._read_execution_claim(identity)
-                if self._claim_expired(claim, now=now):
-                    attempt = self.attempt_count(identity) + 1
-                    started = _now()
-                    try:
-                        self._write_json(
-                            self._execution_claim_path(identity),
-                            {
-                                "owner_id": owner_id,
-                                "claimed_at": now,
-                                "expires_at": now + self.execution_lease_seconds,
-                            },
-                        )
-                        running = StageRecord(
-                            identity=identity,
-                            status="RUNNING",
-                            attempt_count=attempt,
-                            started_at=started,
-                            completed_at=None,
-                            output_fingerprint=None,
-                            usage={},
-                            cost_usd=0.0,
-                        )
-                        self._write_json(self._record_path(identity), running.to_dict())
-                    except BaseException:
-                        # The write lock is still held; never remove a different owner's claim.
+                    now = time.time()
+                    claim = self._read_execution_claim(identity)
+                    if self._claim_expired(claim, now=now):
+                        attempt = self.attempt_count(identity) + 1
+                        started = _now()
                         try:
-                            if self._claim_owner(self._read_execution_claim(identity)) == owner_id:
-                                self._execution_claim_path(identity).unlink(missing_ok=True)
-                        except OSError:
-                            LOGGER.warning(
-                                "DAG initial claim cleanup failed for %s", identity.stage_name
+                            self._write_json(
+                                self._execution_claim_path(identity),
+                                {
+                                    "owner_id": owner_id,
+                                    "claimed_at": now,
+                                    "expires_at": now + self.execution_lease_seconds,
+                                },
                             )
-                        raise
-                    claimed = True
+                            running = StageRecord(
+                                identity=identity,
+                                status="RUNNING",
+                                attempt_count=attempt,
+                                started_at=started,
+                                completed_at=None,
+                                output_fingerprint=None,
+                                usage={},
+                                cost_usd=0.0,
+                            )
+                            self._write_json(self._record_path(identity), running.to_dict())
+                        except BaseException:
+                            with _preserve_primary("initial claim release"):
+                                self._release_local_claim(identity, owner_id)
+                            raise
+                        claimed = True
+            except BaseException:
+                if claimed:
+                    # Initial publication succeeded but exiting its lock failed.
+                    with (
+                        _preserve_primary("initial claim release after lock failure"),
+                        self._write_lock(identity, timeout_seconds=0.0),
+                    ):
+                        self._release_local_claim(identity, owner_id)
+                raise
 
             if claimed:
                 break
             time.sleep(self.follower_poll_seconds)
 
+        committed = False
         try:
             raw_result = operation()
             result = raw_result if isinstance(raw_result, StageResult) else StageResult(raw_result)
@@ -501,24 +548,15 @@ class DagStore:
                     cost_usd=result.cost_usd,
                 )
                 self._write_json(self._record_path(identity), passed.to_dict())
-                self._execution_claim_path(identity).unlink(missing_ok=True)
+                committed = True
+                self._release_local_claim(identity, owner_id)
             return result.output, False
-        except Exception as exc:
-            with self._write_lock(identity):
-                claim = self._read_execution_claim(identity)
-                if self._claim_owner(claim) == owner_id:
-                    failed = StageRecord(
-                        identity=identity,
-                        status="FAILED",
-                        attempt_count=attempt,
-                        started_at=started,
-                        completed_at=_now(),
-                        output_fingerprint=None,
-                        usage={},
-                        cost_usd=0.0,
-                        error_type=type(exc).__name__,
-                        error=str(exc),
-                    )
-                    self._write_json(self._record_path(identity), failed.to_dict())
-                    self._execution_claim_path(identity).unlink(missing_ok=True)
+        except BaseException as exc:
+            with _preserve_primary("local failure cleanup"), self._write_lock(identity):
+                if self._claim_owner(self._read_execution_claim(identity)) == owner_id:
+                    if not committed:
+                        with _preserve_primary("FAILED record publication"):
+                            self._record_failure(identity, attempt, started, exc)
+                    with _preserve_primary("local claim release"):
+                        self._release_local_claim(identity, owner_id)
             raise

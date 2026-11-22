@@ -1,4 +1,5 @@
 import json
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -750,3 +751,197 @@ def test_coordinated_false_claim_keeps_follower_polling_without_release(tmp_path
     assert not releases
     assert not operations
     sleep.assert_called_once_with(follower.follower_poll_seconds)
+
+
+@pytest.mark.parametrize("primary_at", ["operation", "output"])
+@pytest.mark.parametrize("report_at", ["write", "write-cancel", "commit", "renew"])
+@pytest.mark.parametrize("primary_type", [OSError, KeyboardInterrupt, SystemExit])
+def test_coordinated_double_fault_releases_lease_and_preserves_primary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    primary_at: str,
+    report_at: str,
+    primary_type: type[BaseException],
+) -> None:
+    primary = primary_type("synthetic primary failure")
+    active = {"owner": ""}
+    operations: list[int] = []
+    release_calls: list[str] = []
+    reports: list[str] = []
+    threads_before = set(threading.enumerate())
+    original_replace = Path.replace
+    identity = _identity("distributed-double-fault")
+    fault = True
+    failing = False
+
+    def claim(_identity, owner: str, _ttl: float) -> bool:
+        if active["owner"]:
+            return False
+        active["owner"] = owner
+        return True
+
+    def renew(_identity, owner: str, _ttl: float) -> bool:
+        if fault and failing and report_at == "renew":
+            reports.append("renew")
+            raise SystemExit("secondary renew cancellation")
+        return active["owner"] == owner
+
+    def release(_identity, owner: str) -> bool:
+        release_calls.append(owner)
+        if active["owner"] != owner:
+            return False
+        active["owner"] = ""
+        return True
+
+    def commit() -> None:
+        if fault and failing and report_at == "commit":
+            reports.append("commit")
+            raise OSError("secondary commit failure")
+
+    def replace_record(path: Path, target: Path) -> Path:
+        nonlocal failing
+        if fault and target.name == "output.json":
+            failing = True
+            raise primary
+        if fault and target.name == "stage.json":
+            record = json.loads(path.read_text())
+            if record["status"] == "FAILED" and report_at in {"write", "write-cancel"}:
+                reports.append(report_at)
+                if report_at == "write-cancel":
+                    raise KeyboardInterrupt("secondary write cancellation")
+                raise OSError("secondary write failure")
+        return original_replace(path, target)
+
+    coordinator = DagLeaseCoordinator(
+        claim=claim, renew=renew, release=release, commit=commit, reload=lambda: None
+    )
+    store = DagStore(tmp_path, coordinator=coordinator, execution_lease_seconds=120.0)
+
+    def operation() -> object:
+        nonlocal failing
+        operations.append(1)
+        if fault and primary_at == "operation":
+            failing = True
+            raise primary
+        return {"synthetic": True}
+
+    monkeypatch.setattr(Path, "replace", replace_record)
+    with pytest.raises(primary_type) as error:
+        store.execute(identity, operation)
+    assert error.value is primary
+    assert operations == [1]
+    assert reports == [report_at]
+    assert len(release_calls) == 1
+    assert not active["owner"]
+    assert store.cached_output(identity) is None
+    assert not store._output_path(identity).exists()
+    assert store.attempt_count(identity) == 1
+    assert not list(store._directory(identity).glob(".*.tmp"))
+    assert not set(threading.enumerate()) - threads_before
+    fault = False
+    with patch("clipper.dag.time.sleep", side_effect=AssertionError("unexpected wait")):
+        assert store.execute(identity, operation) == ({"synthetic": True}, False)
+    assert operations == [1, 1]
+    assert store.attempt_count(identity) == 2
+    assert not active["owner"]
+    assert not set(threading.enumerate()) - threads_before
+
+
+@pytest.mark.parametrize("primary_at", ["claim", "reload", "initial", "operation"])
+@pytest.mark.parametrize("release_mode", ["false", "raise", "cancel", "other-owner"])
+@pytest.mark.parametrize("primary_type", [OSError, KeyboardInterrupt])
+def test_coordinated_cleanup_never_replaces_active_primary(
+    tmp_path: Path, primary_at: str, release_mode: str, primary_type: type[BaseException]
+) -> None:
+    active = {"owner": ""}
+    primary = primary_type("primary acquisition or operation failure")
+    released: list[str] = []
+    acquired: list[str] = []
+    operations: list[int] = []
+    identity = _identity("cleanup-primary")
+
+    def claim(_identity, owner: str, _ttl: float) -> bool:
+        active["owner"] = owner
+        acquired.append(owner)
+        if primary_at == "claim":
+            if release_mode == "other-owner":
+                active["owner"] = "other-owner"
+            raise primary
+        return True
+
+    def renew(_identity, owner: str, _ttl: float) -> bool:
+        return active["owner"] == owner
+
+    def release(_identity, owner: str) -> bool:
+        released.append(owner)
+        if release_mode == "cancel":
+            raise SystemExit("secondary release cancellation")
+        if release_mode == "raise":
+            raise OSError("secondary release failure")
+        return False
+
+    def reload() -> None:
+        if primary_at == "reload" and active["owner"]:
+            if release_mode == "other-owner":
+                active["owner"] = "other-owner"
+            raise primary
+
+    def commit() -> None:
+        if primary_at == "initial":
+            if release_mode == "other-owner":
+                active["owner"] = "other-owner"
+            raise primary
+
+    def operation() -> object:
+        operations.append(1)
+        if release_mode == "other-owner":
+            active["owner"] = "other-owner"
+        raise primary
+
+    coordinator = DagLeaseCoordinator(
+        claim=claim, renew=renew, release=release, commit=commit, reload=reload
+    )
+    store = DagStore(tmp_path, coordinator=coordinator)
+    with patch("clipper.dag.time.sleep"), pytest.raises(primary_type) as error:
+        store.execute(identity, operation)
+    assert error.value is primary
+    assert len(acquired) == 1
+    assert released == acquired * (1 if release_mode == "cancel" else 3)
+    assert operations == ([1] if primary_at == "operation" else [])
+    assert active["owner"] == ("other-owner" if release_mode == "other-owner" else acquired[0])
+    assert store.cached_output(identity) is None
+    assert not store._output_path(identity).exists()
+
+
+def test_coordinated_new_release_cancellation_after_committed_success_propagates(
+    tmp_path: Path,
+) -> None:
+    identity = _identity("committed-cancellation")
+    cancellation = KeyboardInterrupt("new cancellation")
+    operations: list[int] = []
+    release_calls: list[str] = []
+
+    def operation() -> object:
+        operations.append(1)
+        return {"valid": True}
+
+    def release(_identity, owner: str) -> bool:
+        release_calls.append(owner)
+        raise cancellation
+
+    coordinator = DagLeaseCoordinator(
+        claim=lambda *_args: True,
+        renew=lambda *_args: True,
+        release=release,
+        commit=lambda: None,
+        reload=lambda: None,
+    )
+    store = DagStore(tmp_path, coordinator=coordinator)
+    with pytest.raises(KeyboardInterrupt) as error:
+        store.execute(identity, operation)
+    assert error.value is cancellation
+    assert len(release_calls) == 1
+    assert operations == [1]
+    assert store.cached_output(identity) == {"valid": True}
+    assert store.execute(identity, operation) == ({"valid": True}, True)
+    assert operations == [1]

@@ -7,7 +7,9 @@ import hashlib
 import io
 import json
 import zipfile
+from contextlib import contextmanager
 from dataclasses import replace
+from io import FileIO
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -27,6 +29,7 @@ from clipper.books.faithful import (
     extract_candidate,
     image_reconciliation,
     ocr_contract,
+    read_evidence,
     reading_blocks,
     tesseract_identity,
 )
@@ -1441,3 +1444,60 @@ def test_direct_evidence_size_boundary(delta: int) -> None:
         padded_overlay, _ = convert_research_observations(book, pad(prefix))
         extracted = extract_candidate(book.source, raw, candidate, overlay=pad(padded_overlay))
         assert extracted.content_sha256 == book.content_sha256
+
+
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("delta", [-1, 0, 1, 11000])
+def test_evidence_reader_raw_budget_and_short_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: int, delta: int
+) -> None:
+    path = tmp_path / "evidence.json"
+    raw = _epub()
+    candidate = _candidate(raw)
+    book = extract_candidate(_source(raw, candidate), raw, candidate)
+    research = (
+        {
+            "schema": "clipper-book-research-observations-v1",
+            "source_sha256": book.content_sha256,
+            "entries": [],
+        }
+        if version == 1
+        else _research_v2(book)
+    )
+    data = json.dumps(research, ensure_ascii=False).encode()
+    data += b" " * (MAX_EVIDENCE_BYTES + delta - len(data))
+    path.write_bytes(data)
+    original_open = Path.open
+    offsets: list[int] = []
+    budget = MAX_EVIDENCE_BYTES + 1
+
+    @contextmanager
+    def instrument(path_arg: Path, *args, **kwargs):
+        with original_open(path_arg, *args, **kwargs) as handle:
+            assert isinstance(handle, FileIO)
+            assert kwargs["buffering"] == 0
+
+            def short_read(size: int = -1) -> bytes:
+                before = handle.tell()
+                assert size == budget - before
+                chunk = handle.read(min(size, 65536))
+                assert handle.tell() - before == len(chunk)
+                offsets.append(handle.tell())
+                return chunk
+
+            yield Mock(wraps=handle, read=short_read)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "open", instrument)
+        if delta > 0:
+            with pytest.raises(ExtractionError, match="exceeds bounded size"):
+                read_evidence(path)
+        else:
+            retained = read_evidence(path)
+            assert retained == data
+            overlay, _ = convert_research_observations(book, retained)
+            assert extract_candidate(book.source, raw, candidate, overlay=overlay)
+    assert len(offsets) > 1
+    assert offsets[-1] == min(len(data), budget)
+    assert all(offset <= budget for offset in offsets)
+    assert path.read_bytes() == data

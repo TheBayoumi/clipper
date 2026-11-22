@@ -24,7 +24,7 @@ from typing import Any, Literal
 
 from clipper.stage_contracts import content_fingerprint
 
-from .acquisition import ReviewedCandidate
+from .acquisition import ReviewedCandidate, _read_bounded_file
 from .contracts import (
     BookSection,
     BookSource,
@@ -573,8 +573,7 @@ def _check_evidence_size(payload: bytes) -> None:
 
 def read_evidence(path: Path) -> bytes:
     """Bound the opened file, not a potentially stale stat result."""
-    with path.open("rb") as handle:
-        payload = handle.read(MAX_EVIDENCE_BYTES + 1)
+    payload = _read_bounded_file(path, MAX_EVIDENCE_BYTES + 1)
     _check_evidence_size(payload)
     return payload
 

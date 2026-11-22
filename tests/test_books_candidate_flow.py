@@ -7,7 +7,9 @@ import io
 import json
 import os
 import zipfile
+from contextlib import contextmanager
 from dataclasses import asdict, replace
+from io import FileIO
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -919,17 +921,31 @@ def test_growing_research_file_is_bounded_at_opened_read(
     output = tmp_path / "must-not-exist.json"
     original_open = Path.open
     read_sizes: list[int] = []
+    raw_offsets: list[int] = []
+    budget = faithful.MAX_EVIDENCE_BYTES + 1
 
-    class GrowingReader(io.BytesIO):
-        def read(self, size: int = -1) -> bytes:
-            read_sizes.append(size)
-            assert size == faithful.MAX_EVIDENCE_BYTES + 1
-            return super().read(size)
-
+    @contextmanager
     def open_grown(path: Path, *args, **kwargs):
         if path == research:
-            return GrowingReader(b" " * (faithful.MAX_EVIDENCE_BYTES + 2))
-        return original_open(path, *args, **kwargs)
+            with original_open(path, "ab") as growing:
+                growing.write(b" " * (budget + 11000))
+        with original_open(path, *args, **kwargs) as handle:
+            if path == research:
+                assert isinstance(handle, FileIO)
+                assert kwargs["buffering"] == 0
+
+                def bounded_read(size: int = -1) -> bytes:
+                    offset = handle.tell()
+                    read_sizes.append(size)
+                    assert size == budget - offset
+                    chunk = handle.read(min(size, 65536))
+                    assert handle.tell() - offset == len(chunk)
+                    raw_offsets.append(handle.tell())
+                    return chunk
+
+                yield Mock(wraps=handle, read=bounded_read)
+            else:
+                yield handle
 
     monkeypatch.setattr(Path, "open", open_grown)
     assert (
@@ -951,7 +967,9 @@ def test_growing_research_file_is_bounded_at_opened_read(
         )
         == 1
     )
-    assert read_sizes == [faithful.MAX_EVIDENCE_BYTES + 1]
+    assert read_sizes[0] == budget
+    assert raw_offsets[-1] == budget
+    assert all(offset <= budget for offset in raw_offsets)
     assert "exceeds bounded size" in caplog.text
     assert not (root / "book-candidates" / "research-import").exists()
     assert not output.exists()
