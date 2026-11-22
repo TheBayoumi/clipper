@@ -67,6 +67,26 @@ def _canonical_reply(source: str, request: dict[str, object]) -> str:
     return json.dumps({"lessons": [candidate]}, ensure_ascii=True, separators=(",", ":"))
 
 
+def _pool_reply(
+    request: dict[str, object], *, count: int, ascii_only: bool
+) -> str:
+    spans = request["constraints"]["spans"]
+    assert len(spans) >= count
+    lessons = [
+        {
+            "id": span["id"],
+            "topic": "Authored test",
+            "claim": "A bounded synthetic claim",
+            "hook_angle": "Present one claim",
+            "visual_action": "Show source text",
+            "evidence": span["text"],
+            "evidence_field": "native_text",
+        }
+        for span in spans[:count]
+    ]
+    return json.dumps({"lessons": lessons}, ensure_ascii=ascii_only, separators=(",", ":"))
+
+
 def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -266,4 +286,106 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                 ),
                 flush=True,
             )
+
+        # Production callback, not a plain-schema proxy: 24 near-max spans,
+        # representative 350-word/350-span bound, and one/three lesson replies.
+        # No logits are sampled and no model is initialized.
+        def near_max_span(language: str, number: int) -> str:
+            base = {
+                "latin": "reproducibleevidence",
+                "cjk": "漢字語彙",
+                "arabic": "العربيةبيانات",
+            }[language]
+            body = (base * 400)[:386]
+            return body + f"{number:03d}."
+
+        cases = {
+            language: " ".join(near_max_span(language, index) for index in range(24))
+            for language in ("latin", "cjk", "arabic")
+        }
+        cases["bounded_350_spans"] = " ".join(
+            f"authored{index:03d}." for index in range(350)
+        )
+        for case_name, source in cases.items():
+            request = _request(source)
+            pool = request["constraints"]
+            expected_span_count = 350 if case_name == "bounded_350_spans" else 24
+            assert len(pool["spans"]) == expected_span_count
+            assert pool["coverage"]["omitted_fragment_chars"] == 0
+            setup = time.perf_counter()
+            callback = constrained.prefix_for(request, tokenizer, scripting.SCRIPT_REVISION)
+            build_time = time.perf_counter() - setup
+            parser_alphabet = callback.token_enforcer.root_parser.config.alphabet
+            if case_name == "cjk":
+                assert "漢" in parser_alphabet
+            if case_name == "arabic":
+                assert "ع" in parser_alphabet
+            for count in (1, 3):
+                for ascii_only in (False, True):
+                    raw = _pool_reply(request, count=count, ascii_only=ascii_only)
+                    tokens = tokenizer.encode(raw, add_special_tokens=False)
+                    token_count = len(tokens)
+                    raw_bytes = len(raw.encode("utf-8"))
+                    assert tokenizer.decode(
+                        tokens,
+                        skip_special_tokens=True,
+                        clean_up_tokenization_spaces=False,
+                    ) == raw
+                    assert whole_book.load_strict_reply(raw)["lessons"] == (
+                        json.loads(raw)["lessons"]
+                    )
+                    allowed = token_count <= 960 and raw_bytes <= 16_384
+                    if allowed:
+                        prefix = [tokenizer.eos_token_id]
+                        tested = 0
+                        first_rejected: int | None = None
+                        start = time.perf_counter()
+                        for index, token in enumerate(tokens):
+                            next_allowed = callback(0, torch.tensor(prefix))
+                            if token not in next_allowed:
+                                first_rejected = index
+                                break
+                            prefix.append(token)
+                            tested += 1
+                            if time.perf_counter() - start > 25:
+                                break
+                        seconds = time.perf_counter() - start
+                        complete = (
+                            tested == token_count
+                            and first_rejected is None
+                            and tokenizer.eos_token_id in callback(0, torch.tensor(prefix))
+                        )
+                    else:
+                        tested, first_rejected, seconds, complete = 0, None, 0.0, False
+                    print(
+                        "QWEN_PRODUCTION_POOL_BUDGET "
+                        + json.dumps(
+                            {
+                                "case": case_name,
+                                "pool_spans": expected_span_count,
+                                "source_chars": len(source),
+                                "lessons": count,
+                                "ascii_escaped": ascii_only,
+                                "token_count": token_count,
+                                "raw_bytes": raw_bytes,
+                                "fits_960_tokens": token_count <= 960,
+                                "fits_16k_raw": raw_bytes <= 16_384,
+                                "adapter_setup_seconds": round(build_time, 3),
+                                "prefix_checked": tested,
+                                "prefix_seconds": round(seconds, 3),
+                                "first_rejected_token": first_rejected,
+                                "complete_path": complete,
+                                "model_loaded": False,
+                                "generated": False,
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
+                    if (
+                        case_name in {"latin", "arabic", "bounded_350_spans"}
+                        and count == 1
+                        and not ascii_only
+                    ):
+                        assert allowed and complete
         constrained._tokenizer_data.cache_clear()

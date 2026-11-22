@@ -140,64 +140,72 @@ pages and other quality warnings remain distinct from analysis progress.
 There is no semantic deduplication, ranking, target episode count or
 automatic claim approval.
 
-### Local book-only exact-evidence constrained decoding (not semantic approval)
+### Local book-only paired evidence decoding (not semantic approval)
 
-Only the opt-in local **book** producer uses pinned LM Format Enforcer
-**0.11.3** with Transformers **4.57.3** and the existing Qwen CPU/Torch
-settings. The public JsonSchemaParser handles the seven-field object while a
-small public CharacterLevelParser overlay enforces the selected evidence
-literal. Unlike a nested whole-response SequenceParser, this preserves
-ordinary LMFE tokenizer-adapter fast paths outside the evidence value.
-Script generation does not use this decoder.
+Only the opt-in local book producer uses LM Format Enforcer **0.11.3**
+and the existing Transformers **4.57.3**, pinned Qwen model/revision,
+CPU Torch **2.6.0+cpu**, settings, seed and **960-new-token** limit.
+A public CharacterLevelParser overlay keeps the JSON-schema seven-field
+output intact. It constrains each generated ID and evidence quotation to
+**the same exact choice** regardless of the order of the two JSON fields;
+a duplicate quote at different source locations has a distinct safe ID.
+Both the direct-Unicode and ASCII-escaped JSON spellings of each exact
+source quote are allowed, with decoded bytes validated against the original
+unit string. Escaped quotes, backslashes and control characters remain
+literal source characters after JSON parsing. Source data and model output
+are never host-assembled, normalized, truncated, fixed or approved.
 
-The response root must be an object with only lessons, a list of zero to
-three objects with exactly the seven required fields. Creative strings are
-1–400 characters, IDs are safe source-derived choices and evidence_field is
-the supplied exact field. Each evidence choice is an exact continuous unit
-source fragment, serialized as ASCII JSON escapes using the Python json
-encoder with ensure_ascii=True. This changes only its JSON *spelling*:
-straight double quotes, backslashes, literal control characters, mixed
-scripts, uncommon Unicode and emoji round-trip to the precise original
-source characters. No source normalization, truncation, ID rewriting,
-post-hoc JSON repair, array wrapping, or fence stripping is permitted.
+The source unit text still appears in full in the canonical request. Its
+explicit source_evidence_choices menu lists each exact ID, quote and
+unit-relative start/end/boundary, so the prompt reflects what the grammar
+actually allows. The decoder recomputes the span policy and rejects a
+different canonical menu. The raw response still has exactly the original
+seven fields; private candidate evidence_anchor gets a separately derived
+selected_occurrence (unit-relative offsets, exact SHA-256, selected ID and
+boundary) **only after** validating that raw pair. Historical recorded
+responses keep their original provenance shape. Local fresh extraction and
+cache replay both independently check source ID/evidence pairs using the
+original unchanged raw bytes and the current request identity.
 
-The inclusive **bounded-source-clause-spans-inclusive-v2** policy splits at
-whitespace after the punctuation marks period, exclamation, question,
-semicolon and colon. All source characters are retained at exact Unicode
-codepoint offsets with SHA-256 hashes and explicit first/last-unit boundary
-uncertainty (350-word units may cut a sentence). At most 400 distinct
-fragments and 12,000 source characters are processed per unit; a selectable
-fragment must be nonempty and no more than 400 characters. Repeated source
-fragments share a literal choice but preserve their individual occurrence
-offsets and digests. Whitespace split separators are counted separately
-from excluded source fragments. Quote/backslash/control-containing
-fragments no longer disappear. Overlong clauses, sources over the cap or
-pool-cap omissions cause an explicit failed unit before model loading,
-rather than allowing candidate extraction from misleading partial coverage.
-A truly empty span set similarly fails closed. These input bounds remain
-a visible production constraint: an overlong qualification cannot be
-represented within the existing 400-character evidence field.
+Span policy **bounded-multilingual-clauses-occurrences-v3** handles spacing
+after ASCII/CJK/Arabic punctuation and adjacent CJK/Arabic punctuation
+without whitespace. It avoids common English abbreviations (Dr., Prof.,
+e.g.) and dotted initials (U.S.); language-specific sentence splitting is
+heuristic, not a guaranteed accurate linguistic segmentation. At most 400
+occurrences and 12,000 source characters are allowed per unit; each selected
+fragment must fit the existing 400-character evidence field. This is not a
+magic arbitrary coverage guarantee: upstream WorkUnit.text joins at most
+350 whitespace-separated words with single spaces, so no more than 350
+whitespace-delimited fragments exist; extra non-whitespace CJK/Arabic
+boundaries can increase the count. The pool records any cap overflow,
+overlong fragment, duplicate occurrence, ignored abbreviation break,
+separator whitespace, offsets and boundary uncertainty in **private**
+progress and aggregate export reporting. It fails the unit before model
+loading when a fragment exceeds 400 characters, the pool exceeds 400
+entries or source exceeds 12,000 characters; the decision between
+whole-unit fail-closed and explicitly reviewed partial coverage for these
+residual cases is **deferred**, not silently implemented.
 
-Normal **private** progress includes per-unit selected offsets/hashes,
-duplicate occurrences, boundary caveats, source length, split whitespace,
-omission reasons and counts, and fail-closed coverage status. The progress
-ledger and private export include an aggregate summary with these counts.
-Raw local completions retain their exact original bytes, and both fresh
-completion and cache replay independently revalidate strict JSON, the
-existing seven-field contract, source provenance and the currently selected
-evidence/ID choices. Earlier cached output is not migrated or trusted
-under this new request/producer identity.
+Importantly, being an exact **source** choice is not proof it can fit a
+complete generated reply. The per-unit metadata marks token-budget
+feasibility **unverified** and reports the unchanged 960-token and 16-KiB
+raw limits. Unicode ASCII escapes can exceed those limits even though
+direct Unicode may fit; the decoder offers both spellings. Reproducible
+model-free probes load only the exact public pinned tokenizer/config and
+exercise LMFE's real allowed-token callback and Transformers logits filter
+on synthetic scores. They report whole one/three-lesson reply token counts,
+raw bytes, pool setup and checked-prefix time. An accepted canonical token
+path does not prove that sampling will follow it, nor that some alternative
+path is impossible if a canonical BPE path is rejected.
 
-The decoder, grammar, tokenizer revision, span policy and pool material
-affect canonical request and DAG fingerprints. Only tokenizer vocabulary
-preprocessing is cached per tokenizer instance and pinned revision; each
-request receives a fresh parser/enforcer. Any unsatisfiable token path or
-960-token exhaustion remains a failure, not a fabricated completion.
-Pinned public-tokenizer model-free tests verify adapter behavior and timings;
-neither CI nor these tests load weights or call generate(). Mechanical
-validity cannot prove claim/hook grounding, creative quality or preserved
-semantic caveats. **MINED_UNREVIEWED** and **publish_eligible=false** remain
-mandatory, including for structurally valid empty lessons.
+The local producer/pool/grammar policy change updates cache identities;
+raw history, private file permissions and replay verification remain
+unchanged. Terminal EOS is checked against the actual pinned model
+generation-config EOS ID or list, including incomplete 960-token output;
+the generation parameters themselves are unchanged. No script-generation
+caller uses the book decoder. Mechanical validation never proves contextual
+claim support, caveat integrity or creative value. All candidates remain
+**MINED_UNREVIEWED**, **publish_eligible=false**.
 
 ## Interrupted work and output
 

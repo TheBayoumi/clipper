@@ -24,7 +24,7 @@ WINDOW_UNITS = 32
 MAX_PLAN_UNITS = 20_000
 MAX_RECORDED_REPLY_BYTES = 16_384
 LOCAL_COMPLETION_SCHEMA = "clipper-book-local-completion-v1"
-LOCAL_PRODUCER_CONTRACT = "clipper-book-cpu-qwen-json-exact-literal-v3"
+LOCAL_PRODUCER_CONTRACT = "clipper-book-cpu-qwen-paired-direct-escaped-v4"
 LOCAL_GENERATION = {
     "model": scripting.SCRIPT_MODEL,
     "revision": scripting.SCRIPT_REVISION,
@@ -212,7 +212,19 @@ def _request_for_identity(
     book: BookText, unit: WorkUnit, book_fingerprint: str
 ) -> dict[str, object]:
     """Private batching helper: identity comes from plan_for(book), not caller input."""
+    pool = constrained.span_pool(unit.text, unit.evidence_field)
+    spans = cast(list[dict[str, object]], pool["spans"])
     evidence = {
+        "source_evidence_choices": [
+            {
+                "id": span["id"],
+                "evidence": span["text"],
+                "start": span["start"],
+                "end": span["end"],
+                "boundary": span["boundary"],
+            }
+            for span in spans
+        ],
         "book_title": book.source.title,
         "book_author": book.source.author,
         "edition": book.edition_identity,
@@ -235,7 +247,7 @@ def _request_for_identity(
         "revision": scripting.SCRIPT_REVISION,
         "seed": 42,
         "max_new_tokens": 960,
-        "constraints": constrained.span_pool(unit.text, unit.evidence_field),
+        "constraints": pool,
         "messages": [
             {
                 "role": "system",
@@ -248,15 +260,21 @@ def _request_for_identity(
                     'the keys "id", "topic", "claim", "hook_angle", '
                     '"visual_action", "evidence", and "evidence_field" with no others. '
                     "Every value must be a nonempty string of at most 400 characters. "
-                    'The "id" must be a fresh descriptive lowercase slug matching '
-                    "^[a-z0-9]+(?:-[a-z0-9]+)*$, unique within this reply; "
-                    'do not copy the supplied "anchor" or use colons. '
+                    'Choose each "id" and "evidence" as one exact paired entry '
+                    'from "source_evidence_choices" in the user message, not '
+                    "independently from different entries. Do not change either "
+                    "field, even when multiple occurrences quote the same text. "
+                    "IDs are safe lowercase slugs matching "
+                    "^[a-z0-9]+(?:-[a-z0-9]+)*$ and must not repeat in one reply. "
+                    "The full source text remains available for context; the "
+                    "bounded choice menu identifies the only eligible evidence "
+                    "occurrences. If no supported claim fits, return empty lessons. "
                     'Write a specific claim supported by the supplied "text", '
                     "not a generic topic or invented fact. Keep the topic, "
                     "hook angle, and visual action grounded in that claim. "
-                    'The "evidence" must be a short exact continuous substring '
-                    'of the supplied "text" (maximum 400 characters), never '
-                    "paraphrased, shortened with ellipses, or invented. "
+                    'The "evidence" must reproduce the selected entry exactly '
+                    "(maximum 400 characters), without paraphrase or ellipses. "
+                    "Do not substitute a different substring from source text. "
                     'The "evidence_field" must exactly repeat the supplied '
                     '"evidence_field" value. All candidates remain unreviewed '
                     "and not approved or publishable. Image/OCR/research wording "
@@ -310,8 +328,27 @@ def validate_reply(payload: object, unit: WorkUnit) -> list[dict[str, str]]:
     return validated
 
 
-def candidate_for(book: BookText, unit: WorkUnit, item: dict[str, str]) -> dict[str, Any]:
+def candidate_for(
+    book: BookText,
+    unit: WorkUnit,
+    item: dict[str, str],
+    *,
+    local_span: dict[str, object] | None = None,
+) -> dict[str, Any]:
+    """Preserve recorded provenance; attach local verified occurrence only."""
     local_key = content_fingerprint({"unit": unit.fingerprint, "candidate_id": item["id"]})
+    if local_span is not None:
+        start, end = cast(int, local_span["start"]), cast(int, local_span["end"])
+        if (
+            start < 0
+            or end > len(unit.text)
+            or start >= end
+            or unit.text[start:end] != item["evidence"]
+            or local_span["id"] != item["id"]
+            or hashlib.sha256(unit.text[start:end].encode("utf-8")).hexdigest()
+            != local_span["sha256"]
+        ):
+            raise mining.BookMiningError("selected local evidence occurrence is inconsistent")
     return {
         "id": f"{item['id']}-{local_key}",
         "proposed_id": item["id"],
@@ -335,6 +372,19 @@ def candidate_for(book: BookText, unit: WorkUnit, item: dict[str, str]) -> dict[
             "source_sha256": book.content_sha256,
             "text_sha256": unit.text_sha256,
             "quote": item["evidence"],
+            **(
+                {
+                    "selected_occurrence": {
+                        "unit_start": local_span["start"],
+                        "unit_end": local_span["end"],
+                        "quote_sha256": local_span["sha256"],
+                        "boundary": local_span["boundary"],
+                        "id": item["id"],
+                    }
+                }
+                if local_span is not None
+                else {}
+            ),
         },
     }
 

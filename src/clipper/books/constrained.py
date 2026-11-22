@@ -14,14 +14,19 @@ from . import selection
 
 DECODER_PACKAGE = "lm-format-enforcer"
 DECODER_VERSION = "0.11.3"
-GRAMMAR_CONTRACT = "book-seven-field-json-exact-literal-filter-v2"
-SPAN_POLICY = "bounded-source-clause-spans-inclusive-v2"
-POOL_SCHEMA = "clipper-book-exact-source-spans-v2"
+GRAMMAR_CONTRACT = "book-seven-field-paired-escaped-direct-literal-v3"
+SPAN_POLICY = "bounded-multilingual-clauses-occurrences-v3"
+POOL_SCHEMA = "clipper-book-exact-source-spans-v3"
 MAX_SOURCE_CHARS = 12_000
 MAX_SPANS = 400
 MAX_FIELD_CHARS = 400
 FIELDS = ("id", "topic", "claim", "hook_angle", "visual_action", "evidence", "evidence_field")
-SPLIT = re.compile(r"(?<=[.!?;:])\s+")
+SPLIT = re.compile(r"(?<=[.!?;:。！？؛؟])\s+|(?<=[。！？؛؟])(?=\S)")
+ABBREVIATIONS = frozenset({
+    "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.",
+    "e.g.", "i.e.", "vs.", "etc.", "fig.", "no.", "vol.",
+})
+INITIAL = re.compile(r"(?:[A-Za-z]\.){1,6}$")
 
 
 class ConstraintError(ValueError):
@@ -36,13 +41,32 @@ class DecoderUnavailable(ConstraintError):
     """Exact opt-in grammar runtime absent or incompatible."""
 
 
-def span_pool(text: str, evidence_field: str) -> dict[str, object]:
-    """Bounded complete clause evidence with offsets, duplicates and honest gaps.
+def _boundaries(text: str) -> tuple[list[tuple[int, int]], int, int]:
+    """Split multilingual clauses without cutting common abbreviations/initials."""
+    chunks: list[tuple[int, int]] = []
+    previous = 0
+    separators = 0
+    prevented = 0
+    for match in SPLIT.finditer(text):
+        left, right = match.span()
+        if text[left - 1] == ".":
+            previous_token = text[max(0, text.rfind(" ", 0, left) + 1) : left]
+            # Includes dotted initials (U.S.) and conventional abbreviations.
+            if (
+                previous_token.casefold() in ABBREVIATIONS
+                or INITIAL.fullmatch(previous_token) is not None
+            ):
+                prevented += 1
+                continue
+        chunks.append((previous, left))
+        separators += right - left
+        previous = right
+    chunks.append((previous, len(text)))
+    return chunks, separators, prevented
 
-    Original string content is never rewritten. JSON-escaped literal choices are
-    built only at decoding time; the returned pool contains exact source slices.
-    Source lengths/caps that would omit a clause fail closed before inference.
-    """
+
+def span_pool(text: str, evidence_field: str) -> dict[str, object]:
+    """Exact source offsets per occurrence; no truncation or hidden exclusion."""
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
     spans: list[dict[str, object]] = []
     duplicates: list[dict[str, object]] = []
@@ -50,17 +74,10 @@ def span_pool(text: str, evidence_field: str) -> dict[str, object]:
     omitted_chars = 0
     covered_chars = 0
     separator_chars = 0
+    prevented_breaks = 0
     oversized_source = len(text) > MAX_SOURCE_CHARS
     if not oversized_source:
-        boundaries = [(0, len(text))]
-        if text:
-            boundaries = []
-            offset = 0
-            for match in SPLIT.finditer(text):
-                boundaries.append((offset, match.start()))
-                separator_chars += match.end() - match.start()
-                offset = match.end()
-            boundaries.append((offset, len(text)))
+        boundaries, separator_chars, prevented_breaks = _boundaries(text)
         seen: dict[str, int] = {}
         for left, right in boundaries:
             fragment = text[left:right]
@@ -73,7 +90,7 @@ def span_pool(text: str, evidence_field: str) -> dict[str, object]:
             reason: str | None = None
             if len(value) > MAX_FIELD_CHARS:
                 reason = "overlong"
-            elif value not in seen and len(spans) >= MAX_SPANS:
+            elif len(spans) >= MAX_SPANS:
                 reason = "pool_cap"
             if reason:
                 omitted[reason] += 1
@@ -91,18 +108,18 @@ def span_pool(text: str, evidence_field: str) -> dict[str, object]:
                         "first_start": seen[value],
                     }
                 )
-                continue
-            seen[value] = start
+            else:
+                seen[value] = start
             words = re.findall(r"[a-z0-9]+", value.casefold())[:5]
             stem = "-".join(words)[:70].strip("-") or "unicode-source-span"
-            identifier = f"{stem}-{digest[:12]}"
+            identifier = f"{stem}-{digest[:12]}-{start}"
             if not selection.IDENTIFIER.fullmatch(identifier):
                 raise ConstraintError("invalid deterministic evidence identifier")
             boundary = "clause"
             if start == 0:
-                boundary = "unit_start_unknown"
+                boundary = "unit_start_context_unknown"
             elif end == len(text):
-                boundary = "unit_end_may_be_incomplete"
+                boundary = "unit_end_context_unknown"
             spans.append(
                 {
                     "text": value,
@@ -126,12 +143,16 @@ def span_pool(text: str, evidence_field: str) -> dict[str, object]:
         "coverage": {
             "covered_chars": covered_chars,
             "split_separator_chars": separator_chars,
+            "abbreviation_splits_prevented": prevented_breaks,
             "omitted_fragment_chars": omitted_chars,
             "omitted": omitted,
             "oversized_source": oversized_source,
             "fail_closed_for_coverage": bool(omitted_chars or oversized_source),
             "unit_start_context_unknown": bool(text.strip()),
             "unit_end_context_unknown": bool(text.strip()),
+            "token_budget_status": "unverified_per_span_and_full_reply",
+            "whole_reply_max_tokens": 960,
+            "raw_reply_max_bytes": 16_384,
         },
     }
 
@@ -208,6 +229,18 @@ def decode_schema(request: dict[str, object]) -> dict[str, object]:
         if metadata != expected:
             raise ValueError("source span identity mismatch")
         spans = cast(list[dict[str, object]], expected["spans"])
+        menu = evidence.get("source_evidence_choices")
+        if menu is not None and menu != [
+            {
+                "id": span["id"],
+                "evidence": span["text"],
+                "start": span["start"],
+                "end": span["end"],
+                "boundary": span["boundary"],
+            }
+            for span in spans
+        ]:
+            raise ValueError("source evidence choice menu mismatch")
         if cast(dict[str, object], expected["coverage"])["fail_closed_for_coverage"]:
             raise NoEligibleSpans("source clauses exceed bounded evidence coverage")
         if not spans:
@@ -271,22 +304,49 @@ def _tokenizer_data(tokenizer: Any, revision: str) -> Any:
     return integration.build_token_enforcer_tokenizer_data(tokenizer)
 
 
-def _literal_evidence_guard(parser: Any, values: list[str], base_type: Any) -> Any:
-    """Fast, immutable public CharacterLevelParser overlay for evidence only.
+def _literal_evidence_guard(parser: Any, spans: list[dict[str, object]], base_type: Any) -> Any:
+    """Book-only public LMFE parser overlay enforcing exact source ID/quote pairs.
 
-    JSON Schema enforces the seven-field structure. This small lexer detects
-    the evidence value and narrows its legal next characters to a trie of
-    JSON-serialized literal interiors, including ASCII Unicode escapes.
-    No private library hooks or whole-response SequenceParser are involved.
+    Both direct-Unicode and ASCII-escaped JSON literals decode to one source
+    value. No private LMFE hooks or post-hoc field assembly are used. Character
+    alphabet extension is confined to this request's public parser config.
     """
     terminal = "\x00"
-    trie: dict[str, Any] = {}
-    for value in values:
-        literal = json.dumps(value, ensure_ascii=True)[1:-1]
-        node = trie
-        for character in literal:
-            node = node.setdefault(character, {})
-        node[terminal] = True
+    pairs = {str(span["id"]): str(span["text"]) for span in spans}
+    by_quote: dict[str, set[str]] = {}
+    for identifier, quote in pairs.items():
+        by_quote.setdefault(quote, set()).add(identifier)
+
+    def trie_for(strings: set[str], *, escaped: bool) -> dict[str, Any]:
+        root: dict[str, Any] = {}
+        for value in strings:
+            options = (
+                {
+                    json.dumps(value, ensure_ascii=False)[1:-1],
+                    json.dumps(value, ensure_ascii=True)[1:-1],
+                }
+                if escaped
+                else {value}
+            )
+            for option in options:
+                node = root
+                for character in option:
+                    node = node.setdefault(character, {})
+                node[terminal] = True
+        return root
+
+    all_ids = trie_for(set(pairs), escaped=False)
+    all_quotes = trie_for(set(pairs.values()), escaped=True)
+    quote_by_id = {key: trie_for({value}, escaped=True) for key, value in pairs.items()}
+    ids_by_quote = {
+        quote: trie_for(ids, escaped=False) for quote, ids in by_quote.items()
+    }
+    # The released adapter replaces parser.config with a tokenizer-derived
+    # alphabet. Extend that PUBLIC config for exact source characters: otherwise
+    # its free-string parser excludes direct Unicode even when tokens exist.
+    extra_alphabet = "".join(sorted({
+        c for value in pairs.values() for c in value if ord(c) > 127
+    }))
 
     class EvidenceGuard(base_type):  # type: ignore[misc]
         def __init__(
@@ -299,6 +359,12 @@ def _literal_evidence_guard(parser: Any, values: list[str], base_type: Any) -> A
             key_buffer: str = "",
             last_key: str = "",
             last_sig: str = "",
+            field: str = "",
+            value_buffer: str = "",
+            in_lessons: bool = False,
+            in_candidate: bool = False,
+            selected_id: str | None = None,
+            selected_quote: str | None = None,
             active: dict[str, Any] | None = None,
             parser_config: Any = None,
         ) -> None:
@@ -309,6 +375,12 @@ def _literal_evidence_guard(parser: Any, values: list[str], base_type: Any) -> A
             self.key_buffer = key_buffer
             self.last_key = last_key
             self.last_sig = last_sig
+            self.field = field
+            self.value_buffer = value_buffer
+            self.in_lessons = in_lessons
+            self.in_candidate = in_candidate
+            self.selected_id = selected_id
+            self.selected_quote = selected_quote
             self.active = active
             super().__init__(parser_config)
 
@@ -318,9 +390,9 @@ def _literal_evidence_guard(parser: Any, values: list[str], base_type: Any) -> A
 
         @config.setter
         def config(self, value: Any) -> None:
+            if extra_alphabet:
+                value.alphabet += "".join(c for c in extra_alphabet if c not in value.alphabet)
             self._config = value
-            # LMFE's UnionParser does not initialize a config property.
-            # Its child JSON parsers retain the configured shared root.
             self.inner.config = value
 
         def get_allowed_characters(self) -> str:
@@ -330,47 +402,91 @@ def _literal_evidence_guard(parser: Any, values: list[str], base_type: Any) -> A
             options = set(self.active).difference({terminal})
             if terminal in self.active and not self.escaped:
                 options.add('"')
-            return "".join(c for c in allowed if c in options)
+            return "".join(character for character in allowed if character in options)
 
         def add_character(self, character: str) -> Any:
             if character not in self.get_allowed_characters():
-                raise ConstraintError("invalid exact-evidence character continuation")
+                raise ConstraintError("invalid paired source evidence character")
             inner = self.inner.add_character(character)
             in_string, escaped, is_key = self.in_string, self.escaped, self.is_key
             key_buffer, last_key, last_sig = self.key_buffer, self.last_key, self.last_sig
+            field, value_buffer = self.field, self.value_buffer
+            in_lessons, in_candidate = self.in_lessons, self.in_candidate
+            selected_id, selected_quote = self.selected_id, self.selected_quote
             active = self.active
+
             if not in_string:
                 if character == '"':
                     is_key = last_sig != ":"
-                    key_buffer = ""
-                    active = trie if not is_key and last_key == "evidence" else None
-                    in_string = True
-                    escaped = False
+                    field = "" if is_key else last_key
+                    key_buffer, value_buffer = "", ""
+                    if in_candidate and field == "id":
+                        active = (
+                            ids_by_quote[selected_quote] if selected_quote is not None else all_ids
+                        )
+                    elif in_candidate and field == "evidence":
+                        active = (
+                            quote_by_id[selected_id] if selected_id is not None else all_quotes
+                        )
+                    else:
+                        active = None
+                    in_string, escaped = True, False
                 elif not character.isspace():
+                    if character == "[" and last_key == "lessons":
+                        in_lessons = True
+                    elif character == "{" and in_lessons:
+                        in_candidate = True
+                        selected_id, selected_quote = None, None
+                    elif character == "}" and in_candidate:
+                        if selected_id is None or pairs.get(selected_id) != selected_quote:
+                            raise ConstraintError("source ID/evidence pair mismatch")
+                        in_candidate = False
+                    elif character == "]" and in_lessons:
+                        in_lessons = False
                     last_sig = character
             elif escaped:
                 if active is not None:
                     active = active[character]
-                elif is_key:
+                if is_key:
                     key_buffer += character
+                elif field in ("id", "evidence"):
+                    value_buffer += character
                 escaped = False
             elif character == "\\":
                 if active is not None:
                     active = active[character]
+                if field in ("id", "evidence") and not is_key:
+                    value_buffer += character
                 escaped = True
             elif character == '"':
                 if active is not None and terminal not in active:
-                    raise ConstraintError("incomplete exact source evidence literal")
+                    raise ConstraintError("incomplete source ID/evidence choice")
                 if is_key:
                     last_key = key_buffer
+                elif in_candidate and field == "id":
+                    selected_id = json.loads('"' + value_buffer + '"')
+                    if selected_id not in pairs or (
+                        selected_quote is not None and pairs[selected_id] != selected_quote
+                    ):
+                        raise ConstraintError("source ID/evidence pair mismatch")
+                elif in_candidate and field == "evidence":
+                    selected_quote = json.loads('"' + value_buffer + '"')
+                    if selected_quote not in by_quote or (
+                        selected_id is not None and pairs[selected_id] != selected_quote
+                    ):
+                        raise ConstraintError("source ID/evidence pair mismatch")
                 active = None
                 in_string = False
+                field = ""
                 last_sig = '"'
             else:
                 if active is not None:
                     active = active[character]
-                elif is_key:
+                if is_key:
                     key_buffer += character
+                elif field in ("id", "evidence"):
+                    value_buffer += character
+
             return EvidenceGuard(
                 inner,
                 in_string=in_string,
@@ -379,6 +495,12 @@ def _literal_evidence_guard(parser: Any, values: list[str], base_type: Any) -> A
                 key_buffer=key_buffer,
                 last_key=last_key,
                 last_sig=last_sig,
+                field=field,
+                value_buffer=value_buffer,
+                in_lessons=in_lessons,
+                in_candidate=in_candidate,
+                selected_id=selected_id,
+                selected_quote=selected_quote,
                 active=active,
                 parser_config=self.config,
             )
@@ -392,18 +514,25 @@ def _literal_evidence_guard(parser: Any, values: list[str], base_type: Any) -> A
         def cache_key(self) -> Any:
             return None if self.active is not None else self.inner.cache_key()
 
-    return EvidenceGuard(parser, parser_config=parser.config)
+    root = EvidenceGuard(parser, parser_config=parser.config)
+    root.config = parser.config
+    return root
+
+
+def selected_span(item: dict[str, str], request: dict[str, object]) -> dict[str, object]:
+    """Return the one declared occurrence after verifying its raw ID/quote pair."""
+    decode_schema(request)
+    spans = cast(list[dict[str, object]], cast(dict[str, object], request["constraints"])["spans"])
+    for span in spans:
+        if span["id"] == item["id"] and span["text"] == item["evidence"]:
+            return span
+    raise ConstraintError("local reply source ID/evidence pair was not declared")
 
 
 def validate_local_choice(lessons: list[dict[str, str]], request: dict[str, object]) -> None:
-    """Independent raw-derived local evidence choice check, also run on replay."""
-    decode_schema(request)
-    choices = cast(list[dict[str, str]], cast(dict[str, object], request["constraints"])["spans"])
-    evidence = {span["text"] for span in choices}
-    ids = {span["id"] for span in choices}
+    """Independent actual-raw validation, including every first/replay pair."""
     for lesson in lessons:
-        if lesson["evidence"] not in evidence or lesson["id"] not in ids:
-            raise ConstraintError("local reply evidence was not a canonical source choice")
+        selected_span(lesson, request)
 
 
 def prefix_for(request: dict[str, object], tokenizer: Any, revision: str) -> Any:
@@ -411,9 +540,8 @@ def prefix_for(request: dict[str, object], tokenizer: Any, revision: str) -> Any
     schema = decode_schema(request)
     module, integration = _decoder()
     spans = cast(list[dict[str, object]], cast(dict[str, object], request["constraints"])["spans"])
-    values = [str(span["text"]) for span in spans]
     parser = _literal_evidence_guard(
-        module.JsonSchemaParser(schema), values, module.CharacterLevelParser
+        module.JsonSchemaParser(schema), spans, module.CharacterLevelParser
     )
     tokenizer_data = _tokenizer_data(tokenizer, revision)
     return integration.build_transformers_prefix_allowed_tokens_fn(tokenizer_data, parser)

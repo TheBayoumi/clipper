@@ -43,8 +43,8 @@ def _drive(parser: CharacterLevelParser, value: str) -> CharacterLevelParser:
 def _guard(request: dict[str, object]) -> CharacterLevelParser:
     schema = constrained.decode_schema(request)
     parser = JsonSchemaParser(schema)
-    choices = [str(s["text"]) for s in request["constraints"]["spans"]]
-    return constrained._literal_evidence_guard(parser, choices, CharacterLevelParser)
+    spans = request["constraints"]["spans"]
+    return constrained._literal_evidence_guard(parser, spans, CharacterLevelParser)
 
 
 def _synthetic_tokens() -> TokenEnforcerTokenizerData:
@@ -150,10 +150,12 @@ def test_span_selection_exact_unicode_and_declared_omissions(source: str, expect
 
 def test_boundary_cap_duplicate_and_overlong_coverage_are_explicit() -> None:
     pool = constrained.span_pool("Repeated. Repeated. Tail without terminator", "native_text")
-    assert len(pool["spans"]) == 2
+    assert len(pool["spans"]) == 3
     assert pool["coverage"]["omitted"]["duplicate"] == 1
-    assert pool["spans"][-1]["boundary"] == "unit_end_may_be_incomplete"
-    assert pool["spans"][0]["boundary"] == "unit_start_unknown"
+    assert pool["spans"][0]["id"] != pool["spans"][1]["id"]
+    assert pool["spans"][0]["text"] == pool["spans"][1]["text"]
+    assert pool["spans"][-1]["boundary"] == "unit_end_context_unknown"
+    assert pool["spans"][0]["boundary"] == "unit_start_context_unknown"
     cap = constrained.span_pool(" ".join(f"Sentence {i}." for i in range(30)), "native_text")
     assert len(cap["spans"]) == 30
     assert cap["coverage"]["omitted"]["pool_cap"] == 0
@@ -404,6 +406,104 @@ def test_private_coverage_record_reports_separators_and_boundaries() -> None:
     assert total["units_fail_closed_for_coverage"] == 0
     assert total["unit_start_context_unknown"] == 1
     assert total["unit_end_context_unknown"] == 1
+
+
+def test_exact_pairs_rejected_in_both_field_orders_and_raw_validator() -> None:
+    request = _request("First source. Second source.")
+    spans = request["constraints"]["spans"]
+    first, second = spans[0], spans[1]
+    assert first["id"] != second["id"]
+    selected = {
+        "id": first["id"],
+        "topic": "A topic",
+        "claim": "An authored claim",
+        "hook_angle": "A source hook",
+        "visual_action": "Draw two cards",
+        "evidence": first["text"],
+        "evidence_field": "native_text",
+    }
+    constrained.validate_local_choice([selected], request)
+    wrong = {**selected, "evidence": second["text"]}
+    with pytest.raises(constrained.ConstraintError, match="pair"):
+        constrained.validate_local_choice([wrong], request)
+    with pytest.raises(constrained.ConstraintError, match="pair"):
+        constrained.selected_span(wrong, request)
+    for candidate in (wrong, {"evidence": wrong["evidence"], **{
+        key: value for key, value in wrong.items() if key != "evidence"
+    }}):
+        raw = json.dumps({"lessons": [candidate]}, separators=(",", ":"))
+        parser = _guard(request)
+        for char in raw:
+            if char not in parser.get_allowed_characters():
+                break
+            parser = parser.add_character(char)
+        else:
+            assert not parser.can_end(), "mismatched pair must not decode"
+    # The same quote occurs twice, with distinct *declared* occurrence IDs.
+    duplicated = constrained.span_pool("Repeat. Repeat.", "native_text")
+    assert len(duplicated["spans"]) == 2
+    assert len(duplicated["duplicates"]) == 1
+    assert duplicated["spans"][0]["id"] != duplicated["spans"][1]["id"]
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("Dr. Ada met Prof. Lin. The result followed.", 2),
+        ("U.S. trials succeeded. Dr. Lin agreed.", 2),
+        ("A. Smith reported a result. Another result followed.", 2),
+        ("第一句。第二句！第三句？", 3),
+        ("الجملة الأولى؟الجملة الثانية؛الجملة الثالثة.", 3),
+        ("سؤال؟ جواب.", 2),
+    ],
+)
+def test_multilingual_boundaries_and_abbreviations(source: str, expected: int) -> None:
+    pool = constrained.span_pool(source, "native_text")
+    assert len(pool["spans"]) == expected
+    assert pool["coverage"]["omitted_fragment_chars"] == 0
+    assert sum(len(s["text"]) for s in pool["spans"]) + (
+        pool["coverage"]["split_separator_chars"]
+    ) == len(source)
+    assert pool["coverage"]["token_budget_status"] == "unverified_per_span_and_full_reply"
+
+
+def test_true_350_word_upper_bound_and_unresolved_long_fragment() -> None:
+    # Upstream WorkUnit text is exactly 350 whitespace-delimited words.
+    source = " ".join("a." for _ in range(350))
+    pool = constrained.span_pool(source, "native_text")
+    assert len(pool["spans"]) == 350 < constrained.MAX_SPANS
+    assert pool["coverage"]["omitted_fragment_chars"] == 0
+    large = constrained.span_pool("x" * 401 + ". Another.", "native_text")
+    assert large["coverage"]["omitted"]["overlong"] == 1
+    assert large["coverage"]["fail_closed_for_coverage"] is True
+    with pytest.raises(constrained.NoEligibleSpans):
+        constrained.decode_schema(_request("x" * 401 + ". Another."))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'Quoted "qualification" with a slash \\ and an emoji 🧪.',
+        "Unicode café 漢字 العربية remains exact.",
+        "Control\\tand\\nencoded sequences remain exact.",
+    ],
+)
+def test_direct_and_ascii_wire_representations_decode_to_same_source(source: str) -> None:
+    request = _request(source)
+    span = request["constraints"]["spans"][0]
+    lesson = {
+        "id": span["id"],
+        "topic": "Test",
+        "claim": "An authored claim",
+        "hook_angle": "Show source",
+        "visual_action": "A source card",
+        "evidence": span["text"],
+        "evidence_field": "native_text",
+    }
+    for ascii_only in (False, True):
+        raw = json.dumps({"lessons": [lesson]}, ensure_ascii=ascii_only)
+        _drive(_guard(request), raw)
+        assert whole_book.load_strict_reply(raw)["lessons"][0] == lesson
 
 
 def test_incomplete_generation_raw_is_not_a_valid_completion() -> None:

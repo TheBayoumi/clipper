@@ -1067,7 +1067,12 @@ class BookOrchestrator:
                             raise mining.BookMiningError("cached analysis unit identity mismatch")
                         validated = whole_book.validate_reply({"lessons": stored["lessons"]}, unit)
                         for item in validated:
-                            candidate = whole_book.candidate_for(book, unit, item)
+                            selected = (
+                                constrained.selected_span(item, request) if local_cpu else None
+                            )
+                            candidate = whole_book.candidate_for(
+                                book, unit, item, local_span=selected
+                            )
                             if candidate["id"] in used_ids:
                                 raise mining.BookMiningError("mined candidate identity collision")
                             used_ids.add(candidate["id"])

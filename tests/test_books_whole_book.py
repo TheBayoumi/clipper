@@ -164,11 +164,12 @@ def test_canonical_prompt_states_existing_strict_validator_contract(
         "never as useful-lesson success",
         "nonempty string of at most 400 characters",
         "^[a-z0-9]+(?:-[a-z0-9]+)*$",
-        "fresh descriptive",
-        "unique within this reply",
-        'do not copy the supplied "anchor"',
+        '"source_evidence_choices"',
+        "one exact paired entry",
+        "Do not change either",
+        "do not repeat in one reply",
         "specific claim",
-        "exact continuous substring",
+        "selected entry exactly",
         '"evidence_field" must exactly repeat',
         "unreviewed",
         "not approved or publishable",
@@ -189,6 +190,13 @@ def test_canonical_prompt_states_existing_strict_validator_contract(
     assert supplied["text"] == unit.text
     assert supplied["evidence_field"] == unit.evidence_field
     assert supplied["anchor"] == unit.anchor
+    choices = supplied["source_evidence_choices"]
+    assert len(choices) == len(request["constraints"]["spans"])
+    for selected, span in zip(choices, request["constraints"]["spans"]):
+        assert selected["id"] == span["id"]
+        assert selected["evidence"] == unit.text[span["start"] : span["end"]]
+        assert selected["start"] == span["start"]
+        assert selected["end"] == span["end"]
     assert request["max_new_tokens"] == 960
 
 
@@ -335,6 +343,127 @@ def test_local_fresh_and_replay_recheck_canonical_selected_evidence(
     export = json.loads(Path(first["export_path"]).read_bytes())
     assert export["evidence_coverage_summary"] == summary
     assert export["publish_eligible"] is False
+
+
+def test_declared_occurrence_pair_provenance_is_raw_derived_not_recorded(
+    tmp_path: Path,
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=1, with_image=False)
+    work = whole_book.plan_for(acquired.book)
+    request = whole_book.request_for(acquired.book, work.units[0])
+    response = response_for(work.units[0])
+    raw = json.dumps(response, ensure_ascii=False)
+    result = runner.mine_candidate(
+        acquired.analysis_ref_path,
+        local_cpu=True,
+        max_new_units=len(work.units),
+        local_completion=lambda request: json.dumps(
+            response_for(next(unit for unit in work.units if unit.text == json.loads(
+                request["messages"][1]["content"]
+            )["text"]))
+        ),
+    )
+    assert result["status"] == "complete"
+    catalog = json.loads(Path(result["export_path"]).read_bytes())
+    mined = catalog["books"][0]["lessons"]
+    assert mined
+    expected = constrained.selected_span(response["lessons"][0], request)
+    chosen = mined[0]["evidence_anchor"]["selected_occurrence"]
+    assert chosen == {
+        "unit_start": expected["start"],
+        "unit_end": expected["end"],
+        "quote_sha256": expected["sha256"],
+        "boundary": expected["boundary"],
+        "id": expected["id"],
+    }
+    assert mined[0]["review_status"] == "MINED_UNREVIEWED"
+    assert mined[0]["publish_eligible"] is False
+    assert "selected_occurrence" not in whole_book.candidate_for(
+        acquired.book, work.units[0], response["lessons"][0]
+    )["evidence_anchor"]
+    # Distinct raw IDs disambiguate exact repeated-text occurrences.
+    repeated = replace(work.units[0], text="Repeat. Repeat.")
+    pool = constrained.span_pool(repeated.text, repeated.evidence_field)
+    one, two = pool["spans"]
+    assert one["text"] == two["text"] and one["id"] != two["id"]
+    for span in (one, two):
+        choice = dict(response["lessons"][0], id=span["id"], evidence=span["text"])
+        validated = constrained.selected_span(
+            choice,
+            {
+                "messages": [
+                    {"role": "system", "content": "synthetic"},
+                    {
+                        "role": "user",
+                        "content": json.dumps({
+                            "text": repeated.text,
+                            "evidence_field": repeated.evidence_field,
+                        }),
+                    },
+                ],
+                "constraints": pool,
+            },
+        )
+        item = whole_book.candidate_for(acquired.book, repeated, choice, local_span=validated)
+        occ = item["evidence_anchor"]["selected_occurrence"]
+        assert occ["unit_start"] == span["start"]
+        assert occ["unit_end"] == span["end"]
+    assert raw.encode("utf-8") == json.dumps(response, ensure_ascii=False).encode("utf-8")
+
+
+def test_fake_existing_generation_path_accepts_multi_eos_and_rejects_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    class FakeInput:
+        shape = (1, 1)
+
+    class FakeTokenizer:
+        eos_token_id = 0
+
+        def apply_chat_template(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+            return {"input_ids": FakeInput()}
+
+        def decode(self, _tokens: object, *, skip_special_tokens: bool) -> str:
+            assert skip_special_tokens
+            return '{"lessons":[]}'
+
+    class FakeModel:
+        generation_config = SimpleNamespace(eos_token_id=[0, 42])
+
+        def __init__(self, terminal: int) -> None:
+            self.terminal = terminal
+
+        def generate(self, **_kwargs: object) -> list[list[int]]:
+            # Synthetic fixed-token output, NOT a real model inference.
+            return [[999, 111, self.terminal]]
+
+    actual_import = scripting.importlib.import_module
+    fake_torch = SimpleNamespace(
+        manual_seed=lambda _seed: None,
+        inference_mode=lambda: nullcontext(),
+    )
+
+    def imported(name: str) -> object:
+        return fake_torch if name == "torch" else actual_import(name)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(scripting.importlib, "import_module", imported)
+        patch.setattr(constrained, "prefix_for", lambda *_args: lambda _batch, _ids: [0])
+        patch.setattr(scripting, "_public_cpu_smoke_phase", lambda _phase: None)
+        request = {"seed": 42, "max_new_tokens": 960, "messages": []}
+        tok = FakeTokenizer()
+        for last in (0, 42):
+            patch.setattr(scripting, "_script_pipeline", lambda last=last: (FakeModel(last), tok))
+            assert scripting._run_pinned_qwen(request, normalize_script=False) == (
+                '{"lessons":[]}'
+            )
+        patch.setattr(scripting, "_script_pipeline", lambda: (FakeModel(777), tok))
+        with pytest.raises(scripting.IncompleteConstrainedResponse) as exc:
+            scripting._run_pinned_qwen(request, normalize_script=False)
+        assert exc.value.raw == '{"lessons":[]}'
 
 
 def test_canonical_prompt_change_invalidates_cache_but_keeps_old_raw(

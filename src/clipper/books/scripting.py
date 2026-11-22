@@ -477,9 +477,23 @@ def _run_pinned_qwen(request: dict[str, object], *, normalize_script: bool) -> s
     output_ids = output[0][inputs["input_ids"].shape[-1] :]
     result: str = tokenizer.decode(output_ids, skip_special_tokens=True)
     if not normalize_script:
-        # A valid-looking final prefix at the 960-token cap is not a completion.
+        # Match the *effective* pinned model EOS set without changing generation.
+        # Qwen generation_config can carry more than tokenizer.eos_token_id.
+        configured = getattr(
+            getattr(model, "generation_config", None), "eos_token_id", None
+        )
+        if configured is None:
+            configured = tokenizer.eos_token_id
+        if isinstance(configured, int):
+            end_tokens = {configured}
+        elif isinstance(configured, (tuple, list)) and all(
+            isinstance(token_id, int) for token_id in configured
+        ):
+            end_tokens = set(configured)
+        else:
+            end_tokens = set()
         last_token = int(output_ids[-1]) if len(output_ids) else None
-        if tokenizer.eos_token_id is None or last_token != int(tokenizer.eos_token_id):
+        if last_token is None or last_token not in end_tokens:
             raise IncompleteConstrainedResponse(result)
     if normalize_script:
         result = result.strip()
