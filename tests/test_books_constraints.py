@@ -868,8 +868,6 @@ def test_public_book_context_preflight_is_pinned_and_weight_free(
 
 def test_synthetic_public_book_prefix_wrapper_and_escape_paths() -> None:
     """Exercise production wrapper in ordinary pytest, with no models."""
-    from typing import Any
-
     source = "A fully synthetic source sentence."
     request = _request(source)
     data = _synthetic_tokens()
