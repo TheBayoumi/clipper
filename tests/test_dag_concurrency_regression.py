@@ -592,3 +592,172 @@ def test_local_post_pass_cancellation_preserves_foreign_owner(
     assert store.cached_output(identity) == {"synthetic": True}
     assert not (store._directory(identity) / ".write-lock").exists()
     assert not list(store._directory(identity).glob(".*.tmp"))
+
+
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("boundary", ["opened", "locked"])
+def test_os_lock_acquisition_cancellation_leaves_no_orphan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, private: bool, boundary: str
+) -> None:
+    identity = StageIdentity(
+        stage_name="books.ingest", source_hash="synthetic", contract_hash="fence"
+    )
+    store = DagStore(
+        tmp_path / "dag",
+        private_stages=frozenset({identity.stage_name}) if private else frozenset(),
+    )
+    primary = KeyboardInterrupt("synthetic lock acquisition cancellation")
+    original_open = os.open
+    original_lock = DagStore._lock_file
+    injected = False
+
+    def opened(path, flags, mode=0o777):
+        nonlocal injected
+        if not injected and boundary == "opened" and str(path).endswith(".write-lock-file"):
+            injected = True
+            descriptor = original_open(path, flags, mode)
+            os.close(descriptor)
+            raise primary
+        return original_open(path, flags, mode)
+
+    def locked(descriptor: int, *, acquire: bool) -> None:
+        nonlocal injected
+        original_lock(descriptor, acquire=acquire)
+        if acquire and boundary == "locked" and not injected:
+            injected = True
+            raise primary
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, "open", opened)
+        scoped.setattr(DagStore, "_lock_file", staticmethod(locked))
+        with pytest.raises(KeyboardInterrupt) as caught:
+            store.execute(identity, lambda: {"synthetic": True})
+    assert caught.value is primary
+    assert injected
+    assert not store._execution_claim_path(identity).exists()
+    assert not (store._directory(identity) / ".write-lock").exists()
+    assert store._directory(identity).joinpath(".write-lock-file").exists()
+    if private:
+        assert store._directory(identity).stat().st_mode & 0o777 == 0o700
+        lock = store._directory(identity) / ".write-lock-file"
+        assert lock.stat().st_mode & 0o777 == 0o600
+    with monkeypatch.context() as scoped:
+        scoped.setattr(time, "sleep", lambda _value: pytest.fail("lock waited on abandoned owner"))
+        assert store.execute(identity, lambda: {"synthetic": True}) == ({"synthetic": True}, False)
+
+
+def test_os_file_lock_is_exclusive_across_processes_and_released(
+    tmp_path: Path,
+) -> None:
+    import subprocess
+    import sys
+
+    if os.name == "nt":
+        pytest.skip("process probe uses fcntl on Linux; Windows uses msvcrt")
+
+    store = DagStore(tmp_path)
+    identity = _identity()
+    other = (
+        "import fcntl, os, sys; "
+        "fd=os.open(sys.argv[1],os.O_RDWR); "
+        "ok=True; "
+        "exec('try:\\n fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)\\n"
+        "except BlockingIOError:\\n ok=False'); "
+        "os.close(fd); "
+        "sys.exit(0 if ok else 1)"
+    )
+    with store._write_lock(identity):
+        path = store._directory(identity) / ".write-lock-file"
+        blocked = subprocess.run(
+            [sys.executable, "-c", other, str(path)],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        assert blocked.returncode == 1, blocked.stderr
+    acquired = subprocess.run(
+        [sys.executable, "-c", other, str(path)],
+        capture_output=True, text=True, timeout=5, check=False,
+    )
+    assert acquired.returncode == 0, acquired.stderr
+
+
+@pytest.mark.parametrize("missing", ["started_at", "usage", "cost_usd"])
+@pytest.mark.parametrize("private", [False, True])
+def test_post_replace_incomplete_pass_is_not_reusable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str, private: bool
+) -> None:
+    identity = StageIdentity(
+        stage_name="books.ingest", source_hash="synthetic", contract_hash="metadata"
+    )
+    store = DagStore(
+        tmp_path / "dag",
+        private_stages=frozenset({identity.stage_name}) if private else frozenset(),
+    )
+    original_unlink = Path.unlink
+    primary = KeyboardInterrupt("synthetic metadata cancellation")
+    injected = False
+    calls: list[int] = []
+
+    def operation() -> object:
+        calls.append(1)
+        return {"complete": True}
+
+    def unlink(path: Path, *args, **kwargs):
+        nonlocal injected
+        if (
+            not injected
+            and path.name.startswith(".stage.json.")
+            and not path.exists()
+            and store.cached_output(identity) == {"complete": True}
+        ):
+            record = json.loads(store._record_path(identity).read_text())
+            record.pop(missing)
+            store._record_path(identity).write_text(json.dumps(record))
+            injected = True
+            raise primary
+        return original_unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "unlink", unlink)
+        with pytest.raises(KeyboardInterrupt) as caught:
+            store.execute(identity, operation)
+    assert caught.value is primary
+    assert injected
+    assert store.cached_output(identity) is None
+    assert not store._execution_claim_path(identity).exists()
+    assert store.attempt_count(identity) == 1
+    assert store.execute(identity, operation) == ({"complete": True}, False)
+    assert store.attempt_count(identity) == 2
+    assert calls == [1, 1]
+    assert not list(store._directory(identity).glob(".*.tmp"))
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("started_at", ""),
+        ("completed_at", None),
+        ("usage", None),
+        ("usage", []),
+        ("cost_usd", -1.0),
+        ("cost_usd", float("inf")),
+        ("cost_usd", True),
+        ("attempt_count", False),
+        ("output_fingerprint", "x" * 64),
+        ("error_type", "spurious"),
+    ],
+)
+def test_complete_pass_validation_rejects_invalid_metadata(
+    tmp_path: Path, key: str, value: object
+) -> None:
+    store = DagStore(tmp_path)
+    identity = _identity()
+    assert store.execute(identity, lambda: {"synthetic": True})[1] is False
+    path = store._record_path(identity)
+    original = path.read_bytes()
+    record = json.loads(original)
+    record[key] = value
+    path.write_text(json.dumps(record))
+    assert store.cached_output(identity) is None
+    path.write_bytes(original)
+    assert store.cached_output(identity) == {"synthetic": True}
+    assert path.read_bytes() == original

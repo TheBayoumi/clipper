@@ -403,3 +403,45 @@ The existing one-second join budget remains finite; an uncooperative worker
 cannot be forcibly killed, and failure to stop is reported rather than silently
 returning success. Owner-bound release remains best effort, without changing
 local or production lease durations or the coordinator API.
+
+### Serialized terminal authority and OS-managed local locks
+
+The production coordinated DagStore now has two optional paired callbacks:
+`read_committed(identity)` reads the authoritative durable terminal without
+reloading the dirty mount, and `publish_terminal(identity,owner,record,output)`
+asks the existing serialized lease endpoint to publish the complete terminal.
+Claim receipts carry persisted per-stage attempt counts. Only that endpoint may
+write new `_dag-authority/<stage-and-cache-key>.json` receipts, after checking the
+current lease owner, attempt number and unexpired lease. Both PASS and FAILED
+terminal records are fenced; a prior PASS cannot be revoked by a later FAILED.
+Complete output is transported as JSON-serializable stage data over the existing
+Modal function RPC, which can be larger than a compact lease message. Modal
+request-size limits and durable read behavior need separate live qualification;
+no new services or model/provider calls are introduced.
+
+`Volume.read_file` is used to read committed backend bytes: `Volume.reload`
+can implicitly commit the calling container's dirty files, and Volume background
+or shutdown commits may occur. Workers in the authoritative mode do not write
+canonical PASS/RUNNING records, so incidental commits cannot promote an unfenced
+PASS. Valid old complete records are only read as read-only committed legacy
+fallback; old artifact bytes are never rewritten by migration. A lost terminal
+acknowledgement remains an error, even when a subsequent committed read shows
+valid PASS. When read is busy or unavailable, no rerun or success is inferred.
+Server serialization must be maintained (one input at a time on the existing
+max_containers=1 endpoint); a rolling mixed-version writer migration cannot
+be certified by local tests alone.
+
+Local and legacy filesystem DAG stages use OS advisory locks on the persistent
+`.write-lock-file` instead of an orphanable mkdir lock. Cancellation or process
+death releases the OS handle. Existing old-style `.write-lock` directories are
+not removed or guessed stale; acquisition fails closed until the owner resolves
+it. Private directories remain 0700 and lock files 0600. The public
+`cached_output` API retains the historic ambiguity of Python None, while
+`execute` and internal lookups use an explicit hit indicator and correctly
+reuse JSON null/false/empty values. Persisted PASS validation requires complete
+identity/record fields, reasonable metadata types, status and output digest.
+
+There is no guarantee for an unavailable coordinator, uncooperative renewal
+thread, unsupported Modal RPC payload size or cross-version running writers.
+Unconfirmed publication is not transformed into success. No source-fidelity,
+private-runtime or publication approval is implied by these tests.

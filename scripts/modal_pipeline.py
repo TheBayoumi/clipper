@@ -951,6 +951,74 @@ def _editorial_acceptance_probe(
     return result
 
 
+_TERMINAL_SCHEMA = "clipper-dag-authoritative-terminal-v1"
+
+
+def _durable_json(path: str) -> dict[str, Any] | None:
+    """Read committed Volume bytes without reload or flushing this mount."""
+    try:
+        payload = b"".join(artifact_volume.read_file(path))
+    except (FileNotFoundError, modal.exception.NotFoundError):
+        return None
+    document = json.loads(payload)
+    if not isinstance(document, dict):
+        raise RuntimeError("DAG committed storage contains invalid JSON evidence")
+    return document
+
+
+def _dag_terminal_path(stage_name: str, cache_key: str) -> str:
+    key = hashlib.sha256(f"{stage_name}\0{cache_key}".encode()).hexdigest()
+    return f"_dag-authority/{key}.json"
+
+
+def _dag_legacy_terminal(
+    stage_name: str, cache_key: str, dag_root: str
+) -> dict[str, Any] | None:
+    """Read a complete, previously committed PASS without rewriting legacy bytes."""
+    from clipper.dag import DagStore
+    from clipper.stage_contracts import content_fingerprint
+
+    if not dag_root:
+        return None
+    root = Path(dag_root)
+    if root.is_absolute() or any(part in {"..", "."} for part in root.parts):
+        raise ValueError("DAG legacy root must be a safe relative artifact path")
+    stage = "".join(c if c.isalnum() or c in {"-", "_"} else "-" for c in stage_name)
+    prefix = str(root / stage / cache_key)
+    record = _durable_json(f"{prefix}/stage.json")
+    if record is None or not DagStore._complete_pass_record(record):
+        return None
+    identity = record.get("identity")
+    if not isinstance(identity, dict) or identity.get("cache_key") != cache_key:
+        return None
+    output = _durable_json(f"{prefix}/output.json")
+    # JSON values can be scalar or null; read_file is authoritative, not the mount.
+    if output is None:
+        try:
+            payload = b"".join(artifact_volume.read_file(f"{prefix}/output.json"))
+        except (FileNotFoundError, modal.exception.NotFoundError):
+            return None
+        output_value: object = json.loads(payload)
+    else:
+        output_value = output
+    if content_fingerprint(output_value) != record["output_fingerprint"]:
+        return None
+    return {"record": record, "output": output_value}
+
+
+def _dag_committed_terminal(
+    stage_name: str, cache_key: str, dag_root: str
+) -> dict[str, Any] | None:
+    stored = _durable_json(_dag_terminal_path(stage_name, cache_key))
+    if stored is not None:
+        if stored.get("schema") != _TERMINAL_SCHEMA or not isinstance(
+            stored.get("record"), dict
+        ) or "output" not in stored:
+            raise RuntimeError("DAG authoritative terminal envelope is malformed")
+        return {"record": stored["record"], "output": stored["output"]}
+    return _dag_legacy_terminal(stage_name, cache_key, dag_root)
+
+
 @app.function(
     image=runner_image,
     volumes={ARTIFACT_ROOT: artifact_volume},
@@ -960,34 +1028,39 @@ def _editorial_acceptance_probe(
     scaledown_window=2,
 )
 def dag_execution_lease(payload: dict[str, Any]) -> dict[str, Any]:
-    """Serialize editorial DAG ownership across Modal Volume snapshots."""
+    """Serialize ownership and terminal publication within one existing authority."""
+
+    from clipper.dag import DagStore
+    from clipper.stage_contracts import content_fingerprint
 
     _assert_expected_git_sha(payload)
     action = str(payload.get("action") or "")
     stage_name = str(payload.get("stage_name") or "")
     cache_key = str(payload.get("cache_key") or "")
     owner_id = str(payload.get("owner_id") or "")
+    dag_root = str(payload.get("dag_root") or "")
     ttl_seconds = float(payload.get("ttl_seconds") or 0.0)
-    if action not in {"claim", "renew", "release"}:
+    if action not in {"claim", "renew", "release", "read", "publish"}:
         raise ValueError("unsupported DAG lease action")
-    if not stage_name or not cache_key or len(owner_id) != 32:
+    if not stage_name or not cache_key or (action != "read" and len(owner_id) != 32):
         raise ValueError("DAG lease request identity is invalid")
-    if action != "release" and (
+    if action in {"claim", "renew"} and (
         not math.isfinite(ttl_seconds) or ttl_seconds <= 0 or ttl_seconds > 21_600
     ):
         raise ValueError("DAG lease ttl must be finite and within the production timeout")
+    # Never use reload to query durability: Modal reload may persist dirty files.
+    if action == "read":
+        return {"terminal": _dag_committed_terminal(stage_name, cache_key, dag_root)}
 
     artifact_volume.reload()
     key = hashlib.sha256(f"{stage_name}\0{cache_key}".encode()).hexdigest()
     lease_path = Path(ARTIFACT_ROOT) / "_dag-leases" / f"{key}.json"
     state: dict[str, Any] = {}
     if lease_path.is_file():
-        try:
-            loaded = json.loads(lease_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            loaded = {}
-        if isinstance(loaded, dict):
-            state = loaded
+        loaded = json.loads(lease_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            raise RuntimeError("DAG persisted lease contains invalid ownership evidence")
+        state = loaded
 
     now = time.time()
     current_owner = str(state.get("owner_id") or "")
@@ -998,40 +1071,87 @@ def dag_execution_lease(payload: dict[str, Any]) -> dict[str, Any]:
         and math.isfinite(float(expires_at))
         and float(expires_at) > now
     )
+    attempts = state.get("attempt_count")
+    counter = attempts if isinstance(attempts, int) and not isinstance(attempts, bool) else 0
 
     if action == "release":
         if current_owner != owner_id:
             return {"released": False, "owner_id": current_owner}
-        lease_path.unlink(missing_ok=True)
+        state["owner_id"] = ""
+        state["expires_at"] = 0.0
+        _atomic_write_json(lease_path, state)
         artifact_volume.commit()
         return {"released": True, "owner_id": owner_id}
 
-    if action == "claim" and active and current_owner != owner_id:
-        return {
-            "acquired": False,
-            "owner_id": current_owner,
-            "expires_at": float(expires_at),
-        }
-    if action == "renew" and current_owner != owner_id:
-        return {
-            "renewed": False,
-            "owner_id": current_owner,
-            "expires_at": float(expires_at) if active else None,
-        }
-
-    next_state = {
-        "stage_name": stage_name,
-        "cache_key": cache_key,
-        "owner_id": owner_id,
-        "claimed_at": float(state.get("claimed_at") or now) if current_owner == owner_id else now,
-        "expires_at": now + ttl_seconds,
-        "updated_at": now,
-    }
-    _atomic_write_json(lease_path, next_state)
-    artifact_volume.commit()
     if action == "claim":
-        return {"acquired": True, **next_state}
-    return {"renewed": True, **next_state}
+        terminal = _dag_committed_terminal(stage_name, cache_key, dag_root)
+        if terminal is not None and terminal["record"].get("status") == "PASS":
+            return {"acquired": False, "attempt_count": counter}
+        if active and current_owner != owner_id:
+            return {"acquired": False, "attempt_count": counter}
+        if current_owner != owner_id or not active:
+            previous = terminal["record"].get("attempt_count", 0) if terminal else 0
+            prior = previous if isinstance(previous, int) and not isinstance(previous, bool) else 0
+            counter = max(counter, prior) + 1
+        state = {
+            "stage_name": stage_name,
+            "cache_key": cache_key,
+            "owner_id": owner_id,
+            "claimed_at": now,
+            "expires_at": now + ttl_seconds,
+            "updated_at": now,
+            "attempt_count": counter,
+        }
+        _atomic_write_json(lease_path, state)
+        artifact_volume.commit()
+        return {"acquired": True, **state}
+
+    if action == "renew":
+        if not active or current_owner != owner_id:
+            return {"renewed": False, "owner_id": current_owner}
+        state["expires_at"] = now + ttl_seconds
+        state["updated_at"] = now
+        _atomic_write_json(lease_path, state)
+        artifact_volume.commit()
+        return {"renewed": True, **state}
+
+    # The serialized owner authority is the ONLY new writer of terminal records.
+    # A worker has no canonical PASS file to flush via background/shutdown commits.
+    if not active or current_owner != owner_id:
+        return {"published": False, "owner_id": current_owner}
+    record = payload.get("record")
+    if not isinstance(record, dict) or record.get("status") not in {"PASS", "FAILED"}:
+        raise ValueError("DAG terminal publication record is invalid")
+    identity_data = record.get("identity")
+    if not isinstance(identity_data, dict) or (
+        identity_data.get("stage_name") != stage_name
+        or identity_data.get("cache_key") != cache_key
+    ):
+        raise ValueError("DAG terminal publication identity mismatch")
+    if record.get("attempt_count") != counter:
+        return {"published": False, "owner_id": current_owner}
+    output: object = payload.get("output")
+    if record["status"] == "PASS":
+        if not DagStore._complete_pass_record(record) or (
+            content_fingerprint(output) != record.get("output_fingerprint")
+        ):
+            raise ValueError("DAG terminal publication lacks valid PASS evidence")
+    else:
+        if (
+            not isinstance(record.get("error_type"), str)
+            or not record["error_type"]
+            or record.get("output_fingerprint") is not None
+        ):
+            raise ValueError("DAG terminal failure report is invalid")
+    prior = _dag_committed_terminal(stage_name, cache_key, dag_root)
+    if prior is not None and prior["record"].get("status") == "PASS":
+        return {"published": False, "owner_id": current_owner}
+    _atomic_write_json(
+        Path(ARTIFACT_ROOT) / _dag_terminal_path(stage_name, cache_key),
+        {"schema": _TERMINAL_SCHEMA, "record": record, "output": output},
+    )
+    artifact_volume.commit()
+    return {"published": True, "owner_id": owner_id}
 
 
 PIPELINE_IDENTITY_IMAGE = modal.Image.debian_slim(python_version="3.12").env(
@@ -1182,41 +1302,73 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
 
     lease_function = modal.Function.from_name(APP_NAME, "dag_execution_lease")
 
-    def lease_action(
-        action: str,
-        identity: Any,
-        owner_id: str,
-        ttl_seconds: float = 0.0,
-    ) -> dict[str, Any]:
-        response = lease_function.remote(
-            {
+    def coordinated_dag_store(root: Path) -> DagStore:
+        from clipper.dag import StageClaim
+
+        # Stage identity is unchanged; root is used only for read-only legacy reuse.
+        dag_root = Path(root).resolve().relative_to(Path(ARTIFACT_ROOT).resolve()).as_posix()
+
+        def lease_action(
+            action: str,
+            identity: Any,
+            owner_id: str = "",
+            ttl_seconds: float = 0.0,
+            *,
+            record: dict[str, object] | None = None,
+            output: object = None,
+        ) -> dict[str, Any]:
+            request: dict[str, object] = {
                 "action": action,
                 "stage_name": identity.stage_name,
                 "cache_key": identity.cache_key,
+                "dag_root": dag_root,
                 "owner_id": owner_id,
                 "ttl_seconds": ttl_seconds,
                 "expected_git_sha": requested_git_sha,
             }
+            if record is not None:
+                request["record"] = record
+                request["output"] = output
+            response = lease_function.remote(request)
+            if not isinstance(response, dict):
+                raise RuntimeError("distributed DAG authority returned invalid evidence")
+            return response
+
+        def claim(identity: Any, owner_id: str, ttl: float) -> StageClaim:
+            response = lease_action("claim", identity, owner_id, ttl)
+            attempts = response.get("attempt_count")
+            if not isinstance(attempts, int) or isinstance(attempts, bool):
+                raise RuntimeError("DAG authority claim counter is invalid")
+            return StageClaim(bool(response.get("acquired")), attempts)
+
+        def read_committed(identity: Any) -> dict[str, Any] | None:
+            response = lease_action("read", identity)
+            value = response.get("terminal")
+            if value is not None and not isinstance(value, dict):
+                raise RuntimeError("DAG committed terminal response is malformed")
+            return value
+
+        def publish_terminal(
+            identity: Any, owner: str, record: Any, output: object
+        ) -> bool:
+            response = lease_action(
+                "publish", identity, owner, record=record.to_dict(), output=output
+            )
+            return response.get("published") is True
+
+        coordinator = DagLeaseCoordinator(
+            claim=claim,
+            renew=lambda identity, owner_id, ttl: bool(
+                lease_action("renew", identity, owner_id, ttl).get("renewed")
+            ),
+            release=lambda identity, owner_id: bool(
+                lease_action("release", identity, owner_id).get("released")
+            ),
+            commit=artifact_volume.commit,
+            reload=artifact_volume.reload,
+            read_committed=read_committed,
+            publish_terminal=publish_terminal,
         )
-        if not isinstance(response, dict):
-            raise RuntimeError("distributed DAG lease coordinator returned invalid evidence")
-        return response
-
-    coordinator = DagLeaseCoordinator(
-        claim=lambda identity, owner_id, ttl: bool(
-            lease_action("claim", identity, owner_id, ttl).get("acquired")
-        ),
-        renew=lambda identity, owner_id, ttl: bool(
-            lease_action("renew", identity, owner_id, ttl).get("renewed")
-        ),
-        release=lambda identity, owner_id: bool(
-            lease_action("release", identity, owner_id).get("released")
-        ),
-        commit=artifact_volume.commit,
-        reload=artifact_volume.reload,
-    )
-
-    def coordinated_dag_store(root: Path) -> DagStore:
         return DagStore(
             root,
             execution_lease_seconds=120.0,

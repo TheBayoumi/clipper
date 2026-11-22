@@ -16,6 +16,14 @@ from typing import Any, Literal
 
 from .stage_contracts import StageIdentity, content_fingerprint
 
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
+_FROM_DISK = object()
+
+
 LOGGER = logging.getLogger("clipper.dag")
 
 StageStatus = Literal["RUNNING", "PASS", "FAILED"]
@@ -75,17 +83,31 @@ class StageRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class DagLeaseCoordinator:
-    """Owner-bound leases; reload refreshes the durable snapshot, not local writes.
+class StageClaim:
+    """An authority-fenced claim with a persistent per-identity attempt counter."""
 
-    Release must refuse a different owner's lease. Commit can fail after persistence.
+    acquired: bool
+    attempt_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class DagLeaseCoordinator:
+    """Owner-bound leases and optional authoritative terminal publication.
+
+    The authoritative adapter's read_committed must not flush a dirty writer view.
+    publish_terminal must fence against the active owner and lease expiry before
+    committing both the record and output. A rejected publication returns False.
     """
 
-    claim: Callable[[StageIdentity, str, float], bool]
+    claim: Callable[[StageIdentity, str, float], bool | StageClaim]
     renew: Callable[[StageIdentity, str, float], bool]
     release: Callable[[StageIdentity, str], bool]
     commit: Callable[[], None]
     reload: Callable[[], None]
+    read_committed: Callable[[StageIdentity], dict[str, Any] | None] | None = None
+    publish_terminal: (
+        Callable[[StageIdentity, str, StageRecord, object], bool] | None
+    ) = None
 
 
 class DagStore:
@@ -104,6 +126,10 @@ class DagStore:
         self.execution_lease_seconds = float(execution_lease_seconds)
         self.follower_poll_seconds = float(follower_poll_seconds)
         self.coordinator = coordinator
+        if coordinator is not None and (
+            (coordinator.read_committed is None) != (coordinator.publish_terminal is None)
+        ):
+            raise ValueError("coordinated terminal read and publication must be paired")
         self._publication_lock = threading.Lock()
         self._pending_passes: dict[str, tuple[str, Literal["publishing", "uncertain"]]] = {}
         self.private_stages = private_stages
@@ -220,6 +246,18 @@ class DagStore:
         else:
             temporary.unlink(missing_ok=True)
 
+    @staticmethod
+    def _lock_file(descriptor: int, *, acquire: bool) -> None:
+        if os.name == "nt":
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(
+                descriptor, msvcrt.LK_NBLCK if acquire else msvcrt.LK_UNLCK, 1
+            )
+        else:
+            fcntl.flock(
+                descriptor, (fcntl.LOCK_EX | fcntl.LOCK_NB) if acquire else fcntl.LOCK_UN
+            )
+
     @contextmanager
     def _write_lock(
         self,
@@ -227,31 +265,48 @@ class DagStore:
         *,
         timeout_seconds: float = 30.0,
     ) -> Iterator[None]:
+        """OS-managed lock: death/cancellation closes the descriptor, not a mkdir lease."""
         self._prepare_private_stage(identity)
-        lock = self._directory(identity) / ".write-lock"
+        directory = self._directory(identity)
+        legacy = directory / ".write-lock"
+        path = directory / ".write-lock-file"
         deadline = time.monotonic() + timeout_seconds
-        while True:
-            try:
-                lock.mkdir(
-                    parents=True,
-                    exist_ok=False,
-                    mode=0o700 if identity.stage_name in self.private_stages else 0o777,
-                )
-                break
-            except FileExistsError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"timed out acquiring DAG write lock for {identity.stage_name}"
-                    ) from None
-                time.sleep(0.01)
+        # The old mkdir lock may still belong to another running code version.
+        # Never remove it or claim that it is stale.
+        if legacy.exists():
+            raise TimeoutError(
+                f"legacy DAG lock requires owner intervention: {identity.stage_name}"
+            )
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
-            yield
-        except BaseException:
-            with _preserve_primary("write lock removal"):
-                lock.rmdir()
-            raise
-        else:
-            lock.rmdir()
+            if identity.stage_name in self.private_stages:
+                os.chmod(path, 0o600)
+            if os.name == "nt" and os.fstat(fd).st_size == 0:
+                os.write(fd, b"0")
+            while True:
+                if legacy.exists():
+                    raise TimeoutError(
+                        f"legacy DAG lock requires owner intervention: {identity.stage_name}"
+                    )
+                try:
+                    self._lock_file(fd, acquire=True)
+                    break
+                except (BlockingIOError, PermissionError, OSError):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"timed out acquiring DAG write lock for {identity.stage_name}"
+                        ) from None
+                    time.sleep(0.01)
+            try:
+                yield
+            except BaseException:
+                with _preserve_primary("write lock release"):
+                    self._lock_file(fd, acquire=False)
+                raise
+            else:
+                self._lock_file(fd, acquire=False)
+        finally:
+            os.close(fd)
 
     def _read_record_payload(self, identity: StageIdentity) -> dict[str, Any] | None:
         path = self._record_path(identity)
@@ -272,47 +327,106 @@ class DagStore:
 
     @staticmethod
     def _matches_identity(record: dict[str, Any], identity: StageIdentity) -> bool:
-        return content_fingerprint(record.get("identity")) == content_fingerprint(
-            identity.to_dict()
+        return record.get("identity") == identity.to_dict()
+
+    @staticmethod
+    def _complete_pass_record(record: dict[str, Any]) -> bool:
+        """Validate all persisted PASS fields; older complete records remain readable."""
+        fields = {
+            "identity",
+            "status",
+            "attempt_count",
+            "started_at",
+            "completed_at",
+            "output_fingerprint",
+            "usage",
+            "cost_usd",
+            "error_type",
+            "error",
+        }
+        cost = record.get("cost_usd")
+        attempts = record.get("attempt_count")
+        fingerprint = record.get("output_fingerprint")
+        return (
+            set(record) == fields
+            and record.get("status") == "PASS"
+            and isinstance(attempts, int)
+            and not isinstance(attempts, bool)
+            and attempts > 0
+            and isinstance(record.get("started_at"), str)
+            and bool(record["started_at"])
+            and isinstance(record.get("completed_at"), str)
+            and bool(record["completed_at"])
+            and isinstance(fingerprint, str)
+            and len(fingerprint) == 64
+            and all(character in "0123456789abcdef" for character in fingerprint)
+            and isinstance(record.get("usage"), dict)
+            and all(isinstance(key, str) for key in record["usage"])
+            and isinstance(cost, (int, float))
+            and not isinstance(cost, bool)
+            and math.isfinite(cost)
+            and cost >= 0
+            and record.get("error_type") is None
+            and record.get("error") is None
         )
 
     def _validated_pass(
-        self, identity: StageIdentity, record: dict[str, Any] | None
+        self,
+        identity: StageIdentity,
+        record: dict[str, Any] | None,
+        *,
+        output: object = _FROM_DISK,
     ) -> tuple[object] | None:
-        """Validate the same exact identity and output for reuse and error recovery."""
-        if record is None or record.get("status") != "PASS":
+        if record is None or not self._complete_pass_record(record):
             return None
-        attempt = record.get("attempt_count")
-        completed = record.get("completed_at")
-        if (
-            not isinstance(attempt, int)
-            or isinstance(attempt, bool)
-            or attempt <= 0
-            or not isinstance(completed, str)
-            or not completed
-        ):
+        if not self._matches_identity(record, identity):
             return None
         try:
-            if not self._matches_identity(record, identity):
+            value: object = (
+                json.loads(self._output_path(identity).read_text(encoding="utf-8"))
+                if output is _FROM_DISK
+                else output
+            )
+            if content_fingerprint(value) != record["output_fingerprint"]:
                 return None
-            output: object = json.loads(self._output_path(identity).read_text(encoding="utf-8"))
-            expected = record.get("output_fingerprint")
-            if not isinstance(expected, str) or content_fingerprint(output) != expected:
-                return None
-        except (FileNotFoundError, ValueError, RecursionError):
+        except (OSError, ValueError, RecursionError, TypeError):
             return None
-        return (output,)
+        return (value,)
 
-    def cached_output(self, identity: StageIdentity) -> object | None:
+    def _cache_hit(self, identity: StageIdentity) -> tuple[bool, object]:
+        """Explicit hit bit, so a valid JSON null output is reusable."""
+        coordinator = self.coordinator
+        if coordinator is not None and coordinator.read_committed is not None:
+            snapshot = coordinator.read_committed(identity)
+            if snapshot is None:
+                return False, None
+            if not isinstance(snapshot, dict) or set(snapshot) != {"record", "output"}:
+                raise RuntimeError("DAG committed terminal evidence is malformed")
+            record = snapshot["record"]
+            if not isinstance(record, dict):
+                raise RuntimeError("DAG committed terminal record is malformed")
+            if record.get("status") == "FAILED":
+                return False, None
+            validated = self._validated_pass(identity, record, output=snapshot["output"])
+            if validated is None:
+                raise RuntimeError("DAG committed PASS identity or output is invalid")
+            return True, validated[0]
         self._prepare_private_stage(identity)
         with self._publication_lock:
             if identity.cache_key in self._pending_passes:
-                return None
+                return False, None
             try:
-                validated = self._validated_pass(identity, self._read_record_payload(identity))
+                validated = self._validated_pass(
+                    identity, self._read_record_payload(identity)
+                )
             except OSError:
-                return None
-            return validated[0] if validated is not None else None
+                return False, None
+            return (True, validated[0]) if validated is not None else (False, None)
+
+    def cached_output(self, identity: StageIdentity) -> object | None:
+        """Legacy public API: None is ambiguous; execute uses the explicit hit bit."""
+        hit, output = self._cache_hit(identity)
+        return output if hit else None
 
     def _may_report_after_pass(
         self, identity: StageIdentity, attempted: StageRecord, *, coordinated: bool
@@ -335,7 +449,6 @@ class DagStore:
             if record.get("status") == "FAILED":
                 return False
             if not coordinated and record.get("status") == "PASS":
-                # Local atomic record exists, but its output is missing or invalid.
                 return True
         LOGGER.warning("DAG PASS publication remains uncertain for %s", identity.stage_name)
         return False
@@ -362,8 +475,12 @@ class DagStore:
     def _coordinated_cached_output(self, identity: StageIdentity) -> object | None:
         if self.coordinator is None:
             raise RuntimeError("DAG coordinator is unavailable")
-        self._reload_snapshot(self.coordinator, identity)
-        return self.cached_output(identity)
+        if self.coordinator.read_committed is not None:
+            hit, cached = self._cache_hit(identity)
+        else:
+            self._reload_snapshot(self.coordinator, identity)
+            hit, cached = self._cache_hit(identity)
+        return cached if hit else None
 
     def _release_lease_best_effort(
         self,
@@ -385,6 +502,152 @@ class DagStore:
                 time.sleep(0.05 * (release_attempt + 1))
         LOGGER.warning("DAG lease cleanup not acknowledged for %s", identity.stage_name)
 
+    def _execute_authoritative(
+        self,
+        identity: StageIdentity,
+        operation: Callable[[], StageResult | object],
+        coordinator: DagLeaseCoordinator,
+    ) -> tuple[object, bool]:
+        """Distributed terminal state is published only by the fenced authority.
+
+        Worker mounts never write the canonical terminal record. A lost publish
+        acknowledgement is an error, even if a later committed read sees PASS.
+        """
+        publish = coordinator.publish_terminal
+        if publish is None:
+            raise RuntimeError("DAG terminal authority is unavailable")
+        owner_id = uuid.uuid4().hex
+        attempt = 0
+        while True:
+            hit, cached = self._cache_hit(identity)
+            if hit:
+                return cached, True
+            try:
+                receipt = coordinator.claim(identity, owner_id, self.execution_lease_seconds)
+            except BaseException:
+                with _preserve_primary("authoritative claim release"):
+                    self._release_lease_best_effort(coordinator, identity, owner_id)
+                raise
+            if not isinstance(receipt, StageClaim):
+                with _preserve_primary("invalid claim release"):
+                    self._release_lease_best_effort(coordinator, identity, owner_id)
+                raise RuntimeError("DAG authority must return a fenced claim receipt")
+            if receipt.acquired:
+                try:
+                    attempt = receipt.attempt_count
+                    if attempt <= 0:
+                        raise RuntimeError("DAG authority returned an invalid attempt number")
+                    hit, cached = self._cache_hit(identity)
+                except BaseException:
+                    with _preserve_primary("authoritative claim release"):
+                        self._release_lease_best_effort(coordinator, identity, owner_id)
+                    raise
+                if hit:
+                    self._release_lease_best_effort(coordinator, identity, owner_id)
+                    return cached, True
+                break
+            time.sleep(self.follower_poll_seconds)
+
+        started = _now()
+        renewal_stop = threading.Event()
+        lease_lost = threading.Event()
+        termination_lock = threading.Lock()
+        termination: BaseException | None = None
+
+        def renew_worker() -> None:
+            nonlocal termination
+            interval = min(30.0, max(0.5, self.execution_lease_seconds / 3.0))
+            try:
+                while not renewal_stop.wait(interval):
+                    if not coordinator.renew(identity, owner_id, self.execution_lease_seconds):
+                        lease_lost.set()
+                        return
+            except Exception as exc:
+                lease_lost.set()
+                LOGGER.warning("DAG authority renewal failed: %s", type(exc).__name__)
+            except BaseException as exc:
+                with termination_lock:
+                    termination = exc
+
+        worker = threading.Thread(target=renew_worker, daemon=True)
+
+        def check_worker() -> None:
+            with termination_lock:
+                result = termination
+            if result is not None:
+                raise result
+            if lease_lost.is_set():
+                raise RuntimeError(
+                    f"DAG distributed execution lease lost for {identity.stage_name}"
+                )
+
+        def shutdown_worker() -> None:
+            renewal_stop.set()
+            if worker.ident is not None:
+                worker.join(timeout=1.0)
+            if worker.is_alive():
+                raise RuntimeError("DAG renewal worker did not stop within the shutdown budget")
+            check_worker()
+
+        pass_submission_started = False
+        try:
+            worker.start()
+            raw = operation()
+            check_worker()
+            result = raw if isinstance(raw, StageResult) else StageResult(raw)
+            owns_lease = coordinator.renew(identity, owner_id, self.execution_lease_seconds)
+            check_worker()
+            if not owns_lease:
+                raise RuntimeError(
+                    f"DAG distributed execution lease lost before PASS for {identity.stage_name}"
+                )
+            passed = StageRecord(
+                identity=identity,
+                status="PASS",
+                attempt_count=attempt,
+                started_at=started,
+                completed_at=_now(),
+                output_fingerprint=content_fingerprint(result.output),
+                usage=dict(result.usage),
+                cost_usd=result.cost_usd,
+            )
+            check_worker()
+            pass_submission_started = True
+            if not publish(identity, owner_id, passed, result.output):
+                raise RuntimeError("DAG owner-fenced PASS publication rejected")
+            # The authority may have committed while the worker was terminating.
+            # A successful acknowledgement cannot mask that termination or lease loss.
+            shutdown_worker()
+        except BaseException as exc:
+            with _preserve_primary("authoritative renewal shutdown"):
+                shutdown_worker()
+            if not pass_submission_started:
+                with _preserve_primary("authoritative FAILED publication"):
+                    if not lease_lost.is_set() and coordinator.renew(
+                        identity, owner_id, self.execution_lease_seconds
+                    ):
+                        failed = StageRecord(
+                            identity=identity,
+                            status="FAILED",
+                            attempt_count=attempt,
+                            started_at=started,
+                            completed_at=_now(),
+                            output_fingerprint=None,
+                            usage={},
+                            cost_usd=0.0,
+                            error_type=type(exc).__name__,
+                            error=str(exc),
+                        )
+                        publish(identity, owner_id, failed, None)
+            # After a submitted PASS, acknowledgement may be lost. Never replace
+            # its unknown durable result with FAILED as part of cleanup.
+            with _preserve_primary("authoritative claim release"):
+                self._release_lease_best_effort(coordinator, identity, owner_id)
+            raise
+        else:
+            self._release_lease_best_effort(coordinator, identity, owner_id)
+            return result.output, False
+
     def _execute_coordinated(
         self,
         identity: StageIdentity,
@@ -393,6 +656,8 @@ class DagStore:
         coordinator = self.coordinator
         if coordinator is None:
             raise RuntimeError("DAG coordinator is unavailable")
+        if coordinator.read_committed is not None:
+            return self._execute_authoritative(identity, operation, coordinator)
         owner_id = uuid.uuid4().hex
         attempt = 0
         started = ""
@@ -435,8 +700,10 @@ class DagStore:
                 raise RuntimeError("DAG renewal worker did not stop within the shutdown budget")
 
         while True:
-            cached = self._coordinated_cached_output(identity)
-            if cached is not None:
+            if coordinator.read_committed is None:
+                self._reload_snapshot(coordinator, identity)
+            hit, cached = self._cache_hit(identity)
+            if hit:
                 return cached, True
             try:
                 claimed = coordinator.claim(identity, owner_id, self.execution_lease_seconds)
@@ -448,8 +715,8 @@ class DagStore:
             if claimed:
                 try:
                     self._reload_snapshot(coordinator, identity)
-                    cached = self.cached_output(identity)
-                    if cached is None:
+                    hit, cached = self._cache_hit(identity)
+                    if not hit:
                         attempt = self.attempt_count(identity) + 1
                         started = _now()
                         running = StageRecord(
@@ -468,7 +735,7 @@ class DagStore:
                     with _preserve_primary("lease release"):
                         self._release_lease_best_effort(coordinator, identity, owner_id)
                     raise
-                if cached is not None:
+                if hit:
                     self._release_lease_best_effort(coordinator, identity, owner_id)
                     return cached, True
                 break
@@ -577,15 +844,15 @@ class DagStore:
         started = ""
 
         while True:
-            cached = self.cached_output(identity)
-            if cached is not None:
+            hit, cached = self._cache_hit(identity)
+            if hit:
                 return cached, True
 
             claimed = False
             try:
                 with self._write_lock(identity):
-                    cached = self.cached_output(identity)
-                    if cached is not None:
+                    hit, cached = self._cache_hit(identity)
+                    if hit:
                         return cached, True
 
                     now = time.time()
