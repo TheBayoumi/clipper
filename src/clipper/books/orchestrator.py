@@ -210,7 +210,10 @@ class BookOrchestrator:
         self.root = artifact_root
         self.dag = DagStore(
             artifact_root / "book-dag",
-            private_stages=frozenset({BOOK_STAGE_CONTRACTS["ingest"].name}),
+            private_stages=frozenset({
+                BOOK_STAGE_CONTRACTS["ingest"].name,
+                "books.mining.unit.v1",
+            }),
         )
         self.script_cache_root = artifact_root / "book-script-cache"
 
