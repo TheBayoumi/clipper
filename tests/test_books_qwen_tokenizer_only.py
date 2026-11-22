@@ -129,15 +129,12 @@ def _bounded_alternative_token_probe(
     regular = tokenizer_data.regular_tokens
     return {
         "prefix_matches": True,
-        "required_next_char_codepoint": (
-            ord(required_char) if required_char else None
-        ),
+        "required_next_char_codepoint": (ord(required_char) if required_char else None),
         "parser_alphabet_contains_next": (
             required_char in callback.token_enforcer.root_parser.config.alphabet
         ),
         "registered_tokens_starting_with_next_char": sum(
-            token_string.startswith(required_char)
-            for _, token_string, _ in regular
+            token_string.startswith(required_char) for _, token_string, _ in regular
         ),
         "first_allowed_tokens": len(first_allowed),
         "first_scanned": explored_first,
