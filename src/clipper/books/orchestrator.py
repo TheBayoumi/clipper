@@ -734,6 +734,7 @@ class BookOrchestrator:
             raise whole_book.LocalReplyFailure("incomplete_constrained_generation", digest)
         try:
             lessons = whole_book.validate_reply(whole_book.load_strict_reply(response), unit)
+            constrained.validate_local_choice(lessons, request)
         except (ValueError, TypeError, RecursionError) as exc:
             raise whole_book.LocalReplyFailure("invalid_reply", digest) from exc
         return {
@@ -750,6 +751,7 @@ class BookOrchestrator:
         ref: whole_book.CandidateAnalysisRef,
         identity: StageIdentity,
         request_sha256: str,
+        request: dict[str, object],
         unit: whole_book.WorkUnit,
         producer_fingerprint: str,
         stored: object,
@@ -804,6 +806,9 @@ class BookOrchestrator:
         try:
             value: object = whole_book.load_strict_reply(raw)
             lessons = whole_book.validate_reply(value, unit)
+            if content_fingerprint(request) != request_sha256:
+                raise constrained.ConstraintError("cached canonical request changed")
+            constrained.validate_local_choice(lessons, request)
         except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
             raise BookRunError("cached local model response is invalid") from exc
         if not isinstance(value, dict) or lessons != stored["lessons"]:
@@ -972,6 +977,7 @@ class BookOrchestrator:
                                 ref=ref,
                                 identity=identity_local,
                                 request_sha256=request_key,
+                                request=request,
                                 unit=unit,
                                 producer_fingerprint=producer_fingerprint,
                                 stored=stored_local,
@@ -1083,6 +1089,9 @@ class BookOrchestrator:
                         "review_status": unit.review_status,
                         "research_link_status": unit.research_link_status,
                         "text_sha256": unit.text_sha256,
+                        "evidence_coverage": constrained.coverage_record(
+                            cast(dict[str, object], request["constraints"])
+                        ),
                         "request_sha256": request_key,
                         "used_completion_sha256": response_digest,
                         "status": status,
@@ -1133,6 +1142,9 @@ class BookOrchestrator:
             "excluded_pages": [asdict(p) for p in book.excluded_pages],
             "gaps": list(work.skipped),
             "progress": progress,
+            "evidence_coverage_summary": constrained.coverage_summary(
+                [cast(dict[str, object], item["evidence_coverage"]) for item in progress]
+            ),
             "counts": counts,
             "candidate_count": len(lessons),
             "status": outcome,
@@ -1159,6 +1171,7 @@ class BookOrchestrator:
                 "publish_eligible": False,
                 "analysis_plan_fingerprint": plan_fingerprint,
                 "progress_sha256": progress_sha256,
+                "evidence_coverage_summary": ledger["evidence_coverage_summary"],
                 "ingest_fingerprint": book_fingerprint,
                 "recovery_status": book.recovery_status,
                 "books": [

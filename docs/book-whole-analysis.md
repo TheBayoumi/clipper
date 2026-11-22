@@ -140,58 +140,64 @@ pages and other quality warnings remain distinct from analysis progress.
 There is no semantic deduplication, ranking, target episode count or
 automatic claim approval.
 
-### Local book-only constrained decoding (not semantic approval)
+### Local book-only exact-evidence constrained decoding (not semantic approval)
 
-The canonical whole-book request now includes a deterministic exact-source-span
-policy and fingerprint. Only the opt-in local **book** Qwen producer uses
-LM Format Enforcer **0.11.3**, its public Transformers prefix callback, and
-the existing Transformers **4.57.3** prefix_allowed_tokens_fn argument. The
-independent script-generation path does not use the decoder. Install both
-niche-models and book-constrained extras; missing or incompatible pinned
-decoder dependencies fail closed rather than reverting to unconstrained text.
-No alternate model, revision, sampling configuration or CPU budget is used.
+Only the opt-in local **book** producer uses pinned LM Format Enforcer
+**0.11.3** with Transformers **4.57.3** and the existing Qwen CPU/Torch
+settings. The public JsonSchemaParser handles the seven-field object while a
+small public CharacterLevelParser overlay enforces the selected evidence
+literal. Unlike a nested whole-response SequenceParser, this preserves
+ordinary LMFE tokenizer-adapter fast paths outside the evidence value.
+Script generation does not use this decoder.
 
-The JSON grammar permits one top-level object with only lessons, an array
-of zero to three objects containing the existing seven required string keys.
-Free creative fields have 1–400 character grammar limits; the evidence field
-and quote are enumerated, and source-derived safe IDs are bounded enum
-choices. The unchanged final validator still rejects blank/whitespace-only
-fields, repeated IDs, overlong strings and mismatched provenance. The raw
-decoder also rejects duplicate JSON keys without rewriting any bytes.
+The response root must be an object with only lessons, a list of zero to
+three objects with exactly the seven required fields. Creative strings are
+1–400 characters, IDs are safe source-derived choices and evidence_field is
+the supplied exact field. Each evidence choice is an exact continuous unit
+source fragment, serialized as ASCII JSON escapes using the Python json
+encoder with ensure_ascii=True. This changes only its JSON *spelling*:
+straight double quotes, backslashes, literal control characters, mixed
+scripts, uncommon Unicode and emoji round-trip to the precise original
+source characters. No source normalization, truncation, ID rewriting,
+post-hoc JSON repair, array wrapping, or fence stripping is permitted.
 
-The exact bounded-source-clause-spans-v1 policy splits only on whitespace
-following a period, exclamation/question mark, semicolon or colon. It retains
-exact Unicode codepoint offsets, source and span SHA-256 hashes and explicit
-per-unit boundary caveats. The upstream 350-word division can cut sentences;
-its first and last fragments are never represented as complete context.
-Each unit supplies at most 24 unique complete fragments, maximum 400
-characters per fragment and 12,000 source characters. An overlong fragment
-is **not** silently cut down; it is excluded and counted. Duplicate, capped,
-and oversized-source omissions are also recorded in request metadata.
-LM Format Enforcer 0.11.3 cannot safely constrain some JSON-escaped literal
-source strings through enums; entire fragments containing straight double
-quotes, backslashes or control characters are excluded and counted, not
-normalized. Other Unicode characters remain verbatim. A tokenizer unable
-to represent a required character fails closed. **No eligible spans** means
-a failed unit without loading the model, never free-form quote generation.
+The inclusive **bounded-source-clause-spans-inclusive-v2** policy splits at
+whitespace after the punctuation marks period, exclamation, question,
+semicolon and colon. All source characters are retained at exact Unicode
+codepoint offsets with SHA-256 hashes and explicit first/last-unit boundary
+uncertainty (350-word units may cut a sentence). At most 400 distinct
+fragments and 12,000 source characters are processed per unit; a selectable
+fragment must be nonempty and no more than 400 characters. Repeated source
+fragments share a literal choice but preserve their individual occurrence
+offsets and digests. Whitespace split separators are counted separately
+from excluded source fragments. Quote/backslash/control-containing
+fragments no longer disappear. Overlong clauses, sources over the cap or
+pool-cap omissions cause an explicit failed unit before model loading,
+rather than allowing candidate extraction from misleading partial coverage.
+A truly empty span set similarly fails closed. These input bounds remain
+a visible production constraint: an overlong qualification cannot be
+represented within the existing 400-character evidence field.
 
-Decoder version, grammar contract, tokenizer revision, source span policy and
-pool material contribute to canonical request and local producer/DAG
-fingerprints. Only tokenizer-vocabulary preprocessing is cached per concrete
-tokenizer object and revision: the JSON parser and token enforcer start fresh
-on every request. Existing immutable raw answers and history do not satisfy
-the new identity. If the generation terminates without EOS (including
-960-token exhaustion), its unchanged decoded raw bytes are saved privately
-before the attempt fails. Cached local replay still checks actual raw bytes,
-strict JSON parsing, schema, evidence and output identity. Neither fences,
-unsafe IDs nor quotes are repaired or manufactured.
+Normal **private** progress includes per-unit selected offsets/hashes,
+duplicate occurrences, boundary caveats, source length, split whitespace,
+omission reasons and counts, and fail-closed coverage status. The progress
+ledger and private export include an aggregate summary with these counts.
+Raw local completions retain their exact original bytes, and both fresh
+completion and cache replay independently revalidate strict JSON, the
+existing seven-field contract, source provenance and the currently selected
+evidence/ID choices. Earlier cached output is not migrated or trusted
+under this new request/producer identity.
 
-**Formal validity is not editorial support.** Even a perfect exact quote can
-accompany an invented causal inference, exaggerated hook or generic visual
-action. An empty accepted array is not useful-lesson success. All proposed
-candidates remain MINED_UNREVIEWED and publish_eligible=false. A human must
-review source context, caveats and creative quality. Model-free tests do not
-prove genuine Qwen generation succeeds or offers a useful lesson.
+The decoder, grammar, tokenizer revision, span policy and pool material
+affect canonical request and DAG fingerprints. Only tokenizer vocabulary
+preprocessing is cached per tokenizer instance and pinned revision; each
+request receives a fresh parser/enforcer. Any unsatisfiable token path or
+960-token exhaustion remains a failure, not a fabricated completion.
+Pinned public-tokenizer model-free tests verify adapter behavior and timings;
+neither CI nor these tests load weights or call generate(). Mechanical
+validity cannot prove claim/hook grounding, creative quality or preserved
+semantic caveats. **MINED_UNREVIEWED** and **publish_eligible=false** remain
+mandatory, including for structurally valid empty lessons.
 
 ## Interrupted work and output
 

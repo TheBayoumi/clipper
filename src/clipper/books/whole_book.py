@@ -24,7 +24,7 @@ WINDOW_UNITS = 32
 MAX_PLAN_UNITS = 20_000
 MAX_RECORDED_REPLY_BYTES = 16_384
 LOCAL_COMPLETION_SCHEMA = "clipper-book-local-completion-v1"
-LOCAL_PRODUCER_CONTRACT = "clipper-book-cpu-qwen-json-prefix-v2"
+LOCAL_PRODUCER_CONTRACT = "clipper-book-cpu-qwen-json-exact-literal-v3"
 LOCAL_GENERATION = {
     "model": scripting.SCRIPT_MODEL,
     "revision": scripting.SCRIPT_REVISION,

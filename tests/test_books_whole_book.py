@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from clipper import cli
-from clipper.books import acquisition, mining, scripting, whole_book
+from clipper.books import acquisition, constrained, mining, scripting, whole_book
 from clipper.books import orchestrator as orchestrator_module
 from clipper.books.contracts import (
     BookText,
@@ -128,16 +128,17 @@ def ingested(tmp_path: Path, *, paragraphs: int = 129, with_image: bool = True):
 
 
 def response_for(unit: whole_book.WorkUnit, *, count: int = 1) -> dict[str, object]:
+    spans = constrained.span_pool(unit.text, unit.evidence_field)["spans"]
     return {
         "lessons": [
             {
-                "id": f"idea-{index}",
+                "id": spans[index]["id"] if index < len(spans) else f"idea-{index}",
                 "topic": "Fabricated idea",
                 "claim": "Unreviewed synthetic claim",
                 "hook_angle": "An invented demonstration",
                 "visual_action": "A cartoon actor places a token",
                 "evidence_field": unit.evidence_field,
-                "evidence": unit.text[:35],
+                "evidence": spans[index]["text"] if index < len(spans) else unit.text[:35],
             }
             for index in range(count)
         ]
@@ -264,6 +265,78 @@ def test_incomplete_constrained_generation_preserves_raw_before_rejection(
     assert raws[0].read_bytes() == raw.encode("utf-8")
 
 
+def test_local_raw_unselected_substring_fails_without_repair(
+    tmp_path: Path,
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+    unit = whole_book.plan_for(acquired.book).units[0]
+    request = whole_book.request_for(acquired.book, unit)
+    selected = request["constraints"]["spans"][0]
+    assert len(selected["text"]) > 25
+    unselected = selected["text"][:20]
+    assert unselected in unit.text
+    lesson = dict(response_for(unit)["lessons"][0], evidence=unselected)
+    raw = json.dumps({"lessons": [lesson]}, ensure_ascii=False)
+    result = runner.mine_candidate(
+        acquired.analysis_ref_path,
+        local_cpu=True,
+        max_new_units=1,
+        local_completion=lambda _request: raw,
+    )
+    assert result["status"] == "incomplete"
+    progress = json.loads(Path(result["progress_path"]).read_bytes())
+    row = progress["progress"][0]
+    assert row["failure_category"] == "invalid_reply"
+    assert row["evidence_coverage"]["policy"] == constrained.SPAN_POLICY
+    assert row["evidence_coverage"]["selectable_spans"][0]["sha256"] == selected["sha256"]
+    assert "text" not in row["evidence_coverage"]["selectable_spans"][0]
+    original = list(
+        (tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt")
+    )
+    assert len(original) == 1
+    assert original[0].read_bytes() == raw.encode("utf-8")
+
+
+def test_local_fresh_and_replay_recheck_canonical_selected_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=1, with_image=False)
+    unit = whole_book.plan_for(acquired.book).units[0]
+    request = whole_book.request_for(acquired.book, unit)
+    raw = json.dumps({"lessons": response_for(unit)["lessons"]}, ensure_ascii=False)
+    real_check = constrained.validate_local_choice
+    checks: list[str] = []
+
+    def checked(lessons: list[dict[str, str]], actual: dict[str, object]) -> None:
+        checks.append(content_fingerprint(actual))
+        real_check(lessons, actual)
+
+    monkeypatch.setattr(constrained, "validate_local_choice", checked)
+    first = runner.mine_candidate(
+        acquired.analysis_ref_path,
+        local_cpu=True,
+        max_new_units=1,
+        local_completion=lambda _request: raw,
+    )
+    assert first["counts"]["failed"] == 0
+    second = runner.mine_candidate(
+        acquired.analysis_ref_path,
+        local_cpu=True,
+        max_new_units=1,
+        local_completion=lambda _request: pytest.fail("cache must not generate"),
+    )
+    assert second == first
+    assert checks == [content_fingerprint(request)] * 3
+    report = json.loads(Path(first["progress_path"]).read_bytes())
+    summary = report["evidence_coverage_summary"]
+    assert summary["policy"] == constrained.SPAN_POLICY
+    assert summary["covered_fragment_chars"] > 0
+    assert summary["unit_start_context_unknown"] >= 1
+    export = json.loads(Path(first["export_path"]).read_bytes())
+    assert export["evidence_coverage_summary"] == summary
+    assert export["publish_eligible"] is False
+
+
 def test_canonical_prompt_change_invalidates_cache_but_keeps_old_raw(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -310,12 +383,12 @@ def test_canonical_prompt_change_invalidates_cache_but_keeps_old_raw(
             {
                 "lessons": [
                     {
-                        "id": "repeat-synthetic-action",
+                        "id": request["constraints"]["spans"][0]["id"],
                         "topic": "Fabricated repetition",
                         "claim": "An invented example repeats a fabricated action",
                         "hook_angle": "Observe a repeated synthetic example",
                         "visual_action": "An actor places a token twice",
-                        "evidence": supplied["text"][:35],
+                        "evidence": request["constraints"]["spans"][0]["text"],
                         "evidence_field": supplied["evidence_field"],
                     }
                 ]

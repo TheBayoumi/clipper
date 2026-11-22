@@ -30,9 +30,21 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
+      - name: Install pinned public CPU-only Torch for tokenizer adapter checks
+        run: |
+          python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 'torch==2.6.0+cpu'
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy
+      - name: Verify exact public Qwen tokenizer and real decoder adapter without weights
+        env:
+          CLIPPER_TOKENIZER_ONLY_PROBE: "1"
+          HF_HUB_DISABLE_TELEMETRY: "1"
+          CUDA_VISIBLE_DEVICES: "-1"
+          HF_HOME: ${{ runner.temp }}/clipper-tokenizer-only-hf
+        run: |
+          timeout --signal=TERM --kill-after=15s 6m \
+            python -m pytest -q -s -o addopts="" tests/test_books_qwen_tokenizer_only.py
       - run: pytest
       - name: Enforce measured package coverage floor
         run: coverage report --fail-under=95
