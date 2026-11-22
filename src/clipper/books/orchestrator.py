@@ -20,6 +20,7 @@ from clipper.stage_contracts import (
 
 from . import (
     acquisition,
+    constrained,
     faithful,
     ingest,
     mining,
@@ -689,8 +690,19 @@ class BookOrchestrator:
         completion: Callable[[dict[str, object]], str],
     ) -> dict[str, object]:
         """Store bounded raw model evidence before validating; failed DAG stages can retry."""
+        truncated = False
         try:
             response = completion(request)
+        except scripting.IncompleteConstrainedResponse as exc:
+            # Preserve the raw truncated generation before rejecting it.
+            response = exc.raw
+            truncated = True
+        except constrained.NoEligibleSpans as exc:
+            raise whole_book.LocalReplyFailure("no_eligible_source_span") from exc
+        except constrained.DecoderUnavailable as exc:
+            raise whole_book.LocalReplyFailure("constrained_decoder_unavailable") from exc
+        except constrained.ConstraintError as exc:
+            raise whole_book.LocalReplyFailure("invalid_constrained_request") from exc
         except scripting.PinnedQwenSnapshotError as exc:
             raise whole_book.LocalReplyFailure("pinned_model_cache_unavailable") from exc
         except Exception as exc:
@@ -718,8 +730,10 @@ class BookOrchestrator:
         )
         if len(payload) > whole_book.MAX_RECORDED_REPLY_BYTES:
             raise whole_book.LocalReplyFailure("oversized_reply", digest)
+        if truncated:
+            raise whole_book.LocalReplyFailure("incomplete_constrained_generation", digest)
         try:
-            lessons = whole_book.validate_reply(json.loads(response), unit)
+            lessons = whole_book.validate_reply(whole_book.load_strict_reply(response), unit)
         except (ValueError, TypeError, RecursionError) as exc:
             raise whole_book.LocalReplyFailure("invalid_reply", digest) from exc
         return {
@@ -788,7 +802,7 @@ class BookOrchestrator:
         ):
             raise BookRunError("cached local model raw evidence changed")
         try:
-            value: object = json.loads(raw)
+            value: object = whole_book.load_strict_reply(raw)
             lessons = whole_book.validate_reply(value, unit)
         except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
             raise BookRunError("cached local model response is invalid") from exc

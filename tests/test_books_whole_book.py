@@ -240,6 +240,29 @@ def test_local_raw_invalid_response_is_not_repaired_or_accepted(tmp_path: Path, 
     assert raws[0].read_bytes() == raw.encode("utf-8")
 
 
+def test_incomplete_constrained_generation_preserves_raw_before_rejection(
+    tmp_path: Path,
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+    raw = '{"lessons":[]}'
+    def incomplete(_request: dict[str, object]) -> str:
+        raise scripting.IncompleteConstrainedResponse(raw)
+
+    result = runner.mine_candidate(
+        acquired.analysis_ref_path, local_cpu=True, max_new_units=1,
+        local_completion=incomplete,
+    )
+    assert result["status"] == "incomplete"
+    assert result["counts"]["failed"] == 1
+    progress = json.loads(Path(result["progress_path"]).read_bytes())
+    assert progress["progress"][0]["failure_category"] == "incomplete_constrained_generation"
+    raws = list(
+        (tmp_path / "artifacts/book-candidates/analysis/completions").glob("**/*.txt")
+    )
+    assert len(raws) == 1
+    assert raws[0].read_bytes() == raw.encode("utf-8")
+
+
 def test_canonical_prompt_change_invalidates_cache_but_keeps_old_raw(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1323,7 +1346,7 @@ def test_pinned_local_qwen_cpu_loader_uses_one_fake_model_without_weight_downloa
 
         def generate(self, **kwargs):
             generated.append(kwargs)
-            return [[0, 7]]
+            return [[0, 7, 0]]
 
     class Tokenizer:
         eos_token_id = 0
@@ -1333,7 +1356,7 @@ def test_pinned_local_qwen_cpu_loader_uses_one_fake_model_without_weight_downloa
             return {"input_ids": Inputs()}
 
         def decode(self, tokens, *, skip_special_tokens: bool):
-            assert tokens == [7] and skip_special_tokens
+            assert tokens == [7, 0] and skip_special_tokens
             return decoded
 
     model = Model()
@@ -1387,6 +1410,11 @@ def test_pinned_local_qwen_cpu_loader_uses_one_fake_model_without_weight_downloa
     scripting._script_pipeline.cache_clear()
     try:
         with monkeypatch.context() as patch:
+            patch.setattr("clipper.books.constrained._decoder", lambda: (None, None))
+            patch.setattr(
+                "clipper.books.constrained.prefix_for",
+                lambda *_args: lambda _batch_id, _tokens: [0],
+            )
             patch.setenv("HF_HUB_OFFLINE", "1")
             patch.setattr(scripting.importlib, "import_module", injected)
             assert scripting._local_book_completion(request) == decoded
@@ -1397,6 +1425,7 @@ def test_pinned_local_qwen_cpu_loader_uses_one_fake_model_without_weight_downloa
             assert len(generated) == 2
             assert all(call["temperature"] == 0.7 for call in generated)
             assert all(call["max_new_tokens"] == 960 for call in generated)
+            assert all(call["prefix_allowed_tokens_fn"](0, []) == [0] for call in generated)
     finally:
         scripting._script_pipeline.cache_clear()
 

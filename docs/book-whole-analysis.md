@@ -20,7 +20,7 @@ clipper books mine --candidate-ref \
   --artifact-root artifacts/books
 
 # Explicit alternative: no response-map file; local CPU inference only.
-python -m pip install -e ".[niche-models]"
+python -m pip install -e ".[niche-models,book-constrained]"
 clipper books mine --candidate-ref \
   artifacts/books/book-candidates/analysis-refs/atomic-habits/EXACT_STAGE_KEY.json \
   --book-id atomic-habits --local-cpu --max-new-units 8 \
@@ -36,7 +36,7 @@ The existing legacy owner-file `books mine --book-id ... --responses ...`
 interface stays recorded-only. Local CPU mode uses precisely the pinned
 `Qwen/Qwen3-1.7B` revision
 `8d4744f9e13072f4920c326350fa81eedb74eae9`.
-Install `.[niche-models]` first. At the **first uncached eligible unit only**,
+Install `.[niche-models,book-constrained]` first. At the **first uncached eligible unit only**,
 the loader asks Hugging Face Hub for the pinned *local* snapshot and passes
 its verified `.../models--Qwen--Qwen3-1.7B/snapshots/<exact-revision>`
 directory (not a repo ID) to Transformers 4.57.3. This avoids its
@@ -139,6 +139,59 @@ provenance retained. `incomplete_recovery`, unverified rights, excluded
 pages and other quality warnings remain distinct from analysis progress.
 There is no semantic deduplication, ranking, target episode count or
 automatic claim approval.
+
+### Local book-only constrained decoding (not semantic approval)
+
+The canonical whole-book request now includes a deterministic exact-source-span
+policy and fingerprint. Only the opt-in local **book** Qwen producer uses
+LM Format Enforcer **0.11.3**, its public Transformers prefix callback, and
+the existing Transformers **4.57.3** prefix_allowed_tokens_fn argument. The
+independent script-generation path does not use the decoder. Install both
+niche-models and book-constrained extras; missing or incompatible pinned
+decoder dependencies fail closed rather than reverting to unconstrained text.
+No alternate model, revision, sampling configuration or CPU budget is used.
+
+The JSON grammar permits one top-level object with only lessons, an array
+of zero to three objects containing the existing seven required string keys.
+Free creative fields have 1–400 character grammar limits; the evidence field
+and quote are enumerated, and source-derived safe IDs are bounded enum
+choices. The unchanged final validator still rejects blank/whitespace-only
+fields, repeated IDs, overlong strings and mismatched provenance. The raw
+decoder also rejects duplicate JSON keys without rewriting any bytes.
+
+The exact bounded-source-clause-spans-v1 policy splits only on whitespace
+following a period, exclamation/question mark, semicolon or colon. It retains
+exact Unicode codepoint offsets, source and span SHA-256 hashes and explicit
+per-unit boundary caveats. The upstream 350-word division can cut sentences;
+its first and last fragments are never represented as complete context.
+Each unit supplies at most 24 unique complete fragments, maximum 400
+characters per fragment and 12,000 source characters. An overlong fragment
+is **not** silently cut down; it is excluded and counted. Duplicate, capped,
+and oversized-source omissions are also recorded in request metadata.
+LM Format Enforcer 0.11.3 cannot safely constrain some JSON-escaped literal
+source strings through enums; entire fragments containing straight double
+quotes, backslashes or control characters are excluded and counted, not
+normalized. Other Unicode characters remain verbatim. A tokenizer unable
+to represent a required character fails closed. **No eligible spans** means
+a failed unit without loading the model, never free-form quote generation.
+
+Decoder version, grammar contract, tokenizer revision, source span policy and
+pool material contribute to canonical request and local producer/DAG
+fingerprints. Only tokenizer-vocabulary preprocessing is cached per concrete
+tokenizer object and revision: the JSON parser and token enforcer start fresh
+on every request. Existing immutable raw answers and history do not satisfy
+the new identity. If the generation terminates without EOS (including
+960-token exhaustion), its unchanged decoded raw bytes are saved privately
+before the attempt fails. Cached local replay still checks actual raw bytes,
+strict JSON parsing, schema, evidence and output identity. Neither fences,
+unsafe IDs nor quotes are repaired or manufactured.
+
+**Formal validity is not editorial support.** Even a perfect exact quote can
+accompany an invented causal inference, exaggerated hook or generic visual
+action. An empty accepted array is not useful-lesson success. All proposed
+candidates remain MINED_UNREVIEWED and publish_eligible=false. A human must
+review source context, caveats and creative quality. Model-free tests do not
+prove genuine Qwen generation succeeds or offers a useful lesson.
 
 ## Interrupted work and output
 

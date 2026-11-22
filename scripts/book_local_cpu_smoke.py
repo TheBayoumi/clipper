@@ -48,6 +48,7 @@ OUTPUT_NAME = "clipper-public-book-cpu-smoke"
 RUNTIME = {
     "torch": "2.6.0+cpu",
     "transformers": "4.57.3",
+    "lm-format-enforcer": "0.11.3",
     "huggingface-hub": "0.36.2",
 }
 _MODEL = "Qwen/Qwen3-1.7B"

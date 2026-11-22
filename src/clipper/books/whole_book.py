@@ -14,7 +14,7 @@ from typing import Any
 
 from clipper.stage_contracts import content_fingerprint
 
-from . import faithful, mining, scripting, selection
+from . import constrained, faithful, mining, scripting, selection
 from .contracts import BookText
 
 REF_SCHEMA = "clipper-book-candidate-analysis-ref-v1"
@@ -24,7 +24,7 @@ WINDOW_UNITS = 32
 MAX_PLAN_UNITS = 20_000
 MAX_RECORDED_REPLY_BYTES = 16_384
 LOCAL_COMPLETION_SCHEMA = "clipper-book-local-completion-v1"
-LOCAL_PRODUCER_CONTRACT = "clipper-book-cpu-qwen-generate-validate-v1"
+LOCAL_PRODUCER_CONTRACT = "clipper-book-cpu-qwen-json-prefix-v2"
 LOCAL_GENERATION = {
     "model": scripting.SCRIPT_MODEL,
     "revision": scripting.SCRIPT_REVISION,
@@ -43,7 +43,7 @@ LOCAL_GENERATION = {
 def local_producer_material() -> dict[str, object]:
     """Resolve installed runtime versions without importing torch or loading weights."""
     runtime: dict[str, str] = {}
-    for package in ("torch", "transformers"):
+    for package in ("torch", "transformers", constrained.DECODER_PACKAGE):
         try:
             runtime[package] = version(package)
         except PackageNotFoundError:
@@ -56,6 +56,15 @@ def local_producer_material() -> dict[str, object]:
         "request_schema": PLAN_SCHEMA,
         "reply_max_bytes": MAX_RECORDED_REPLY_BYTES,
         "validator": "exact-quote-evidence-field-and-0-to-3-lessons-v1",
+        "decoder": {
+            "package": constrained.DECODER_PACKAGE,
+            "version": constrained.DECODER_VERSION,
+            "grammar": constrained.GRAMMAR_CONTRACT,
+            "span_policy": constrained.SPAN_POLICY,
+            "pool_schema": constrained.POOL_SCHEMA,
+            "tokenizer_model": scripting.SCRIPT_MODEL,
+            "tokenizer_revision": scripting.SCRIPT_REVISION,
+        },
     }
 
 
@@ -226,6 +235,7 @@ def _request_for_identity(
         "revision": scripting.SCRIPT_REVISION,
         "seed": 42,
         "max_new_tokens": 960,
+        "constraints": constrained.span_pool(unit.text, unit.evidence_field),
         "messages": [
             {
                 "role": "system",
@@ -256,6 +266,20 @@ def _request_for_identity(
             {"role": "user", "content": json.dumps(evidence, sort_keys=True, ensure_ascii=False)},
         ],
     }
+
+
+def load_strict_reply(raw: str | bytes) -> object:
+    """Reject repeated JSON keys, including nested candidate objects, without repair."""
+
+    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, entry in pairs:
+            if key in value:
+                raise mining.BookMiningError("duplicate JSON object key in local book reply")
+            value[key] = entry
+        return value
+
+    return json.loads(raw, object_pairs_hook=unique)
 
 
 def validate_reply(payload: object, unit: WorkUnit) -> list[dict[str, str]]:

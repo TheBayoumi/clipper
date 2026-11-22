@@ -50,7 +50,7 @@ jobs:
       - name: Install CPU-only pinned lean runtime (no Kokoro, Modal, or CUDA wheels)
         run: |
           python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 'torch==2.6.0+cpu'
-          python -m pip install --no-cache-dir 'transformers==4.57.3' 'huggingface_hub==0.36.2' 'PyYAML>=6.0.3,<7'
+          python -m pip install --no-cache-dir 'transformers==4.57.3' 'huggingface_hub==0.36.2' 'PyYAML>=6.0.3,<7' 'lm-format-enforcer==0.11.3'
           python -m pip install --no-cache-dir --no-deps -e .
       - name: Execute actual pinned CPU model with shorter hard process timeout
         id: model

@@ -296,6 +296,14 @@ def _script_request(config: NicheConfig) -> dict[str, object]:
     }
 
 
+class IncompleteConstrainedResponse(NicheVideoError):
+    """A generation stopped before EOS; its unchanged raw text must be stored."""
+
+    def __init__(self, raw: str) -> None:
+        super().__init__("constrained book generation stopped without EOS")
+        self.raw = raw
+
+
 class PinnedQwenSnapshotError(NicheVideoError):
     """Missing or incomplete exact-revision model cache, without revision fallback."""
 
@@ -439,6 +447,14 @@ def _run_pinned_qwen(request: dict[str, object], *, normalize_script: bool) -> s
     torch = importlib.import_module("torch")
 
     model, tokenizer = _script_pipeline()
+    # No decoder state is shared with the independent script-generation callers.
+    kwargs: dict[str, Any] = {}
+    if not normalize_script:
+        from . import constrained
+
+        kwargs["prefix_allowed_tokens_fn"] = constrained.prefix_for(
+            request, tokenizer, SCRIPT_REVISION
+        )
     torch.manual_seed(int(cast(int, request["seed"])))
     inputs = tokenizer.apply_chat_template(
         request["messages"],
@@ -455,10 +471,16 @@ def _run_pinned_qwen(request: dict[str, object], *, normalize_script: bool) -> s
             max_new_tokens=int(cast(int, request["max_new_tokens"])),
             **QWEN_GENERATION_SETTINGS,
             pad_token_id=tokenizer.eos_token_id,
+            **kwargs,
         )
     _public_cpu_smoke_phase("real_generation_complete")
     output_ids = output[0][inputs["input_ids"].shape[-1] :]
     result: str = tokenizer.decode(output_ids, skip_special_tokens=True)
+    if not normalize_script:
+        # A valid-looking final prefix at the 960-token cap is not a completion.
+        last_token = int(output_ids[-1]) if len(output_ids) else None
+        if tokenizer.eos_token_id is None or last_token != int(tokenizer.eos_token_id):
+            raise IncompleteConstrainedResponse(result)
     if normalize_script:
         result = result.strip()
         if result.startswith(chr(96) * 3):
@@ -472,7 +494,12 @@ def _local_script_completion(request: dict[str, object]) -> str:
 
 
 def _local_book_completion(request: dict[str, object]) -> str:
-    """Opt-in only: execute pinned Qwen on CPU and retain raw decoded output."""
+    """Opt-in only: validate source choices before pinned CPU-only inference."""
+    from . import constrained
+
+    # No eligible source span must never quietly disable constrained decoding.
+    constrained.decode_schema(request)
+    constrained._decoder()
     model, _tokenizer = _script_pipeline()
     if str(model.device) != "cpu":
         raise NicheVideoError("local book completion requires CPU-resident pinned Qwen weights")

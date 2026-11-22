@@ -301,6 +301,7 @@ def test_workflow_github_context_rules_and_dormant_trigger_are_explicit() -> Non
     cache_index = next(i for i, step in enumerate(steps) if "ephemeral HF cache" in step["name"])
     install_index = next(i for i, step in enumerate(steps) if "CPU-only pinned" in step["name"])
     assert gate_index < cache_index < install_index
+    assert "lm-format-enforcer==0.11.3" in steps[install_index]["run"]
     setup = steps[cache_index]["run"]
     assert '"$RUNNER_TEMP"' in setup
     assert '"$GITHUB_ENV"' in setup
