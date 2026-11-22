@@ -164,7 +164,8 @@ def coverage_summary(records: list[dict[str, object]]) -> dict[str, object]:
             len(cast(list[object], record["selectable_spans"])) for record in records
         ),
         "covered_fragment_chars": sum(
-            cast(int, cast(dict[str, object], record["coverage"])["covered_chars"]) for record in records
+            cast(int, cast(dict[str, object], record["coverage"])["covered_chars"])
+            for record in records
         ),
         "split_separator_chars": sum(
             cast(int, cast(dict[str, object], record["coverage"])["split_separator_chars"])
