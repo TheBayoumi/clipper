@@ -479,9 +479,7 @@ def _run_pinned_qwen(request: dict[str, object], *, normalize_script: bool) -> s
     if not normalize_script:
         # Match the *effective* pinned model EOS set without changing generation.
         # Qwen generation_config can carry more than tokenizer.eos_token_id.
-        configured = getattr(
-            getattr(model, "generation_config", None), "eos_token_id", None
-        )
+        configured = getattr(getattr(model, "generation_config", None), "eos_token_id", None)
         if configured is None:
             configured = tokenizer.eos_token_id
         if isinstance(configured, int):

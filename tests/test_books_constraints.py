@@ -428,9 +428,13 @@ def test_exact_pairs_rejected_in_both_field_orders_and_raw_validator() -> None:
         constrained.validate_local_choice([wrong], request)
     with pytest.raises(constrained.ConstraintError, match="pair"):
         constrained.selected_span(wrong, request)
-    for candidate in (wrong, {"evidence": wrong["evidence"], **{
-        key: value for key, value in wrong.items() if key != "evidence"
-    }}):
+    for candidate in (
+        wrong,
+        {
+            "evidence": wrong["evidence"],
+            **{key: value for key, value in wrong.items() if key != "evidence"},
+        },
+    ):
         raw = json.dumps({"lessons": [candidate]}, separators=(",", ":"))
         parser = _guard(request)
         for char in raw:
@@ -452,7 +456,7 @@ def test_exact_pairs_rejected_in_both_field_orders_and_raw_validator() -> None:
         ("Dr. Ada met Prof. Lin. The result followed.", 2),
         ("U.S. trials succeeded. Dr. Lin agreed.", 2),
         ("A. Smith reported a result. Another result followed.", 2),
-        ("第一句。第二句\uFF01第三句\uFF1F", 3),
+        ("第一句。第二句\uff01第三句\uff1f", 3),
         ("الجملة الأولى؟الجملة الثانية؛الجملة الثالثة.", 3),
         ("سؤال؟ جواب.", 2),
     ],

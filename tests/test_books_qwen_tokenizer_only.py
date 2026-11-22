@@ -67,9 +67,7 @@ def _canonical_reply(source: str, request: dict[str, object]) -> str:
     return json.dumps({"lessons": [candidate]}, ensure_ascii=True, separators=(",", ":"))
 
 
-def _pool_reply(
-    request: dict[str, object], *, count: int, ascii_only: bool
-) -> str:
+def _pool_reply(request: dict[str, object], *, count: int, ascii_only: bool) -> str:
     spans = request["constraints"]["spans"]
     assert len(spans) >= count
     lessons = [
@@ -303,9 +301,7 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
             language: " ".join(near_max_span(language, index) for index in range(24))
             for language in ("latin", "cjk", "arabic")
         }
-        cases["bounded_350_spans"] = " ".join(
-            f"authored{index:03d}." for index in range(350)
-        )
+        cases["bounded_350_spans"] = " ".join(f"authored{index:03d}." for index in range(350))
         for case_name, source in cases.items():
             request = _request(source)
             pool = request["constraints"]
@@ -326,13 +322,16 @@ def test_real_pinned_qwen_tokenizer_and_prefix_adapter_without_weights(
                     tokens = tokenizer.encode(raw, add_special_tokens=False)
                     token_count = len(tokens)
                     raw_bytes = len(raw.encode("utf-8"))
-                    assert tokenizer.decode(
-                        tokens,
-                        skip_special_tokens=True,
-                        clean_up_tokenization_spaces=False,
-                    ) == raw
-                    assert whole_book.load_strict_reply(raw)["lessons"] == (
-                        json.loads(raw)["lessons"]
+                    assert (
+                        tokenizer.decode(
+                            tokens,
+                            skip_special_tokens=True,
+                            clean_up_tokenization_spaces=False,
+                        )
+                        == raw
+                    )
+                    assert (
+                        whole_book.load_strict_reply(raw)["lessons"] == (json.loads(raw)["lessons"])
                     )
                     allowed = token_count <= 960 and raw_bytes <= 16_384
                     if allowed:

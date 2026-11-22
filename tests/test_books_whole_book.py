@@ -358,9 +358,13 @@ def test_declared_occurrence_pair_provenance_is_raw_derived_not_recorded(
         local_cpu=True,
         max_new_units=len(work.units),
         local_completion=lambda request: json.dumps(
-            response_for(next(unit for unit in work.units if unit.text == json.loads(
-                request["messages"][1]["content"]
-            )["text"]))
+            response_for(
+                next(
+                    unit
+                    for unit in work.units
+                    if unit.text == json.loads(request["messages"][1]["content"])["text"]
+                )
+            )
         ),
     )
     assert result["status"] == "complete"
@@ -378,9 +382,12 @@ def test_declared_occurrence_pair_provenance_is_raw_derived_not_recorded(
     }
     assert mined[0]["review_status"] == "MINED_UNREVIEWED"
     assert mined[0]["publish_eligible"] is False
-    assert "selected_occurrence" not in whole_book.candidate_for(
-        acquired.book, work.units[0], response["lessons"][0]
-    )["evidence_anchor"]
+    assert (
+        "selected_occurrence"
+        not in whole_book.candidate_for(acquired.book, work.units[0], response["lessons"][0])[
+            "evidence_anchor"
+        ]
+    )
     # Distinct raw IDs disambiguate exact repeated-text occurrences.
     repeated = replace(work.units[0], text="Repeat. Repeat.")
     pool = constrained.span_pool(repeated.text, repeated.evidence_field)
@@ -395,10 +402,12 @@ def test_declared_occurrence_pair_provenance_is_raw_derived_not_recorded(
                     {"role": "system", "content": "synthetic"},
                     {
                         "role": "user",
-                        "content": json.dumps({
-                            "text": repeated.text,
-                            "evidence_field": repeated.evidence_field,
-                        }),
+                        "content": json.dumps(
+                            {
+                                "text": repeated.text,
+                                "evidence_field": repeated.evidence_field,
+                            }
+                        ),
                     },
                 ],
                 "constraints": pool,
@@ -457,9 +466,7 @@ def test_fake_existing_generation_path_accepts_multi_eos_and_rejects_incomplete(
         tok = FakeTokenizer()
         for last in (0, 42):
             patch.setattr(scripting, "_script_pipeline", lambda last=last: (FakeModel(last), tok))
-            assert scripting._run_pinned_qwen(request, normalize_script=False) == (
-                '{"lessons":[]}'
-            )
+            assert scripting._run_pinned_qwen(request, normalize_script=False) == ('{"lessons":[]}')
         patch.setattr(scripting, "_script_pipeline", lambda: (FakeModel(777), tok))
         with pytest.raises(scripting.IncompleteConstrainedResponse) as exc:
             scripting._run_pinned_qwen(request, normalize_script=False)

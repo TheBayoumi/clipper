@@ -25,10 +25,24 @@ SPLIT = re.compile(
     r"(?<=[.!?;:\u3002\uFF01\uFF1F\u061B\u061F])\s+"
     r"|(?<=[\u3002\uFF01\uFF1F\u061B\u061F])(?=\S)"
 )
-ABBREVIATIONS = frozenset({
-    "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.",
-    "e.g.", "i.e.", "vs.", "etc.", "fig.", "no.", "vol.",
-})
+ABBREVIATIONS = frozenset(
+    {
+        "mr.",
+        "mrs.",
+        "ms.",
+        "dr.",
+        "prof.",
+        "sr.",
+        "jr.",
+        "e.g.",
+        "i.e.",
+        "vs.",
+        "etc.",
+        "fig.",
+        "no.",
+        "vol.",
+    }
+)
 INITIAL = re.compile(r"(?:[A-Za-z]\.){1,6}$")
 
 
@@ -341,15 +355,11 @@ def _literal_evidence_guard(parser: Any, spans: list[dict[str, object]], base_ty
     all_ids = trie_for(set(pairs), escaped=False)
     all_quotes = trie_for(set(pairs.values()), escaped=True)
     quote_by_id = {key: trie_for({value}, escaped=True) for key, value in pairs.items()}
-    ids_by_quote = {
-        quote: trie_for(ids, escaped=False) for quote, ids in by_quote.items()
-    }
+    ids_by_quote = {quote: trie_for(ids, escaped=False) for quote, ids in by_quote.items()}
     # The released adapter replaces parser.config with a tokenizer-derived
     # alphabet. Extend that PUBLIC config for exact source characters: otherwise
     # its free-string parser excludes direct Unicode even when tokens exist.
-    extra_alphabet = "".join(sorted({
-        c for value in pairs.values() for c in value if ord(c) > 127
-    }))
+    extra_alphabet = "".join(sorted({c for value in pairs.values() for c in value if ord(c) > 127}))
 
     class EvidenceGuard(base_type):  # type: ignore[misc]
         def __init__(
@@ -428,9 +438,7 @@ def _literal_evidence_guard(parser: Any, spans: list[dict[str, object]], base_ty
                             ids_by_quote[selected_quote] if selected_quote is not None else all_ids
                         )
                     elif in_candidate and field == "evidence":
-                        active = (
-                            quote_by_id[selected_id] if selected_id is not None else all_quotes
-                        )
+                        active = quote_by_id[selected_id] if selected_id is not None else all_quotes
                     else:
                         active = None
                     in_string, escaped = True, False
