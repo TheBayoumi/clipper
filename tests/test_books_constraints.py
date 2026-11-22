@@ -796,20 +796,13 @@ def test_public_book_context_preflight_is_pinned_and_weight_free(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
 ) -> None:
 
-    snapshot = (
-        tmp_path
-        / "models--Qwen--Qwen3-1.7B"
-        / "snapshots"
-        / scripting.SCRIPT_REVISION
-    )
+    snapshot = tmp_path / "models--Qwen--Qwen3-1.7B" / "snapshots" / scripting.SCRIPT_REVISION
     snapshot.mkdir(parents=True)
     synthetic_tokenizer_bytes = b'{"synthetic":"no model, no weights"}'
     (snapshot / "tokenizer.json").write_bytes(synthetic_tokenizer_bytes)
     model_limit = 40_959 if fault == "wrong-model-limit" else 40_960
     tokenizer_limit = 131_071 if fault == "wrong-tokenizer-limit" else 131_072
-    (snapshot / "config.json").write_text(
-        json.dumps({"max_position_embeddings": model_limit})
-    )
+    (snapshot / "config.json").write_text(json.dumps({"max_position_embeddings": model_limit}))
     (snapshot / "tokenizer_config.json").write_text(
         json.dumps({"model_max_length": tokenizer_limit})
     )
