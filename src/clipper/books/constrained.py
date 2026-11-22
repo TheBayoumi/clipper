@@ -739,10 +739,11 @@ class _BlankSafePrefixFn:
             token_id for token_id, wire, _word in tokenizer_data.regular_tokens if '"' in wire
         )
         self._states: dict[int, tuple[tuple[int, ...], str, Any]] = {}
-        self.token_enforcer = callback.token_enforcer
+        self.token_enforcer = getattr(callback, "token_enforcer", None)
 
     def __call__(self, batch_id: int, sent: Any) -> list[int]:
-        token_ids = tuple(int(value) for value in sent.tolist())
+        sequence = sent.tolist() if hasattr(sent, "tolist") else sent
+        token_ids = tuple(int(value) for value in sequence)
         allowed: list[int] = self._callback(batch_id, sent)
         if batch_id not in self._states:
             # Transformers calls with the prompt before the first new token.

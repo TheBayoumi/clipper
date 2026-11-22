@@ -864,3 +864,56 @@ def test_public_book_context_preflight_is_pinned_and_weight_free(
         "model.safetensors" not in cast(list[str], call["allow_patterns"])
         for call in download_calls
     )
+
+
+def test_synthetic_public_book_prefix_wrapper_and_escape_paths() -> None:
+    """Exercise production wrapper in ordinary pytest, with no models."""
+    from typing import Any
+
+    source = "A fully synthetic source sentence."
+    request = _request(source)
+    data = _synthetic_tokens()
+    root = _guard(request)
+
+    class Sent:
+        def __init__(self, values: list[int]) -> None:
+            self.values = values
+
+        def tolist(self) -> list[int]:
+            return self.values
+
+    class ReleasedAdapter:
+        def __init__(self) -> None:
+            self.token_enforcer = TokenEnforcer(data, root)
+
+        def __call__(self, _batch_id: int, sent: Sent) -> list[int]:
+            return self.token_enforcer.get_allowed_tokens(sent.tolist()).allowed_tokens
+
+    by_char = {value: index for index, value, _new_word in data.regular_tokens}
+    assert '"' in by_char
+    assert constrained._blank_closing_token_ids(data)
+    for topic in ("Visible", "\\u00a0Visible"):
+        # The second topic is an in-memory synthetic raw escape, not a source
+        # rewrite. Its decoded value is nonblank and exactly validated.
+        span = cast(list[dict[str, object]], request["constraints"]["spans"])[0]
+        lesson: dict[str, str] = {
+            "id": str(span["id"]),
+            "topic": topic,
+            "claim": "An authored synthetic claim",
+            "hook_angle": "View the exact quote",
+            "visual_action": "Show a synthetic card",
+            "evidence": str(span["text"]),
+            "evidence_field": "native_text",
+        }
+        raw = json.dumps({"lessons": [lesson]}, ensure_ascii=True, separators=(",", ":"))
+        decoder = constrained._BlankSafePrefixFn(ReleasedAdapter(), root, data)
+        state = [999]
+        assert data.eos_token_id not in decoder(0, Sent(state))
+        for character in raw:
+            allowed = decoder(0, Sent(state))
+            assert by_char[character] in allowed
+            state.append(by_char[character])
+        assert data.eos_token_id in decoder(0, Sent(state))
+        parsed: Any = whole_book.load_strict_reply(raw)
+        assert parsed == {"lessons": [lesson]}
+        constrained.validate_local_choice(parsed["lessons"], request)
