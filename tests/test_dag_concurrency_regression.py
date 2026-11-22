@@ -62,7 +62,7 @@ def test_stale_dag_lock_is_not_reclaimed_unsafely(tmp_path) -> None:
     lock.mkdir(parents=True)
 
     with (
-        pytest.raises(TimeoutError, match="timed out acquiring DAG write lock"),
+        pytest.raises(TimeoutError, match="legacy DAG lock requires owner intervention"),
         store._write_lock(identity, timeout_seconds=0.02),
     ):
         raise AssertionError("stale lock must never be stolen")
@@ -399,15 +399,15 @@ def test_local_lock_or_release_cancellation_propagates_without_stranding_owned_c
     identity = _identity()
     store = DagStore(tmp_path)
     cancellation = KeyboardInterrupt("new cleanup cancellation")
-    original_rmdir = Path.rmdir
+    original_lock = DagStore._lock_file
     original_unlink = Path.unlink
     operations: list[int] = []
     raised = False
 
-    def rmdir(path: Path):
+    def lock(descriptor: int, *, acquire: bool) -> None:
         nonlocal raised
-        original_rmdir(path)
-        if stage == "initial" and path.name == ".write-lock" and not raised:
+        original_lock(descriptor, acquire=acquire)
+        if stage == "initial" and not acquire and not raised:
             raised = True
             raise cancellation
 
@@ -422,7 +422,7 @@ def test_local_lock_or_release_cancellation_propagates_without_stranding_owned_c
         operations.append(1)
         return {"valid": True}
 
-    monkeypatch.setattr(Path, "rmdir", rmdir)
+    monkeypatch.setattr(DagStore, "_lock_file", staticmethod(lock))
     monkeypatch.setattr(Path, "unlink", unlink)
     with pytest.raises(KeyboardInterrupt) as error:
         store.execute(identity, operation)

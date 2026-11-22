@@ -989,16 +989,12 @@ def _dag_legacy_terminal(stage_name: str, cache_key: str, dag_root: str) -> dict
     identity = record.get("identity")
     if not isinstance(identity, dict) or identity.get("cache_key") != cache_key:
         return None
-    output = _durable_json(f"{prefix}/output.json")
-    # JSON values can be scalar or null; read_file is authoritative, not the mount.
-    if output is None:
-        try:
-            payload = b"".join(artifact_volume.read_file(f"{prefix}/output.json"))
-        except (FileNotFoundError, modal.exception.NotFoundError):
-            return None
-        output_value: object = json.loads(payload)
-    else:
-        output_value = output
+    # Output can be any valid JSON value, including null and scalar values.
+    try:
+        payload = b"".join(artifact_volume.read_file(f"{prefix}/output.json"))
+    except (FileNotFoundError, modal.exception.NotFoundError):
+        return None
+    output_value: object = json.loads(payload)
     if content_fingerprint(output_value) != record["output_fingerprint"]:
         return None
     return {"record": record, "output": output_value}
