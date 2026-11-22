@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -222,6 +223,98 @@ def test_title_only_ingest_handoff_more_than_128_chunks_64_candidates_and_cli(
     )
     assert export_path.read_bytes() == original_export
     assert progress_path.read_bytes() == original_progress
+
+
+def test_private_analysis_hierarchy_with_permissive_umask(
+    tmp_path: Path,
+) -> None:
+    tmp_path.chmod(0o755)
+    shared = tmp_path / "shared"
+    shared.mkdir(mode=0o755)
+    previous = os.umask(0)
+    try:
+        artifact_root = tmp_path / "artifacts"
+        runner, acquired, _ = ingested(tmp_path, paragraphs=9, with_image=False)
+        replies = responses_for(acquired.book)
+        report = runner.mine_candidate(
+            acquired.analysis_ref_path,
+            responses=replies,
+            response_file_sha256=content_fingerprint(replies),
+        )
+        assert report["status"] == "complete"
+        candidate_root = artifact_root / "book-candidates"
+        paths = [
+            acquired.analysis_ref_path,
+            Path(report["progress_path"]),
+            Path(report["export_path"]),
+        ]
+        for file in paths:
+            assert file.stat().st_mode & 0o777 == 0o600
+            current = file.parent
+            while current != candidate_root.parent:
+                assert current.stat().st_mode & 0o777 == 0o700, current
+                current = current.parent
+        dag = artifact_root / "book-dag" / "books-mining-unit-v1"
+        assert list(dag.glob("*/stage.json"))
+        for file in dag.glob("*/stage.json"):
+            assert file.stat().st_mode & 0o777 == 0o600
+            assert file.parent.stat().st_mode & 0o777 == 0o700
+        for file in dag.glob("*/output.json"):
+            assert file.stat().st_mode & 0o777 == 0o600
+        assert shared.stat().st_mode & 0o777 == 0o755
+        assert tmp_path.stat().st_mode & 0o777 == 0o755
+    finally:
+        os.umask(previous)
+
+
+def test_reused_analysis_ancestors_tightened_without_changing_artifact_bytes(
+    tmp_path: Path,
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=9, with_image=False)
+    replies = responses_for(acquired.book)
+    digest = content_fingerprint(replies)
+    initial = runner.mine_candidate(
+        acquired.analysis_ref_path, responses=replies, response_file_sha256=digest
+    )
+    assert initial["status"] == "complete"
+    root = tmp_path / "artifacts"
+    candidate_root = root / "book-candidates"
+    originals = {
+        acquired.analysis_ref_path: acquired.analysis_ref_path.read_bytes(),
+        Path(initial["progress_path"]): Path(initial["progress_path"]).read_bytes(),
+        Path(initial["export_path"]): Path(initial["export_path"]).read_bytes(),
+    }
+    directories = [
+        candidate_root,
+        candidate_root / "analysis-refs",
+        acquired.analysis_ref_path.parent,
+        candidate_root / "analysis",
+        candidate_root / "analysis" / "progress",
+        Path(initial["progress_path"]).parent,
+        candidate_root / "analysis" / "exports",
+        Path(initial["export_path"]).parent,
+    ]
+    root.chmod(0o755)
+    for directory in directories:
+        directory.chmod(0o777)
+    previous = os.umask(0)
+    try:
+        repeated = runner.ingest_candidate(
+            acquired.candidate.title, registry=(acquired.candidate,), offline=True
+        )
+        assert not isinstance(repeated, SourceUnresolved)
+        assert repeated.analysis_ref_path == acquired.analysis_ref_path
+        assert runner.mine_candidate(
+            acquired.analysis_ref_path, responses=replies, response_file_sha256=digest
+        ) == initial
+    finally:
+        os.umask(previous)
+    for directory in directories:
+        assert directory.stat().st_mode & 0o777 == 0o700, directory
+    for file, original in originals.items():
+        assert file.read_bytes() == original
+        assert file.stat().st_mode & 0o777 == 0o600
+    assert root.stat().st_mode & 0o777 == 0o755
 
 
 def test_partial_missing_invalid_and_extended_response_resume(

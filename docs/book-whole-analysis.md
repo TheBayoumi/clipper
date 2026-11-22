@@ -32,11 +32,15 @@ extracted/dossier byte hashes, book fingerprint, parser version/config and
 recovery status. The reader reconstructs the expected paths from this handle,
 validates actual files, acquisition metadata and the canonical ingest DAG PASS,
 and rejects mismatched, changed, unsafe or cross-book references before mining.
-It never resolves by last-modified or "latest" edition. The ingest CLI prints
+Reviewed candidate identity uses the registry's explicit `book_id` (for example,
+`psychology-of-money`), while parsed title and author must exactly match the
+reviewed edition; no additional title-derived ID is required. It never resolves
+by last-modified or "latest" edition. The ingest CLI prints
 `analysis_ref_path` even if source recovery is incomplete and it exits 2.
 References and all source-bearing outputs are immutable/private (0700
-directories, 0600 files on supported POSIX filesystems) under an
-owner-controlled artifact root. Previous raw, extraction, report and cache
+directories, including intermediate application-owned ancestors, and 0600
+files on supported POSIX filesystems) under an owner-controlled artifact root.
+Unrelated shared ancestor permissions are not changed. Previous raw, extraction, report and cache
 bytes are never migrated.
 
 Legacy `clipper books ingest --source ...` and `books mine --book-id ...`

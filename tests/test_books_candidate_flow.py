@@ -18,7 +18,7 @@ import pytest
 from clipper import cli
 from clipper.books import acquisition, faithful
 from clipper.books.contracts import OCRIdentity, SourceUnresolved
-from clipper.books.orchestrator import BookOrchestrator, BookRunError
+from clipper.books.orchestrator import BookOrchestrator, BookRunError, _book_slug
 from clipper.stage_contracts import content_fingerprint
 
 
@@ -120,6 +120,107 @@ def _fixture(
             )
 
     return candidate, FakeTransport(), registry
+
+
+@pytest.mark.parametrize(
+    ("book_id", "title_slug"),
+    [
+        ("atomic-habits", "atomic-habits"),
+        ("psychology-of-money", "the-psychology-of-money"),
+    ],
+)
+def test_reviewed_book_id_is_not_replaced_by_title_slug(
+    tmp_path: Path, book_id: str, title_slug: str
+) -> None:
+    candidate, transport, _ = _fixture(tmp_path, book_id=book_id)
+    runner = BookOrchestrator(tmp_path / "private")
+    result = runner.ingest_candidate(candidate.title, registry=(candidate,), transport=transport)
+    assert not isinstance(result, SourceUnresolved)
+    assert candidate.book_id == book_id
+    assert _book_slug(candidate.title) == title_slug
+    assert result.analysis_ref_path.parent.name == book_id
+
+    reference, book = runner.load_candidate_for_analysis(
+        result.analysis_ref_path, book_id=candidate.book_id
+    )
+    assert reference.book_id == candidate.book_id
+    assert reference.candidate_fingerprint == candidate.fingerprint
+    assert book.source.title == candidate.title
+    assert book.source.author == candidate.author
+    assert book.fingerprint == result.book.fingerprint
+    assert reference.extracted_sha256 == hashlib.sha256(
+        result.extracted_path.read_bytes()
+    ).hexdigest()
+
+    # Both a random requested ID and the other valid reviewed registry ID
+    # must be rejected even if their title conventions differ.
+    other_id = "psychology-of-money" if book_id == "atomic-habits" else "atomic-habits"
+    for requested in ("unrelated-book", other_id):
+        with pytest.raises(BookRunError, match="candidate analysis reference"):
+            runner.load_candidate_for_analysis(result.analysis_ref_path, book_id=requested)
+
+    # Structural mining handoff uses no inference and cannot grant approval.
+    mined = runner.mine_candidate(
+        result.analysis_ref_path,
+        book_id=book_id,
+        responses={},
+        response_file_sha256="a" * 64,
+    )
+    assert mined["book_id"] == book_id
+    assert mined["status"] == "incomplete"
+    assert mined["publish_eligible"] is False
+
+
+def test_private_write_restricts_new_parents_without_touching_shared_paths(
+    tmp_path: Path,
+) -> None:
+    tmp_path.chmod(0o755)
+    shared = tmp_path / "shared"
+    shared.mkdir(mode=0o755)
+    previous_bytes = b"unrelated original"
+    previous_file = shared / "original.bin"
+    previous_file.write_bytes(previous_bytes)
+    private_root = tmp_path / "artifact-root" / "book-candidates"
+    previous = os.umask(0)
+    try:
+        output = (
+            private_root / "research-import" / "rejections" / "synthetic" / "record.json"
+        )
+        acquisition._private_write(output, b"private fixture", private_root=private_root)
+        assert output.stat().st_mode & 0o777 == 0o600
+        directory = output.parent
+        while directory != private_root.parent:
+            assert directory.stat().st_mode & 0o777 == 0o700, directory
+            directory = directory.parent
+
+        # An explicit sidecar path can create restrictive new intermediates
+        # without chmodding an existing unrelated shared parent.
+        sidecar = shared / "new" / "nested" / "overlay.json"
+        acquisition._private_write(sidecar, b"synthetic overlay")
+        assert sidecar.stat().st_mode & 0o777 == 0o600
+        assert sidecar.parent.stat().st_mode & 0o777 == 0o700
+        assert sidecar.parent.parent.stat().st_mode & 0o777 == 0o700
+        assert shared.stat().st_mode & 0o777 == 0o755
+        assert tmp_path.stat().st_mode & 0o777 == 0o755
+        assert previous_file.read_bytes() == previous_bytes
+
+        with pytest.raises(acquisition.AcquisitionError, match="outside owned root"):
+            acquisition._private_write(
+                shared / "escape.json", b"no", private_root=private_root
+            )
+        outside = shared / "outside"
+        outside.mkdir(mode=0o755)
+        (private_root / "analysis").symlink_to(outside, target_is_directory=True)
+        with pytest.raises(acquisition.AcquisitionError, match="symlink"):
+            acquisition._private_write(
+                private_root / "analysis" / "progress" / "record.json",
+                b"no",
+                private_root=private_root,
+            )
+        assert not (outside / "progress").exists()
+        assert outside.stat().st_mode & 0o777 == 0o755
+    finally:
+        os.umask(previous)
 
 
 def test_title_only_ingest_preserves_private_raw_and_incomplete_image_evidence(

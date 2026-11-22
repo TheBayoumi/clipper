@@ -120,6 +120,24 @@ def test_full_offline_gutenberg_ingest_mine_select_and_resume(
     assert len(list((tmp_path / "book-dag/books-mining").glob("*/stage.json"))) == 1
 
 
+def test_legacy_owner_file_retains_title_derived_identity_with_leading_article(
+    tmp_path: Path,
+) -> None:
+    title = "The Synthetic Complete Book"
+    raw = _complete_book().replace(TITLE.encode(), title.encode())
+    source = tmp_path / "owner.txt"
+    source.write_bytes(raw)
+    runner = BookOrchestrator(tmp_path / "legacy")
+    book = runner.ingest(title, AUTHOR, ingest.LocalFileResolver(source))
+    assert isinstance(book, BookText)
+    assert runner.load_text("the-synthetic-complete-book") == book
+    assert (runner.root / "book-text/the-synthetic-complete-book.json").is_file()
+    with pytest.raises(BookRunError, match="ingested BookText missing"):
+        runner.load_text("synthetic-complete-book")
+    # The legacy owner-file interface never aliases a reviewed candidate.
+    assert not (runner.root / "book-candidates/analysis-refs").exists()
+
+
 def test_cli_ingest_owner_file_and_reject_unsourced_mining(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, capsys: pytest.CaptureFixture[str]
 ) -> None:

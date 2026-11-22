@@ -279,9 +279,44 @@ def _response(result: HTTPResult, *, limit: int, kind: str) -> None:
         raise AcquisitionError(f"Archive {kind} returned HTML rather than expected data")
 
 
-def _private_directory(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(path, 0o700)
+def _private_directory(path: Path, *, private_root: Path | None = None) -> None:
+    """Tighten owned directory chains without chmodding unrelated shared parents."""
+    if private_root is None:
+        # An explicitly supplied output path owns its final directory and any
+        # missing parents, but not existing shared ancestors such as /tmp.
+        missing: list[Path] = []
+        current = path
+        while not current.exists():
+            if current.is_symlink():
+                raise AcquisitionError("private artifact directory is a symlink")
+            missing.append(current)
+            current = current.parent
+        if current.is_symlink():
+            raise AcquisitionError("private artifact directory is a symlink")
+        for directory in reversed(missing):
+            directory.mkdir(mode=0o700)
+            os.chmod(directory, 0o700)
+        os.chmod(path, 0o700)
+        return
+
+    try:
+        relative = path.relative_to(private_root)
+    except ValueError as exc:
+        raise AcquisitionError("private artifact parent outside owned root") from exc
+    if ".." in relative.parts:
+        raise AcquisitionError("private artifact parent escapes owned root")
+    directories = (
+        private_root,
+        *(
+            private_root.joinpath(*relative.parts[:index])
+            for index in range(1, len(relative.parts) + 1)
+        ),
+    )
+    for index, directory in enumerate(directories):
+        if directory.is_symlink():
+            raise AcquisitionError("private artifact directory is a symlink")
+        directory.mkdir(parents=index == 0, exist_ok=True, mode=0o700)
+        os.chmod(directory, 0o700)
 
 
 def _read_bounded_file(path: Path, budget: int) -> bytes:
@@ -301,9 +336,13 @@ def _matches_immutable_bytes(path: Path, data: bytes) -> bool:
     return _read_bounded_file(path, len(data) + 1) == data
 
 
-def _private_write(path: Path, data: bytes) -> None:
+def _private_write(
+    path: Path, data: bytes, *, private_root: Path | None = None
+) -> None:
     """Publish complete immutable bytes with an exclusive atomic link, never replace."""
-    _private_directory(path.parent)
+    _private_directory(path.parent, private_root=private_root)
+    if path.is_symlink():
+        raise AcquisitionError("private artifact path is a symlink")
     if path.exists():
         os.chmod(path, 0o600)
         if not _matches_immutable_bytes(path, data):
@@ -322,7 +361,7 @@ def _private_write(path: Path, data: bytes) -> None:
         try:
             os.link(temporary, path)
         except FileExistsError as exc:
-            if not _matches_immutable_bytes(path, data):
+            if path.is_symlink() or not _matches_immutable_bytes(path, data):
                 raise AcquisitionError(
                     f"immutable artifact conflicts with recorded bytes: {path.name}"
                 ) from exc
@@ -498,7 +537,7 @@ class ArchiveAcquirer:
                 "edition_authenticated": False,
                 "warnings": list(warnings),
             }
-            _private_write(raw_path, download.body)
+            _private_write(raw_path, download.body, private_root=self.root)
             if not manifest_path.is_file():
                 try:
                     _private_write(
@@ -507,6 +546,7 @@ class ArchiveAcquirer:
                             json.dumps(manifest, sort_keys=True, ensure_ascii=False, indent=2)
                             + "\n"
                         ).encode(),
+                        private_root=self.root,
                     )
                 except AcquisitionError:
                     # A concurrent identical fetch may have committed its own first timestamp.
@@ -534,7 +574,11 @@ class ArchiveAcquirer:
                     json.dumps(event, sort_keys=True, ensure_ascii=False, indent=2) + "\n"
                 ).encode()
                 event_key = hashlib.sha256(event_bytes).hexdigest()
-                _private_write(self.root / "events" / key / f"{event_key}.json", event_bytes)
+                _private_write(
+                    self.root / "events" / key / f"{event_key}.json",
+                    event_bytes,
+                    private_root=self.root,
+                )
             return AcquiredBook(
                 canonical.source,
                 candidate,
@@ -564,7 +608,11 @@ class ArchiveAcquirer:
                 + "\n"
             ).encode()
             incident = hashlib.sha256(report).hexdigest()
-            _private_write(self.root / "errors" / f"{key}-{incident}.json", report)
+            _private_write(
+                self.root / "errors" / f"{key}-{incident}.json",
+                report,
+                private_root=self.root,
+            )
             if isinstance(exc, AcquisitionError):
                 raise
             raise AcquisitionError(f"Archive candidate metadata/acquisition failed: {exc}") from exc

@@ -156,9 +156,15 @@ def dispatch_books(args: argparse.Namespace) -> int:
         research_bytes = faithful.read_evidence(args.research)
         research_digest = hashlib.sha256(research_bytes).hexdigest()
         import_root = args.artifact_root / "book-candidates" / "research-import"
-        acquisition._private_directory(import_root)
+        acquisition._private_directory(
+            import_root, private_root=args.artifact_root / "book-candidates"
+        )
         raw_research_path = import_root / "source" / f"{research_digest}.json"
-        acquisition._private_write(raw_research_path, research_bytes)
+        acquisition._private_write(
+            raw_research_path,
+            research_bytes,
+            private_root=args.artifact_root / "book-candidates",
+        )
         try:
             overlay_bytes, report = faithful.convert_research_observations(
                 recovered.book, research_bytes
@@ -175,7 +181,9 @@ def dispatch_books(args: argparse.Namespace) -> int:
             diagnostic_identity = content_fingerprint(rejection)
             rejection["diagnostic_identity"] = diagnostic_identity
             rejection_root = import_root / "rejections"
-            acquisition._private_directory(rejection_root)
+            acquisition._private_directory(
+                rejection_root, private_root=args.artifact_root / "book-candidates"
+            )
             rejection_path = (
                 rejection_root
                 / recovered.candidate.fingerprint
@@ -184,6 +192,7 @@ def dispatch_books(args: argparse.Namespace) -> int:
             acquisition._private_write(
                 rejection_path,
                 (json.dumps(rejection, sort_keys=True, indent=2) + "\n").encode(),
+                private_root=args.artifact_root / "book-candidates",
             )
             raise
         report_material = {
@@ -200,7 +209,9 @@ def dispatch_books(args: argparse.Namespace) -> int:
         report["import_report_material"] = report_material
         report_path = import_root / recovered.candidate.book_id / f"report-{report_identity}.json"
         acquisition._private_write(
-            report_path, (json.dumps(report, sort_keys=True, indent=2) + "\n").encode()
+            report_path,
+            (json.dumps(report, sort_keys=True, indent=2) + "\n").encode(),
+            private_root=args.artifact_root / "book-candidates",
         )
         acquisition._private_write(args.output, overlay_bytes)
         print(

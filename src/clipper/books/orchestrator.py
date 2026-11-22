@@ -363,6 +363,7 @@ class BookOrchestrator:
         acquisition._private_write(
             extracted_path,
             (json.dumps(asdict(book), ensure_ascii=False, sort_keys=True) + "\n").encode(),
+            private_root=self.root / "book-candidates",
         )
         reconciliation = faithful.image_reconciliation(book)
         dossier = {
@@ -426,10 +427,13 @@ class BookOrchestrator:
         acquisition._private_write(
             reconciliation_path,
             (json.dumps(reconciliation, sort_keys=True, indent=2) + "\n").encode(),
+            private_root=self.root / "book-candidates",
         )
         dossier["reconciliation_path"] = str(reconciliation_path)
         acquisition._private_write(
-            dossier_path, (json.dumps(dossier, sort_keys=True, indent=2) + "\n").encode()
+            dossier_path,
+            (json.dumps(dossier, sort_keys=True, indent=2) + "\n").encode(),
+            private_root=self.root / "book-candidates",
         )
         analysis_ref_path = (
             self.root
@@ -457,6 +461,7 @@ class BookOrchestrator:
         acquisition._private_write(
             analysis_ref_path,
             (json.dumps(asdict(analysis_ref), ensure_ascii=False, sort_keys=True) + "\n").encode(),
+            private_root=self.root / "book-candidates",
         )
         return CandidateIngestResult(
             acquired.candidate,
@@ -581,7 +586,6 @@ class BookOrchestrator:
                 or book.parser_config_sha256 != ref.parser_config_sha256
                 or book.recovery_status != ref.recovery_status
                 or book.source.authorization_status != "unverified"
-                or _book_slug(book.source.title) != ref.book_id
                 or sum(len(p.split()) for section in book.sections for p in section.paragraphs)
                 != book.total_word_count
             ):
@@ -825,7 +829,9 @@ class BookOrchestrator:
         progress_sha256 = hashlib.sha256(progress_bytes).hexdigest()
         artifact_name = f"{plan_fingerprint}-{response_file_sha256}-{progress_sha256}.json"
         progress_path = base / "progress" / ref.book_id / artifact_name
-        acquisition._private_write(progress_path, progress_bytes)
+        acquisition._private_write(
+            progress_path, progress_bytes, private_root=self.root / "book-candidates"
+        )
         export_path: Path | None = None
         if outcome == "complete":
             export = {
@@ -859,6 +865,7 @@ class BookOrchestrator:
             acquisition._private_write(
                 export_path,
                 (json.dumps(export, ensure_ascii=False, sort_keys=True) + "\n").encode(),
+                private_root=self.root / "book-candidates",
             )
         return {
             "book_id": ref.book_id,
