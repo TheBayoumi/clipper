@@ -91,17 +91,23 @@ class DagStore:
         self.follower_poll_seconds = float(follower_poll_seconds)
         self.coordinator = coordinator
         self.private_stages = private_stages
+        self._private_stage_dirs = frozenset(
+            self._stage_directory_name(stage) for stage in private_stages
+        )
         if not math.isfinite(self.execution_lease_seconds) or self.execution_lease_seconds <= 0:
             raise ValueError("DAG execution lease must be finite and positive")
         if not math.isfinite(self.follower_poll_seconds) or self.follower_poll_seconds <= 0:
             raise ValueError("DAG follower poll interval must be finite and positive")
 
-    def _directory(self, identity: StageIdentity) -> Path:
-        safe_stage = "".join(
+    @staticmethod
+    def _stage_directory_name(stage_name: str) -> str:
+        return "".join(
             character if character.isalnum() or character in {"-", "_"} else "-"
-            for character in identity.stage_name
+            for character in stage_name
         )
-        return self.root / safe_stage / identity.cache_key
+
+    def _directory(self, identity: StageIdentity) -> Path:
+        return self.root / self._stage_directory_name(identity.stage_name) / identity.cache_key
 
     def _record_path(self, identity: StageIdentity) -> Path:
         return self._directory(identity) / "stage.json"
@@ -148,7 +154,7 @@ class DagStore:
             raise ValueError("DAG stage is not configured for private persistence")
         self.root.parent.mkdir(parents=True, exist_ok=True)
         self._private_directory(self.root)
-        stage = self.root / stage_name
+        stage = self.root / self._stage_directory_name(stage_name)
         self._private_directory(stage)
         for directory in stage.iterdir():
             if directory.is_symlink() or not directory.is_dir():
@@ -184,7 +190,7 @@ class DagStore:
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         try:
             serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
-            if path.parent.parent.name in self.private_stages:
+            if path.parent.parent.name in self._private_stage_dirs:
                 descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                     handle.write(serialized)

@@ -419,8 +419,26 @@ def test_second_normal_candidate_ingest_reuses_pinned_extracted_artifact(
     runner = BookOrchestrator(tmp_path / "private")
     first = runner.ingest_candidate("Atomic Habits", registry=(candidate,), transport=transport)
     assert not isinstance(first, SourceUnresolved)
+    stage = runner.root / "book-dag" / "books-ingest"
+    current_output = stage / first.stage_key / "output.json"
+    old_directory = stage / "synthetic-predecessor-cache"
+    old_directory.mkdir(mode=0o755)
+    old_output = old_directory / "output.json"
+    old_output.write_bytes(current_output.read_bytes())
+    hashes = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in (old_output, current_output)}
+    for path in hashes:
+        path.chmod(0o644)
+        path.parent.chmod(0o755)
+    stage.chmod(0o755)
+    stage.parent.chmod(0o755)
     monkeypatch.setattr(transport, "fail", True)
     second = runner.ingest_candidate("Atomic Habits", registry=(candidate,), transport=transport)
+    for path, digest in hashes.items():
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert path.parent.stat().st_mode & 0o777 == 0o700
+    assert stage.stat().st_mode & 0o777 == 0o700
+    assert stage.parent.stat().st_mode & 0o777 == 0o700
     assert not isinstance(second, SourceUnresolved)
     assert second.acquired.cache_hit is True
     assert second.stage_key == first.stage_key

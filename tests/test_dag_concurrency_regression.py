@@ -108,7 +108,9 @@ def test_expired_execution_claim_is_recovered_as_new_attempt(tmp_path) -> None:
 def test_private_dag_creation_resume_and_concurrent_writers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    identity = _identity()
+    identity = StageIdentity(
+        stage_name="private.ingest", source_hash="source-hash", contract_hash="contract-hash"
+    )
     root = tmp_path / "private-dag"
     store = DagStore(root, private_stages=frozenset({identity.stage_name}))
     calls: list[int] = []
@@ -132,7 +134,7 @@ def test_private_dag_creation_resume_and_concurrent_writers(
             results = list(pool.map(lambda _: store.execute(identity, operation), range(3)))
         assert len(calls) == 1
         assert sum(not reused for _, reused in results) == 1
-        for directory in (root, root / identity.stage_name, store._directory(identity)):
+        for directory in (root, root / "private-ingest", store._directory(identity)):
             assert directory.stat().st_mode & 0o777 == 0o700
         files = list(store._directory(identity).glob("*.json"))
         assert files
@@ -168,5 +170,32 @@ def test_private_dag_failure_keeps_record_private_and_no_temporary_files(tmp_pat
         assert not store._output_path(identity).exists()
         assert not list(record.parent.glob("*.tmp"))
         assert not store._execution_claim_path(identity).exists()
+    finally:
+        os.umask(previous)
+
+
+def test_private_dag_output_rename_failure_removes_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    store = DagStore(tmp_path / "private", private_stages=frozenset({identity.stage_name}))
+    original_replace = Path.replace
+
+    def fail_output(path: Path, target: Path) -> Path:
+        assert path.stat().st_mode & 0o777 == 0o600
+        if target.name == "output.json":
+            raise OSError("synthetic rename failure")
+        return original_replace(path, target)
+
+    previous = os.umask(0)
+    try:
+        monkeypatch.setattr(Path, "replace", fail_output)
+        with pytest.raises(OSError, match="synthetic rename failure"):
+            store.execute(identity, lambda: {"synthetic": 1})
+        directory = store._directory(identity)
+        assert not list(directory.glob(".*.tmp"))
+        assert not store._output_path(identity).exists()
+        assert not store._execution_claim_path(identity).exists()
+        assert store._record_path(identity).stat().st_mode & 0o777 == 0o600
     finally:
         os.umask(previous)

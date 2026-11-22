@@ -1344,3 +1344,46 @@ def test_v1_projection_provenance_labels_actual_text(normalized: str | None) -> 
     assert all(x.text == (normalized or "original") for x in image_view)
     expected = "image_normalized" if normalized else "image_original"
     assert all(x.text_provenance == expected for x in image_view)
+
+
+def test_valid_v2_envelope_cannot_overwrite_unknown_original_with_duplicate_member() -> None:
+    raw = _epub()
+    candidate = _candidate(raw)
+    book = extract_candidate(_source(raw, candidate), raw, candidate)
+    research = _research_v2(book)
+    inventory = research["occurrence_inventory"]
+    assert isinstance(inventory, list)
+    research["observations"] = [
+        _observation(inventory[0], observation_id="duplicate", reviewed_by="fixture human")
+    ]
+    payload = json.dumps(research).encode()
+    overlay, _ = convert_research_observations(book, payload)
+    for original, reader in ((payload, "research"), (overlay, "overlay")):
+        needle = b'"original_transcription":null'
+        compact = original.replace(b'"original_transcription": null', needle)
+        conflict = compact.replace(
+            needle,
+            b'"original_transcription":null,"original_transcription":"fabricated"',
+        )
+        assert conflict != original
+        with pytest.raises(ExtractionError, match="duplicate JSON member"):
+            if reader == "research":
+                convert_research_observations(book, conflict)
+            else:
+                extract_candidate(book.source, raw, candidate, overlay=conflict)
+
+
+def test_valid_v2_research_envelope_rejects_unpaired_surrogate_in_observation() -> None:
+    raw = _epub()
+    candidate = _candidate(raw)
+    book = extract_candidate(_source(raw, candidate), raw, candidate)
+    research = _research_v2(book)
+    inventory = research["occurrence_inventory"]
+    assert isinstance(inventory, list)
+    research["observations"] = [
+        _observation(inventory[0], observation_id="unicode", normalized="secret\ud800")
+    ]
+    payload = json.dumps(research).encode()
+    with pytest.raises(ExtractionError, match="invalid JSON or Unicode") as error:
+        convert_research_observations(book, payload)
+    assert "secret" not in str(error.value)
