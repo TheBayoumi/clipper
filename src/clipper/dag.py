@@ -248,7 +248,8 @@ class DagStore:
     def _lock_file(descriptor: int, *, acquire: bool) -> None:
         if os.name == "nt":
             os.lseek(descriptor, 0, os.SEEK_SET)
-            locking = getattr(msvcrt, "locking")
+            method = "locking"
+            locking = getattr(msvcrt, method)
             lock_mode = getattr(msvcrt, "LK_NBLCK" if acquire else "LK_UNLCK")
             locking(descriptor, lock_mode, 1)
         else:
