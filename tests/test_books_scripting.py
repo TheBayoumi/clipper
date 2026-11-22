@@ -106,11 +106,7 @@ def test_fake_optional_qwen_loader_and_completion_preserve_pinned_request(
     )
     loaded: list[str] = []
     snapshot = (
-        tmp_path
-        / "hub"
-        / "models--Qwen--Qwen3-1.7B"
-        / "snapshots"
-        / scripting.SCRIPT_REVISION
+        tmp_path / "hub" / "models--Qwen--Qwen3-1.7B" / "snapshots" / scripting.SCRIPT_REVISION
     )
     snapshot.mkdir(parents=True)
     for name in ("config.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors"):
