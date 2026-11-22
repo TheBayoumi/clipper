@@ -14,7 +14,7 @@ from . import selection
 
 DECODER_PACKAGE = "lm-format-enforcer"
 DECODER_VERSION = "0.11.3"
-GRAMMAR_CONTRACT = "book-seven-field-token-mixed-escaped-literal-v4"
+GRAMMAR_CONTRACT = "book-seven-field-blank-safe-public-callback-v5"
 PINNED_TOKENIZER_SHA256 = "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
 SPAN_POLICY = "bounded-multilingual-clauses-occurrences-v4"
 POOL_SCHEMA = "clipper-book-exact-source-spans-v3"
@@ -662,39 +662,10 @@ def _literal_evidence_guard(parser: Any, spans: list[dict[str, object]], base_ty
             return not self.in_string and self.active is None and self.inner.can_end()
 
         def shortcut_key(self) -> Any:
-            if self.active is not None:
-                return None
-            shortcut = self.inner.shortcut_key()
-            if (
-                self.in_candidate
-                and self.in_string
-                and not self.is_key
-                and self.field in CREATIVE_FIELDS
-            ):
-                try:
-                    meaningful = not self.escaped and bool(
-                        json.loads('"' + self.value_buffer + '"').strip()
-                    )
-                except ValueError:
-                    meaningful = False
-                if not meaningful:
-                    # Released LMFE's public json_freetext shortcut caches
-                    # non-quote tokens separately from trailing-quote tokens.
-                    # Its min-remaining parameter is clamped to the largest
-                    # tokenizer token width. A large temporary minimum keeps
-                    # the fast cached scan while excluding every token ending
-                    # in a quote (including merged blanks + quote). This is
-                    # NOT a field-length or schema change: the original limit
-                    # is restored once decoded content becomes nonblank.
-                    if (
-                        isinstance(shortcut, tuple)
-                        and len(shortcut) == 4
-                        and shortcut[0] == "json_freetext"
-                    ):
-                        _, current, _minimum, maximum = shortcut
-                        return ("json_freetext", current, current + 1_000_000, maximum)
-                    return None
-            return shortcut
+            # LMFE's public JSON free-text shortcut is essential for CPU
+            # latency. Filter only invalid merged closing tokens in the
+            # book-only callback; never disable fast text scanning globally.
+            return None if self.active is not None else self.inner.shortcut_key()
 
         def cache_key(self) -> Any:
             # The inner JSON parser has no knowledge of selected IDs or a
@@ -730,8 +701,111 @@ def validate_local_choice(lessons: list[dict[str, str]], request: dict[str, obje
         seen.add(identifier)
 
 
+def _blank_closing_token_ids(tokenizer_data: Any) -> frozenset[int]:
+    """Public LMFE vocabulary: tokens that can close an all-blank JSON string."""
+    invalid: set[int] = set()
+    for token_id, spelling, _starts_word in tokenizer_data.regular_tokens:
+        escaped = False
+        for index, character in enumerate(spelling):
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                try:
+                    content = json.loads('"' + spelling[:index] + '"')
+                except ValueError:
+                    invalid.add(token_id)
+                else:
+                    if not content.strip():
+                        invalid.add(token_id)
+                break
+    return frozenset(invalid)
+
+
+class _BlankSafePrefixFn:
+    """Fast public adapter with independent generated-prefix blank-field guard.
+
+    No LMFE private state access or post-generation JSON modification. A
+    separate CharacterLevelParser follows only decoded generated tokens.
+    """
+
+    def __init__(self, callback: Any, parser: Any, tokenizer_data: Any) -> None:
+        self._callback = callback
+        self._parser = parser
+        self._decoder = tokenizer_data.decoder
+        self._blank_closers = _blank_closing_token_ids(tokenizer_data)
+        self._quote_tokens = frozenset(
+            token_id for token_id, wire, _word in tokenizer_data.regular_tokens if '"' in wire
+        )
+        self._states: dict[int, tuple[tuple[int, ...], str, Any]] = {}
+        self.token_enforcer = callback.token_enforcer
+
+    def __call__(self, batch_id: int, sent: Any) -> list[int]:
+        token_ids = tuple(int(value) for value in sent.tolist())
+        allowed: list[int] = self._callback(batch_id, sent)
+        if batch_id not in self._states:
+            # Transformers calls with the prompt before the first new token.
+            self._states[batch_id] = (token_ids, "", self._parser)
+            return allowed
+        prompt, previous, state = self._states[batch_id]
+        if token_ids[: len(prompt)] != prompt:
+            raise ConstraintError("book constrained prompt changed within generation")
+        generated = list(token_ids[len(prompt) :])
+        raw = self._decoder(generated)
+        if not isinstance(raw, str):
+            raise ConstraintError("book tokenizer decoder returned invalid data")
+        if not raw.startswith(previous):
+            state, previous = self._parser, ""
+        try:
+            for letter in raw[len(previous) :]:
+                state = state.add_character(letter)
+        except (ValueError, KeyError, IndexError, AttributeError) as exc:
+            raise ConstraintError("invalid generated book JSON prefix") from exc
+        self._states[batch_id] = (prompt, raw, state)
+        if not (
+            state.in_candidate
+            and state.in_string
+            and not state.is_key
+            and state.field in CREATIVE_FIELDS
+        ):
+            return allowed
+        try:
+            meaningful = bool(json.loads('"' + state.value_buffer + '"').strip())
+        except ValueError:
+            meaningful = False
+        if meaningful:
+            return allowed
+        if not state.escaped:
+            try:
+                json.loads('"' + state.value_buffer + '"')
+            except ValueError:
+                pass
+            else:
+                # Never mutate LMFE's shared allowed-token cache.
+                return [token for token in allowed if token not in self._blank_closers]
+        # Incomplete JSON escape: check actual context-dependent decoded
+        # candidate tokens with quotes against the public grammar.
+        filtered: list[int] = []
+        for token in allowed:
+            if token not in self._quote_tokens:
+                filtered.append(token)
+                continue
+            candidate = self._decoder([*generated, token])
+            if not isinstance(candidate, str) or not candidate.startswith(raw):
+                continue
+            trial = state
+            try:
+                for letter in candidate[len(raw) :]:
+                    trial = trial.add_character(letter)
+            except (ValueError, KeyError, IndexError, AttributeError):
+                continue
+            filtered.append(token)
+        return filtered
+
+
 def prefix_for(request: dict[str, object], tokenizer: Any, revision: str) -> Any:
-    """Fresh per-request LMFE parser/enforcer; scripts remain unaffected."""
+    """Fresh book-only LMFE decoder with efficient exact nonblank admission."""
     schema = decode_schema(request)
     module, integration = _decoder()
     spans = cast(list[dict[str, object]], cast(dict[str, object], request["constraints"])["spans"])
@@ -739,4 +813,5 @@ def prefix_for(request: dict[str, object], tokenizer: Any, revision: str) -> Any
         module.JsonSchemaParser(schema), spans, module.CharacterLevelParser
     )
     tokenizer_data = _tokenizer_data(tokenizer, revision)
-    return integration.build_transformers_prefix_allowed_tokens_fn(tokenizer_data, parser)
+    base = integration.build_transformers_prefix_allowed_tokens_fn(tokenizer_data, parser)
+    return _BlankSafePrefixFn(base, parser, tokenizer_data)
