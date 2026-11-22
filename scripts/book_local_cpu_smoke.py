@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -455,13 +456,15 @@ def _observe_memory(root: Path, stop: threading.Event) -> None:
 
 
 def _capture_paths(root: Path) -> dict[str, str]:
-    """Exact bounded public fixture outputs, excluding mutable temporary/lock files."""
+    """Replay uses exactly the collector's confined, pre-bounded file reader."""
     result: dict[str, str] = {}
-    for path in _allowed_files(root):
-        if "/analysis/completions/" in path.as_posix() or (
-            "/analysis/progress/" in path.as_posix() or "/analysis/exports/" in path.as_posix()
+    for path, data in _public_evidence_files(root):
+        relative = path.relative_to(root).as_posix()
+        if any(
+            f"/analysis/{name}/" in relative
+            for name in ("completions", "progress", "exports")
         ):
-            result[str(path.relative_to(root))] = _digest(path.read_bytes())
+            result[relative] = _digest(data)
     return result
 
 
@@ -480,34 +483,40 @@ def _execute(root: Path, *, replay: bool) -> None:
 
     gate_info = gate()
     if replay:
-        stored = json.loads((root / "evidence" / "outcome.json").read_bytes())
+        stored = json.loads(_bounded_public_bytes(root, root / "evidence" / "outcome.json", MAX_FILE_BYTES))
         if stored["result"]["status"] != "complete":
             raise SmokeError("cannot replay a failed or incomplete real model invocation")
         existing = _capture_paths(root)
         if not existing or scripting._script_pipeline.cache_info().misses:
             raise SmokeError("replay was not started in a new unloaded Python process")
-        manifest = json.loads((root / "evidence" / "fixture-manifest.json").read_bytes())
+        manifest = json.loads(
+            _bounded_public_bytes(root, root / "evidence" / "fixture-manifest.json", MAX_FILE_BYTES)
+        )
         marker(root, "replay_cache_read_start")
     else:
         if root.exists() or root.is_symlink():
             raise SmokeError("fresh public smoke refuses any preseeded results")
         root.mkdir(mode=0o700)
+        _json(root / "evidence" / "trigger.json", gate_info)
         marker(root, "public_fixture_prepare_start")
         manifest = prepare(root)
-        _json(root / "evidence" / "trigger.json", gate_info)
         marker(root, "public_fixture_ready", unit_count=len(manifest["work_units"]))
         _require_resources(root)
         runtime = _runtime()
         _json(root / "evidence" / "runtime.json", runtime)
         marker(root, "real_model_cpu_start", runtime=runtime)
     reference = root / str(manifest["analysis_ref"])
-    if reference.is_symlink() or not reference.is_file():
+    _confined(root, reference, directory=False)
+    if not reference.is_file():
         raise SmokeError("public candidate reference is missing or linked")
     runner = BookOrchestrator(root / "private")
     start = time.monotonic()
     # No injected producer or output. The production loader must execute for
     # first-pass uncached units; a completed replay must never invoke it.
     os.environ["CLIPPER_PUBLIC_BOOK_CPU_SMOKE"] = "1"
+    os.environ["CLIPPER_PUBLIC_BOOK_CPU_SMOKE_PHASE_FILE"] = str(
+        root / "evidence" / "model-phases.jsonl"
+    )
     stop = threading.Event()
     watch = threading.Thread(target=_observe_memory, args=(root, stop), daemon=True)
     watch.start()
@@ -566,8 +575,50 @@ def _execute(root: Path, *, replay: bool) -> None:
         raise SmokeError("real pinned model mining incomplete: inspect bounded private progress")
 
 
+def _confined(root: Path, path: Path, *, directory: bool) -> None:
+    """Single fail-closed boundary shared by collection, replay and status reads.
+
+    Reject every symlink ancestor, including parents of the dedicated root,
+    then require strict resolved containment. Do not traverse foreign roots.
+    """
+    if (
+        not root.is_absolute()
+        or not path.is_absolute()
+        or ".." in root.parts
+        or ".." in path.parts
+    ):
+        raise SmokeError("public evidence path must be absolute and canonical")
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise SmokeError("public evidence escapes dedicated root") from exc
+    for parent in (root, *root.parents):
+        if parent.is_symlink():
+            raise SmokeError("public evidence contains a linked ancestor")
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise SmokeError("public evidence contains a linked ancestor")
+    try:
+        boundary = root.resolve(strict=True)
+        actual = path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise SmokeError("public evidence path is unavailable or invalid") from exc
+    if not root.is_dir() or not actual.is_relative_to(boundary):
+        raise SmokeError("public evidence path escapes dedicated root")
+    if directory and not path.is_dir():
+        raise SmokeError("public evidence directory is not a directory")
+
+
 def _allowed_files(root: Path) -> list[Path]:
-    """Strict allowlist, no cross-root glob or symlink traversal."""
+    """Walk only explicit public-fixture roots, rejecting symlink ancestors."""
+    for parent in (root, *root.parents):
+        if parent.is_symlink():
+            raise SmokeError("public evidence contains a linked ancestor")
+    if not root.exists():
+        return []
+    _confined(root, root, directory=True)
     allowed = [
         (root / "evidence", re.compile(r"[a-zA-Z0-9-]+(?:\.json|\.jsonl|\.txt)")),
         (
@@ -587,40 +638,190 @@ def _allowed_files(root: Path) -> list[Path]:
     ]
     found: list[Path] = []
     for directory, allowed_path in allowed:
+        # Even a dangling symlink at an allowlist root must fail closed.
+        if directory.is_symlink():
+            raise SmokeError("public evidence contains a linked ancestor")
         if not directory.exists():
+            # An existing intermediate parent may itself be a symlink.
+            current = root
+            for part in directory.relative_to(root).parts:
+                current = current / part
+                if current.is_symlink():
+                    raise SmokeError("public evidence contains a linked ancestor")
             continue
-        if directory.is_symlink() or not directory.is_dir():
-            raise SmokeError("public evidence allowlist directory is invalid")
+        _confined(root, directory, directory=True)
         for base, dirs, files in os.walk(directory, followlinks=False):
             base_path = Path(base)
-            if any((base_path / child).is_symlink() for child in dirs):
-                raise SmokeError("public evidence contains a linked directory")
+            _confined(root, base_path, directory=True)
+            for child in dirs:
+                _confined(root, base_path / child, directory=True)
             for name in files:
                 path = base_path / name
                 relative = path.relative_to(directory).as_posix()
                 if not allowed_path.fullmatch(relative):
                     continue
-                if path.is_symlink() or not path.is_file():
-                    raise SmokeError("public evidence contains a linked or non-file artifact")
+                _confined(root, path, directory=False)
                 found.append(path)
                 if len(found) > MAX_FILES:
                     raise SmokeError("public evidence exceeds file-count limit")
-    return sorted(found, key=lambda path: path.relative_to(root).as_posix())
+    return sorted(found, key=lambda item: item.relative_to(root).as_posix())
 
 
-def encoded_evidence(root: Path) -> list[dict[str, object]]:
-    """Reconstructable JSON/base64 records; refuse oversized or external data."""
-    if root.is_symlink():
-        raise SmokeError("public evidence root is a symlink")
-    records: list[dict[str, object]] = []
-    total = 0
-    for file in _allowed_files(root):
-        data = file.read_bytes()
-        if len(data) > MAX_FILE_BYTES:
+def _bounded_public_bytes(root: Path, file: Path, remaining: int) -> bytes:
+    """Stat-before-read; bounded read+post-stat; fail on growth or file replacement."""
+    _confined(root, file, directory=False)
+    try:
+        initial = file.lstat()
+    except OSError as exc:
+        raise SmokeError("public evidence file is unavailable") from exc
+    if not stat.S_ISREG(initial.st_mode):
+        raise SmokeError("public evidence must be a regular file")
+    if initial.st_size > MAX_FILE_BYTES:
+        raise SmokeError("public smoke individual evidence file exceeds size limit")
+    if initial.st_size > remaining:
+        raise SmokeError("public smoke evidence total exceeds hard limit")
+    limit = min(MAX_FILE_BYTES, remaining)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(file, flags)
+    except OSError as exc:
+        raise SmokeError("public evidence file cannot be safely opened") from exc
+    with os.fdopen(descriptor, "rb") as handle:
+        before = os.fstat(handle.fileno())
+        if not stat.S_ISREG(before.st_mode) or (
+            before.st_dev,
+            before.st_ino,
+        ) != (initial.st_dev, initial.st_ino):
+            raise SmokeError("public evidence file changed identity before read")
+        if before.st_size > MAX_FILE_BYTES:
             raise SmokeError("public smoke individual evidence file exceeds size limit")
-        total += len(data)
-        if total > MAX_TOTAL_BYTES:
+        if before.st_size > remaining:
             raise SmokeError("public smoke evidence total exceeds hard limit")
+        data = handle.read(limit + 1)
+        after = os.fstat(handle.fileno())
+    if len(data) > MAX_FILE_BYTES:
+        raise SmokeError("public smoke individual evidence grew beyond file limit")
+    if len(data) > remaining:
+        raise SmokeError("public smoke evidence grew beyond total limit")
+    if len(data) != before.st_size or after.st_size != before.st_size:
+        raise SmokeError("public evidence file changed size during bounded read")
+    return data
+
+
+def _public_evidence_files(root: Path) -> list[tuple[Path, bytes]]:
+    """Shared strict per-file/total/count budget for collection and replay."""
+    result: list[tuple[Path, bytes]] = []
+    remaining = MAX_TOTAL_BYTES
+    for path in _allowed_files(root):
+        data = _bounded_public_bytes(root, path, remaining)
+        remaining -= len(data)
+        result.append((path, data))
+    return result
+
+
+def _evidence_json(root: Path, name: str) -> object | None:
+    """Read only a fixed, bounded public status file through the same boundary."""
+    path = root / "evidence" / name
+    if not path.exists() and not path.is_symlink():
+        return None
+    raw = _bounded_public_bytes(root, path, MAX_FILE_BYTES)
+    try:
+        return json.loads(raw)
+    except (ValueError, UnicodeError) as exc:
+        raise SmokeError("public smoke status evidence is invalid JSON") from exc
+
+
+def _evidence_state(root: Path) -> dict[str, object]:
+    """Only a verified one-file GitHub gate can confer a real-run evidence label."""
+    state: dict[str, object] = {
+        "execution": "SYNTHETIC_OR_UNGATED_NO_MODEL",
+        "outcome": "NO_VERIFIED_GATED_RUN",
+        "verified_gated_request": False,
+        "model_phases": [],
+    }
+    try:
+        if root != _root() or os.environ.get("GITHUB_EVENT_NAME") != "push":
+            return state
+        attestation = gate()
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return state
+    state["verified_gated_request"] = True
+    state["trigger_sha"] = attestation["trigger_sha"]
+    state["reviewed_code_sha"] = attestation["reviewed_code_sha"]
+    state["execution"] = "GATED_REQUEST_NO_MODEL_EVIDENCE"
+    state["outcome"] = "GATED_REQUEST_NOT_STARTED"
+    if not root.exists():
+        return state
+    trace = _evidence_json(root, "trigger.json")
+    if trace != attestation:
+        state["outcome"] = "NO_MATCHING_GATED_EXECUTION_TRACE"
+        return state
+    state["execution"] = "GATED_PUBLIC_CPU_ATTEMPT"
+    last = _evidence_json(root, "latest-phase.json")
+    if isinstance(last, dict) and isinstance(last.get("phase"), str):
+        state["last_phase"] = last["phase"]
+    phases_file = root / "evidence" / "model-phases.jsonl"
+    phases: list[str] = []
+    if phases_file.exists() or phases_file.is_symlink():
+        raw = _bounded_public_bytes(root, phases_file, MAX_FILE_BYTES)
+        for line in raw.splitlines():
+            try:
+                row = json.loads(line)
+            except (ValueError, UnicodeError) as exc:
+                raise SmokeError("model phase evidence is malformed") from exc
+            if (
+                not isinstance(row, dict)
+                or set(row) != {"phase"}
+                or not isinstance(row["phase"], str)
+                or not re.fullmatch(r"[a-z_]{1,64}", row["phase"])
+            ):
+                raise SmokeError("model phase evidence is invalid")
+            phases.append(row["phase"])
+    state["model_phases"] = phases
+    process = _evidence_json(root, "process-exit.json")
+    outcome = _evidence_json(root, "outcome.json")
+    if isinstance(process, dict):
+        state["process_exit_code"] = process.get("exit_code")
+        if process.get("outcome") == "timeout":
+            state["outcome"] = "PROCESS_TIMED_OUT_NO_ACCEPTED_COMPLETION"
+            return state
+    if isinstance(outcome, dict) and isinstance(outcome.get("result"), dict):
+        result = outcome["result"]
+        if result.get("status") == "complete":
+            count = result.get("candidate_count")
+            if type(count) is not int or count < 0:
+                raise SmokeError("completed real result has invalid candidate count")
+            state["outcome"] = (
+                "VALID_EMPTY_COMPLETION_NOT_LESSON_QUALITY"
+                if count == 0
+                else "VALID_UNREVIEWED_CANDIDATES_NOT_APPROVED"
+            )
+            state["cache_replay_verified"] = _evidence_json(root, "replay.json") is not None
+            return state
+        state["outcome"] = "INCOMPLETE_OR_INVALID_MODEL_RESULT"
+        return state
+    if "real_generation_start" in phases:
+        state["outcome"] = "GENERATION_STARTED_WITHOUT_ACCEPTED_COMPLETION"
+    elif "cpu_weight_loading_start" in phases:
+        state["outcome"] = "MODEL_LOADING_STARTED_WITHOUT_ACCEPTED_COMPLETION"
+    elif "pinned_snapshot_resolution_start" in phases:
+        state["outcome"] = "MODEL_SNAPSHOT_RESOLUTION_STARTED"
+    elif state.get("last_phase") == "real_model_cpu_start":
+        state["outcome"] = "GATED_CPU_ENTRY_REACHED_NO_COMPLETION"
+    elif isinstance(process, dict) and process.get("exit_code") != 0:
+        state["outcome"] = "GATED_PREMODEL_PROCESS_FAILED"
+    else:
+        state["outcome"] = "GATED_FIXTURE_OR_PREFLIGHT_STAGE"
+    return state
+
+
+def encoded_evidence(
+    root: Path, *, classification: dict[str, object] | None = None
+) -> list[dict[str, object]]:
+    """Reconstructable bounded evidence with gate-derived execution provenance."""
+    state = classification if classification is not None else _evidence_state(root)
+    records: list[dict[str, object]] = []
+    for file, data in _public_evidence_files(root):
         digest = _digest(data)
         chunks = [data[i : i + CHUNK_BYTES] for i in range(0, len(data), CHUNK_BYTES)]
         if not chunks:
@@ -630,7 +831,8 @@ def encoded_evidence(root: Path) -> list[dict[str, object]]:
                 {
                     "kind": "PUBLIC_BOOK_CPU_SMOKE_EVIDENCE_CHUNK_V1",
                     "label": LABEL,
-                    "execution": INTENT,
+                    "execution": state["execution"],
+                    "outcome": state["outcome"],
                     "path": file.relative_to(root).as_posix(),
                     "index": index,
                     "chunk_count": len(chunks),
@@ -643,30 +845,33 @@ def encoded_evidence(root: Path) -> list[dict[str, object]]:
 
 
 def collect(root: Path) -> None:
-    records = encoded_evidence(root)
+    state = _evidence_state(root)
+    records = encoded_evidence(root, classification=state)
     names = sorted({str(item["path"]) for item in records})
     summary = {
         "label": LABEL,
-        "execution": INTENT,
+        **state,
         "schema": "clipper-public-book-cpu-smoke-collection-v1",
         "record_count": len(records),
         "file_count": len(names),
         "files": names,
         "no_uploaded_artifacts": True,
-        "model_execution_is_not_accepted_by_synthetic_ci": True,
+        "synthetic_CI_does_not_run_a_model": True,
     }
     print("PUBLIC_BOOK_CPU_SMOKE_COLLECTION " + json.dumps(summary, sort_keys=True), flush=True)
     for record in records:
         print(json.dumps(record, sort_keys=True, separators=(",", ":")), flush=True)
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-    if summary_path:
-        with Path(summary_path).open("a", encoding="utf-8") as out:
-            out.write(
+    # Synthetic package tests can inherit GITHUB_STEP_SUMMARY. Never write
+    # there without a separately verified one-file trigger and matching trace.
+    if summary_path and state["verified_gated_request"]:
+        with Path(summary_path).open("a", encoding="utf-8") as output:
+            output.write(
                 "## PUBLIC_SYNTHETIC_FIXTURE_NOT_A_BOOK — CPU smoke\n"
-                f"Execution: {INTENT}; evidence files: {len(names)}; "
-                f"reconstruction records: {len(records)}\n"
+                f"Execution: {state['execution']}; outcome: {state['outcome']}; "
+                f"evidence files: {len(names)}; records: {len(records)}\n"
                 "No artifact upload or persistent cache. "
-                "The exact evidence is in job log JSON/base64 chunks.\n"
+                "Exact evidence is in job log JSON/base64 chunks.\n"
             )
 
 
@@ -678,7 +883,7 @@ def finish(root: Path, exit_code: int) -> None:
         root / "evidence" / "process-exit.json",
         {
             "label": LABEL,
-            "execution": INTENT,
+            "execution": _evidence_state(root)["execution"],
             "exit_code": exit_code,
             "outcome": kind,
             "utc": datetime.now(UTC).isoformat(),
@@ -727,7 +932,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "PUBLIC_BOOK_CPU_SMOKE_ERROR "
             + json.dumps(
-                {"label": LABEL, "execution": INTENT, "error_type": type(exc).__name__},
+                {"label": LABEL, "command": args.action, "execution": "UNVERIFIED_SMOKE_COMMAND", "error_type": type(exc).__name__},
                 sort_keys=True,
             ),
             flush=True,
@@ -739,7 +944,7 @@ def main(argv: list[str] | None = None) -> int:
                     root / "evidence" / "failure.json",
                     {
                         "label": LABEL,
-                        "execution": INTENT,
+                        "execution": _evidence_state(root)["execution"],
                         "failure_type": type(exc).__name__,
                         "phase": (
                             json.loads((root / "evidence" / "latest-phase.json").read_bytes())[

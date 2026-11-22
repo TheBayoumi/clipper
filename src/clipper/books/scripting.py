@@ -393,6 +393,20 @@ def _public_cpu_smoke_phase(phase: str) -> None:
     """Optional public-only phase markers, never prompts, tokens, or credentials."""
     if os.environ.get("CLIPPER_PUBLIC_BOOK_CPU_SMOKE") == "1":
         print(f"PUBLIC_BOOK_CPU_MODEL_PHASE {phase}", flush=True)
+        destination = os.environ.get("CLIPPER_PUBLIC_BOOK_CPU_SMOKE_PHASE_FILE")
+        if destination:
+            path = Path(destination)
+            if (
+                path.name != "model-phases.jsonl"
+                or path.is_symlink()
+                or path.parent.is_symlink()
+                or not path.parent.is_dir()
+                or not re.fullmatch(r"[a-z_]{1,64}", phase)
+            ):
+                raise NicheVideoError("public CPU model phase evidence path is unsafe")
+            with path.open("a", encoding="utf-8") as output:
+                output.write(json.dumps({"phase": phase}, sort_keys=True) + "\n")
+            path.chmod(0o600)
 
 
 @lru_cache(maxsize=1)

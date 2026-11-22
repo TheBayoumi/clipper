@@ -231,7 +231,7 @@ def test_evidence_bounds_reject_oversize_and_symlink(tmp_path: Path) -> None:
     target = root / "elsewhere"
     target.mkdir()
     (evidence / "reports").symlink_to(target, target_is_directory=True)
-    with pytest.raises(smoke.SmokeError, match="linked directory"):
+    with pytest.raises(smoke.SmokeError, match="linked ancestor"):
         smoke.encoded_evidence(root)
 
 
@@ -308,3 +308,225 @@ def test_workflow_github_context_rules_and_dormant_trigger_are_explicit() -> Non
     assert not (smoke.REPO / smoke.RUN_REQUEST).exists()
 
 
+def _sample_progress(root: Path) -> Path:
+    progress = (
+        root
+        / "private/book-candidates/analysis/progress"
+        / smoke.BOOK_ID
+        / f"{'a' * 64}.json"
+    )
+    progress.parent.mkdir(parents=True, exist_ok=True)
+    progress.write_bytes(b'{"label":"PUBLIC_SYNTHETIC_FIXTURE_NOT_A_BOOK"}\n')
+    return progress
+
+
+def test_legitimate_progress_bytes_shared_by_collector_and_replay_hash(tmp_path: Path) -> None:
+    root = tmp_path / "public"
+    file = _sample_progress(root)
+    expected = hashlib.sha256(file.read_bytes()).hexdigest()
+    assert smoke._capture_paths(root) == {str(file.relative_to(root)): expected}
+    records = smoke.encoded_evidence(root)
+    assert records
+    assert records[0]["execution"] == "SYNTHETIC_OR_UNGATED_NO_MODEL"
+    assert records[0]["sha256"] == expected
+
+
+@pytest.mark.parametrize("linked_at", ["root", "root_parent", "private", "analysis", "progress"])
+def test_collector_and_replay_reject_symlink_ancestors_outside_root(
+    tmp_path: Path, linked_at: str
+) -> None:
+    root = tmp_path / "public"
+    outside = tmp_path / "outside"
+    external = _sample_progress(outside)
+    assert external.is_file()
+    if linked_at == "root":
+        root.symlink_to(outside, target_is_directory=True)
+    elif linked_at == "root_parent":
+        alias = tmp_path / "alias"
+        alias.symlink_to(tmp_path, target_is_directory=True)
+        root = alias / "outside"
+    elif linked_at == "private":
+        root.mkdir()
+        (root / "private").symlink_to(outside / "private", target_is_directory=True)
+    elif linked_at == "analysis":
+        root.joinpath("private/book-candidates").mkdir(parents=True)
+        (root / "private/book-candidates/analysis").symlink_to(
+            outside / "private/book-candidates/analysis", target_is_directory=True
+        )
+    else:
+        root.joinpath("private/book-candidates/analysis").mkdir(parents=True)
+        (root / "private/book-candidates/analysis/progress").symlink_to(
+            outside / "private/book-candidates/analysis/progress", target_is_directory=True
+        )
+    with pytest.raises(smoke.SmokeError, match="linked ancestor"):
+        smoke.encoded_evidence(root)
+    with pytest.raises(smoke.SmokeError, match="linked ancestor"):
+        smoke._capture_paths(root)
+
+
+def test_collector_and_replay_reject_matching_symlink_leaf(tmp_path: Path) -> None:
+    root = tmp_path / "public"
+    other = _sample_progress(tmp_path / "outside")
+    leaf = other.relative_to(tmp_path / "outside")
+    target = root / leaf
+    target.parent.mkdir(parents=True)
+    target.symlink_to(other)
+    for reader in (smoke.encoded_evidence, smoke._capture_paths):
+        with pytest.raises(smoke.SmokeError, match="linked ancestor"):
+            reader(root)
+
+
+def test_both_readers_precheck_size_without_unbounded_path_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "public"
+    progress = _sample_progress(root)
+    progress.write_bytes(b"X" * (smoke.MAX_FILE_BYTES + 1))
+
+    def forbidden_read(_self: Path) -> bytes:
+        pytest.fail("oversized file must be rejected without Path.read_bytes")
+
+    monkeypatch.setattr(Path, "read_bytes", forbidden_read)
+    for reader in (smoke.encoded_evidence, smoke._capture_paths):
+        with pytest.raises(smoke.SmokeError, match="individual evidence file"):
+            reader(root)
+
+
+def test_evidence_total_limit_is_enforced_before_opening_next_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "public"
+    file = _sample_progress(root)
+    file.write_bytes(b"x" * 20)
+    second = root / "evidence" / "runtime.json"
+    second.parent.mkdir(parents=True)
+    second.write_bytes(b"y" * 20)
+    monkeypatch.setattr(smoke, "MAX_TOTAL_BYTES", 30)
+    original_open = os.open
+    opens: list[str] = []
+
+    def tracked_open(
+        path: str | os.PathLike[str],
+        flags: int,
+        *args: object,
+        **kwargs: object,
+    ) -> int:
+        opens.append(str(path))
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(smoke.os, "open", tracked_open)
+    for reader in (smoke.encoded_evidence, smoke._capture_paths):
+        opens.clear()
+        with pytest.raises(smoke.SmokeError, match="total exceeds"):
+            reader(root)
+        assert len(opens) == 1
+
+
+def test_growing_evidence_is_rejected_before_unbounded_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "public"
+    file = _sample_progress(root)
+    original_open = os.open
+    open_count = 0
+
+    def grow_at_open(
+        path: str | os.PathLike[str],
+        flags: int,
+        *args: object,
+        **kwargs: object,
+    ) -> int:
+        nonlocal open_count
+        if Path(path) == file:
+            open_count += 1
+            extra_fd = original_open(file, os.O_WRONLY | os.O_APPEND)
+            try:
+                os.write(extra_fd, b"G" * (smoke.MAX_FILE_BYTES + 1))
+            finally:
+                os.close(extra_fd)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(smoke.os, "open", grow_at_open)
+    with pytest.raises(smoke.SmokeError, match="individual evidence file"):
+        smoke.encoded_evidence(root)
+    assert open_count == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="FIFO check requires a POSIX runner")
+def test_nonregular_fifo_is_rejected_without_opening(tmp_path: Path) -> None:
+    root = tmp_path / "public"
+    evidence = root / "evidence"
+    evidence.mkdir(parents=True)
+    fifo = evidence / "runtime.json"
+    os.mkfifo(fifo)
+    for reader in (smoke.encoded_evidence, smoke._capture_paths):
+        with pytest.raises(smoke.SmokeError, match="regular file"):
+            reader(root)
+
+
+def test_ambient_github_summary_never_receives_ungated_synthetic_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    summary = tmp_path / "ambient-gh-summary.md"
+    summary.write_text("SENTINEL\n", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    root = smoke._root()
+    root.mkdir()
+    smoke.finish(root, 124)
+    assert smoke.main(["collect"]) == 0
+    assert summary.read_text(encoding="utf-8") == "SENTINEL\n"
+    output = capsys.readouterr().out
+    assert '"execution": "SYNTHETIC_OR_UNGATED_NO_MODEL"' in output
+    assert '"outcome": "NO_VERIFIED_GATED_RUN"' in output
+    assert "GATED_PUBLIC_CPU_ATTEMPT" not in output
+    assert "REAL_EXECUTION" not in output
+
+
+def test_public_gated_phase_classification_has_no_fake_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    root = smoke._root()
+    root.mkdir()
+    attested = {"trigger_sha": "a" * 40, "reviewed_code_sha": "b" * 40}
+    monkeypatch.setattr(smoke, "gate", lambda: attested)
+    smoke._json(root / "evidence" / "trigger.json", attested)
+    assert smoke._evidence_state(root)["outcome"] == "GATED_FIXTURE_OR_PREFLIGHT_STAGE"
+    phases = root / "evidence/model-phases.jsonl"
+    smoke._write(phases, b'{"phase":"cpu_weight_loading_start"}\n')
+    assert smoke._evidence_state(root)["outcome"] == "MODEL_LOADING_STARTED_WITHOUT_ACCEPTED_COMPLETION"
+    smoke._write(
+        phases,
+        b'{"phase":"cpu_weight_loading_start"}\n{"phase":"real_generation_start"}\n',
+    )
+    assert smoke._evidence_state(root)["outcome"] == "GENERATION_STARTED_WITHOUT_ACCEPTED_COMPLETION"
+    smoke._json(root / "evidence" / "outcome.json", {"result": {"status": "incomplete"}})
+    assert smoke._evidence_state(root)["outcome"] == "INCOMPLETE_OR_INVALID_MODEL_RESULT"
+    smoke._json(
+        root / "evidence" / "outcome.json",
+        {"result": {"status": "complete", "candidate_count": 0}},
+    )
+    assert smoke._evidence_state(root)["outcome"] == "VALID_EMPTY_COMPLETION_NOT_LESSON_QUALITY"
+    smoke._json(
+        root / "evidence" / "outcome.json",
+        {"result": {"status": "complete", "candidate_count": 1}},
+    )
+    assert smoke._evidence_state(root)["outcome"] == "VALID_UNREVIEWED_CANDIDATES_NOT_APPROVED"
+    smoke.finish(root, 124)
+    assert smoke._evidence_state(root)["outcome"] == "PROCESS_TIMED_OUT_NO_ACCEPTED_COMPLETION"
+
+
+def test_model_phase_logging_is_public_and_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    marker = tmp_path / "model-phases.jsonl"
+    monkeypatch.setenv("CLIPPER_PUBLIC_BOOK_CPU_SMOKE", "1")
+    monkeypatch.setenv("CLIPPER_PUBLIC_BOOK_CPU_SMOKE_PHASE_FILE", str(marker))
+    scripting._public_cpu_smoke_phase("cpu_weight_loading_start")
+    assert json.loads(marker.read_text()) == {"phase": "cpu_weight_loading_start"}
+    assert marker.stat().st_mode & 0o777 == 0o600
+    assert capsys.readouterr().out.strip() == "PUBLIC_BOOK_CPU_MODEL_PHASE cpu_weight_loading_start"
+    with pytest.raises(scripting.NicheVideoError, match="phase evidence path"):
+        scripting._public_cpu_smoke_phase("contains unsafe data")
