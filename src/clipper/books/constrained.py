@@ -643,7 +643,12 @@ def _literal_evidence_guard(parser: Any, spans: list[dict[str, object]], base_ty
             return None if self.active is not None else self.inner.shortcut_key()
 
         def cache_key(self) -> Any:
-            return None if self.active is not None else self.inner.cache_key()
+            # The inner JSON parser has no knowledge of selected IDs or a
+            # creative field's decoded nonblank status. Its cache key cannot
+            # safely represent those generation-time restrictions.
+            if self.active is not None or self.in_candidate or self.used_ids:
+                return None
+            return self.inner.cache_key()
 
     root = EvidenceGuard(parser, parser_config=parser.config)
     root.config = parser.config

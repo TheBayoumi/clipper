@@ -669,3 +669,38 @@ def test_persistent_mixed_literal_union_on_repeated_cjk_spans() -> None:
         parser = parser.add_character(character)
     else:
         assert not parser.can_end()
+
+
+def test_released_token_enforcer_cannot_cache_away_choice_restrictions() -> None:
+    request = _request("Repeat. Repeat.")
+    first, second = request["constraints"]["spans"]
+    assert first["id"] != second["id"]
+    tokens = _synthetic_tokens()
+    by_character = {char: identifier for identifier, char, _ in tokens.regular_tokens}
+
+    def reachable(raw: str) -> bool:
+        enforcer = TokenEnforcer(tokens, _guard(request))
+        sequence = [999]
+        for char in raw:
+            if by_character[char] not in enforcer.get_allowed_tokens(sequence).allowed_tokens:
+                return False
+            sequence.append(by_character[char])
+        return tokens.eos_token_id in enforcer.get_allowed_tokens(sequence).allowed_tokens
+
+    def lesson(span: dict[str, object]) -> dict[str, str]:
+        return {
+            "id": str(span["id"]),
+            "topic": "Test",
+            "claim": "Exact quote",
+            "hook_angle": "Inspect evidence",
+            "visual_action": "Show a card",
+            "evidence": str(span["text"]),
+            "evidence_field": "native_text",
+        }
+
+    first_lesson, second_lesson = lesson(first), lesson(second)
+    assert reachable(json.dumps({"lessons": [first_lesson, second_lesson]}))
+    assert not reachable(json.dumps({"lessons": [first_lesson, first_lesson]}))
+    assert not reachable(
+        json.dumps({"lessons": [{**first_lesson, "topic": "  "}]})
+    )
