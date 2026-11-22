@@ -662,26 +662,39 @@ def _literal_evidence_guard(parser: Any, spans: list[dict[str, object]], base_ty
             return not self.in_string and self.active is None and self.inner.can_end()
 
         def shortcut_key(self) -> Any:
-            # Public LMFE json_freetext shortcut can admit a single token
-            # containing only blanks plus the closing quote. Disable that
-            # shortcut only until a creative value contains real nonspace
-            # content; restore the optimized path immediately afterwards.
             if self.active is not None:
                 return None
+            shortcut = self.inner.shortcut_key()
             if (
                 self.in_candidate
                 and self.in_string
                 and not self.is_key
                 and self.field in CREATIVE_FIELDS
             ):
-                if self.escaped:
-                    return None
                 try:
-                    if not json.loads('"' + self.value_buffer + '"').strip():
-                        return None
+                    meaningful = not self.escaped and bool(
+                        json.loads('"' + self.value_buffer + '"').strip()
+                    )
                 except ValueError:
+                    meaningful = False
+                if not meaningful:
+                    # Released LMFE's public json_freetext shortcut caches
+                    # non-quote tokens separately from trailing-quote tokens.
+                    # Its min-remaining parameter is clamped to the largest
+                    # tokenizer token width. A large temporary minimum keeps
+                    # the fast cached scan while excluding every token ending
+                    # in a quote (including merged blanks + quote). This is
+                    # NOT a field-length or schema change: the original limit
+                    # is restored once decoded content becomes nonblank.
+                    if (
+                        isinstance(shortcut, tuple)
+                        and len(shortcut) == 4
+                        and shortcut[0] == "json_freetext"
+                    ):
+                        _, current, _minimum, maximum = shortcut
+                        return ("json_freetext", current, current + 1_000_000, maximum)
                     return None
-            return self.inner.shortcut_key()
+            return shortcut
 
         def cache_key(self) -> Any:
             # The inner JSON parser has no knowledge of selected IDs or a
