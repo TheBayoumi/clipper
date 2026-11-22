@@ -1166,9 +1166,7 @@ def test_pinned_local_qwen_cpu_loader_uses_one_fake_model_without_weight_downloa
         manual_seed=lambda seed: seeds.append(seed),
         inference_mode=lambda: nullcontext(),
     )
-    fake_transformers = SimpleNamespace(
-        AutoTokenizer=AutoTokenizer, AutoModelForCausalLM=AutoModel
-    )
+    fake_transformers = SimpleNamespace(AutoTokenizer=AutoTokenizer, AutoModelForCausalLM=AutoModel)
     real_import = scripting.importlib.import_module
 
     def injected(name: str):
