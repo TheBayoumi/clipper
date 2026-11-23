@@ -842,7 +842,7 @@ def test_selected_chapter_rejects_overcap_export_and_rehashed_reading_blocks(
     digest = hashlib.sha256(encoded).hexdigest()
     path = host.root / "book-candidates" / "selected-scopes" / f"{digest}.json"
     path.write_bytes(encoded)
-    with pytest.raises(selected_scope.SelectedSourceStop, match="reading blocks"):
+    with pytest.raises(selected_scope.SelectedSourceStop, match="evidence cannot be verified"):
         selected_scope.import_chapter(host.root, path)
 
 
@@ -1069,9 +1069,17 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
             argument_completion=fake("argument"),
             audit_completion=fake("audit"),
             reconcile_completion=fake("reconcile"),
+            adaptation_completion=lambda req: _hybrid_creative_output("adaptation", req),
+            script_completion=lambda req: _hybrid_creative_output("chapter_script", req),
+            direction_completion=lambda req: _hybrid_creative_output("chapter_direction", req),
+            narration_producer=_hybrid_wav,
             token_counter=lambda _messages: 1000,
         )
-        return evaluate(*args, **kwargs)
+        outcome = evaluate(*args, **kwargs)
+        if kwargs.get("review_file") is not None:
+            assert outcome["status"] == "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED"
+            return {**outcome, "status": "CHAPTER_PREPRODUCTION_READY_UNREVIEWED"}
+        return outcome
 
     monkeypatch.setattr(chapter, "evaluate_hybrid_chapter", injected)
     monkeypatch.setattr(chapter_host, "_release_models", lambda: None)
@@ -1119,6 +1127,52 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
         for record in blocked["chapters"].values()
     )
     assert calls == frozen
+    miner.assert_not_called()
+
+    # Explicit synthetic human review of both complete, independently frozen briefs.
+    runtime["probe"] = "A"
+    private = runner.root / "book-candidates"
+    for number in (1, 7):
+        packet_path = private / "private-host" / f"chapter-{number}-review-packet.json"
+        packet = json.loads(packet_path.read_bytes())
+        approval = packet["review_template"]
+        approval["reviewer"] = "Synthetic human (test fixture only)"
+        for unit in approval["unit_decisions"]:
+            unit.update(review="accept", reason="Inspected original synthetic unit and gap")
+        for beat in approval["beat_decisions"]:
+            beat.update(
+                review="support_attested",
+                reason="Synthetic meaning and qualification review",
+            )
+        review_path = private / "private-host" / f"chapter-{number}-synthetic-approval.json"
+        evaluation._store(private, review_path, approval)
+        inputs[f"chapter_{number}"]["review_file"] = str(review_path)
+    manifest.write_bytes(evaluation._json_bytes(inputs))
+    resumed = _call(runner, manifest, "hybrid-resume")
+    assert all(
+        chapter_result["status"] == "CHAPTER_PREPRODUCTION_READY_UNREVIEWED"
+        for chapter_result in resumed["chapters"].values()
+    )
+    assert calls == frozen, "unchanged producer must reuse argument/audit/reconciliation"
+    for number in (1, 7):
+        block = inputs[f"chapter_{number}"]
+        inventory = chapter_host._hybrid_output_manifest(
+            runner.root,
+            number,
+            block["bundle_sha256"],
+            block["scope_sha256"],
+        )
+        assert inventory["source_mode"] == "DIRECT_SOURCE_HYBRID"
+        kinds = {file["kind"] for file in inventory["files"]}
+        assert {"human_review", "final_result", "wav", "source_ledger", "text"} <= kinds
+    recovery = chapter_host.recovery_report(runner.root)
+    assert {chapter_result["recovery_state"] for chapter_result in recovery["chapters"].values()} == {
+        "READY"
+    }
+    archive = chapter_host.private_recovery_archive(runner.root)
+    assert archive["file_count"] >= 20
+    assert archive["files_retrieved"] is False
+    assert archive["host_cleanup_verified"] is False
     miner.assert_not_called()
 
 
