@@ -19,14 +19,19 @@ from clipper.books.orchestrator import BookOrchestrator
 
 
 def _source(
-    tmp_path: Path, *, zero_candidate_unit: bool = False
+    tmp_path: Path, *, zero_candidate_unit: bool = False, with_image: bool = False
 ) -> tuple[BookOrchestrator, Path, Path, Path, list[dict]]:
-    runner, acquired, _ = ingested(tmp_path, paragraphs=12, with_image=False)
+    runner, acquired, _ = ingested(tmp_path, paragraphs=12, with_image=with_image)
     parent = whole_book.plan_for(acquired.book)
     grouped: dict[str, int] = {}
     for unit in parent.units:
         grouped[unit.section_id] = grouped.get(unit.section_id, 0) + 1
-    selected = next((sid for sid, count in grouped.items() if count == 5), None)
+    selected = next(
+        (sid for sid, count in grouped.items()
+         if count == 5 and (
+             not with_image or any(item["section_id"] == sid for item in parent.skipped)
+         )), None
+    )
     assert selected is not None
     scoped = whole_book.plan_for(acquired.book, section_ids=(selected,))
     manifest = {
@@ -555,6 +560,9 @@ def test_failed_brief_attempts_are_recorded_and_not_repeated(
         "empty-argument",
         "single-beat",
         "changed-quote",
+        "invalid-qualification",
+        "dropped-retained-beat",
+        "unknown-original-unit",
     ],
 )
 def test_brief_rejects_source_and_coverage_forgery(mutation: str) -> None:
@@ -614,6 +622,12 @@ def test_brief_rejects_source_and_coverage_forgery(mutation: str) -> None:
         fake["beats"] = fake["beats"][:1]
     elif mutation == "changed-quote":
         fake["beats"][0]["quote"] = "Invented unsupported assertion"
+    elif mutation == "invalid-qualification":
+        fake["beats"][0]["qualification"] = ["not-text"]
+    elif mutation == "dropped-retained-beat":
+        fake["beats"].pop()
+    elif mutation == "unknown-original-unit":
+        fake["coverage"][0]["source_id"] = "noncanonical"
     with pytest.raises(chapter.ChapterStop):
         chapter._brief_validate(fake, units, [], _plan())
 
@@ -1018,3 +1032,137 @@ def test_entire_chapter_request_and_output_preflight_abstains_before_provider(
         )
     provider.assert_not_called()
     assert not list(tmp_path.rglob("started-*.json"))
+
+
+
+def test_skipped_image_marker_kept_in_original_order_and_human_review(
+    tmp_path: Path
+) -> None:
+    runner, ref, progress, section, _ = _source(tmp_path, with_image=True)
+    plan = _plan(adaptation_cpu=False, script_cpu=False, direction_cpu=False)
+    initial, brief = _first_brief(runner, ref, progress, section, plan)
+    source_file = next(
+        (runner.root / "book-candidates/chapter-evaluations").rglob("source-ledger.json")
+    )
+    source = json.loads(source_file.read_bytes())
+    assert len(source["units"]) == 5
+    assert len(source["gaps"]) >= 1
+    assert len(source["reading_order"]) == len(source["units"]) + len(source["gaps"])
+    gap_ids = {gap["source_id"] for gap in source["gaps"]}
+    assert gap_ids.issubset(set(source["reading_order"]))
+    assert all(gap["kind"] == "UNRECOVERED_OR_EMPTY_SOURCE_MARKER" for gap in source["gaps"])
+    assert any(gap["reason"] == "unrecovered_image" for gap in source["gaps"])
+    assert all(gap["text"] == "" for gap in source["gaps"])
+    covered = {row["source_id"]: row for row in brief["coverage"]}
+    assert all(covered[sid]["decision"] == "omit" for sid in gap_ids)
+    review = _review(tmp_path, initial["brief_identity"], brief)
+    accepted = chapter.evaluate_chapter(
+        runner, ref, progress, section, review_file=review,
+        plan=plan, brief_completion=_brief
+    )
+    assert accepted["status"] == "AWAITING_EXPLICIT_CPU_CHAPTER_ADAPTATION"
+    bad = json.loads(json.dumps(brief))
+    next(row for row in bad["coverage"] if row["source_id"] in gap_ids)["decision"] = "keep"
+    with pytest.raises(chapter.ChapterStop, match="unrecovered chapter source"):
+        chapter._brief_validate(bad, source["units"], source["gaps"], plan)
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing-unit", "duplicate-unit", "wrong-unit-decision", "unit-qualifier",
+    "reject-unit", "bad-brief", "missing-beat", "duplicate-beat",
+    "unknown-beat", "beat-qualifier",
+])
+def test_human_review_checks_every_original_unit_and_exact_span(
+    tmp_path: Path, mutation: str
+) -> None:
+    runner, ref, progress, section, _ = _source(tmp_path)
+    initial, brief = _first_brief(runner, ref, progress, section, _plan())
+    review = _review(tmp_path, initial["brief_identity"], brief)
+    source_file = next(
+        (runner.root / "book-candidates/chapter-evaluations").rglob("source-ledger.json")
+    )
+    source = json.loads(source_file.read_bytes())
+    doc = json.loads(review.read_bytes())
+    if mutation == "missing-unit":
+        doc["unit_decisions"].pop()
+    elif mutation == "duplicate-unit":
+        doc["unit_decisions"][1]["source_id"] = doc["unit_decisions"][0]["source_id"]
+    elif mutation == "wrong-unit-decision":
+        doc["unit_decisions"][0]["decision"] = "omit"
+    elif mutation == "unit-qualifier":
+        doc["unit_decisions"][0]["qualifier_quote"] = "NOT_PRESENT_IN_SOURCE"
+    elif mutation == "reject-unit":
+        doc["unit_decisions"][0]["review"] = "reject_coverage"
+    elif mutation == "bad-brief":
+        doc["brief_sha256"] = "a" * 64
+    elif mutation == "missing-beat":
+        doc["decisions"].pop()
+    elif mutation == "duplicate-beat":
+        doc["decisions"][1]["beat_id"] = doc["decisions"][0]["beat_id"]
+    elif mutation == "unknown-beat":
+        doc["decisions"][0]["beat_id"] = "beat-99"
+    elif mutation == "beat-qualifier":
+        doc["decisions"][0]["qualifier_quote"] = "NOT_PRESENT_IN_SOURCE"
+    with pytest.raises(chapter.ChapterStop):
+        chapter._review_validate(
+            doc, brief, initial["brief_identity"], source["units"], source["gaps"]
+        )
+
+
+def test_chapter_source_budget_fails_without_truncation_or_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, ref, progress, section, _ = _source(tmp_path)
+    monkeypatch.setattr(chapter, "MAX_SOURCE_BYTES", 128)
+    producer = Mock(side_effect=AssertionError("no model permitted"))
+    with pytest.raises(chapter.ChapterStop, match="source preflight budget"):
+        chapter.evaluate_chapter(
+            runner, ref, progress, section, plan=_plan(),
+            brief_completion=producer,
+        )
+    producer.assert_not_called()
+
+
+@pytest.mark.parametrize("hold", ["script", "direction"])
+def test_chapter_explicit_stage_hold_never_silently_calls_later_provider(
+    tmp_path: Path, hold: str
+) -> None:
+    runner, ref, progress, section, _ = _source(tmp_path)
+    initial, brief = _first_brief(runner, ref, progress, section, _plan())
+    review = _review(tmp_path, initial["brief_identity"], brief)
+    never = Mock(side_effect=AssertionError("held producer invoked"))
+    kwargs = {
+        "review_file": review,
+        "plan": _plan(
+            script_cpu=hold != "script", direction_cpu=False
+        ),
+        "brief_completion": _brief, "adaptation_completion": _adapt,
+        "script_completion": never if hold == "script" else _script,
+        "direction_completion": never,
+    }
+    result = chapter.evaluate_chapter(runner, ref, progress, section, **kwargs)
+    assert result["status"] == (
+        "AWAITING_EXPLICIT_CPU_CHAPTER_SCRIPT" if hold == "script"
+        else "AWAITING_EXPLICIT_CPU_CHAPTER_DIRECTION"
+    )
+    never.assert_not_called()
+
+
+
+@pytest.mark.parametrize("mutation", ["schema", "nonbool", "over-limit", "voice"])
+def test_chapter_manifest_permissions_and_budgets_reject_bad_inputs(mutation: str) -> None:
+    from dataclasses import asdict
+
+    settings: dict[str, object] = {
+        "schema": chapter.PLAN_SCHEMA, **asdict(_plan())
+    }
+    if mutation == "schema":
+        settings["schema"] = "unexpected-bypass"
+    elif mutation == "nonbool":
+        settings["brief_cpu"] = "true"
+    elif mutation == "over-limit":
+        settings["max_beats"] = 3000
+    elif mutation == "voice":
+        settings["voice"] = "unknown-speaker"
+    with pytest.raises(chapter.ChapterStop):
+        chapter.ChapterPlan.from_manifest(settings)
