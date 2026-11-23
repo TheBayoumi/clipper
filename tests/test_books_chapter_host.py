@@ -270,9 +270,7 @@ def test_two_chapters_brief_stops_for_independent_review_and_resume(
     monkeypatch.setattr(chapter, "evaluate_chapter", fake_evaluate)
     monkeypatch.setattr(chapter_host, "_review_packet", lambda _r, n, _s: packets.append(n))
     monkeypatch.setattr(chapter_host, "_release_models", lambda: None)
-    monkeypatch.setattr(
-        chapter_host, "_save_final_manifest", lambda *_args: "e" * 64
-    )
+    monkeypatch.setattr(chapter_host, "_save_final_manifest", lambda *_args: "e" * 64)
     phase = _call(runner, path, "brief")
     assert phase["status"] == "PRIVATE_TWO_CHAPTER_CHECKPOINT"
     assert [phase["chapters"][str(n)]["status"] for n in (1, 7)] == [
@@ -1140,12 +1138,8 @@ def test_full_execute_losing_concurrent_mining_claim_cannot_stop_winner(
     _locked(runner, path, config)
     first = config["chapter_1"]
     second = config["chapter_7"]
-    chapter_host._phase(
-        runner, 1, first["bundle_sha256"], first["scope_sha256"], "NOT_STARTED"
-    )
-    chapter_host._phase(
-        runner, 7, second["bundle_sha256"], second["scope_sha256"], "NOT_STARTED"
-    )
+    chapter_host._phase(runner, 1, first["bundle_sha256"], first["scope_sha256"], "NOT_STARTED")
+    chapter_host._phase(runner, 7, second["bundle_sha256"], second["scope_sha256"], "NOT_STARTED")
     chapter_host._phase(
         runner, 7, second["bundle_sha256"], second["scope_sha256"], "MINING_IN_FLIGHT"
     )
@@ -1207,17 +1201,17 @@ def test_resumed_host_interruption_reports_precise_last_subphase_and_verified_pr
     bundle, scope = chosen["bundle_sha256"], chosen["scope_sha256"]
     owner = "a" * 32
     _ = chapter_host._phase(runner, 1, bundle, scope, "NOT_STARTED")
-    chapter_host._phase(
-        runner, 1, bundle, scope, "MINING_IN_FLIGHT", {"claim_owner": owner}
-    )
-    chapter_host._phase(
-        runner, 1, bundle, scope, "BRIEF_IN_FLIGHT", {"claim_owner": owner}
-    )
+    chapter_host._phase(runner, 1, bundle, scope, "MINING_IN_FLIGHT", {"claim_owner": owner})
+    chapter_host._phase(runner, 1, bundle, scope, "BRIEF_IN_FLIGHT", {"claim_owner": owner})
     progress = runner.root / "synthetic-progress.json"
     progress.write_bytes(evaluation._json_bytes({"progress": "synthetic"}))
     brief = "b" * 64
     chapter_host._phase(
-        runner, 1, bundle, scope, "AWAITING_HUMAN_REVIEW",
+        runner,
+        1,
+        bundle,
+        scope,
+        "AWAITING_HUMAN_REVIEW",
         {"claim_owner": owner, "brief_identity": brief},
     )
     saved = runner.root / "book-candidates/private-host/chapter-1-brief-record.json"
@@ -1239,9 +1233,7 @@ def test_resumed_host_interruption_reports_precise_last_subphase_and_verified_pr
     review.write_bytes(evaluation._json_bytes({"synthetic": "review placeholder"}))
     config["chapter_1"]["review_file"] = str(review)
     path.write_bytes(evaluation._json_bytes(config))
-    chapter_host._phase(
-        runner, 7, other["bundle_sha256"], other["scope_sha256"], "NOT_STARTED"
-    )
+    chapter_host._phase(runner, 7, other["bundle_sha256"], other["scope_sha256"], "NOT_STARTED")
     chapter_host._phase(
         runner, 7, other["bundle_sha256"], other["scope_sha256"], "MINING_IN_FLIGHT"
     )
@@ -1277,7 +1269,12 @@ def test_resumed_host_interruption_reports_precise_last_subphase_and_verified_pr
     assert entry["retrieval_status"] == "NOT_ATTEMPTED"
     verified = entry["last_verified_artifact_identities"]
     assert verified["brief_identity"] == brief
-    if stop_after in {"SCRIPT_IN_FLIGHT", "NARRATION_IN_FLIGHT", "DIRECTION_IN_FLIGHT", "DIRECTION_VERIFIED"}:
+    if stop_after in {
+        "SCRIPT_IN_FLIGHT",
+        "NARRATION_IN_FLIGHT",
+        "DIRECTION_IN_FLIGHT",
+        "DIRECTION_VERIFIED",
+    }:
         assert verified["adaptation_identity"] == "c" * 64
     if stop_after in {"NARRATION_IN_FLIGHT", "DIRECTION_IN_FLIGHT", "DIRECTION_VERIFIED"}:
         assert verified["script_identity"] == "d" * 64
@@ -1365,23 +1362,25 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
     report = {
         "schema": "clipper-chapter-narration-v2",
         "provenance": "INJECTED_TEST_WAV",
-        "records": [{
-            "wav_relative_path": "chapter-audio-injected_test_wav/synthetic.wav",
-            "sha256": hashlib.sha256(wav_bytes).hexdigest(),
-        }],
+        "records": [
+            {
+                "wav_relative_path": "chapter-audio-injected_test_wav/synthetic.wav",
+                "sha256": hashlib.sha256(wav_bytes).hexdigest(),
+            }
+        ],
     }
     report_identity = content_fingerprint(report)
     evaluation._store(base, base / f"narration-report-{report_identity}.json", report)
 
     chapter_host._phase(runner, 1, bundle, scope, "NOT_STARTED")
+    chapter_host._phase(runner, 1, bundle, scope, "MINING_IN_FLIGHT", {"claim_owner": first_owner})
+    chapter_host._phase(runner, 1, bundle, scope, "BRIEF_IN_FLIGHT", {"claim_owner": first_owner})
     chapter_host._phase(
-        runner, 1, bundle, scope, "MINING_IN_FLIGHT", {"claim_owner": first_owner}
-    )
-    chapter_host._phase(
-        runner, 1, bundle, scope, "BRIEF_IN_FLIGHT", {"claim_owner": first_owner}
-    )
-    chapter_host._phase(
-        runner, 1, bundle, scope, "AWAITING_HUMAN_REVIEW",
+        runner,
+        1,
+        bundle,
+        scope,
+        "AWAITING_HUMAN_REVIEW",
         {"claim_owner": first_owner, "brief_identity": identities["brief"]},
     )
     chapter_host._phase(
@@ -1393,9 +1392,7 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         ("NARRATION_IN_FLIGHT", "NARRATION_VERIFIED", report_identity),
         ("DIRECTION_IN_FLIGHT", "DIRECTION_VERIFIED", identities["chapter_direction"]),
     ):
-        chapter_host._phase(
-            runner, 1, bundle, scope, start, {"claim_owner": resumed_owner}
-        )
+        chapter_host._phase(runner, 1, bundle, scope, start, {"claim_owner": resumed_owner})
         stage_key = {
             "ADAPTATION_VERIFIED": "adaptation_identity",
             "SCRIPT_VERIFIED": "script_identity",
@@ -1403,7 +1400,11 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
             "DIRECTION_VERIFIED": "direction_identity",
         }[verified]
         chapter_host._phase(
-            runner, 1, bundle, scope, verified,
+            runner,
+            1,
+            bundle,
+            scope,
+            verified,
             {"claim_owner": resumed_owner, stage_key: identity},
         )
 
@@ -1414,7 +1415,8 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
     (base_dir / "source-ledger.json").write_bytes(source_bytes)
     review_id = "6" * 64
     evaluation._store(
-        base, base_dir / f"human-review-{review_id}.json",
+        base,
+        base_dir / f"human-review-{review_id}.json",
         {"synthetic": "private human review artifact"},
     )
     result = {
@@ -1431,12 +1433,14 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         "human_review_sha256": review_id,
     }
     final_key = content_fingerprint(result)
-    evaluation._store(
-        base, base_dir / f"chapter-result-{final_key}.json", result
-    )
+    evaluation._store(base, base_dir / f"chapter-result-{final_key}.json", result)
     manifest_sha = chapter_host._save_final_manifest(root, 1, bundle, scope, final_key)
     chapter_host._phase(
-        runner, 1, bundle, scope, "PREPRODUCTION_READY",
+        runner,
+        1,
+        bundle,
+        scope,
+        "PREPRODUCTION_READY",
         {
             "claim_owner": resumed_owner,
             "final_result_identity": final_key,
