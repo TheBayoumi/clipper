@@ -951,7 +951,10 @@ def _claim(root: Path, marker: Path, request_key: str, attempt: int) -> str:
 
 def _verified_owner(root: Path, marker: Path, key: str, attempt: int, owner: str) -> None:
     try:
-        started = whole_book.load_strict_reply(evaluation._read(marker, 2048))
+        claim_bytes = evaluation._read(marker, 2048)
+        started = whole_book.load_strict_reply(claim_bytes)
+        if claim_bytes != evaluation._json_bytes(started):
+            raise ChapterStop("chapter attempt reservation is noncanonical")
     except (ValueError, TypeError, OSError):
         raise ChapterStop("chapter cached attempt has ambiguous reservation") from None
     expected = {
@@ -968,6 +971,94 @@ def _verified_owner(root: Path, marker: Path, key: str, attempt: int, owner: str
         or started != expected
     ):
         raise ChapterStop("chapter cached attempt owner mismatch")
+
+
+def _verified_rejected_attempt(
+    root: Path,
+    directory: Path,
+    key: str,
+    attempt: int,
+    max_attempts: int,
+    validate: Callable[[object], dict[str, Any]],
+    expected_owner: str | None = None,
+) -> None:
+    """Verify the whole recorded rejection before a retry or later cache replay."""
+    try:
+        if (
+            type(attempt) is not int
+            or type(max_attempts) is not int
+            or not 1 <= attempt < max_attempts
+        ):
+            raise ChapterStop("chapter prior attempt outside active retry budget")
+        claim_path = directory / f"started-{attempt}.json"
+        claim_bytes = evaluation._read(claim_path, 2048)
+        claim = _shape(
+            whole_book.load_strict_reply(claim_bytes),
+            {"request_key", "attempt", "owner", "status"},
+            "chapter prior attempt claim schema",
+        )
+        owner = claim["owner"]
+        if (
+            claim_bytes != evaluation._json_bytes(claim)
+            or type(claim["attempt"]) is not int
+            or claim["attempt"] != attempt
+            or claim["request_key"] != key
+            or claim["status"] != "STARTED_UNRESOLVED"
+            or not isinstance(owner, str)
+            or re.fullmatch(r"[0-9a-f]{32}", owner) is None
+            or (expected_owner is not None and owner != expected_owner)
+        ):
+            raise ChapterStop("chapter prior attempt claim identity mismatch")
+        _verified_owner(root, claim_path, key, attempt, owner)
+
+        raw_bytes = evaluation._read(
+            directory / f"raw-{attempt}.json", MAX_RAW_BYTES * 6 + 2048
+        )
+        raw_record = _shape(
+            whole_book.load_strict_reply(raw_bytes),
+            {"attempt", "owner", "raw", "sha256"},
+            "chapter prior raw record schema",
+        )
+        response = raw_record["raw"]
+        raw_digest = raw_record["sha256"]
+        if (
+            raw_bytes != evaluation._json_bytes(raw_record)
+            or type(raw_record["attempt"]) is not int
+            or raw_record["attempt"] != attempt
+            or raw_record["owner"] != owner
+            or not isinstance(response, str)
+            or len(response.encode("utf-8")) > MAX_RAW_BYTES
+            or not isinstance(raw_digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", raw_digest) is None
+            or hashlib.sha256(response.encode("utf-8")).hexdigest() != raw_digest
+        ):
+            raise ChapterStop("chapter prior raw attempt identity mismatch")
+
+        failed_bytes = evaluation._read(directory / f"failed-{attempt}.json", 2048)
+        failed = _shape(
+            whole_book.load_strict_reply(failed_bytes),
+            {"attempt", "owner", "status"},
+            "chapter prior rejection schema",
+        )
+        if (
+            failed_bytes != evaluation._json_bytes(failed)
+            or type(failed["attempt"]) is not int
+            or failed["attempt"] != attempt
+            or failed["owner"] != owner
+            or failed["status"] != "SCHEMA_OR_SOURCE_REJECTED"
+        ):
+            raise ChapterStop("chapter prior attempt was not a retry-eligible rejection")
+
+        # A rejected response cannot be retrospectively relabeled as rejected
+        # when it passes the same deterministic source/schema validator.
+        try:
+            validate(whole_book.load_strict_reply(response))
+        except (ValueError, TypeError, KeyError, RecursionError):
+            pass
+        else:
+            raise ChapterStop("chapter prior recorded rejection is not reproducible")
+    except (ValueError, TypeError, KeyError, OSError, RecursionError, OverflowError):
+        raise ChapterStop("chapter prior attempt history cannot be verified") from None
 
 
 def _text_artifact_identity(
@@ -1035,6 +1126,10 @@ def _verified_text_artifact(
             or re.fullmatch(r"[0-9a-f]{64}", saved["payload_sha256"]) is None
         ):
             raise ChapterStop("chapter cached text artifact identity mismatch")
+        for prior in range(1, attempt):
+            _verified_rejected_attempt(
+                root, directory, request_key, prior, max_attempts, validate
+            )
         _verified_owner(
             root,
             directory / f"started-{attempt}.json",
@@ -1136,14 +1231,11 @@ def _stage(
         raise ChapterStop("chapter stage has prior unresolved/failed attempts")
     previous_owner: str | None = None
     for index in range(1, plan.max_attempts_per_stage + 1):
-        # Revalidate the rejected attempt immediately before authorizing a retry.
+        # Reverify the exact rejected claim, raw and failure before the next call.
         if previous_owner is not None:
-            _verified_owner(
-                root,
-                directory / f"started-{index - 1}.json",
-                stage_key,
-                index - 1,
-                previous_owner,
+            _verified_rejected_attempt(
+                root, directory, stage_key, index - 1,
+                plan.max_attempts_per_stage, validate, previous_owner,
             )
         marker = directory / f"started-{index}.json"
         owner = _claim(root, marker, stage_key, index)
