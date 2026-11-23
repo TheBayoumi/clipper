@@ -26,6 +26,7 @@ MAX_BEATS = 128
 MAX_SPANS_PER_BEAT = 24
 MAX_AUDIT_RAW_BYTES = 100_000
 SAFE_CONTEXT_TOKENS = 32_768
+CHAT_TEMPLATE_CONTRACT = "pinned-qwen-chat-enable-thinking-false-v1"
 MAX_REQUEST_BYTES = 280_000
 SPAN_ROLES = frozenset({"ASSERTION", "AUTHOR_EXAMPLE", "COUNTEREXAMPLE", "QUALIFICATION"})
 DECISIONS = frozenset({"keep", "compress", "omit"})
@@ -201,6 +202,14 @@ def producer_identity(
         "chapter_plan_fingerprint": plan_fingerprint,
         "model_producer": model_producer,
         "source_mode": "DIRECT_SOURCE_HYBRID",
+        "model": scripting.SCRIPT_MODEL,
+        "revision": scripting.SCRIPT_REVISION,
+        "tokenizer_sha256": constrained.PINNED_TOKENIZER_SHA256,
+        "chat_template_contract": CHAT_TEMPLATE_CONTRACT,
+        "generation_settings": scripting.QWEN_GENERATION_SETTINGS,
+        "thinking_enabled": False,
+        "combined_context_limit": SAFE_CONTEXT_TOKENS,
+        "stage_schemas": [ARGUMENT_SCHEMA, AUDIT_SCHEMA, BRIEF_SCHEMA],
     }
 
 
@@ -262,7 +271,7 @@ def request(
             "contract": f"hybrid-{stage}-v1",
             "request": result,
             "tokenizer_sha256": constrained.PINNED_TOKENIZER_SHA256,
-            "template": "pinned-qwen-chat-enable-thinking-false-v1",
+            "template": CHAT_TEMPLATE_CONTRACT,
             "safe_context": SAFE_CONTEXT_TOKENS,
             "producer_identity": producer_identity,
             "generation_settings": scripting.QWEN_GENERATION_SETTINGS,
