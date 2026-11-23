@@ -104,7 +104,7 @@ recover_private() (
       if bounded python3 -c '
 import hashlib, json, pathlib, re, sys, tarfile
 created_path, archive_path, report_path, safe_path = map(pathlib.Path, sys.argv[1:])
-dig = re.compile(r"[0-9a-f]{64}\\Z")
+dig = re.compile(r"[0-9a-f]{64}\Z")
 def digest(raw):
     return hashlib.sha256(raw).hexdigest()
 created_raw = created_path.read_bytes()
@@ -192,7 +192,7 @@ with tarfile.open(archive_path, mode="r:") as source:
                                       for x in safe["chapters"].values()) else "PARTIAL"),
         "host_cleanup_status": "NOT_YET_REST_VERIFIED",
     }
-    report_path.write_text(json.dumps(summary, sort_keys=True) + "\\n", encoding="utf-8")
+    report_path.write_text(json.dumps(summary, sort_keys=True) + "\n", encoding="utf-8")
     safe_path.write_bytes(safe_bytes)
 ' "$session/recovery-created.json" "$destination/chapter-recovery.tar" \
   "$destination/retrieval-verification.json" "$destination/safe-recovery-status.json"; then
