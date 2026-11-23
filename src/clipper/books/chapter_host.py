@@ -589,6 +589,7 @@ def execute(
             continue
         private_root = root / "book-candidates"
         saved = private_root / "private-host" / f"chapter-{number}-brief-record.json"
+        journaled_brief_identity: str | None = None
         try:
             # The independent heartbeat must remain current between chapter
             # phases; a previous invocation never extends the creation clock.
@@ -634,6 +635,11 @@ def execute(
                     or not isinstance(record.get("progress_path"), str)
                 ):
                     raise PrivateHostStop("chapter has no immutable prior private brief phase")
+                if not isinstance(record["brief_identity"], str) or DIGEST.fullmatch(
+                    record["brief_identity"]
+                ) is None:
+                    raise PrivateHostStop("journaled chapter brief identity invalid")
+                journaled_brief_identity = record["brief_identity"]
                 progress_path = _private_path(record["progress_path"], root, must_exist=True)
                 if hashlib.sha256(evaluation._read(progress_path, 20_000_000)).hexdigest() != (
                     record.get("progress_sha256")
@@ -665,12 +671,12 @@ def execute(
                     {"progress_path": str(progress_path)},
                 )
             def commit_resumption() -> None:
-                if mode != "resume":
-                    raise PrivateHostStop("resume claim cannot occur in brief phase")
+                if mode != "resume" or journaled_brief_identity is None:
+                    raise PrivateHostStop("resume claim lacks verified journaled brief identity")
                 _phase(
                     runner, number, digest, scope_sha, "RESUME_IN_FLIGHT",
                     {
-                        "brief_identity": record["brief_identity"],
+                        "brief_identity": journaled_brief_identity,
                         "progress_path": str(progress_path),
                     },
                 )
@@ -688,9 +694,7 @@ def execute(
                 script_completion=scripting._local_chapter_completion,
                 direction_completion=scripting._local_chapter_completion,
                 narration_producer=narration._kokoro_wav,
-                expected_brief_identity=(
-                    cast(str, record["brief_identity"]) if mode == "resume" else None
-                ),
+                expected_brief_identity=journaled_brief_identity,
                 on_resume_verified=commit_resumption if mode == "resume" else None,
             )
             if mode == "brief":
