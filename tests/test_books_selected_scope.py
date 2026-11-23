@@ -441,7 +441,6 @@ def test_importer_rejects_internally_rehashed_incomplete_selected_evidence(
         selected_scope.import_chapter(runner.root, _edited(runner, evidence))
 
 
-
 @pytest.mark.parametrize("boundary", ["missing_json", "oversize", "outside", "symlink"])
 def test_selected_importer_requires_bounded_content_addressed_private_file(
     tmp_path: Path, boundary: str
