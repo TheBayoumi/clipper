@@ -1597,6 +1597,307 @@ def _chapter_output_manifest(
     }
 
 
+
+def _hybrid_output_manifest(
+    root: Path,
+    number: int,
+    bundle: str,
+    scope: str,
+    *,
+    final_result_identity: str | None = None,
+) -> dict[str, object]:
+    """Revalidate source-grounded raw/cache chains before private recovery."""
+    records = _phase_records(root, number, bundle, scope)
+    reference = next(
+        (
+            row["artifacts"]
+            for row in records
+            if row["phase"] == "AWAITING_HUMAN_REVIEW"
+            and row["artifacts"].get("chapter_mode") == "DIRECT_SOURCE_HYBRID"
+        ),
+        None,
+    )
+    if reference is None:
+        # A claimed but interrupted model request has no attested response.
+        # Never invent a recoverable stage identity from loose files.
+        return {
+            "schema": "clipper-chapter-private-output-manifest-v1",
+            "chapter": number,
+            "bundle_sha256": bundle,
+            "scope_sha256": scope,
+            "verified_artifact_identities": {},
+            "files": [],
+            "source_mode": "DIRECT_SOURCE_HYBRID",
+            "inflight_inventory": "UNATTESTED_FAIL_CLOSED",
+            "publish_eligible": False,
+        }
+    base = root / "book-candidates"
+    brief_id = reference.get("brief_identity")
+    argument_id = reference.get("argument_identity")
+    audit_ids = reference.get("audit_identities")
+    key = reference.get("chapter_scope_identity")
+    source_sha = reference.get("source_ledger_sha256")
+    if (
+        not all(isinstance(v, str) and DIGEST.fullmatch(v) for v in (brief_id, argument_id, key, source_sha))
+        or not isinstance(audit_ids, list)
+        or not 1 <= len(audit_ids) <= chapter_hybrid.MAX_AUDITS
+        or any(not isinstance(v, str) or DIGEST.fullmatch(v) is None for v in audit_ids)
+    ):
+        raise PrivateHostStop("hybrid reviewed source-stage identities invalid")
+    saved_path = base / "private-host" / f"chapter-{number}-brief-record.json"
+    saved = _parse_recovery_artifact(_read_recovery_artifact(saved_path, 16384))
+    if (
+        not isinstance(saved, dict)
+        or saved.get("chapter_mode") != "DIRECT_SOURCE_HYBRID"
+        or saved.get("chapter_scope_identity") != key
+        or saved.get("brief_identity") != brief_id
+        or saved.get("argument_identity") != argument_id
+        or saved.get("audit_identities") != audit_ids
+        or saved.get("source_ledger_sha256") != source_sha
+        or saved.get("bundle_sha256") != bundle
+        or saved.get("scope_sha256") != scope
+        or saved.get("chapter") != number
+    ):
+        raise PrivateHostStop("hybrid recovery source brief journal changed")
+    try:
+        plan = chapter.ChapterPlan.from_manifest(saved["plan"])
+    except (ValueError, TypeError, KeyError):
+        raise PrivateHostStop("hybrid recovery frozen CPU plan invalid") from None
+    if saved.get("plan_fingerprint") != plan.fingerprint:
+        raise PrivateHostStop("hybrid recovery CPU plan identity changed")
+    ledger_path = base / "chapter-evaluations" / key / "source-ledger.json"
+    ledger_bytes = _read_recovery_artifact(ledger_path, chapter_hybrid.MAX_SOURCE_BYTES + 1024)
+    ledger_obj = _parse_recovery_artifact(ledger_bytes)
+    if (
+        not isinstance(ledger_obj, dict)
+        or hashlib.sha256(ledger_bytes).hexdigest() != source_sha
+        or ledger_obj.get("identity", {}).get("chapter") != number
+        or ledger_obj.get("identity", {}).get("section_manifest_sha256") != scope
+        or ledger_obj.get("identity", {}).get("selected_bundle_sha256") != bundle
+    ):
+        raise PrivateHostStop("hybrid recoverable source differs from selected original")
+    chapter_hybrid.validate_ledger(ledger_obj)
+    files: list[dict[str, object]] = [
+        _private_output_entry(
+            root, ledger_path, number, "source_ledger", chapter_hybrid.MAX_SOURCE_BYTES + 1024
+        ),
+        _private_output_entry(root, saved_path, number, "review_record", 16384),
+    ]
+
+    def verified_stage(
+        stage: str, identity: str, validator: Callable[[object], dict[str, Any]]
+    ) -> dict[str, Any]:
+        evidence = _stage_output_entries(
+            root, number, stage, identity, validate=validator
+        )
+        files.extend(evidence)
+        records_for_stage = [
+            item
+            for item in evidence
+            if str(item["relative_path"]).endswith("/validated.json")
+        ]
+        if len(records_for_stage) != 1:
+            raise PrivateHostStop("hybrid stage validated source record not unique")
+        path = root / str(records_for_stage[0]["relative_path"])
+        envelope = _parse_recovery_artifact(_read_recovery_artifact(path, 250_000))
+        if (
+            not isinstance(envelope, dict)
+            or envelope.get("artifact_identity") != identity
+            or not isinstance(envelope.get("payload"), dict)
+        ):
+            raise PrivateHostStop("hybrid stage payload changed after raw replay")
+        return envelope["payload"]
+
+    argument = verified_stage(
+        "hybrid_argument",
+        argument_id,
+        lambda raw: chapter_hybrid.validate_argument(raw, ledger_obj),
+    )
+    windows = chapter_hybrid.audit_windows(ledger_obj)
+    if len(windows) != len(audit_ids):
+        raise PrivateHostStop("hybrid recovered local source coverage incomplete")
+    audits = [
+        verified_stage(
+            "hybrid_audit",
+            identity,
+            lambda raw, window=window: chapter_hybrid.validate_audit(
+                raw, ledger_obj, window
+            ),
+        )
+        for window, identity in zip(windows, audit_ids, strict=True)
+    ]
+
+    def validate_reconcile(raw: object) -> dict[str, Any]:
+        result = chapter_hybrid.reconcile(raw, ledger_obj, argument, audits)
+        if len(result["beats"]) > plan.max_beats:
+            raise chapter.ChapterStop("hybrid recovered beat limit differs from frozen plan")
+        return result
+
+    brief = verified_stage("hybrid_reconcile", brief_id, validate_reconcile)
+    packet_path = base / "private-host" / f"chapter-{number}-review-packet.json"
+    packet = _parse_recovery_artifact(_read_recovery_artifact(packet_path, 1_000_000))
+    if (
+        not isinstance(packet, dict)
+        or packet.get("brief_identity") != brief_id
+        or packet.get("brief_sha256") != brief["brief_sha256"]
+        or packet.get("source_ledger_sha256") != source_sha
+    ):
+        raise PrivateHostStop("hybrid source review packet changed after human gate")
+    files.append(_private_output_entry(root, packet_path, number, "review", 1_000_000))
+    stage_identities: dict[str, object] = {
+        "brief_identity": brief_id,
+        "argument_identity": argument_id,
+        "audit_identities": audit_ids,
+    }
+    derived: dict[str, str] = {}
+    for row in records:
+        for field in (
+            "adaptation_identity",
+            "script_identity",
+            "narration_report_identity",
+            "direction_identity",
+            "final_result_identity",
+        ):
+            value = row["artifacts"].get(field)
+            if isinstance(value, str) and DIGEST.fullmatch(value):
+                if field in derived and derived[field] != value:
+                    raise PrivateHostStop("hybrid stage journal identities changed")
+                derived[field] = value
+    stage_identities.update(derived)
+    treatment: dict[str, Any] | None = None
+    script: dict[str, Any] | None = None
+    if "adaptation_identity" in derived:
+        treatment = verified_stage(
+            "adaptation",
+            derived["adaptation_identity"],
+            lambda raw: chapter_hybrid.validate_adaptation(raw, brief, plan),
+        )
+    if "script_identity" in derived:
+        if treatment is None:
+            raise PrivateHostStop("hybrid script recovered without adaptation")
+        script = verified_stage(
+            "chapter_script",
+            derived["script_identity"],
+            lambda raw: chapter_hybrid.validate_script(raw, treatment, brief, plan),
+        )
+    if "narration_report_identity" in derived:
+        files.extend(
+            _narration_output_entries(
+                root, number, derived["narration_report_identity"]
+            )
+        )
+    if final_result_identity is not None:
+        if DIGEST.fullmatch(final_result_identity) is None:
+            raise PrivateHostStop("hybrid final identity invalid")
+        if (
+            "final_result_identity" in derived
+            and derived["final_result_identity"] != final_result_identity
+        ):
+            raise PrivateHostStop("hybrid final identity changed after committed phase")
+        derived["final_result_identity"] = final_result_identity
+        stage_identities["final_result_identity"] = final_result_identity
+    if "final_result_identity" in derived:
+        final_path = (
+            base
+            / "chapter-evaluations"
+            / key
+            / f"chapter-result-{derived['final_result_identity']}.json"
+        )
+        record = _parse_recovery_artifact(_read_recovery_artifact(final_path, 500_000))
+        if (
+            not isinstance(record, dict)
+            or content_fingerprint(record) != derived["final_result_identity"]
+            or record.get("source_mining_provenance") != "DIRECT_SOURCE_NO_MINING"
+            or record.get("chapter_scope_identity") != key
+            or record.get("source_ledger_sha256") != source_sha
+            or record.get("selected_source_bundle_sha256") != bundle
+            or record.get("parent_original_reverified_on_host") is not False
+            or record.get("publish_eligible") is not False
+            or record.get("argument_key") != argument_id
+            or record.get("audit_keys") != audit_ids
+            or record.get("brief_key") != brief_id
+            or any(
+                record.get(record_field) != derived.get(identity_field)
+                for record_field, identity_field in (
+                    ("adaptation_key", "adaptation_identity"),
+                    ("script_key", "script_identity"),
+                    ("direction_key", "direction_identity"),
+                    ("narration_report_key", "narration_report_identity"),
+                )
+            )
+        ):
+            raise PrivateHostStop("hybrid final output differs from complete source journal")
+        if treatment is None or script is None:
+            raise PrivateHostStop("hybrid final creative stages absent")
+        if "direction_identity" in derived:
+            verified_stage(
+                "chapter_direction",
+                derived["direction_identity"],
+                lambda raw: chapter._direction_validate(
+                    raw, script, treatment, record["timings"], plan
+                ),
+            )
+        review_id = record.get("human_review_sha256")
+        if not isinstance(review_id, str) or DIGEST.fullmatch(review_id) is None:
+            raise PrivateHostStop("hybrid final human review digest missing")
+        review_path = final_path.parent / f"human-review-{review_id}.json"
+        review_obj = _parse_recovery_artifact(_read_recovery_artifact(review_path, 250_000))
+        if (
+            not isinstance(review_obj, dict)
+            or review_obj.get("review_sha256") != review_id
+            or review_obj.get("schema") != chapter_hybrid.REVIEW_SCHEMA
+            or not isinstance(review_obj.get("review"), dict)
+            or review_obj["review"].get("brief_artifact_identity") != brief_id
+        ):
+            raise PrivateHostStop("hybrid final human approval record changed")
+        review = {
+            field: value
+            for field, value in review_obj["review"].items()
+            if field != "brief_artifact_identity"
+        }
+        chapter_hybrid.validate_human_review(review, brief, ledger_obj)
+        files.extend(
+            (
+                _private_output_entry(root, final_path, number, "final_result", 500_000),
+                _private_output_entry(root, review_path, number, "human_review", 250_000),
+            )
+        )
+    if len(files) > 256:
+        raise PrivateHostStop("hybrid recovery files exceed finite allowance")
+    unique: dict[str, dict[str, object]] = {}
+    for file in files:
+        relative = str(file["relative_path"])
+        if relative in unique and unique[relative] != file:
+            raise PrivateHostStop("hybrid recovery filename collides")
+        unique[relative] = file
+    return {
+        "schema": "clipper-chapter-private-output-manifest-v1",
+        "chapter": number,
+        "bundle_sha256": bundle,
+        "scope_sha256": scope,
+        "verified_artifact_identities": stage_identities,
+        "files": [unique[key] for key in sorted(unique)],
+        "source_mode": "DIRECT_SOURCE_HYBRID",
+        "publish_eligible": False,
+    }
+
+
+def _save_hybrid_manifest(
+    root: Path, number: int, bundle: str, scope: str, final_identity: str
+) -> str:
+    manifest = _hybrid_output_manifest(
+        root, number, bundle, scope, final_result_identity=final_identity
+    )
+    raw = evaluation._json_bytes(manifest)
+    digest = hashlib.sha256(raw).hexdigest()
+    evaluation._store(
+        root / "book-candidates",
+        root / "book-candidates/private-host" / f"chapter-{number}-output-manifest.json",
+        manifest,
+    )
+    return digest
+
+
 def _save_final_manifest(
     root: Path, number: int, bundle: str, scope: str, final_result_identity: str
 ) -> str:
