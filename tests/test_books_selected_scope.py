@@ -525,3 +525,108 @@ def test_selected_importer_rejects_corrupt_parent_and_source_evidence(
         data["schema"] = "unverified-selected"
     with pytest.raises(selected_scope.SelectedSourceStop):
         selected_scope.import_chapter(runner.root, _edited(runner, data))
+
+
+def test_failed_selected_mining_request_is_never_regenerated_on_fresh_reentry(
+    tmp_path: Path,
+) -> None:
+    runner, bundle, _ = _bundle(tmp_path, with_image=False)
+    chosen = selected_scope.import_chapter(runner.root, bundle)
+    calls = 0
+
+    def invalid_once(_request: dict[str, object]) -> str:
+        nonlocal calls
+        calls += 1
+        return '{"lessons":[{"invalid":"source"}]}'
+
+    arguments = {
+        "local_cpu": True,
+        "section_ids": chosen.work.section_ids,
+        "section_manifest_sha256": chosen.section_manifest_sha256,
+        "selected_scope_path": bundle,
+        "max_new_units": 1,
+        "local_completion": invalid_once,
+    }
+    first = runner.mine_candidate(bundle, **arguments)
+    assert first["status"] == "incomplete"
+    assert first["counts"]["failed"] == 1
+    assert calls == 1
+    # New orchestrator and same private DAG: an earlier failure consumed the
+    # request, including under a reclaimed failed stage.
+    second = BookOrchestrator(runner.root).mine_candidate(bundle, **arguments)
+    assert second["status"] == "incomplete"
+    assert second["counts"]["failed"] == 1
+    assert second["counts"]["unresolved"] == len(chosen.work.units) - 1
+    assert calls == 1
+    prior = json.loads(Path(second["progress_path"]).read_bytes())
+    assert prior["progress"][0]["failure_category"] == "prior_attempt_interrupted_or_failed"
+
+
+def test_selected_bundle_metadata_relabel_is_not_a_generation_cache_hit(
+    tmp_path: Path,
+) -> None:
+    runner, chapter_one, raw = _bundle(tmp_path, with_image=False)
+    work = selected_scope.import_chapter(runner.root, chapter_one).work
+    calls = 0
+
+    def zero(_request: dict[str, object]) -> str:
+        nonlocal calls
+        calls += 1
+        return '{"lessons":[]}'
+
+    first = runner.mine_candidate(
+        chapter_one,
+        local_cpu=True,
+        selected_scope_path=chapter_one,
+        section_ids=work.section_ids,
+        section_manifest_sha256=raw["section_manifest_sha256"],
+        max_new_units=len(work.units),
+        local_completion=zero,
+    )
+    assert first["status"] == "complete"
+    assert calls == len(work.units)
+    raw["chapter_number"] = 7
+    chapter_seven = _edited(runner, raw)
+    replay = runner.mine_candidate(
+        chapter_seven,
+        local_cpu=True,
+        selected_scope_path=chapter_seven,
+        section_ids=work.section_ids,
+        section_manifest_sha256=raw["section_manifest_sha256"],
+        max_new_units=len(work.units),
+        local_completion=zero,
+    )
+    assert replay["status"] == "complete"
+    assert calls == 2 * len(work.units)
+    assert replay["progress_path"] != first["progress_path"]
+    assert json.loads(Path(replay["progress_path"]).read_bytes())[
+        "selected_scope_bundle_sha256"
+    ] == chapter_seven.stem
+
+
+def test_gap_only_linked_section_preserved_in_source_order(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from clipper.books.contracts import SourceBlock
+
+    owner = tmp_path / "original"
+    owner.mkdir()
+    _runner, acquired, _ = ingested(owner, paragraphs=6, with_image=False)
+    book = acquired.book
+    selected_id = book.sections[0].chapter_id
+    gap_id = "original-linked-gap-only-note"
+    missing = SourceBlock(
+        "note-figure-001", gap_id, "notes/figure-001.png",
+        "image", "", "e" * 64,
+    )
+    derived = replace(book, blocks=(*book.blocks, missing))
+    ordered = whole_book.plan_for(derived, section_ids=(selected_id, gap_id))
+    assert ordered.section_ids == (selected_id, gap_id)
+    assert ordered.units
+    assert all(unit.section_id == selected_id for unit in ordered.units)
+    assert any(gap["section_id"] == gap_id for gap in ordered.skipped)
+    with pytest.raises(ValueError):
+        whole_book.plan_for(derived, section_ids=(gap_id, selected_id))
+
