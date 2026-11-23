@@ -10,8 +10,8 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from uuid import uuid4
 from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 from clipper.stage_contracts import content_fingerprint
 
@@ -342,6 +342,8 @@ def _review_validate(
             or (quote and quote not in sources[sid]["text"])
         ):
             raise ChapterStop("human source coverage qualifier is not original text")
+        if decision["decision"] == "omit" and quote and quote not in decision["reason"]:
+            raise ChapterStop("omitted qualified source unit needs explicit reviewer disposition")
         if decision["review"] != "accept_coverage":
             raise ChapterStop("human rejected chapter unit coverage; revised brief required")
         checked.add(sid)
@@ -428,6 +430,12 @@ def _adapt_validate(
             or len(beat["qualification"]) > 600
         ):
             raise ChapterStop("chapter adaptation lost reviewer-attested qualification")
+        if (
+            decisions[bid]["decision"] == "support_attested"
+            and beat["decision"] == "omit"
+            and (qualifier or original_qualification)
+        ):
+            raise ChapterStop("qualified supported beat requires narrated preservation or new review")
         if decisions[bid]["decision"] == "reject" and beat["decision"] != "omit":
             raise ChapterStop("human-rejected chapter beat cannot become a scene")
         if source_beats[bid]["essential"] and (
@@ -457,14 +465,27 @@ def _adapt_validate(
 
 
 def _script_validate(
-    raw: object, adaptation: dict[str, Any], decisions: dict[str, dict[str, Any]], plan: ChapterPlan
+    raw: object,
+    adaptation: dict[str, Any],
+    decisions: dict[str, dict[str, Any]],
+    plan: ChapterPlan,
+    *,
+    brief: dict[str, Any] | None = None,
+    human_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     obj = _shape(raw, {"title", "scenes"}, "chapter script schema")
     _words(obj["title"], "chapter title missing", 140)
     scenes = _items(obj["scenes"], plan.max_scenes, "chapter scene budget")
     if len(scenes) < 2:
         raise ChapterStop("chapter needs a connected multi-scene argument")
-    allowed = {x["beat_id"] for x in adaptation["beats"] if x["decision"] in {"keep", "compress"}}
+    adapted = {x["beat_id"]: x for x in adaptation["beats"]}
+    allowed = {bid for bid, x in adapted.items() if x["decision"] in {"keep", "compress"}}
+    original = {x["beat_id"]: x for x in brief["beats"]} if brief is not None else {}
+    reviewed_units = (
+        {x["source_id"]: x for x in human_review["unit_decisions"]}
+        if human_review is not None
+        else {}
+    )
     characters = {x["id"] for x in adaptation["characters"]}
     locations = {x["id"] for x in adaptation["locations"]}
     observed: set[str] = set()
@@ -507,10 +528,23 @@ def _script_validate(
         ):
             raise ChapterStop("chapter scene cites omitted/unknown source beats")
         observed.update(beat_ids)
+        if (
+            scene["illustration_label"] == "SOURCE_ACCOUNT"
+            and any(adapted[bid]["illustration"] == "INVENTED_ILLUSTRATION" for bid in beat_ids)
+        ):
+            raise ChapterStop("chapter scene cannot relabel invented adaptation as source account")
         for bid in beat_ids:
-            qualifier = decisions[bid]["qualifier_quote"]
-            if qualifier and qualifier not in scene["narration"]:
-                raise ChapterStop("chapter script lost exact human-attested qualification")
+            qualifiers = [
+                decisions[bid]["qualifier_quote"],
+                adapted[bid]["qualification"],
+            ]
+            if bid in original:
+                qualifiers.append(original[bid]["qualification"])
+                parent_unit = original[bid]["unit_id"]
+                if parent_unit in reviewed_units:
+                    qualifiers.append(reviewed_units[parent_unit]["qualifier_quote"])
+            if any(qualifier and qualifier not in scene["narration"] for qualifier in qualifiers):
+                raise ChapterStop("chapter narration lost source/adaptation/review qualification")
         dialogue = _items(scene["dialogue"], 2, "chapter dialogue budget")
         if dialogue and scene["illustration_label"] != "INVENTED_ILLUSTRATION":
             raise ChapterStop("invented chapter dialogue cannot be framed as author fact")
@@ -533,28 +567,47 @@ def _script_validate(
 def _timings(
     script: dict[str, Any], plan: ChapterPlan, audio: list[dict[str, Any]] | None
 ) -> list[dict[str, Any]]:
+    """Audio timing retains integer PCM offsets; seconds are 6-digit projections."""
     output: list[dict[str, Any]] = []
     start = 0.0
+    sample_cursor = 0
     for scene in script["scenes"]:
         if audio is None:
             word_count = len(scene["narration"].split()) + sum(
                 len(v["text"].split()) for v in scene["dialogue"]
             )
             duration = max(1.0, word_count * 60.0 / 140.0)
+            end = round(start + duration, 6)
+            scene_start = round(start, 6)
+            scene_duration = round(end - scene_start, 6)
         else:
-            duration = sum(
-                x["duration_seconds"] for x in audio if x["scene_id"] == scene["scene_id"]
-            )
-            if duration <= 0:
+            utterances = [x for x in audio if x["scene_id"] == scene["scene_id"]]
+            if not utterances:
                 raise ChapterStop("chapter audio track missing an utterance duration")
-        end = round(start + duration, 4)
+            scene_start_sample = sample_cursor
+            for utterance in utterances:
+                if (
+                    utterance["sample_rate"] != 24000
+                    or type(utterance["samples"]) is not int
+                    or utterance["samples"] <= 0
+                    or utterance["start_sample"] != sample_cursor
+                    or utterance["end_sample"] != sample_cursor + utterance["samples"]
+                ):
+                    raise ChapterStop("chapter audio sample offsets are discontinuous")
+                sample_cursor = utterance["end_sample"]
+            scene_start = round(scene_start_sample / 24000, 6)
+            end = round(sample_cursor / 24000, 6)
+            scene_duration = round((sample_cursor - scene_start_sample) / 24000, 6)
         output.append(
             {
                 "scene_id": scene["scene_id"],
-                "start_seconds": round(start, 4),
+                "start_seconds": scene_start,
                 "end_seconds": end,
-                "duration_seconds": round(duration, 4),
+                "duration_seconds": scene_duration,
                 "basis": "MEASURED_WAV" if audio is not None else "NO_AUDIO_ESTIMATE",
+                "start_sample": scene_start_sample if audio is not None else None,
+                "end_sample": sample_cursor if audio is not None else None,
+                "sample_rate": 24000 if audio is not None else None,
             }
         )
         start = end
@@ -646,16 +699,18 @@ def _direction_validate(
             if (
                 type(start) not in (int, float)
                 or type(end) not in (int, float)
-                or abs(start - previous_end) > 0.02
+                or not math.isfinite(start)
+                or not math.isfinite(end)
+                or abs(start - previous_end) > 0.0000005
                 or not start < end
-                or end > scene_timing["end_seconds"] + 0.02
-                or start < scene_timing["start_seconds"] - 0.02
+                or end > scene_timing["end_seconds"] + 0.0000005
+                or start < scene_timing["start_seconds"] - 0.0000005
             ):
                 raise ChapterStop("chapter shot timing gap, overlap or scene boundary error")
             previous_end = end
-        if not changed or abs(previous_end - scene_timing["end_seconds"]) > 0.02:
+        if not changed or abs(previous_end - scene_timing["end_seconds"]) > 0.0000005:
             raise ChapterStop("chapter scene has no state-changing action or incomplete timing")
-    if index != len(shots) or abs(previous_end - timings[-1]["end_seconds"]) > 0.02:
+    if index != len(shots) or abs(previous_end - timings[-1]["end_seconds"]) > 0.0000005:
         raise ChapterStop("chapter direction includes orphan shots or incomplete timeline")
     canonical = [
         shot
@@ -864,7 +919,9 @@ def _stage(
 ) -> tuple[dict[str, Any], str, str, int]:
     """Reserve each irreversible provider attempt before calling any producer."""
     if completion is None:
-        raise ChapterStop("actual chapter CPU route blocked pending a verified bounded private host")
+        raise ChapterStop(
+            "actual chapter CPU route blocked pending a verified bounded private host"
+        )
     request = _request(stage, payload, plan)
     provenance = "INJECTED_TEST_PRODUCER"
     stage_key = content_fingerprint(
@@ -981,7 +1038,9 @@ def _narrate(
     from .scripting import NicheConfig, Scene
 
     if producer is None:
-        raise ChapterStop("actual chapter Kokoro route blocked pending a verified bounded private host")
+        raise ChapterStop(
+            "actual chapter Kokoro route blocked pending a verified bounded private host"
+        )
     config = NicheConfig(
         niche="private_chapter_preproduction",
         audience="private",
@@ -1026,7 +1085,10 @@ def _narrate(
                     raise ChapterStop("chapter audio has incomplete or conflicting publication")
                 _verified_owner(root, marker, marker_key, 1, saved["owner"])
                 data = evaluation._read(path, narration.MAX_WAV_BYTES)
-                if len(data) != saved["bytes"] or hashlib.sha256(data).hexdigest() != saved["sha256"]:
+                if (
+                    len(data) != saved["bytes"]
+                    or hashlib.sha256(data).hexdigest() != saved["sha256"]
+                ):
                     raise ChapterStop("chapter audio cache changed after owner publication")
                 channels, sample_rate, frames = narration.validated_wav(data, cached=True)
             else:
@@ -1040,7 +1102,9 @@ def _narrate(
                             utterance, config, audio_root, producer=producer
                         )
 
-                    wave_path = evaluation._capture_private_generator(root, audio_root, make_utterance)
+                    wave_path = evaluation._capture_private_generator(
+                        root, audio_root, make_utterance
+                    )
                     data = evaluation._read(wave_path, narration.MAX_WAV_BYTES)
                     channels, sample_rate, frames = narration.validated_wav(data, cached=True)
                     owner = whole_book.load_strict_reply(evaluation._read(marker, 2048))["owner"]
@@ -1057,7 +1121,9 @@ def _narrate(
                         },
                     )
                 except Exception:
-                    raise ChapterStop("chapter narration failed; private attempt retained") from None
+                    raise ChapterStop(
+                        "chapter narration failed; private attempt retained"
+                    ) from None
             start_sample = position
             position += frames
             records.append(
@@ -1175,6 +1241,17 @@ def evaluate_chapter(
         "zero_candidate_units": ledger["counts"]["zero_candidate"],
         "progress_sha256": evaluation._sha(evaluation._read(progress_path, 20_000_000)),
         "source_review": "MINED_UNREVIEWED",
+        "mining_provenance": (
+            ledger["execution_provenance"]
+            if ledger.get("execution_provenance")
+            in {"ACTUAL_CPU_QWEN", "INJECTED_TEST_PRODUCER", "RECORDED_RESPONSE_UNVERIFIED"}
+            else "LEGACY_LOCAL_CPU_UNKNOWN"
+            if ledger.get("completion_mode") == "local_cpu"
+            else "RECORDED_RESPONSE_UNVERIFIED"
+            if ledger.get("response_file_sha256")
+            else "LEGACY_UNKNOWN"
+        ),
+        "mining_producer_fingerprint": ledger.get("producer_fingerprint"),
         "parent_full_book_complete": False,
         "publish_eligible": False,
         "units": units,
@@ -1197,12 +1274,14 @@ def evaluate_chapter(
         "excluded_units": scoped.excluded_units,
         "candidate_count": len(candidates),
         "source_review": "MINED_UNREVIEWED",
+        "mining_provenance": source["mining_provenance"],
         "recovery_status": book.recovery_status,
         "authorization_status": book.source.authorization_status,
         "publish_eligible": False,
         "visual_calls": 0,
         "max_text_attempts": limits.max_attempts_per_stage * len(TEXT_STAGES),
         "max_kokoro_utterances": limits.max_scenes * 3 if limits.kokoro_cpu else 0,
+        "max_runtime_seconds_meaning": "OUTPUT_TIMELINE_BUDGET_NOT_EXECUTION_DEADLINE",
         "actual_audio": False,
         "automation_claim": "NOT_YET_GENERATED",
     }
@@ -1279,7 +1358,9 @@ def evaluate_chapter(
             "human_review": reviewer,
         },
         limits,
-        lambda x: _script_validate(x, treatment, decisions, limits),
+        lambda x: _script_validate(
+            x, treatment, decisions, limits, brief=brief, human_review=reviewer
+        ),
         script_completion,
     )
     summary.update(
@@ -1297,7 +1378,9 @@ def evaluate_chapter(
     audio_origin = "NO_AUDIO"
     narration_report_key: str | None = None
     if limits.kokoro_cpu:
-        audio, audio_origin, narration_report_key = _narrate(root, script, limits, narration_producer)
+        audio, audio_origin, narration_report_key = _narrate(
+            root, script, limits, narration_producer
+        )
     times = _timings(script, limits, audio)
     summary.update(
         {
@@ -1331,6 +1414,7 @@ def evaluate_chapter(
             for v in (brief_origin, adapt_origin, script_origin, direction_origin)
         )
         or audio_origin == "INJECTED_TEST_WAV"
+        or source["mining_provenance"] != "ACTUAL_CPU_QWEN"
     )
     final_status = (
         "TEST_DOUBLE_CHAPTER_TEXT_READY_UNREVIEWED"
@@ -1339,33 +1423,46 @@ def evaluate_chapter(
         if audio is not None
         else "CHAPTER_TEXT_PLAN_READY_NO_AUDIO_UNREVIEWED"
     )
+    result_record = {
+        "schema": "clipper-chapter-private-preproduction-result-v2",
+        "chapter_scope_identity": chapter_key,
+        "source_ledger_sha256": hashlib.sha256(evaluation._json_bytes(source)).hexdigest(),
+        "source_mining_provenance": source["mining_provenance"],
+        "source_mining_producer_fingerprint": source["mining_producer_fingerprint"],
+        "progress_sha256": source["progress_sha256"],
+        "brief_key": brief_key,
+        "human_review_sha256": review_sha,
+        "adaptation_key": adapt_key,
+        "script_key": script_key,
+        "direction_key": direction_key,
+        "shot_count": len(shots["shots"]),
+        "scene_count": len(script["scenes"]),
+        "timings": times,
+        "narration_report_key": narration_report_key,
+        "narration_report_relative_path": (
+            f"narration-report-{narration_report_key}.json"
+            if narration_report_key is not None
+            else None
+        ),
+        "audio_records": audio,
+        "audio_provenance": audio_origin,
+        "text_provenances": [brief_origin, adapt_origin, script_origin, direction_origin],
+        "story_review": "PENDING_INDEPENDENT_REVIEW",
+        "visual_identity_enforced": False,
+        "visual_calls": 0,
+        "source_authenticity": book.source.authorization_status,
+        "source_recovery": book.recovery_status,
+        "publish_eligible": False,
+    }
+    result_identity = content_fingerprint(result_record)
     evaluation._store(
-        root,
-        base / f"chapter-result-{direction_key}.json",
-        {
-            "schema": "clipper-chapter-private-preproduction-result-v1",
-            "brief_key": brief_key,
-            "human_review_sha256": review_sha,
-            "adaptation_key": adapt_key,
-            "script_key": script_key,
-            "direction_key": direction_key,
-            "shot_count": len(shots["shots"]),
-            "scene_count": len(script["scenes"]),
-            "timings": times,
-            "audio_provenance": audio_origin,
-            "text_provenances": [brief_origin, adapt_origin, script_origin, direction_origin],
-            "story_review": "PENDING_INDEPENDENT_REVIEW",
-            "visual_identity_enforced": False,
-            "visual_calls": 0,
-            "source_authenticity": book.source.authorization_status,
-            "source_recovery": book.recovery_status,
-            "publish_eligible": False,
-        },
+        root, base / f"chapter-result-{result_identity}.json", result_record
     )
     return {
         **summary,
         "status": final_status,
         "direction_identity": direction_key,
+        "final_result_identity": result_identity,
         "direction_attempts": direction_attempts,
         "shot_count": len(shots["shots"]),
         "automation_claim": "INJECTED_TEST" if synthetic else "ACTUAL_CPU",

@@ -1215,7 +1215,10 @@ def test_local_cpu_limited_resume_private_raw_and_exact_cache_replay(
         )
         assert export["publish_eligible"] is False
         assert export["books"][0]["lessons"][0]["evidence_anchor"]["field"] == "native_text"
-        assert all(row["completion_origin"] == "local_cpu" for row in progress["progress"])
+        assert all(
+            row["completion_origin"] == "INJECTED_TEST_PRODUCER"
+            for row in progress["progress"]
+        )
         assert all(row["raw_completion_sha256"] for row in progress["progress"])
         completion_root = root / "book-candidates/analysis/completions"
         raw_files = list(completion_root.glob("**/*.txt"))
@@ -1285,7 +1288,7 @@ def test_recorded_empty_does_not_alias_real_local_completion(tmp_path: Path) -> 
     assert result["export_path"] != saved["export_path"]
     assert json.loads(Path(saved["export_path"]).read_text())["books"][0]["lessons"] == []
     assert all(
-        row["completion_origin"] == "local_cpu"
+        row["completion_origin"] == "INJECTED_TEST_PRODUCER"
         for row in json.loads(Path(result["progress_path"]).read_text())["progress"]
     )
 
@@ -1954,3 +1957,19 @@ def test_local_offline_missing_cache_is_failed_not_zero_candidate(
     assert outcome["export_path"] is None
     progress = json.loads(Path(outcome["progress_path"]).read_text())
     assert progress["progress"][0]["failure_category"] == "pinned_model_cache_unavailable"
+
+
+
+def test_injected_source_mining_has_distinct_identity_from_cpu_material() -> None:
+    from clipper.stage_contracts import content_fingerprint
+
+    real = {
+        **whole_book.local_producer_material(),
+        "execution_provenance": "ACTUAL_CPU_QWEN",
+    }
+    injected = {
+        **whole_book.local_producer_material(),
+        "execution_provenance": "INJECTED_TEST_PRODUCER",
+    }
+    assert content_fingerprint(real) != content_fingerprint(injected)
+    assert real["generation"] == injected["generation"]

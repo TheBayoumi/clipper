@@ -216,3 +216,18 @@ Model availability, prompt/context fit, execution cost, CPU memory/runtime,
 source rights, TTS voice immutable revision, full-book completeness and
 rendered character/prop continuity remain unverified. Visual proof requires
 separately authorized multi-shot generation later; this stage has none.
+
+### Execution status and source provenance
+
+Chapter text and Kokoro provider calls are **blocked** until a verified, private,
+externally bounded host is available. `max_runtime_seconds` constrains the
+resulting **story timeline**, not wall-clock inference or speech synthesis time.
+This repository does not assert a host-level timeout or memory cap. Injected
+model-free producers remain available for synthetic tests; historical mining
+artifacts without explicit producer origin are `LEGACY_LOCAL_CPU_UNKNOWN` or
+`LEGACY_UNKNOWN`, not retrospective proof of CPU inference. Chapter final-result
+identity binds the scoped source and mining provenance, all four stage keys,
+human-review digest, exact measured WAV hashes, narration report reference and
+per-utterance PCM sample offsets. An output marked `MEASURED_WAV` requires
+validated readable PCM frames. Editorial truth and character continuity still
+require human review; no images/video are generated here.

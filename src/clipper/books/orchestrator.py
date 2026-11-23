@@ -872,6 +872,13 @@ class BookOrchestrator:
         section_manifest_sha256: str | None = None,
     ) -> dict[str, Any]:
         """Process faithful original work units, optionally scoped to exact parent sections."""
+        producer_provenance = (
+            "INJECTED_TEST_PRODUCER"
+            if local_cpu and local_completion is not None
+            else "ACTUAL_CPU_QWEN"
+            if local_cpu
+            else "RECORDED_RESPONSE_UNVERIFIED"
+        )
         ref, book = self.load_candidate_for_analysis(ref_path, book_id=book_id)
         if (section_ids is None) != (section_manifest_sha256 is None) or (
             section_manifest_sha256 is not None
@@ -888,7 +895,10 @@ class BookOrchestrator:
                 or not 1 <= budget <= whole_book.MAX_PLAN_UNITS
             ):
                 raise BookRunError("local CPU max-new-units must be between 1 and 20000")
-            producer_material = whole_book.local_producer_material()
+            producer_material = {
+                **whole_book.local_producer_material(),
+                "execution_provenance": producer_provenance,
+            }
             producer_fingerprint = content_fingerprint(producer_material)
             producer = local_completion or scripting._local_book_completion
             generation_contract = StageContract(
@@ -1027,7 +1037,7 @@ class BookOrchestrator:
                                     "used_completion": response_digest,
                                     **(
                                         {
-                                            "completion_origin": "local_cpu",
+                                            "completion_origin": producer_provenance,
                                             "generation_stage_key": generation_key,
                                         }
                                         if local_cpu
@@ -1111,7 +1121,7 @@ class BookOrchestrator:
                         "candidate_count": count,
                         **(
                             {
-                                "completion_origin": "local_cpu" if has_answer else None,
+                                "completion_origin": producer_provenance if has_answer else None,
                                 "generation_stage_key": generation_key,
                                 "raw_completion_sha256": raw_sha256,
                                 "failure_category": failure_category,
@@ -1148,6 +1158,7 @@ class BookOrchestrator:
             "window_size": whole_book.WINDOW_UNITS,
             "total_work_units": len(work.units),
             "response_file_sha256": response_file_sha256,
+            "execution_provenance": producer_provenance,
             **(
                 {
                     "completion_mode": "local_cpu",
