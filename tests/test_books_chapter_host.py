@@ -413,3 +413,23 @@ def test_actual_kokoro_provenance_requires_exact_real_adapter_identity(
     assert records[0]["provenance"] == origin
     assert len(digest) == 64
     real.assert_called_once()
+
+
+def test_private_scope_inspection_preserves_prior_report_during_selection_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, path, config = _private_setup(tmp_path, monkeypatch)
+    first = _call(runner, path, "inspect")
+    _ref, book = runner.load_candidate_for_analysis(Path(config["candidate_ref"]))
+    config["chapter_7"]["section_ids"] = [book.sections[2].chapter_id]
+    path.write_bytes(evaluation._json_bytes(config))
+    revised = _call(runner, path, "inspect")
+    assert revised["inspection_sha256"] != first["inspection_sha256"]
+    assert revised["chapters"]["7"]["scope_sha256"] != first["chapters"]["7"]["scope_sha256"]
+    report_dir = runner.root / "book-candidates/private-host"
+    reports = list(report_dir.glob("scope-inspection-*.json"))
+    assert len(reports) == 2
+    for result in (first, revised):
+        report = report_dir / f"scope-inspection-{result['inspection_sha256']}.json"
+        assert report.is_file()
+        assert hashlib.sha256(report.read_bytes()).hexdigest() == result["inspection_sha256"]
