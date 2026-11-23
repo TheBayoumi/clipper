@@ -61,7 +61,9 @@ def _command(argv: list[str], *, input_bytes: bytes | None = None) -> bytes:
             check=True,
         )
     except (FileNotFoundError, OSError, subprocess.SubprocessError):
-        raise LifecycleStop("authoritative host or external supervisor verification unavailable") from None
+        raise LifecycleStop(
+            "authoritative host or external supervisor verification unavailable"
+        ) from None
     if len(result.stdout) > 32768:
         raise LifecycleStop("authoritative host response exceeds bounded evidence")
     return result.stdout.strip()

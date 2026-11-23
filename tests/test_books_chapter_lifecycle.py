@@ -189,7 +189,7 @@ def test_approval_sha_and_rest_timestamp_cannot_be_self_asserted(
 def test_cli_without_external_watchdog_never_launches_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    called = Mock(side_effect=AssertionError("never reach providers"))
+    called = Mock(side_effect=chapter_lifecycle.LifecycleStop("missing owner supervisor"))
     monkeypatch.setattr(chapter_lifecycle, "verify_lifecycle", called)
     monkeypatch.setenv("CODESPACE_NAME", "synthetic")
     result = chapter_lifecycle.main(
@@ -200,4 +200,4 @@ def test_cli_without_external_watchdog_never_launches_model(
     )
     assert result == 2
     assert "PRIVATE_CHAPTER_EXTERNAL_SUPERVISOR_UNVERIFIED" in capsys.readouterr().out
-    called.assert_not_called()
+    called.assert_called_once()

@@ -567,7 +567,10 @@ def execute(
                 _review_packet(runner, number, output)
                 last = _phase(
                     runner, number, digest, scope_sha, "AWAITING_HUMAN_REVIEW",
-                    {"brief_identity": output["brief_identity"], "progress_path": str(progress_path)},
+                    {
+                        "brief_identity": output["brief_identity"],
+                        "progress_path": str(progress_path),
+                    },
                 )
             else:
                 if output["status"] != "CHAPTER_PREPRODUCTION_READY_UNREVIEWED":
