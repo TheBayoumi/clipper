@@ -13,11 +13,9 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-
-from clipper.stage_contracts import content_fingerprint
 
 from . import acquisition, chapter, evaluation, narration, scripting, whole_book
 from .orchestrator import BookOrchestrator
@@ -39,8 +37,8 @@ def _created_at(value: str, now: datetime | None = None) -> datetime:
         raise PrivateHostStop("verified Codespace creation timestamp required") from None
     if date.tzinfo is None:
         raise PrivateHostStop("Codespace timestamp must include UTC offset")
-    date = date.astimezone(timezone.utc)
-    current = now or datetime.now(timezone.utc)
+    date = date.astimezone(UTC)
+    current = now or datetime.now(UTC)
     if date > current or current >= date + timedelta(
         seconds=DEADLINE_SECONDS - CLEANUP_RESERVE_SECONDS
     ):
@@ -49,7 +47,7 @@ def _created_at(value: str, now: datetime | None = None) -> datetime:
 
 
 def _check_deadline(created: datetime) -> None:
-    if datetime.now(timezone.utc) >= created + timedelta(
+    if datetime.now(UTC) >= created + timedelta(
         seconds=DEADLINE_SECONDS - CLEANUP_RESERVE_SECONDS
     ):
         raise PrivateHostStop("one-host shared execution budget exhausted")
@@ -139,7 +137,7 @@ def _inspection(
 ) -> dict[str, object]:
     _ref, book = runner.load_candidate_for_analysis(ref_path)
     root = runner.root / "book-candidates"
-    chapters: dict[str, object] = {}
+    chapters: dict[str, dict[str, Any]] = {}
     covered: set[str] = set()
     for number in (1, 7):
         block = inputs[f"chapter_{number}"]
@@ -189,7 +187,10 @@ def _inspection(
         "chapters": {
             key: {
                 "scope_sha256": item["scope_manifest_sha256"],
-                "counts": item["source_counts"],
+                "work_units": item["source_counts"]["work_units"],
+                "skipped_units": item["source_counts"]["skipped_units"],
+                "words": item["source_counts"]["words"],
+                "source_bytes": item["source_counts"]["source_bytes"],
             }
             for key, item in chapters.items()
         },
@@ -216,7 +217,10 @@ def _review_packet(
     briefs: list[dict[str, Any]] = []
     for path in (root / "brief").glob("*/validated.json"):
         record: object = whole_book.load_strict_reply(evaluation._read(path))
-        if isinstance(record, dict) and record.get("artifact_identity") == summary["brief_identity"]:
+        if (
+            isinstance(record, dict)
+            and record.get("artifact_identity") == summary["brief_identity"]
+        ):
             briefs.append(record)
     if len(briefs) != 1:
         raise PrivateHostStop("private verified brief cannot be uniquely exported")
@@ -254,7 +258,9 @@ def _review_packet(
         },
         "publish_eligible": False,
     }
-    evaluation._store(root, root / "private-host" / f"chapter-{chapter_number}-review-packet.json", packet)
+    evaluation._store(
+        root, root / "private-host" / f"chapter-{chapter_number}-review-packet.json", packet
+    )
 
 
 def _release_models() -> None:
@@ -279,7 +285,7 @@ def execute(
     if (
         not artifact_root.is_absolute()
         or root.is_relative_to(worktree)
-        or root.is_symlink()
+        or artifact_root.is_symlink()
         or root == Path("/")
     ):
         raise PrivateHostStop("private artifacts must live outside repository checkout")
@@ -312,7 +318,7 @@ def execute(
         )
         if block["scope_sha256"] != scope_sha:
             raise PrivateHostStop("chapter source scope not explicitly locked by operator")
-        if counts["work_units"] + counts["skipped_units"] > chapter.MAX_SOURCE_UNITS:
+        if int(counts["work_units"]) + int(counts["skipped_units"]) > chapter.MAX_SOURCE_UNITS:
             raise PrivateHostStop("chapter full source-unit budget exceeded")
         private_root = root / "book-candidates"
         state = private_root / "private-host" / f"chapter-{number}-brief-record.json"
@@ -323,7 +329,7 @@ def execute(
                     local_cpu=True,
                     section_ids=tuple(block["section_ids"]),
                     section_manifest_sha256=scope_sha,
-                    max_new_units=counts["work_units"],
+                    max_new_units=int(counts["work_units"]),
                 )
                 if mined["status"] != "complete":
                     outcomes[str(number)] = {
@@ -394,7 +400,11 @@ def execute(
             }
         finally:
             _release_models()
-    return {"status": "PRIVATE_TWO_CHAPTER_CHECKPOINT", "chapters": outcomes, "publish_eligible": False}
+    return {
+        "status": "PRIVATE_TWO_CHAPTER_CHECKPOINT",
+        "chapters": outcomes,
+        "publish_eligible": False,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1197,7 +1197,9 @@ def _stage(
         try:
             scripting._chapter_context_tokens(request)
         except scripting.NicheVideoError:
-            raise ChapterStop("full real chapter request does not fit pinned token context") from None
+            raise ChapterStop(
+                "full real chapter request does not fit pinned token context"
+            ) from None
     provenance = "ACTUAL_CPU_QWEN" if real_qwen else "INJECTED_TEST_PRODUCER"
     stage_key = content_fingerprint(
         {
