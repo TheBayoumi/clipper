@@ -1173,6 +1173,62 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
     assert archive["file_count"] >= 20
     assert archive["files_retrieved"] is False
     assert archive["host_cleanup_verified"] is False
+
+    # Every original byte is restored after the intentionally corrupted private artifact.
+    # Recovery must reject exact-source, producer, reviewer, raw, and WAV tampering.
+    first = inputs["chapter_1"]
+    def checked_inventory() -> dict[str, object]:
+        return chapter_host._hybrid_output_manifest(
+            runner.root, 1, first["bundle_sha256"], first["scope_sha256"]
+        )
+
+    def artifact(kind: str, stage: str | None = None) -> Path:
+        matches = [
+            file
+            for file in checked_inventory()["files"]
+            if file["kind"] == kind
+            and (stage is None or f"/{stage}/" in file["relative_path"])
+            and (stage is None or file["relative_path"].endswith("/raw-1.json"))
+        ]
+        assert len(matches) == 1
+        return runner.root / matches[0]["relative_path"]
+
+    for kind, stage, field in (
+        ("source_ledger", None, "ledger_sha256"),
+        ("review_record", None, "producer_identity_sha256"),
+        ("review", None, "producer_identity_sha256"),
+        ("final_result", None, "producer_identity_sha256"),
+        ("human_review", None, "review_sha256"),
+        ("narration_report", None, "provenance"),
+        ("wav", None, None),
+        ("text", "hybrid_argument", "raw"),
+        ("text", "hybrid_audit", "raw"),
+        ("text", "hybrid_reconcile", "raw"),
+        ("text", "adaptation", "raw"),
+        ("text", "chapter_script", "raw"),
+        ("text", "chapter_direction", "raw"),
+    ):
+        path = artifact(kind, stage)
+        unchanged = path.read_bytes()
+        try:
+            if kind == "wav":
+                path.write_bytes(unchanged + b"synthetic-tamper")
+            else:
+                forged = json.loads(unchanged)
+                forged[field] = (
+                    "untrusted-test-text" if field in {"raw", "provenance"} else "0" * 64
+                )
+                path.write_bytes(evaluation._json_bytes(forged))
+            with pytest.raises((chapter_host.PrivateHostStop, ValueError, OSError)):
+                chapter_host._hybrid_output_manifest(
+                    runner.root,
+                    1,
+                    first["bundle_sha256"],
+                    first["scope_sha256"],
+                )
+        finally:
+            path.write_bytes(unchanged)
+    assert checked_inventory()["source_mode"] == "DIRECT_SOURCE_HYBRID"
     miner.assert_not_called()
 
 
