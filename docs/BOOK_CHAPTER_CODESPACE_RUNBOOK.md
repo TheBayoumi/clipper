@@ -102,7 +102,10 @@ there. The host will reject bundles whose name or bytes disagree.
   continuously signs and privately transfers 45-second-verifiable heartbeats
   (owner signing private key stays outside host) and forcibly stops/deletes
   that exact Codespace at creation +115 minutes, independently checking REST
-  stop/deletion. This covers **dependency installation, waiting for human review,
+  stop/deletion. If restarted with the exact approved REST instance between
+  minute 115 and minute 120, it enters **cleanup-only**, with no setup or
+  heartbeat; at/after minute 120 it cannot claim bounded automated cleanup.
+  Never restart the clock, approve a different numeric ID or create another host. This covers **dependency installation, waiting for human review,
   all invocations and cleanup**. Do not start setup without a functioning
   external supervisor; if external connectivity, heartbeat or REST deletion
   verification fails, **stop and verify/delete the Codespace manually**.
@@ -137,6 +140,8 @@ export PRIVATE_CHAPTER_APPROVED_SHA=EXACT_POST_CODEX_REVIEWED_40_HEX_SHA
 export PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY=/absolute/owner-supervisor.key
 export PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY=/absolute/owner-supervisor.pub
 export PRIVATE_CHAPTER_ROOT=/tmp/clipper-chapter-private
+# Mandatory, owner-side absolute PRIVATE directory outside any Git worktree.
+export PRIVATE_CHAPTER_RECOVERY_DIR=/absolute/owner-private-chapter-recovery
 bash scripts/private_chapter_external_supervisor.sh
 ```
 
@@ -268,3 +273,38 @@ phase and private evidence**; never claim the other chapter succeeded,
 restart irreversible attempts, extend the host window, automatically infer
 approval, or create another host. No private text, raw output or WAV is
 transferred to this chat or published.
+
+### Owner-only recovery before deletion (same 120-minute limit)
+
+The mandatory `PRIVATE_CHAPTER_RECOVERY_DIR` must exist or be safely
+creatable on the owner's **separate** machine outside Git, with owner-only
+permissions. The external supervisor tries to retrieve the exact chapter
+output inventory before STOP/DELETE, within a separate bounded **16-second
+retrieval allowance inside the original cleanup reserve**. The remote
+`chapter_host recover` command builds a checksum-bound TAR containing
+only scoped, verified private output files: validated text/replay evidence,
+the human-review checkpoint, chapter source ledger and final result when
+available, per-chapter narration reports, and every WAV linked by the
+verified report. The source EPUB, nonselected chapters, images and videos
+are not part of this output archive.
+
+On success the owner receives
+`$PRIVATE_CHAPTER_RECOVERY_DIR/$CODESPACE_NAME/chapter-recovery.tar`,
+`safe-recovery-status.json`, and `retrieval-verification.json`. The
+owner independently hashes the TAR and every allowlisted member against the
+private output manifest **before** marking retrieval verified. If the
+download/hash check fails, the archive must **not** be treated as recovered;
+the status records `retrieval_status=INCOMPLETE`, with a best-effort safe
+phase-only status. This never vetoes or delays a separate, identity-checked
+STOP/DELETE operation. Report retrieval completeness and REST host deletion
+**separately**: recovered files are not proof of deletion, and successful
+deletion is not proof that any files survived.
+
+The safe status only exposes stage names, source-independent SHA identities,
+and `runtime_journal_status` versus `retrieval_status`; it never contains
+source passages, review prose, narration text or WAV bytes. The TAR and any
+other private outputs stay strictly on the owner machine. A process killed
+during adaptation, connected script, narration or direction should report
+the actual last journaled subphase and earlier verified artifact identities.
+A timestamp, heartbeat, output manifest or green synthetic CI does not
+prove successful live chapter execution.
