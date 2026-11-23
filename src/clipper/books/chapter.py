@@ -46,6 +46,10 @@ class ChapterHostBlocked(ChapterStop):
     """Known unavailable bounded private host; CLI may report a fixed status."""
 
 
+class ChapterReviewPending(ChapterStop):
+    """Missing, invalid, or insufficient human attestation; review stays open."""
+
+
 @dataclass(frozen=True)
 class ChapterPlan:
     brief_cpu: bool = False
@@ -1183,6 +1187,8 @@ def _stage(
     plan: ChapterPlan,
     validate: Callable[[object], dict[str, Any]],
     completion: Callable[[dict[str, object]], str] | None,
+    *,
+    replay_only: bool = False,
 ) -> tuple[dict[str, Any], str, str, int]:
     """Reserve each irreversible provider attempt before calling any producer."""
     plan.validate()
@@ -1237,6 +1243,8 @@ def _stage(
             plan.max_attempts_per_stage,
         )
         return validated, artifact_key, provenance, 0
+    if replay_only:
+        raise ChapterStop("previously reviewed chapter brief cache missing or changed")
     if directory.is_dir() and any(directory.iterdir()):
         raise ChapterStop("chapter stage has prior unresolved/failed attempts")
     previous_owner: str | None = None
@@ -1510,6 +1518,8 @@ def evaluate_chapter(
     direction_completion: Callable[[dict[str, object]], str] | None = None,
     narration_producer: Callable[[str, str], bytes] | None = None,
     selected_scope_path: Path | None = None,
+    expected_brief_identity: str | None = None,
+    on_resume_verified: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     """Finite, source-bound chapter preproduction; no legacy catalog, short or render."""
     limits = plan if plan is not None else ChapterPlan()
@@ -1660,7 +1670,10 @@ def evaluate_chapter(
         limits,
         lambda x: _brief_validate(x, units, gaps, limits),
         brief_completion,
+        replay_only=expected_brief_identity is not None,
     )
+    if expected_brief_identity is not None and brief_key != expected_brief_identity:
+        raise ChapterStop("journaled chapter brief identity changed on replay")
     summary.update(
         {
             "brief_identity": brief_key,
@@ -1674,10 +1687,15 @@ def evaluate_chapter(
     )
     if review_file is None:
         return summary
-    review_bytes = evaluation._read(review_file)
-    reviewer, decisions = _review_validate(
-        whole_book.load_strict_reply(review_bytes), brief, brief_key, units, gaps
-    )
+    try:
+        review_bytes = evaluation._read(review_file)
+        reviewer, decisions = _review_validate(
+            whole_book.load_strict_reply(review_bytes), brief, brief_key, units, gaps
+        )
+    except (ValueError, TypeError, OSError, KeyError, RecursionError):
+        if expected_brief_identity is not None:
+            raise ChapterReviewPending("chapter human review missing or invalid") from None
+        raise
     supported = {
         bid for bid, decision in decisions.items() if decision["decision"] == "support_attested"
     }
@@ -1696,7 +1714,13 @@ def evaluate_chapter(
     summary["human_review_sha256"] = review_sha
     summary["human_attested_beat_count"] = len(supported)
     if len(supported) < 2:
+        if expected_brief_identity is not None:
+            raise ChapterReviewPending("chapter human review has insufficient attested beats")
         return {**summary, "status": "ABSTAINED_INSUFFICIENT_ATTESTED_CHAPTER_BEATS"}
+    if on_resume_verified is not None:
+        if expected_brief_identity is None:
+            raise ChapterStop("resume claim requires exact journaled brief identity")
+        on_resume_verified()
     if not limits.adaptation_cpu:
         return {**summary, "status": "AWAITING_EXPLICIT_CPU_CHAPTER_ADAPTATION"}
     treatment, adapt_key, adapt_origin, adapt_attempts = _stage(
