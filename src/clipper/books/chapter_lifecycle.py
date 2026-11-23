@@ -8,6 +8,7 @@ key OUTSIDE the Codespace and force stop/deletion at the creation deadline.
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import os
@@ -119,7 +120,7 @@ def _signed_snapshot(private_root: Path) -> tuple[bytes, bytes]:
             if not payload or len(payload) > 8192 or not signature or len(signature) > 8192:
                 raise ValueError("oversized envelope")
             return payload, signature
-        except (ValueError, TypeError, KeyError):
+        except (binascii.Error, ValueError, TypeError, KeyError):
             raise LifecycleStop("external supervisor signed envelope malformed") from None
     # Read legacy pair once each; verification MUST use these exact snapshots,
     # not re-open pathnames after the OpenSSL check.
