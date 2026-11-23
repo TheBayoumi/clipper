@@ -1797,6 +1797,112 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
 
 
 @pytest.mark.parametrize(
+    "tamper",
+    [
+        "none",
+        "missing_winning_claim",
+        "missing_first_rejection",
+        "changed_original_rejection_receipt",
+        "changed_first_raw",
+    ],
+)
+def test_same_shape_semantically_invalid_source_retries_and_recovers_with_original_receipt(
+    tmp_path: Path, tamper: str
+) -> None:
+    """No model: the FIRST complete JSON reply fails its SOURCE identity, not its shape."""
+    root = tmp_path / "synthetic-host"
+    base = root / "book-candidates"
+    first = {"argument": "synthetic", "beats": [], "coverage": ["wrong-source"]}
+    second = {"argument": "synthetic", "beats": [], "coverage": ["unit-verified"]}
+    producer = Mock(side_effect=[json.dumps(first), json.dumps(second)])
+    plan = chapter.ChapterPlan()
+
+    def real_source_bound_validator(raw: object) -> dict:
+        obj = chapter._shape(
+            raw, {"argument", "beats", "coverage"}, "brief full source schema invalid"
+        )
+        if obj["coverage"] != ["unit-verified"]:
+            raise chapter.ChapterStop("chapter original unit identity mismatch")
+        return obj
+
+    arguments = (
+        base,
+        "brief",
+        {"fixture": "synthetic original unit unit-verified"},
+        plan,
+        real_source_bound_validator,
+    )
+    validated, identity, provenance, attempts = chapter._stage(*arguments, producer)
+    assert validated == second
+    assert provenance == "INJECTED_TEST_PRODUCER"
+    assert attempts == 2
+    replay, replay_identity, _, replay_attempts = chapter._stage(
+        *arguments, Mock(side_effect=AssertionError("no new model calls"))
+    )
+    assert (replay, replay_identity, replay_attempts) == (second, identity, 0)
+    # Replaying the fully validated second attempt never asks the producer again.
+    assert producer.call_count == 2
+
+    stage_dir = next((base / "brief").iterdir())
+    first_failure = json.loads((stage_dir / "failed-1.json").read_bytes())
+    receipt = first_failure["validation_evidence"]
+    assert receipt["contract"] == chapter.REJECTION_EVIDENCE_CONTRACT
+    assert receipt["request_key"] == stage_dir.name
+    assert receipt["raw_sha256"] == json.loads(
+        (stage_dir / "raw-1.json").read_bytes()
+    )["sha256"]
+
+    runner = BookOrchestrator(root)
+    bundle, scope, owner = "1" * 64, "2" * 64, "3" * 32
+    for phase, evidence in (
+        ("NOT_STARTED", {}),
+        ("MINING_IN_FLIGHT", {}),
+        ("BRIEF_IN_FLIGHT", {}),
+        ("AWAITING_HUMAN_REVIEW", {"brief_identity": identity}),
+    ):
+        chapter_host._phase(
+            runner, 1, bundle, scope, phase,
+            {"claim_owner": owner, **evidence} if phase != "NOT_STARTED" else {},
+        )
+    if tamper == "missing_winning_claim":
+        (stage_dir / "started-2.json").unlink()
+    elif tamper == "missing_first_rejection":
+        (stage_dir / "failed-1.json").unlink()
+    elif tamper == "changed_original_rejection_receipt":
+        first_failure["validation_evidence"]["failure_sha256"] = "f" * 64
+        (stage_dir / "failed-1.json").write_bytes(evaluation._json_bytes(first_failure))
+    elif tamper == "changed_first_raw":
+        path = stage_dir / "raw-1.json"
+        changed = json.loads(path.read_bytes())
+        changed["raw"] = json.dumps(second)
+        path.write_bytes(evaluation._json_bytes(changed))
+
+    if tamper == "none":
+        entries = chapter_host._stage_output_entries(root, 1, "brief", identity)
+        assert len(entries) == 6
+        manifest = chapter_host._chapter_output_manifest(root, 1, bundle, scope)
+        assert manifest["files"] == entries or len(manifest["files"]) == len(entries)
+        archived = chapter_host.private_recovery_archive(root)
+        assert archived["file_count"] == 6
+        with tarfile.open(base / "private-host/chapter-recovery.tar", "r:") as output:
+            rows = json.load(output.extractfile("private-recovery-manifest.json"))
+            assert rows["chapters"][0]["inventory_status"] == "VERIFIED"
+            assert rows["chapters"][1]["inventory_status"] == "NOT_STARTED"
+    else:
+        with pytest.raises(chapter_host.PrivateHostStop):
+            chapter_host._stage_output_entries(root, 1, "brief", identity)
+        with pytest.raises(chapter_host.PrivateHostStop):
+            chapter_host._chapter_output_manifest(root, 1, bundle, scope)
+        chapter_host.private_recovery_archive(root)
+        with tarfile.open(base / "private-host/chapter-recovery.tar", "r:") as output:
+            rows = json.load(output.extractfile("private-recovery-manifest.json"))
+            assert rows["chapters"][0]["inventory_status"] == "INCOMPLETE"
+            assert rows["chapters"][0]["files"] == []
+            assert rows["chapters"][1]["inventory_status"] == "NOT_STARTED"
+    assert producer.call_count == 2
+
+
+@pytest.mark.parametrize(
     "fault",
     [
         "missing_directory",
