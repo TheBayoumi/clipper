@@ -358,7 +358,14 @@ def test_actual_pinned_public_tokenizer_template_and_same_count_tokens_bind_requ
 
     fake = PublicTokenizer()
     monkeypatch.setattr(scripting, "_public_book_context", lambda: (fake, 40960))
-    producer_a = whole_book.local_producer_material()
+    legacy_a = whole_book.local_producer_material()
+    producer_a = hybrid.producer_identity(
+        ledger_sha256="a" * 64,
+        chapter_scope_sha256="b" * 64,
+        selected_bundle_sha256="c" * 64,
+        plan_fingerprint="d" * 64,
+        model_producer=legacy_a,
+    )
     material_a = scripting._cached_chapter_tokenizer_material()
     assert material_a["status"] == "PINNED_PUBLIC_TOKENIZER"
     assert material_a["tokenizer_config_sha256"] == hashlib.sha256(config.read_bytes()).hexdigest()
@@ -407,7 +414,14 @@ def test_actual_pinned_public_tokenizer_template_and_same_count_tokens_bind_requ
         with pytest.raises(scripting.NicheVideoError, match="tokens or template"):
             scripting._chapter_context_tokens(request_a)
         if change == "tokenizer_config":
-            producer_b = whole_book.local_producer_material()
+            assert whole_book.local_producer_material() == legacy_a
+            producer_b = hybrid.producer_identity(
+                ledger_sha256="a" * 64,
+                chapter_scope_sha256="b" * 64,
+                selected_bundle_sha256="c" * 64,
+                plan_fingerprint="d" * 64,
+                model_producer=legacy_a,
+            )
             assert producer_b != producer_a
             assert material_a != scripting._cached_chapter_tokenizer_material()
         request_a, key_a = request_b, key_b
