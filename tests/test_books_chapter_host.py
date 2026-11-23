@@ -1858,9 +1858,7 @@ def test_same_shape_semantically_invalid_source_retries_and_recovers_with_origin
         # Ordinary replay independently checks the ORIGINAL source validator
         # in addition to the digest-bound recovery commitment.
         with pytest.raises(chapter.ChapterStop, match="rejection differs"):
-            chapter._stage(
-                *arguments, Mock(side_effect=AssertionError("no new model invocation"))
-            )
+            chapter._stage(*arguments, Mock(side_effect=AssertionError("no new model invocation")))
     elif tamper == "changed_original_rejection_type":
         first_failure["validation_evidence"]["failure_type"] = "UNRECOGNIZED_FAILURE"
         (stage_dir / "failed-1.json").write_bytes(evaluation._json_bytes(first_failure))
