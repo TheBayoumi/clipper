@@ -15,7 +15,7 @@ import re
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from . import acquisition, chapter, evaluation, narration, scripting, whole_book
 from .orchestrator import BookOrchestrator
@@ -322,7 +322,10 @@ def execute(
         section_path, scope_sha, counts = _section_manifest(runner, ref_path, block["section_ids"])
         if block["scope_sha256"] != scope_sha:
             raise PrivateHostStop("chapter source scope not explicitly locked by operator")
-        if int(counts["work_units"]) + int(counts["skipped_units"]) > chapter.MAX_SOURCE_UNITS:
+        if (
+            cast(int, counts["work_units"]) + cast(int, counts["skipped_units"])
+            > chapter.MAX_SOURCE_UNITS
+        ):
             raise PrivateHostStop("chapter full source-unit budget exceeded")
         private_root = root / "book-candidates"
         state = private_root / "private-host" / f"chapter-{number}-brief-record.json"
@@ -333,7 +336,7 @@ def execute(
                     local_cpu=True,
                     section_ids=tuple(block["section_ids"]),
                     section_manifest_sha256=scope_sha,
-                    max_new_units=int(counts["work_units"]),
+                    max_new_units=cast(int, counts["work_units"]),
                 )
                 if mined["status"] != "complete":
                     outcomes[str(number)] = {
@@ -432,7 +435,7 @@ def main(argv: list[str] | None = None) -> int:
             or all(
                 item["status"]
                 in {"AWAITING_HUMAN_CHAPTER_BEAT_REVIEW", "CHAPTER_PREPRODUCTION_READY_UNREVIEWED"}
-                for item in result["chapters"].values()
+                for item in cast(dict[str, dict[str, Any]], result["chapters"]).values()
             )
             else 2
         )
