@@ -1947,3 +1947,136 @@ def test_private_hybrid_review_packet_rejects_stale_source_and_brief(
     finally:
         validated.write_bytes(saved)
     chapter_host._hybrid_review_packet(runner, 1, valid)
+
+
+@pytest.mark.parametrize(
+    ("adaptation_cpu", "script_cpu", "direction_cpu", "kokoro_cpu", "status"),
+    (
+        (True, False, False, False, "AWAITING_EXPLICIT_CPU_CHAPTER_SCRIPT"),
+        (True, True, False, False, "AWAITING_EXPLICIT_CPU_CHAPTER_DIRECTION"),
+        (True, True, False, True, "AWAITING_EXPLICIT_CPU_CHAPTER_DIRECTION"),
+        (True, True, True, False, "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED"),
+    ),
+)
+def test_source_preserving_hybrid_stage_stops_at_explicit_cpu_permissions(
+    tmp_path: Path,
+    adaptation_cpu: bool,
+    script_cpu: bool,
+    direction_cpu: bool,
+    kokoro_cpu: bool,
+    status: str,
+) -> None:
+    runner, selected, section = _selected_hybrid_source(tmp_path)
+    limits = chapter.ChapterPlan(
+        brief_cpu=True,
+        adaptation_cpu=adaptation_cpu,
+        script_cpu=script_cpu,
+        direction_cpu=direction_cpu,
+        kokoro_cpu=kokoro_cpu,
+    )
+    args = {
+        "plan": limits,
+        "argument_completion": lambda req: _injected_hybrid_response("argument", req),
+        "audit_completion": lambda req: _injected_hybrid_response("audit", req),
+        "reconcile_completion": lambda req: _injected_hybrid_response("reconcile", req),
+        "adaptation_completion": lambda req: _hybrid_creative_output("adaptation", req),
+        "script_completion": lambda req: _hybrid_creative_output("chapter_script", req),
+        "direction_completion": lambda req: _hybrid_creative_output("chapter_direction", req),
+        "narration_producer": _hybrid_wav,
+        "token_counter": lambda _messages: 1200,
+    }
+    pending = chapter.evaluate_hybrid_chapter(runner, selected, section, **args)
+    root = runner.root / "book-candidates"
+    ledger = json.loads(
+        next((root / "chapter-evaluations").glob("*/source-ledger.json")).read_bytes()
+    )
+    stage_file = next((root / "hybrid_reconcile").glob("*/validated.json"))
+    brief = json.loads(stage_file.read_bytes())["payload"]
+    reviewed = {
+        "schema": hybrid.REVIEW_SCHEMA,
+        "brief_sha256": brief["brief_sha256"],
+        "brief_artifact_identity": pending["brief_identity"],
+        "reviewer": "Synthetic controlled phase reviewer",
+        "unit_decisions": [
+            {"id": unit["id"], "review": "accept", "reason": "Original reviewed in fixture"}
+            for unit in ledger["entries"]
+        ],
+        "beat_decisions": [
+            {
+                "beat_id": beat["beat_id"],
+                "review": "support_attested",
+                "reason": "Original meaning and qualifications checked",
+            }
+            for beat in brief["beats"]
+        ],
+    }
+    review_file = tmp_path / "synthetic-phase-review.json"
+    review_file.write_bytes(evaluation._json_bytes(reviewed))
+    resumed = chapter.evaluate_hybrid_chapter(
+        runner,
+        selected,
+        section,
+        review_file=review_file,
+        expected_brief_identity=pending["brief_identity"],
+        **args,
+    )
+    assert resumed["status"] == status
+    assert resumed["publish_eligible"] is False
+    if not kokoro_cpu:
+        assert "narration_report_identity" not in resumed or (
+            resumed["narration_report_identity"] is None
+        )
+    else:
+        assert resumed["narration_report_identity"]
+
+
+def test_hybrid_resume_callback_requires_exact_brief_claim(
+    tmp_path: Path,
+) -> None:
+    runner, selected, section = _selected_hybrid_source(tmp_path)
+    args = {
+        "plan": chapter.ChapterPlan(brief_cpu=True),
+        "argument_completion": lambda req: _injected_hybrid_response("argument", req),
+        "audit_completion": lambda req: _injected_hybrid_response("audit", req),
+        "reconcile_completion": lambda req: _injected_hybrid_response("reconcile", req),
+        "token_counter": lambda _messages: 1200,
+    }
+    pending = chapter.evaluate_hybrid_chapter(runner, selected, section, **args)
+    root = runner.root / "book-candidates"
+    ledger = json.loads(
+        next((root / "chapter-evaluations").glob("*/source-ledger.json")).read_bytes()
+    )
+    brief = json.loads(
+        next((root / "hybrid_reconcile").glob("*/validated.json")).read_bytes()
+    )["payload"]
+    reviewed = {
+        "schema": hybrid.REVIEW_SCHEMA,
+        "brief_sha256": brief["brief_sha256"],
+        "brief_artifact_identity": pending["brief_identity"],
+        "reviewer": "Synthetic reviewer",
+        "unit_decisions": [
+            {"id": unit["id"], "review": "accept", "reason": "Read source"}
+            for unit in ledger["entries"]
+        ],
+        "beat_decisions": [
+            {
+                "beat_id": beat["beat_id"],
+                "review": "support_attested",
+                "reason": "Read original meaning",
+            }
+            for beat in brief["beats"]
+        ],
+    }
+    file = tmp_path / "synthetic-reviewed.json"
+    file.write_bytes(evaluation._json_bytes(reviewed))
+    callback = Mock(side_effect=AssertionError("no unbound phase claim"))
+    with pytest.raises(chapter.ChapterStop, match="exact journaled brief"):
+        chapter.evaluate_hybrid_chapter(
+            runner,
+            selected,
+            section,
+            review_file=file,
+            on_resume_verified=callback,
+            **args,
+        )
+    callback.assert_not_called()
