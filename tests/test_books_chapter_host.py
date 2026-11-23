@@ -1513,9 +1513,7 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         return
     if damage == "valid_brief_checkpoint":
         review_checkpoint = base / "private-host/chapter-1-brief-record.json"
-        evaluation._store(
-            base, review_checkpoint, {"brief_identity": identities["brief"]}
-        )
+        evaluation._store(base, review_checkpoint, {"brief_identity": identities["brief"]})
         scoped = chapter_host._chapter_output_manifest(root, 1, bundle, scope)
         assert any(
             entry["relative_path"] == "book-candidates/private-host/chapter-1-brief-record.json"
