@@ -57,6 +57,9 @@ session="$(mktemp -d)"
 chmod 700 "$session"
 cleanup_verified=0
 verified_identity=0
+recovery_allowed=0
+remote_safe=0
+cleanup_only=0
 
 # Initial identity alone is NOT permission to DELETE a name that has since
 # been replaced. Recheck numeric instance ID + repo + name + creation stamp
@@ -139,7 +142,9 @@ terminate_host() {
   deletion_verified=0
   # Recover safe status and bounded private outputs before deletion, within
   # the original shared deadline. Failed retrieval never vetoes cleanup.
-  recover_private >/dev/null 2>&1 || true
+  if (( recovery_allowed == 1 && cleanup_only == 0 )); then
+    recover_private >/dev/null 2>&1 || true
+  fi
   if ! identity_matches; then
     rm -rf -- "$session"
     echo "EXTERNAL_SUPERVISOR_REJECTED_HOST_IDENTITY_NO_DESTRUCTIVE_CALL" >&2
@@ -155,7 +160,7 @@ terminate_host() {
       stop_verified=1
       break
     fi
-    sleep 1
+    bounded sleep 1 || break
   done
   if ! identity_matches; then
     rm -rf -- "$session"
@@ -170,7 +175,7 @@ terminate_host() {
       deletion_verified=1
       break
     fi
-    sleep 1
+    bounded sleep 1 || break
   done
   rm -rf -- "$session"
   if [[ "$stop_verified" == 1 && "$deletion_verified" == 1 ]]; then
@@ -214,28 +219,48 @@ if (x.get("name") != os.environ["CODESPACE_NAME"]
     or actual != expected):
     sys.exit(2)
 created = datetime.datetime.fromisoformat(x["created_at"].replace("Z", "+00:00"))
-now = datetime.datetime.now(datetime.timezone.utc)
-remaining = int((created + datetime.timedelta(seconds=6900) - now).total_seconds())
-if created > now or remaining <= 0:
+if created.tzinfo is None:
     sys.exit(2)
-print(x["id"], x["created_at"], remaining)
+now = datetime.datetime.now(datetime.timezone.utc)
+# Identity verification and permission to execute are DISTINCT.
+# Even at 116 minutes, an exact approved Codespace must be cleaned up.
+if created > now or now >= created + datetime.timedelta(seconds=7200):
+    sys.exit(2)
+execution_allowed = now < created + datetime.timedelta(seconds=6900)
+print(x["id"], x["created_at"], "EXECUTION" if execution_allowed else "CLEANUP_ONLY")
 ')" || {
-  echo "EXTERNAL_SUPERVISOR_WRONG_HOST_OR_DEADLINE" >&2
+  echo "EXTERNAL_SUPERVISOR_WRONG_HOST_OR_TOTAL_DEADLINE" >&2
   exit 2
 }
-read -r codespace_id created_at initial_remaining <<< "$validated"
+read -r codespace_id created_at lifecycle_mode <<< "$validated"
 export SUPERVISED_CODESPACE_ID="$codespace_id"
 export SUPERVISED_CREATED_AT="$created_at"
 deadline_epoch="$(( $(date -u -d "$created_at" +%s) + 7200 ))"
 verified_identity=1
-remote="$PRIVATE_CHAPTER_ROOT/book-candidates/private-host"
 
-# Remote strings must never allow an operator-provided path to become a
-# remote shell command injection. Codespace private root uses a fixed safe set.
-if [[ ! "$PRIVATE_CHAPTER_ROOT" =~ ^/[a-zA-Z0-9_./-]+$ ]]; then
-  echo "EXTERNAL_SUPERVISOR_UNSAFE_REMOTE_PATH" >&2
+# BEFORE any recovery command or remote shell arguments, validate the path.
+# Invalid retrieval configuration must not veto STOP/DELETE for a verified ID.
+if [[ "$PRIVATE_CHAPTER_ROOT" =~ ^/[a-zA-Z0-9_./-]+$ &&
+      "$PRIVATE_CHAPTER_ROOT" != "/" &&
+      "$PRIVATE_CHAPTER_ROOT" != *"/../"* &&
+      "$PRIVATE_CHAPTER_ROOT" != *"/./"* &&
+      "$PRIVATE_CHAPTER_ROOT" != *"/.." &&
+      "$PRIVATE_CHAPTER_ROOT" != *"/." ]]; then
+  remote_safe=1
+  recovery_allowed=1
+else
+  echo "EXTERNAL_SUPERVISOR_UNSAFE_REMOTE_PATH_CLEANUP_ONLY" >&2
   exit 2
 fi
+
+# Never install keys or refresh heartbeat after the original +115-minute
+# execution window. This branch only stops/deletes the exact REST identity.
+if [[ "$lifecycle_mode" == "CLEANUP_ONLY" ]]; then
+  cleanup_only=1
+  echo "EXTERNAL_SUPERVISOR_EXISTING_HOST_CLEANUP_RESERVE" >&2
+  exit 0
+fi
+remote="$PRIVATE_CHAPTER_ROOT/book-candidates/private-host"
 identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_CHANGED" >&2; exit 2; }
 bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
   "mkdir -p '$remote' && chmod 700 '$remote'" >/dev/null
