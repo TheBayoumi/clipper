@@ -131,9 +131,12 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
     )
     elapsed = time.monotonic() - started
     expected_status = (
-        0 if hang == "cleanup_116"
-        else 124 if hang in {"ssh", "copy"}
-        else 3 if hang == "stop"
+        0
+        if hang == "cleanup_116"
+        else 124
+        if hang in {"ssh", "copy"}
+        else 3
+        if hang == "stop"
         else 2
     )
     assert result.returncode == expected_status
