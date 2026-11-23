@@ -439,3 +439,74 @@ def test_importer_rejects_internally_rehashed_incomplete_selected_evidence(
         evidence["work_plan"]["units"] = []
     with pytest.raises(selected_scope.SelectedSourceStop):
         selected_scope.import_chapter(runner.root, _edited(runner, evidence))
+
+
+
+@pytest.mark.parametrize("boundary", ["missing_json", "oversize", "outside", "symlink"])
+def test_selected_importer_requires_bounded_content_addressed_private_file(
+    tmp_path: Path, boundary: str
+) -> None:
+    runner, original, _ = _bundle(tmp_path)
+    location = runner.root / "book-candidates/selected-scopes"
+    if boundary == "missing_json":
+        raw = b"{"
+        target = location / f"{hashlib.sha256(raw).hexdigest()}.json"
+        target.write_bytes(raw)
+    elif boundary == "oversize":
+        raw = b" " * (selected_scope.MAX_BUNDLE_BYTES + 1)
+        target = location / f"{hashlib.sha256(raw).hexdigest()}.json"
+        target.write_bytes(raw)
+    elif boundary == "outside":
+        target = runner.root / "outside-selected.json"
+        target.write_bytes(original.read_bytes())
+    else:
+        target = location / "symlink-selected.json"
+        target.symlink_to(original)
+    with pytest.raises(selected_scope.SelectedSourceStop):
+        selected_scope.import_chapter(runner.root, target)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "parent_book_id",
+        "parent_hash_format",
+        "missing_parent_ref",
+        "missing_source_metadata",
+        "missing_source_identity",
+        "wrong_source_hash",
+        "unreviewed_policy",
+        "reading_block_type",
+        "reading_block_origin",
+        "missing_plan_shape",
+        "noncanonical_status",
+    ],
+)
+def test_selected_importer_rejects_corrupt_parent_and_source_evidence(
+    tmp_path: Path, damage: str
+) -> None:
+    runner, _original, data = _bundle(tmp_path)
+    if damage == "parent_book_id":
+        data["parent_ref"]["book_id"] = ""
+    elif damage == "parent_hash_format":
+        data["parent_ref"]["ingest_stage_key"] = True
+    elif damage == "missing_parent_ref":
+        data["parent_ref"].pop("dossier_sha256")
+    elif damage == "missing_source_metadata":
+        data["source"].pop("source_uri")
+    elif damage == "missing_source_identity":
+        data["source_identity"].pop("recovery_status")
+    elif damage == "wrong_source_hash":
+        data["source_identity"]["source_fingerprint"] = "f" * 64
+    elif damage == "unreviewed_policy":
+        data["review_status"] = "APPROVED"
+    elif damage == "reading_block_type":
+        data["reading_blocks"][0] = 123
+    elif damage == "reading_block_origin":
+        data["reading_blocks"][0]["origin"] = "unknown_origin"
+    elif damage == "missing_plan_shape":
+        data["work_plan"].pop("parent_plan_fingerprint")
+    else:
+        data["schema"] = "unverified-selected"
+    with pytest.raises(selected_scope.SelectedSourceStop):
+        selected_scope.import_chapter(runner.root, _edited(runner, data))
