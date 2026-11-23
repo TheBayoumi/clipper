@@ -1360,22 +1360,82 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         raw = json.dumps(payload, sort_keys=True)
         raw_sha = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         payload_sha = hashlib.sha256(evaluation._json_bytes(payload)).hexdigest()
-        identity = chapter._text_artifact_identity(
-            stage, key, "INJECTED_TEST_PRODUCER", raw_sha, payload_sha
-        )
         directory = base / stage / key
-        evaluation._store(
-            base,
-            directory / "raw-1.json",
-            {"attempt": 1, "owner": first_owner, "raw": raw, "sha256": raw_sha},
+        retry = (
+            stage == "adaptation"
+            and damage in {
+                "valid_prior_rejection_before_manifest",
+                "missing_prior_rejection_before_manifest",
+            }
+        )
+        prior_digest = None
+        winning_attempt, winning_owner = 1, first_owner
+        if retry:
+            previous_owner = "8" * 32
+            failed_raw = json.dumps({"not": "valid-adaptation"}, sort_keys=True)
+            failed_raw_sha = hashlib.sha256(failed_raw.encode("utf-8")).hexdigest()
+            evaluation._store(
+                base,
+                directory / "started-1.json",
+                {
+                    "request_key": key,
+                    "attempt": 1,
+                    "owner": previous_owner,
+                    "status": "STARTED_UNRESOLVED",
+                },
+            )
+            evaluation._store(
+                base,
+                directory / "raw-1.json",
+                {
+                    "attempt": 1,
+                    "owner": previous_owner,
+                    "raw": failed_raw,
+                    "sha256": failed_raw_sha,
+                },
+            )
+            evaluation._store(
+                base,
+                directory / "failed-1.json",
+                {
+                    "attempt": 1,
+                    "owner": previous_owner,
+                    "status": "SCHEMA_OR_SOURCE_REJECTED",
+                    "validation_evidence": chapter._rejection_evidence(
+                        directory,
+                        key,
+                        1,
+                        previous_owner,
+                        failed_raw_sha,
+                        chapter.ChapterStop("chapter adaptation schema"),
+                    ),
+                },
+            )
+            prior_digest = hashlib.sha256(
+                (directory / "failed-1.json").read_bytes()
+            ).hexdigest()
+            winning_attempt, winning_owner = 2, first_owner
+        identity = chapter._text_artifact_identity(
+            stage, key, "INJECTED_TEST_PRODUCER", raw_sha, payload_sha,
+            prior_rejection_sha256=prior_digest,
         )
         evaluation._store(
             base,
-            directory / "started-1.json",
+            directory / f"raw-{winning_attempt}.json",
+            {
+                "attempt": winning_attempt,
+                "owner": winning_owner,
+                "raw": raw,
+                "sha256": raw_sha,
+            },
+        )
+        evaluation._store(
+            base,
+            directory / f"started-{winning_attempt}.json",
             {
                 "request_key": key,
-                "attempt": 1,
-                "owner": first_owner,
+                "attempt": winning_attempt,
+                "owner": winning_owner,
                 "status": "STARTED_UNRESOLVED",
             },
         )
@@ -1388,12 +1448,17 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
                 "contract": stage,
                 "validator_contract": chapter.TEXT_ARTIFACT_CONTRACT,
                 "payload": payload,
-                "owner": first_owner,
-                "attempt": 1,
+                "owner": winning_owner,
+                "attempt": winning_attempt,
                 "raw_sha256": raw_sha,
                 "payload_sha256": payload_sha,
                 "token_receipt": None,
                 "artifact_identity": identity,
+                **(
+                    {"prior_rejection_sha256": prior_digest}
+                    if prior_digest is not None
+                    else {}
+                ),
             },
         )
         return identity
@@ -1493,94 +1558,12 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         with pytest.raises(chapter_host.PrivateHostStop, match="replay history"):
             chapter_host._save_final_manifest(root, 1, bundle, scope, final_key)
         return
-    if damage in {
-        "missing_prior_rejection_before_manifest",
-        "valid_prior_rejection_before_manifest",
-    }:
-        # Reconstruct an alternative synthetic *original* retry history.
-        # Immutable production records are never overwritten in place.
-        (stage_directory / "started-1.json").unlink()
-        (stage_directory / "raw-1.json").unlink()
-        first_raw = json.dumps({"not": "valid-adaptation"}, sort_keys=True)
-        first_digest = hashlib.sha256(first_raw.encode()).hexdigest()
-        prior_owner = "8" * 32
-        winning_owner = "3" * 32
-        request_key = stage_directory.name
-        evaluation._store(
-            base,
-            stage_directory / "started-1.json",
-            {
-                "request_key": request_key,
-                "attempt": 1,
-                "owner": prior_owner,
-                "status": "STARTED_UNRESOLVED",
-            },
-        )
-        evaluation._store(
-            base,
-            stage_directory / "raw-1.json",
-            {"attempt": 1, "owner": prior_owner, "raw": first_raw, "sha256": first_digest},
-        )
-        if damage == "valid_prior_rejection_before_manifest":
-            evaluation._store(
-                base,
-                stage_directory / "failed-1.json",
-                {
-                    "attempt": 1,
-                    "owner": prior_owner,
-                    "status": "SCHEMA_OR_SOURCE_REJECTED",
-                    "validation_evidence": chapter._rejection_evidence(
-                        stage_directory,
-                        request_key,
-                        1,
-                        prior_owner,
-                        first_digest,
-                        chapter.ChapterStop("chapter adaptation schema"),
-                    ),
-                },
-            )
-        existing_raw = json.loads((stage_directory / "raw-1.json").read_bytes())
-        assert existing_raw["owner"] == prior_owner
-        successful_raw = json.dumps(
-            {
-                "throughline": "synthetic",
-                "narrative_form": "CONCEPTUAL_SEQUENCE",
-                "choice_reason": "synthetic",
-                "beats": [],
-                "characters": [],
-                "locations": [],
-                "props": [],
-            },
-            sort_keys=True,
-        )
-        evaluation._store(
-            base,
-            stage_directory / "raw-2.json",
-            {
-                "attempt": 2,
-                "owner": winning_owner,
-                "raw": successful_raw,
-                "sha256": hashlib.sha256(successful_raw.encode()).hexdigest(),
-            },
-        )
-        evaluation._store(
-            base,
-            stage_directory / "started-2.json",
-            {
-                "request_key": request_key,
-                "attempt": 2,
-                "owner": winning_owner,
-                "status": "STARTED_UNRESOLVED",
-            },
-        )
-        validated = json.loads((stage_directory / "validated.json").read_bytes())
-        (stage_directory / "validated.json").unlink()
-        validated.update({"attempt": 2, "owner": winning_owner})
-        evaluation._store(base, stage_directory / "validated.json", validated)
-        if damage == "missing_prior_rejection_before_manifest":
-            with pytest.raises(chapter_host.PrivateHostStop, match="replay history"):
-                chapter_host._save_final_manifest(root, 1, bundle, scope, final_key)
-            return
+    if damage == "missing_prior_rejection_before_manifest":
+        # The winning identity still commits the true prior failure, now missing.
+        (stage_directory / "failed-1.json").unlink()
+        with pytest.raises(chapter_host.PrivateHostStop, match="replay history"):
+            chapter_host._save_final_manifest(root, 1, bundle, scope, final_key)
+        return
     manifest_sha = chapter_host._save_final_manifest(root, 1, bundle, scope, final_key)
     chapter_host._phase(
         runner,
