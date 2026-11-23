@@ -750,3 +750,85 @@ def test_in_flight_chapter_phase_reentry_stays_interrupted(
     assert result["chapters"]["1"]["status"] == "INTERRUPTED_DURING_MINING"
     assert result["chapters"]["7"]["status"] == "INTERRUPTED_DURING_MINING"
     provider.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "damage", ["empty", "folder_symlink", "entry_symlink", "canonical_tamper"]
+)
+def test_private_phase_journal_missing_or_rewritten_records_never_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    runner, path, config = _private_setup(tmp_path, monkeypatch)
+    _locked(runner, path, config)
+    digest = config["chapter_1"]["bundle_sha256"]
+    scope = config["chapter_1"]["scope_sha256"]
+    chapter_host._phase(runner, 1, digest, scope, "NOT_STARTED")
+    folder = runner.root / "book-candidates/private-host/chapter-1-phase-events"
+    event = next(folder.glob("*.json"))
+    if damage == "empty":
+        event.unlink()
+    elif damage == "folder_symlink":
+        original = folder.with_name("phase-events-retained")
+        folder.rename(original)
+        folder.symlink_to(original, target_is_directory=True)
+    elif damage == "entry_symlink":
+        copied = folder / "retained-record"
+        event.rename(copied)
+        event.symlink_to(copied)
+    else:
+        record = json.loads(event.read_bytes())
+        record["publish_eligible"] = True
+        event.write_bytes(evaluation._json_bytes(record))
+    with pytest.raises(chapter_host.PrivateHostStop, match="phase history"):
+        chapter_host._phase_records(runner.root, 1, digest, scope)
+    no_model = Mock(side_effect=AssertionError("missing phase journal cannot restart mining"))
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", no_model)
+    with pytest.raises(chapter_host.PrivateHostStop, match="phase history"):
+        _call(runner, path, "brief")
+    no_model.assert_not_called()
+
+
+def test_private_host_rejects_unapproved_mode_and_incomplete_cpu_plan_before_mining(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, path, config = _private_setup(tmp_path, monkeypatch)
+    producer = Mock(side_effect=AssertionError("never infer for invalid runtime settings"))
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", producer)
+    with pytest.raises(chapter_host.PrivateHostStop, match="unsupported"):
+        _call(runner, path, "unsupported-private-mode")
+    config["plan"]["brief_cpu"] = False
+    path.write_bytes(evaluation._json_bytes(config))
+    with pytest.raises(chapter_host.PrivateHostStop, match="explicit full CPU"):
+        _call(runner, path, "brief")
+    producer.assert_not_called()
+
+
+def test_private_host_checks_original_section_manifest_before_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    runner, _manifest, config = _private_setup(tmp_path, monkeypatch)
+    bundle = Path(config["chapter_1"]["bundle_path"])
+    verified = selected_scope.import_chapter(runner.root, bundle)
+    changed = replace(verified, section_manifest_sha256="f" * 64)
+    with pytest.raises(chapter_host.PrivateHostStop, match="manifest changed"):
+        chapter_host._section_manifest(runner, changed)
+
+
+def test_private_host_cli_never_leaks_missing_private_source_details(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = [
+        "inspect",
+        "--artifact-root",
+        str(tmp_path),
+        "--manifest",
+        str(tmp_path / "synthetic-private-missing.json"),
+        "--codespace-created-at",
+        datetime.now(UTC).isoformat(),
+    ]
+    assert chapter_host.main(args) == 2
+    printed = capsys.readouterr().err
+    assert "PRIVATE_CHAPTER_HOST_FAILED_CLOSED" in printed
+    assert "synthetic-private-missing.json" not in printed
