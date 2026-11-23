@@ -1648,10 +1648,13 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
         else:
             kind = "text" if attack == "reconcile_ledger" else attack
             item = next(
-                row for row in listing["chapters"][0]["files"]
+                row
+                for row in listing["chapters"][0]["files"]
                 if row["kind"] == kind
-                and (attack != "reconcile_ledger" or
-                     row["relative_path"].startswith("book-candidates/hybrid_reconcile/"))
+                and (
+                    attack != "reconcile_ledger"
+                    or row["relative_path"].startswith("book-candidates/hybrid_reconcile/")
+                )
             )
             path = item["relative_path"]
             if attack == "wav":
