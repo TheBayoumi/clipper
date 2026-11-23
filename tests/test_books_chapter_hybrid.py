@@ -12,8 +12,9 @@ from unittest.mock import Mock
 
 import pytest
 from test_books_selected_scope import _bundle
+from test_books_whole_book import ingested
 
-from clipper.books import chapter, evaluation, selected_scope
+from clipper.books import chapter, evaluation, selected_scope, whole_book
 from clipper.books import chapter_hybrid as hybrid
 from clipper.books.orchestrator import BookOrchestrator
 
@@ -767,3 +768,42 @@ def test_hybrid_reconciliation_raw_tampering_refuses_fresh_replay(
             expected_brief_identity=waiting["brief_identity"],
             **args,
         )
+
+
+def test_export_import_101_plus_unresolved_gap_preserves_original_scoped_source(
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "synthetic-source"
+    original.mkdir()
+    runner, acquired, _transport = ingested(original, paragraphs=300, with_image=True)
+    section_id = acquired.book.sections[1].chapter_id
+    expected = whole_book.plan_for(acquired.book, section_ids=(section_id,))
+    assert len(expected.units) == 101
+    assert len(expected.skipped) == 1
+    selected_path, selected_sha = selected_scope.export_chapter(
+        runner,
+        acquired.analysis_ref_path,
+        chapter_number=1,
+        chapter_section_ids=(section_id,),
+    )
+    assert selected_sha == hashlib.sha256(selected_path.read_bytes()).hexdigest()
+    host_root = tmp_path / "synthetic-host"
+    copied = host_root / "book-candidates" / "selected-scopes" / f"{selected_sha}.json"
+    copied.parent.mkdir(parents=True)
+    copied.write_bytes(selected_path.read_bytes())
+    verified = selected_scope.import_chapter(host_root, copied)
+    assert verified.work == expected
+    units, gaps, ordered = chapter._full_source_scope(verified.book, verified.work, None, [])
+    assert (len(units), len(gaps), len(ordered)) == (101, 1, 102)
+    ledger = hybrid.freeze(
+        units,
+        gaps,
+        ordered,
+        {"chapter": 1, "selected_bundle_sha256": selected_sha},
+    )
+    assert len(hybrid.validate_ledger(ledger)) == 102
+    assert [item["source_id"] for item in ledger["entries"]] == ordered
+    assert all(item["kind"] == "CANONICAL_WORK_UNIT" for item in ledger["entries"][:-1])
+    assert sum(item["kind"] == "UNRECOVERED_OR_EMPTY_SOURCE_MARKER" for item in ledger["entries"]) == 1
+    assert not list(host_root.rglob("*.epub"))
+    assert not list(host_root.rglob("analysis-refs"))
