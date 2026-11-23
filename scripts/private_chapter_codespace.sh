@@ -11,11 +11,14 @@ mode="$1"
 : "${PRIVATE_CHAPTER_ROOT:?Set an absolute private artifact directory outside the worktree}"
 : "${PRIVATE_CHAPTER_MANIFEST:?Set the private two-chapter manifest path}"
 : "${CODESPACE_NAME:?Run in the single authorized Codespace}"
+: "${PRIVATE_CHAPTER_APPROVED_SHA:?Exact Codex-reviewed checkout must be pinned}"
+: "${PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY_SHA256:?Owner external signer must be pinned}"
 if [[ "${CODESPACES:-}" != "true" ]]; then
   echo "PRIVATE_CHAPTER_HOST_NOT_CODESPACE" >&2
   exit 2
 fi
-if [[ "$(git rev-parse --abbrev-ref HEAD)" != "review/unified-tts-cleanup" ]]; then
+if [[ "$(git rev-parse --abbrev-ref HEAD)" != "review/unified-tts-cleanup" ||
+      "$(git rev-parse HEAD)" != "$PRIVATE_CHAPTER_APPROVED_SHA" ]]; then
   echo "PRIVATE_CHAPTER_UNEXPECTED_BRANCH" >&2
   exit 2
 fi
@@ -57,6 +60,14 @@ print(created.isoformat(), remaining)
   exit 2
 fi
 read -r codespace_created_at remaining_seconds <<< "$clock"
+# REST metadata and branch do not prove an independent hard supervisor:
+# require a fresh externally signed heartbeat BEFORE Python or any providers.
+if ! python -m clipper.books.chapter_lifecycle \
+  --artifact-root "$private_root" \
+  --codespace-created-at "$codespace_created_at"; then
+  echo "PRIVATE_CHAPTER_LIVE_EXTERNAL_SUPERVISOR_REQUIRED" >&2
+  exit 2
+fi
 # Exactly one shared Hugging Face cache under the private root; same pinned
 # revision for public tokenizer preflight and actual Qwen model weights.
 export HF_HOME="$private_root/model-cache/huggingface"
@@ -65,8 +76,9 @@ export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=4
 export MKL_NUM_THREADS=4
 mkdir -p "$HF_HOME"
-# GNU timeout is the hard outer boundary even if torch blocks inside C.
-# A five-minute reserve is left for private artifact handling and host stop.
+# GNU timeout bounds only this Python invocation. It is NOT a lifecycle
+# supervisor. The independent owner-side watchdog covers install, human waits,
+# Python hangs, stop and verified deletion from original host creation time.
 set +e
 timeout --signal=TERM --kill-after=15s "${remaining_seconds}s" \
   python -m clipper.books.chapter_host "$mode" \

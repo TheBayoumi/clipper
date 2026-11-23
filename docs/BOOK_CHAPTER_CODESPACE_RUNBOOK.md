@@ -96,25 +96,78 @@ there. The host will reject bundles whose name or bytes disagree.
   inspection, both chapter mining+briefs, independent human reviews, any
   resumes, failure handling and cleanup. A machine-time cap is **not**
   assurance that either chapter completes.
-- The wrapper checks the live Codespace metadata via
-  `gh api user/codespaces/$CODESPACE_NAME`. If this is inaccessible or does
-  not match, stop. It imposes GNU `timeout` ending no later than creation
-  +115 minutes, reserving 5 minutes for private cleanup and stopping the
-  Codespace itself **before the original +2h deadline**. Every invocation
-  obtains the same creation time; there is no per-chapter reset or automatic
-  new Codespace. Cleanup is an owner operation even if Python is killed.
+- **Mandatory external enforcement:** `scripts/private_chapter_external_supervisor.sh`
+  runs on the owner's **separate computer**, not inside the Codespace, and
+  begins immediately after creation **before** installing dependencies. It
+  continuously signs and privately transfers 45-second-verifiable heartbeats
+  (owner signing private key stays outside host) and forcibly stops/deletes
+  that exact Codespace at creation +115 minutes, independently checking REST
+  stop/deletion. This covers **dependency installation, waiting for human review,
+  all invocations and cleanup**. Do not start setup without a functioning
+  external supervisor; if external connectivity, heartbeat or REST deletion
+  verification fails, **stop and verify/delete the Codespace manually**.
+- The in-host wrapper's GNU `timeout` **only** guards the Python invocation;
+  it is **not** proof of Codespace stop or deletion. Both the CLI and direct
+  `chapter_host.execute()` require GitHub REST-backed ID/shape/creation time,
+  exact approved checkout SHA and a fresh signed external heartbeat before
+  any providers. A branch name, environment variable, Python timer or
+  unsigned self-generated local file is insufficient. Every invocation uses
+  the same actual Codespace creation timestamp; no reset or extra host.
+- The external signed heartbeat verifies *recent external monitoring*, not a
+  mathematical guarantee that future network access will survive. The owner
+  remains responsible for confirming REST stop/deletion and the unchanged
+  account-wide $0 paid-overage block. No host usage is approved by this
+  runbook until actual independent Codex post-fix review clears the SHA.
 
 ## Private host manifest — only selected evidence
 
 All paths are **absolute and private outside the Git worktree**; `umask 077`.
-After the owner creates the one approved Codespace and transfers the two
-JSON files, use `/tmp/clipper-chapter-private` as an example root:
+After Codex review, the owner must first separately confirm the exact
+approved commit SHA and create the one authorized host; this document
+**does not create that host**. Generate a fresh private RSA key on the
+owner's external machine (for example
+`openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out owner-supervisor.key`
+and `openssl pkey -in owner-supervisor.key -pubout -out owner-supervisor.pub`).
+Keep `owner-supervisor.key` **outside** the Codespace forever. On the owner
+machine, start and keep running:
+
+```bash
+export CODESPACE_NAME=EXACT_EXISTING_APPROVED_NAME
+export PRIVATE_CHAPTER_APPROVED_SHA=EXACT_POST_CODEX_REVIEWED_40_HEX_SHA
+export PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY=/absolute/owner-supervisor.key
+export PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY=/absolute/owner-supervisor.pub
+export PRIVATE_CHAPTER_ROOT=/tmp/clipper-chapter-private
+bash scripts/private_chapter_external_supervisor.sh
+```
+
+**This process must be active BEFORE any host setup**; it sends only
+heartbeat, public key and signature, never private source text. Stop/delete
+confirmation must be observed after the run. In the Codespace, export the
+matching **same** exact-approved SHA and fingerprint of the public key:
+
+```sh
+export PRIVATE_CHAPTER_APPROVED_SHA=EXACT_POST_CODEX_REVIEWED_40_HEX_SHA
+export PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY_SHA256=OWNER_PUBKEY_SHA256
+```
+
+Do **not** use the SHA from this document or a branch name as implicit
+approval. Independently fingerprint the public key on the owner machine
+(`sha256sum owner-supervisor.pub`). If the signer heartbeat is not fresh,
+host preflight fails; do not bypass or fall back to an in-host watchdog.
+
+After the external supervisor is active and the two bundles are transferred,
+use `/tmp/clipper-chapter-private` as an example private root:
 
 ```sh
 export PRIVATE_CHAPTER_ROOT=/tmp/clipper-chapter-private
 export PRIVATE_CHAPTER_MANIFEST="$PRIVATE_CHAPTER_ROOT/two-chapters.json"
 mkdir -p "$PRIVATE_CHAPTER_ROOT/book-candidates/selected-scopes"
 chmod 700 "$PRIVATE_CHAPTER_ROOT"
+# No dependencies or weights may be installed until this stdlib preflight
+# authenticates REST instance, exact SHA, and external signed heartbeat.
+python -m clipper.books.chapter_lifecycle \
+  --artifact-root "$PRIVATE_CHAPTER_ROOT" \
+  --codespace-created-at EXACT_GITHUB_REST_CREATED_AT
 python -m pip install -e ".[niche-models,book-constrained]"
 ```
 
