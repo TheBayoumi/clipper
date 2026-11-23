@@ -237,6 +237,8 @@ def export_chapter(
     blocks = tuple(
         block for block in faithful.reading_blocks(book) if block.section_id in set(order)
     )
+    if not 1 <= len(blocks) <= MAX_CHAPTER_ENTRIES:
+        raise SelectedSourceStop("selected chapter exceeds finite reading-block budget")
     _work_from_blocks(blocks, work)
     parent = SelectedRef(
         book_id=ref.book_id,
