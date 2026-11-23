@@ -1095,7 +1095,10 @@ class BookOrchestrator:
                             failure=exc,
                         )
                     finally:
-                        local_attempts += tried
+                        # Budget is per immutable mining request, NOT per Python
+                        # invocation. Count already-consumed DAG attempts and
+                        # new attempts even when they failed or were reclaimed.
+                        local_attempts += prior_attempts + tried
                 else:
                     if responses is None:
                         raise BookRunError("recorded response mapping missing")
