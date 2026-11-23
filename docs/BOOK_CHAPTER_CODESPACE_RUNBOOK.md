@@ -1,92 +1,137 @@
-# Private Atomic Habits chapters 1 and 7 — single Codespace checkpoint
+# Native selected-chapter private preproduction — Atomic Habits chapters 1 and 7
 
-**Preparation only.** This runbook does not authorize GitHub Actions or any
-assistant to start a Codespace, invoke weights, download a book, or upload text.
-Owner must independently review the changed code first. **The Codespace does not
-exist yet.** No part of this workflow publishes or renders images/video.
+**Checkpoint preparation, not authorization to provision a Codespace.** The
+owner must independently review the changed code first. No private book text
+is provided to chat, committed to Git, or emitted in public CI. No images,
+video, deployment or publishing. Only selected chapters **1 and 7** may be
+transferred to the one future private host. Book-wide scheduling can call the
+same per-chapter API later, but has no new execution authority now.
 
-## Before creation — hard stop checks
+## Two separate security and provenance boundaries
 
-- Preserve the **account-wide $0 paid-overage block** in GitHub billing and
-  confirm unused included core-hours. Four cores for two hours consumes up to
-  **eight core-hours**; included allowance is not proof of completion. Do not
-  choose another host, machine size, account, or repository.
-- Owner creates **one** temporary **private** Codespace on
-  `TheBayoumi/clipper`, branch `review/unified-tts-cleanup`, machine **4
-  cores / 16 GiB RAM / 32 GiB storage**. Actual runtime/CPU availability must
-  be confirmed there. Start the clock at **Codespace creation**, not first
-  inference. Stop it before creation + 2 hours, including setup, review and
-  any cleanup.
-- The launcher reads the live Codespace creation timestamp and machine shape
-  through `gh api user/codespaces/$CODESPACE_NAME`; if this fails (including
-  token permission), **stop**, do not use an unverified hand-entered timestamp.
-  It enforces a common hard GNU `timeout` ending at creation + 115 minutes,
-  reserving **five minutes** for private evidence cleanup and stopping the
-  Codespace. This does not make any CPU call finish in time.
-- Place **only the permitted original source and artifacts in a private
-  directory outside the worktree**, e.g. `/tmp/clipper-chapter-private`, with
-  permissions 0700/0600. Do not commit, print, paste, attach to this chat,
-  upload through CI, or copy raw book text into repository files. The command
-  uses one `HF_HOME` under this directory and the existing pinned Qwen
-  revision. A single snapshot is reused across both scopes; public tokenizer
-  metadata is checked before chapter weights are loaded. Kokoro's `v1.0`
-  remains a **label**, not a verified immutable commit.
+1. **Exporter machine, retained-source private directory.** The owner
+   already holds an exact original candidate reference, full original
+   EPUB/PDF, verified acquisition, immutable original ingest/dossier/DAG
+   evidence. This material stays entirely **on that source machine**.
+   `python -m clipper.books.selected_scope` calls the existing strict
+   `load_candidate_for_analysis()`, verifies raw bytes and parent source
+   before selecting any chapter. It creates a canonical, content-addressed
+   bundle containing **only selected original chapter reading blocks,
+   original work-unit text/anchors/ordinals, and selected linked reading
+   blocks/unrecovered markers**. It carries hashes of the original parent
+   edition, acquisition, source, raw and ingest identities, not original
+   full-book bytes, other chapter text, or fake BookText/candidate handles.
+2. **Isolated CPU Codespace.** Only the two selected bundle JSON files are
+   moved, by an owner-controlled private transfer outside Git. The host
+   importer checks exact canonical bytes, filename SHA-256, parent hash
+   consistency, original unit ordering and exact re-projection of *every*
+   included reading block into its selected units and skipped gap markers.
+   **The host does not reverify the absent original whole-book EPUB or DAG**.
+   Bundle integrity is not a signed external attestation: changing an entire
+   private bundle along with its filename is not prevented cryptographically.
+   Parent verification was performed solely on the exporter; this distinction
+   is preserved in every report, with `parent_full_book_complete=false`.
+   Treat source authorization as **unverified**.
 
-## Source prerequisite and exact scope inspection
+If a caption, image, chart, table, footnote, endnote or appendix is **outside**
+the chapter's main canonical section, the exporter operator must explicitly
+include its original linked section ID via `--linked-sections` in source
+reading order. Missing/unrecovered image text appears as a **gap marker**,
+not authenticated prose. The current faithful model does not establish an
+exhaustive EPUB hyperlink-target graph or prove all externally linked notes
+have been selected: `linked_notes_figures_completeness=UNVERIFIED_REQUIRES_SOURCE_REVIEW`.
+Inspect that gap against the retained original before locking. Do not claim
+a complete chapter when linked notes or caption scope remains uncertain, and
+do not use synthetic replacement passages.
 
-This integration accepts an **existing immutable candidate analysis reference**
-from the real acquisition+faithful ingest pipeline, together with the original
-private raw EPUB/PDF and ingest artifacts. An arbitrary pasted chapter or short
-Episode is **not** an acceptable replacement. If the parent candidate/edition
-cannot be verified, stop; do not fabricate an analysis ref or mine outside the
-two selected scopes. Existing offline candidate ingest may be performed
-privately before this checkpoint; it needs the original pinned acquisition
-artifact and registry. The host driver does not fetch a substitute book.
+## Source-side export (BEFORE creating the Codespace)
 
-In the private Codespace (commands run only **after** owner approval):
+These commands run only on the existing private retained-source environment,
+**not** in chat, public GitHub Actions, or the new Codespace. Replace exact
+paths/IDs with the actual verified private retained-source evidence:
+
+```bash
+export PRIVATE_SOURCE_ROOT=/absolute/private/retained-book-artifacts
+export ORIGINAL_CANDIDATE_REF="$PRIVATE_SOURCE_ROOT/book-candidates/analysis-refs/atomic-habits/EXACT_INGEST_KEY.json"
+
+# First inspect original canonical source section IDs and any linked note IDs
+# against the original retained EPUB/PDF. DO NOT guess IDs or narrow chapters.
+python -m clipper.books.selected_scope \
+  --artifact-root "$PRIVATE_SOURCE_ROOT" \
+  --candidate-ref "$ORIGINAL_CANDIDATE_REF" \
+  --chapter-number 1 \
+  --chapter-sections ORIGINAL_CHAPTER_1_IDS_IN_CANONICAL_ORDER \
+  --linked-sections ORIGINAL_CHAPTER_1_LINKED_NOTES_IF_ANY
+
+python -m clipper.books.selected_scope \
+  --artifact-root "$PRIVATE_SOURCE_ROOT" \
+  --candidate-ref "$ORIGINAL_CANDIDATE_REF" \
+  --chapter-number 7 \
+  --chapter-sections ORIGINAL_CHAPTER_7_IDS_IN_CANONICAL_ORDER \
+  --linked-sections ORIGINAL_CHAPTER_7_LINKED_NOTES_IF_ANY
+```
+
+Each command prints a digest and private path, never book text. If no linked
+sections exist, omit `--linked-sections` entirely. The command must succeed
+only after original full-parent validation; failure is not permission to
+construct new candidate handles or rewrite a two-chapter fake whole EPUB.
+
+Inspect both private exported files' selected section IDs, reading-block
+anchors, work-unit counts, gaps and complete byte lengths. Expected rough
+words: chapter 1 ~4,372, chapter 7 ~1,567; those are *not* permission to
+truncate or replace source. Retain original ordinals, source order, image
+markers and meaningful omissions. Only copy the **two exact content-addressed
+`book-candidates/selected-scopes/<SHA256>.json`** files to the future
+Codespace's matching private directory. No other source material is needed
+there. The host will reject bundles whose name or bytes disagree.
+
+## Before host creation — strict cost and deadline controls
+
+- Keep GitHub's existing account-wide **$0 paid-overage block** unchanged,
+  independently confirm enough unspent included hours. One private Codespace
+  only, repository `TheBayoumi/clipper`, branch
+  `review/unified-tts-cleanup`, **4 cores / 16 GiB / 32 GiB**, no other
+  machine, account, repository or branch. Maximum **eight included core-hours**.
+- **Two hours total starting at Codespace creation**, including setup, source
+  inspection, both chapter mining+briefs, independent human reviews, any
+  resumes, failure handling and cleanup. A machine-time cap is **not**
+  assurance that either chapter completes.
+- The wrapper checks the live Codespace metadata via
+  `gh api user/codespaces/$CODESPACE_NAME`. If this is inaccessible or does
+  not match, stop. It imposes GNU `timeout` ending no later than creation
+  +115 minutes, reserving 5 minutes for private cleanup and stopping the
+  Codespace itself **before the original +2h deadline**. Every invocation
+  obtains the same creation time; there is no per-chapter reset or automatic
+  new Codespace. Cleanup is an owner operation even if Python is killed.
+
+## Private host manifest — only selected evidence
+
+All paths are **absolute and private outside the Git worktree**; `umask 077`.
+After the owner creates the one approved Codespace and transfers the two
+JSON files, use `/tmp/clipper-chapter-private` as an example root:
 
 ```sh
 export PRIVATE_CHAPTER_ROOT=/tmp/clipper-chapter-private
 export PRIVATE_CHAPTER_MANIFEST="$PRIVATE_CHAPTER_ROOT/two-chapters.json"
-mkdir -p "$PRIVATE_CHAPTER_ROOT"
+mkdir -p "$PRIVATE_CHAPTER_ROOT/book-candidates/selected-scopes"
 chmod 700 "$PRIVATE_CHAPTER_ROOT"
-# Setup dependencies on this same CPU host, counted in its two-hour budget.
-python -m pip install -e ".[niche-models,book-constrained,book-pdf]"
-# Inspect the original candidate's chapter/page section IDs privately.
-python - <<'PY' > "$PRIVATE_CHAPTER_ROOT/canonical-sections.json"
-import json, os
-from pathlib import Path
-from clipper.books.orchestrator import BookOrchestrator
-root = Path(os.environ["PRIVATE_CHAPTER_ROOT"])
-# Operator supplies the exact previously ingested immutable candidate ref.
-ref = root / "book-candidates/analysis-refs/atomic-habits/EXACT_INGEST_KEY.json"
-_, book = BookOrchestrator(root).load_candidate_for_analysis(ref)
-print(json.dumps([{"section_id":s.chapter_id,"heading":s.heading}
-                  for s in book.sections], ensure_ascii=False))
-PY
-chmod 600 "$PRIVATE_CHAPTER_ROOT/canonical-sections.json"
+python -m pip install -e ".[niche-models,book-constrained]"
 ```
 
-The example `EXACT_INGEST_KEY` **must** be replaced with the actual private
-ref name; no file should be invented. If PDF sections are pages, include
-**all** pages belonging to each chapter, and relevant captions/footnotes/
-appendices in canonical source reading order. Do not assume a heading named
-“Chapter 1” covers all its illustrations or notes. Select **two disjoint
-explicit ordered lists** with no other chapter sections.
-
-Create `$PRIVATE_CHAPTER_MANIFEST` in the private directory (0600):
+The `two-chapters.json` manifest (mode 0600) must use exact imported digests:
 
 ```json
 {
-  "schema": "clipper-two-private-chapter-codespace-v1",
-  "candidate_ref": "/tmp/clipper-chapter-private/book-candidates/analysis-refs/atomic-habits/EXACT_INGEST_KEY.json",
+  "schema": "clipper-two-private-chapter-codespace-v2",
   "chapter_1": {
-    "section_ids": ["EXACT_CANONICAL_CHAPTER_1_SECTION_IDS_IN_ORDER"],
+    "bundle_path": "/tmp/clipper-chapter-private/book-candidates/selected-scopes/CHAPTER_1_SHA256.json",
+    "bundle_sha256": "CHAPTER_1_SHA256",
     "scope_sha256": null,
     "review_file": null
   },
   "chapter_7": {
-    "section_ids": ["EXACT_CANONICAL_CHAPTER_7_SECTION_IDS_IN_ORDER"],
+    "bundle_path": "/tmp/clipper-chapter-private/book-candidates/selected-scopes/CHAPTER_7_SHA256.json",
+    "bundle_sha256": "CHAPTER_7_SHA256",
     "scope_sha256": null,
     "review_file": null
   },
@@ -109,86 +154,64 @@ Create `$PRIVATE_CHAPTER_MANIFEST` in the private directory (0600):
 }
 ```
 
-Inspect *without inference*:
+**Phase inspect — model-free** (single shared host clock already running):
 
 ```sh
 bash scripts/private_chapter_codespace.sh inspect
 ```
 
-Privately review `book-candidates/private-host/scope-inspection-<SHA256>.json`
-(where the SHA-256 is returned by `inspect`): all selected work units, source bytes, warnings, image/figure/caption/footnote
-gaps, unselected sections, exclusions, page warnings and recovery status.
-The rough source expectations are ~4,372 whitespace words for chapter 1 and
-~1,567 for chapter 7; they are **not** trusted exact hashes or permission to
-trim. Unexpectedly low/high counts or unresolved linked notes require an
-explicit owner disposition. If the original edition's complete chapter
-scope cannot be established, **stop**. Chapter boundaries must never be
-silently narrowed. Lock each exact returned `scope_sha256` into its own
-manifest field **only after private source inspection**; this is a scope
-identity lock, **not** editorial approval.
+Privately inspect the content-addressed
+`book-candidates/private-host/scope-inspection-<SHA256>.json` report, which
+exposes chapter-specific original work counts and exact selected
+anchors, linked IDs, figure/unrecovered markers and source gaps. It flags
+parent bytes unverified on host and linked-note completeness not attested.
+Resolve those questions using the retained original on the exporter machine;
+do not copy full source onto the host. Lock each exact `scope_sha256`
+reported for its own selected bundle in the private manifest. Neither the
+scope lock nor a tokenizer-valid prompt constitutes human semantic approval.
 
-Source ledger size is bounded to **163,840 bytes** (four times the pinned
-40,960-token model context), with at most **64 original work units/gaps per
-chapter**; actual eligibility requires an independent tokenizer-EXACT
-preflight of the full chat template **plus the full output reservation**
-before any chapter call. UTF-8 bytes are **not** used as a proxy for actual
-token count on this host. If a full chapter is outside these limits, stop and
-report it; do not shorten, silently trim, or switch to Episode mode.
-
-## Phase 1 — real scoped mining and brief, then STOP
+**Phase brief — real CPU, sequential per selected chapter:**
 
 ```sh
 bash scripts/private_chapter_codespace.sh brief
 ```
 
-Only the two locked parent-canonical scopes are mined, sequentially and
-independently, with the existing constrained Qwen3-1.7B miner, one shared
-pinned snapshot, and its raw/private completion evidence. Each chapter runs
-real ChapterBrief on its **entire scoped original source ledger**, including
-zero-candidate units and explicit skipped markers. A failed/incomplete scoped
-mining phase is recorded as such and never treated as complete or silently
-restarted. No adaptation, script, narration, or direction call can happen
-during `brief` because `review_file=null`.
+Both bundle identities and scopes are verified **before the first mining call**.
+The pinned Qwen3-1.7B model/tokenizer and constrained per-unit miner work on
+the original selected work units only, with one shared Hugging Face cache and
+distinct immutable per-chapter mining evidence. Source-ledger limits remain
+finite; the full chat/template plus max output token budget receives an
+independent exact pinned-tokenizer preflight before chapter attempts. Raw
+failed attempts, owner claims and cache replay checks are preserved. No
+truncation, excluded-chapter ingestion, short Episode fallback, paid fallback,
+or generating images/video. Kokoro does not run during brief.
 
-A completed brief writes under `book-candidates/private-host/`:
+The complete selected chapter brief and full original-unit/gap review packet
+are private `book-candidates/private-host/chapter-1-review-packet.json`
+and `chapter-7-review-packet.json`. Their `REVIEW_REQUIRED` templates are
+deliberately invalid; **no automated acceptance**. Every unit KEEP/COMPRESS/
+OMIT and each beat requires a substantive independent source decision.
+Missing/uncertain notes, source qualification and omissions must be treated
+explicitly. Each chapter has a separate review and brief identity.
 
-- `chapter-1-review-packet.json`, `chapter-7-review-packet.json`: generated
-  brief, original exact source units and gaps, quoted spans, full coverage,
-  and a **deliberately invalid** `REVIEW_REQUIRED` review template.
-- `chapter-1-brief-record.json`, `chapter-7-brief-record.json`: pinned
-  scope/progress hash and exact generated brief identity.
-- Source/attempt proofs remain in the existing private chapter, mining and
-  output directories. **Review packet is not a human decision.**
+**Phase resume — only after explicit two independent human reviews:**
 
-## Human source/omission gate and Phase 2 — resume
-
-Independently inspect the **full original chapter** beside each private
-packet. A human supplies two separate explicit review JSON files matching
-`clipper-chapter-human-beat-review-v2`: one decision and substantive reason
-for every original unit/gap and every brief beat. `support_attested`,
-`reject`, `accept_coverage`, qualifications and omission dispositions
-must reflect actual inspection. **Never auto-accept template rows.** If
-support cannot be attested, reject and stop; do not manufacture semantics.
-
-Set the two distinct `review_file` fields in the private manifest to these
-files. Then, **only if the same Codespace still has time**:
+Set each `review_file` to its own full reviewed JSON, with no placeholder
+values. Continue only if the **same** Codespace has time:
 
 ```sh
 bash scripts/private_chapter_codespace.sh resume
 ```
 
-Each chapter re-verifies original scope, complete mining, exact raw/validated
-brief, all prior attempt records, and its independently attested review.
-Only then does it run the existing adaptation, linked chapter script,
-measured Kokoro WAV narration/timing and source-bound text shot/direction
-continuity. No image, video, renderer, upload or publishing. The final
-`CHAPTER_PREPRODUCTION_READY_UNREVIEWED` remains **editorially
-unapproved**, with `publish_eligible=false`.
+The original selected bundle, scope, complete mining progress, original raw
+brief artifact and human review are verified again, followed by existing
+adaptation, connected script, shot/direction continuity and real Kokoro
+narration with measured WAV timing. CPU model phases release caches
+sequentially. Two chapter artifacts remain independent, and even completed
+text preproduction has `publish_eligible=false`.
 
-If setup, source mapping, mining, review, narration or any retry cannot
-finish within the one host window, leave private evidence and report the
-last completed phase only. **Never create another host, restart a failed
-irreversible attempt, extend the deadline or turn on paid overage.**
-Stop the Codespace before the **original** creation+2h deadline; handle
-private artifacts out of band through an owner-controlled private route,
-not this chat or the repository.
+If one chapter fails or time expires, report **its actual last completed
+phase and private evidence**; never claim the other chapter succeeded,
+restart irreversible attempts, extend the host window, automatically infer
+approval, or create another host. No private text, raw output or WAV is
+transferred to this chat or published.
