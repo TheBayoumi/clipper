@@ -920,8 +920,6 @@ def execute(
     }
 
 
-
-
 def _claim_hybrid_resume(
     runner: BookOrchestrator,
     number: int,
@@ -1588,8 +1586,6 @@ def _chapter_output_manifest(
         "files": [unique[key] for key in sorted(unique)],
         "publish_eligible": False,
     }
-
-
 
 
 def _hybrid_output_manifest(
