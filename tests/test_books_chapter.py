@@ -2118,3 +2118,98 @@ def test_valid_first_or_second_chapter_attempt_replays_without_producer(
     assert (replay, replay_identity, produced) == (first, identity, 0)
     no_provider.assert_not_called()
     assert provider.call_count == attempt
+
+
+def test_chapter_resume_replays_only_exact_cached_brief_without_producer(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "private"
+    plan = chapter.ChapterPlan()
+    producer = Mock(return_value='{"value":"only synthetic unit text"}')
+    args = (root, "brief", {"fixture": "strict resume"}, plan, lambda x: x, producer)
+    with pytest.raises(chapter.ChapterStop, match="cache missing"):
+        chapter._stage(*args, replay_only=True)
+    producer.assert_not_called()
+    original, identity, _, count = chapter._stage(*args)
+    assert original == {"value": "only synthetic unit text"}
+    assert count == 1
+    replay, verified_identity, _, count = chapter._stage(*args, replay_only=True)
+    assert replay == original
+    assert verified_identity == identity
+    assert count == 0
+    producer.assert_called_once()
+    changed = chapter.ChapterPlan(max_words=plan.max_words + 1)
+    with pytest.raises(chapter.ChapterStop, match="cache missing"):
+        chapter._stage(
+            root, "brief", {"fixture": "strict resume"}, changed, lambda x: x,
+            Mock(side_effect=AssertionError("changed plan must not produce")), replay_only=True,
+        )
+    cached = next((root / "brief").glob("*/validated.json"))
+    cached.unlink()
+    with pytest.raises(chapter.ChapterStop, match="cache missing"):
+        chapter._stage(*args, replay_only=True)
+    producer.assert_called_once()
+
+
+def test_actual_chapter_token_receipt_is_raw_bound_and_injected_receipts_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = '{"value":"synthetic CPU generation for receipt tests"}'
+    receipt = scripting.PinnedQwenRawReceipt(
+        raw=raw,
+        raw_sha256=hashlib.sha256(raw.encode()).hexdigest(),
+        generated_token_count=31,
+        terminal_token_id=151645,
+        eos_decision="EOS_VERIFIED",
+    )
+    injected = Mock(return_value=receipt)
+    with pytest.raises(chapter.ChapterStop, match="invalid bounded raw"):
+        chapter._stage(
+            tmp_path / "injected", "brief", {"fixture": "forgery"},
+            chapter.ChapterPlan(), lambda x: x, injected,
+        )
+    injected.assert_called_once()
+    real = Mock(return_value=receipt)
+    monkeypatch.setattr(scripting, "_local_chapter_completion", real)
+    monkeypatch.setattr(scripting, "_ORIGINAL_LOCAL_CHAPTER_COMPLETION", real)
+    monkeypatch.setattr(scripting, "_chapter_context_tokens", lambda _: 20)
+    root = tmp_path / "actual"
+    args = (
+        root, "brief", {"fixture": "real receipt"}, chapter.ChapterPlan(),
+        lambda x: x, real,
+    )
+    result, identity, provenance, attempts = chapter._stage(*args)
+    assert provenance == "ACTUAL_CPU_QWEN"
+    assert attempts == 1
+    replay, key, _, replay_attempts = chapter._stage(*args, replay_only=True)
+    assert replay == result and key == identity and replay_attempts == 0
+    real.assert_called_once()
+    record_path = next((root / "brief").glob("*/validated.json"))
+    saved = json.loads(record_path.read_bytes())
+    assert saved["token_receipt"]["terminal_token_id"] == 151645
+    saved["token_receipt"]["raw_sha256"] = "f" * 64
+    record_path.write_bytes(evaluation._json_bytes(saved))
+    with pytest.raises(chapter.ChapterStop, match="cannot be verified"):
+        chapter._stage(*args, replay_only=True)
+    real.assert_called_once()
+
+
+def test_actual_chapter_missing_eos_durably_preserves_bounded_raw_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = '{"truncated":"synthetic, not a valid terminated model response"}'
+    real = Mock(side_effect=scripting.IncompleteConstrainedResponse(raw))
+    monkeypatch.setattr(scripting, "_local_chapter_completion", real)
+    monkeypatch.setattr(scripting, "_ORIGINAL_LOCAL_CHAPTER_COMPLETION", real)
+    monkeypatch.setattr(scripting, "_chapter_context_tokens", lambda _: 20)
+    root = tmp_path / "actual-truncated"
+    args = (root, "brief", {"fixture": "missing EOS"}, chapter.ChapterPlan(), lambda x: x, real)
+    with pytest.raises(chapter.ChapterStop, match="without EOS"):
+        chapter._stage(*args)
+    raw_file = next((root / "brief").glob("*/raw-1.json"))
+    failed = next((root / "brief").glob("*/failed-1.json"))
+    assert json.loads(raw_file.read_bytes())["raw"] == raw
+    assert json.loads(failed.read_bytes())["status"] == "MISSING_EOS"
+    with pytest.raises(chapter.ChapterStop, match="unresolved"):
+        chapter._stage(*args)
+    real.assert_called_once()
