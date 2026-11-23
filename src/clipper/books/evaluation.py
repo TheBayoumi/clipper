@@ -124,7 +124,7 @@ def _section_scope(
     raw = _read(section_manifest, 16_384)
     try:
         manifest: object = whole_book.load_strict_reply(raw)
-    except (ValueError, UnicodeError, RecursionError) as exc:
+    except (ValueError, UnicodeError, RecursionError):
         raise EvaluationStop("invalid private section scope JSON") from None
     if not isinstance(manifest, dict) or set(manifest) != {
         "schema", "book_fingerprint", "source_fingerprint",
@@ -137,7 +137,7 @@ def _section_scope(
         raise EvaluationStop("section scope requires canonical section ID strings")
     try:
         plan = whole_book.plan_for(book, section_ids=tuple(ids))
-    except ValueError as exc:
+    except ValueError:
         raise EvaluationStop("section scope does not match canonical parent text") from None
     expected = {
         "schema": SECTION_MANIFEST_SCHEMA,
@@ -770,7 +770,9 @@ def evaluate_candidate(
             started_path = audio_root / "attempts" / f"{wav_cache.stem}.json"
             if not wav_cache.is_file():
                 if started_path.exists():
-                    raise EvaluationStop("previous Kokoro attempt incomplete; retry requires new authority")
+                    raise EvaluationStop(
+                        "previous Kokoro attempt incomplete; retry requires new authority"
+                    )
                 _store(private_root, started_path, {
                     "scene_id": f"scene-{index:02d}",
                     "request_sha256": content_fingerprint(

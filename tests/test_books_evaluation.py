@@ -597,7 +597,8 @@ def test_cli_private_model_keys_and_provider_output_do_not_escape(
 ) -> None:
     runner, ref, progress, candidates = _mined(tmp_path)
     review = _review(tmp_path, progress, candidates)
-    private_token = "PRIV_SYNT_SENTINEL_8CF1AA12"
+    private_marker = "PRIV_SYNT_SENTINEL_8CF1AA12"
+    private_token = private_marker
     def malicious(_request: dict[str, object]) -> str:
         print(private_token)
         print(private_token, file=sys.stderr)

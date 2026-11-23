@@ -10,9 +10,9 @@ import sys
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import asdict
-from uuid import uuid4
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from clipper.stage_contracts import content_fingerprint
 
