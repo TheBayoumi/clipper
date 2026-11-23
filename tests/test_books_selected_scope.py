@@ -795,3 +795,92 @@ def test_injected_fake_real_token_receipt_is_not_accepted_as_provider(
     progress = json.loads(Path(mined["progress_path"]).read_bytes())
     assert progress["execution_provenance"] == "INJECTED_TEST_PRODUCER"
     assert progress["progress"][0]["failure_category"] == "non_text_reply"
+
+
+def test_internal_real_token_receipt_is_bound_to_raw_and_replay_checked(
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    from clipper.books import scripting
+    from clipper.books.orchestrator import BookRunError
+    from clipper.stage_contracts import content_fingerprint
+
+    runner, bundle, _ = _bundle(tmp_path, with_image=False)
+    selected = selected_scope.import_chapter(runner.root, bundle)
+    unit = selected.work.units[0]
+    request = whole_book._request_for_identity(
+        selected.book, unit, selected.book.fingerprint
+    )
+    request["source_boundary"] = selected.book.source_boundary
+    request["selected_scope_bundle_sha256"] = selected.bundle_sha256
+    request_key = content_fingerprint(request)
+    raw = '{"lessons":[]}'
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    receipt = scripting.PinnedQwenRawReceipt(raw, digest, 3, 2, "EOS_VERIFIED")
+    # Synthetic direct internal validator fixture: NOT a real provider call
+    # and NOT a proof that arbitrary injected callbacks can authenticate EOS.
+    identity = SimpleNamespace(cache_key="a" * 64)
+    generated = runner._produce_local_unit(
+        ref=selected.ref,
+        identity=identity,
+        request=request,
+        request_sha256=request_key,
+        unit=unit,
+        producer_fingerprint="b" * 64,
+        completion=lambda _: receipt,
+        actual_provider=True,
+    )
+    assert generated["provider_receipt"] == {
+        "raw_sha256": digest,
+        "generated_token_count": 3,
+        "terminal_token_id": 2,
+        "eos_decision": "EOS_VERIFIED",
+    }
+    value, cached_digest = runner._read_local_unit(
+        ref=selected.ref,
+        identity=identity,
+        request_sha256=request_key,
+        request=request,
+        unit=unit,
+        producer_fingerprint="b" * 64,
+        stored=generated,
+        actual_provider=True,
+    )
+    assert value == {"lessons": []}
+    assert cached_digest == digest
+    for bad in (
+        {"generated_token_count": True},
+        {"generated_token_count": 0},
+        {"terminal_token_id": True},
+        {"terminal_token_id": -1},
+        {"eos_decision": "NOT_ATTESTED"},
+        {"raw_sha256": "0" * 64},
+    ):
+        mutated = {
+            **generated,
+            "provider_receipt": {**generated["provider_receipt"], **bad},
+        }
+        with pytest.raises(BookRunError, match="receipt"):
+            runner._read_local_unit(
+                ref=selected.ref,
+                identity=identity,
+                request_sha256=request_key,
+                request=request,
+                unit=unit,
+                producer_fingerprint="b" * 64,
+                stored=mutated,
+                actual_provider=True,
+            )
+    wrong_digest = scripting.PinnedQwenRawReceipt(raw, "0" * 64, 3, 2, "EOS_VERIFIED")
+    with pytest.raises(whole_book.LocalReplyFailure):
+        runner._produce_local_unit(
+            ref=selected.ref,
+            identity=identity,
+            request=request,
+            request_sha256=request_key,
+            unit=unit,
+            producer_fingerprint="b" * 64,
+            completion=lambda _: wrong_digest,
+            actual_provider=True,
+        )
