@@ -1468,3 +1468,138 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
     wav_path.write_bytes(b"tampered-and-missing-signed-audio")
     with pytest.raises(chapter_host.PrivateHostStop, match="WAV hash"):
         chapter_host.private_recovery_archive(root)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing_directory",
+        "directory_symlink",
+        "child_symlink",
+        "missing_identity",
+        "missing_raw_owner",
+        "wrong_raw_digest",
+        "missing_validated_fields",
+    ],
+)
+def test_scoped_recovery_text_stage_rejects_unverifiable_artifacts(
+    tmp_path: Path, fault: str
+) -> None:
+    """Only canonical stage evidence may be copied, never guessed text."""
+    from clipper.stage_contracts import content_fingerprint
+
+    root = tmp_path / "private"
+    base = root / "book-candidates"
+    stage = "adaptation"
+    stage_root = base / stage
+    key = "1" * 64
+    raw = '{"synthetic":"text"}'
+    owner = "2" * 32
+    raw_digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    payload = json.loads(raw)
+    payload_sha = hashlib.sha256(evaluation._json_bytes(payload)).hexdigest()
+    identity = chapter._text_artifact_identity(
+        stage, key, "INJECTED_TEST_PRODUCER", raw_digest, payload_sha
+    )
+    if fault == "missing_directory":
+        with pytest.raises(chapter_host.PrivateHostStop, match="stage directory missing"):
+            chapter_host._stage_output_entries(root, 1, stage, identity)
+        return
+    stage_root.mkdir(parents=True)
+    if fault == "directory_symlink":
+        retained = stage_root.with_name("retained-synthetic-text")
+        stage_root.rename(retained)
+        stage_root.symlink_to(retained, target_is_directory=True)
+        with pytest.raises(chapter_host.PrivateHostStop, match="stage directory missing"):
+            chapter_host._stage_output_entries(root, 1, stage, identity)
+        return
+    if fault == "child_symlink":
+        elsewhere = tmp_path / "not-in-private-stage"
+        elsewhere.mkdir()
+        (stage_root / key).symlink_to(elsewhere, target_is_directory=True)
+        with pytest.raises(chapter_host.PrivateHostStop, match="stage directory redirected"):
+            chapter_host._stage_output_entries(root, 1, stage, identity)
+        return
+    directory = stage_root / key
+    directory.mkdir()
+    if fault == "missing_identity":
+        with pytest.raises(chapter_host.PrivateHostStop, match="absent or ambiguous"):
+            chapter_host._stage_output_entries(root, 1, stage, identity)
+        return
+    record = {
+        "request_key": key,
+        "provenance": "INJECTED_TEST_PRODUCER",
+        "contract": stage,
+        "validator_contract": chapter.TEXT_ARTIFACT_CONTRACT,
+        "payload": payload,
+        "owner": owner,
+        "attempt": 1,
+        "raw_sha256": raw_digest,
+        "payload_sha256": payload_sha,
+        "token_receipt": None,
+        "artifact_identity": identity,
+    }
+    if fault == "missing_validated_fields":
+        del record["payload"]
+    evaluation._store(base, directory / "validated.json", record)
+    saved = {
+        "attempt": 1,
+        "owner": owner if fault != "missing_raw_owner" else "3" * 32,
+        "raw": raw if fault != "wrong_raw_digest" else "mutated synthetic text",
+        "sha256": raw_digest,
+    }
+    evaluation._store(base, directory / "raw-1.json", saved)
+    with pytest.raises(chapter_host.PrivateHostStop, match="reviewed chapter"):
+        chapter_host._stage_output_entries(root, 1, stage, identity)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing_report",
+        "bad_report_schema",
+        "unapproved_wav_path",
+        "malformed_wav_digest",
+        "absent_wav",
+        "changed_wav",
+    ],
+)
+def test_scoped_recovery_narration_refuses_unverified_or_cross_scope_audio(
+    tmp_path: Path, fault: str
+) -> None:
+    from clipper.stage_contracts import content_fingerprint
+
+    root = tmp_path / "private"
+    base = root / "book-candidates"
+    audio = base / "chapter-audio-injected_test_wav/fixture.wav"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"synthetic-wave-data")
+    report = {
+        "schema": "clipper-chapter-narration-v2",
+        "provenance": "INJECTED_TEST_WAV",
+        "records": [
+            {
+                "wav_relative_path": (
+                    "../different-chapter/private.wav"
+                    if fault == "unapproved_wav_path"
+                    else "chapter-audio-injected_test_wav/fixture.wav"
+                ),
+                "sha256": (
+                    "not-a-digest"
+                    if fault == "malformed_wav_digest"
+                    else hashlib.sha256(b"synthetic-wave-data").hexdigest()
+                ),
+            }
+        ],
+    }
+    if fault == "bad_report_schema":
+        report["schema"] = "different-synthetic-schema"
+    key = content_fingerprint(report)
+    if fault != "missing_report":
+        evaluation._store(base, base / f"narration-report-{key}.json", report)
+    if fault == "absent_wav":
+        audio.unlink()
+    if fault == "changed_wav":
+        audio.write_bytes(b"synthetic-wave-data-hash-mismatch")
+    with pytest.raises((chapter_host.PrivateHostStop, OSError)):
+        chapter_host._narration_output_entries(root, 1, key)
