@@ -503,12 +503,21 @@ def _append_phase_locked(
         raise PhaseClaimContended("duplicate or superseded chapter phase claim")
     # Terminal/follow-on transitions are reserved for the caller which won
     # MINING_IN_FLIGHT or RESUME_IN_FLIGHT. No losing caller may STOP a winner.
-    if state not in {"NOT_STARTED", "MINING_IN_FLIGHT", "HYBRID_BRIEF_IN_FLIGHT", "RESUME_IN_FLIGHT"}:
+    if state not in {
+        "NOT_STARTED",
+        "MINING_IN_FLIGHT",
+        "HYBRID_BRIEF_IN_FLIGHT",
+        "RESUME_IN_FLIGHT",
+    }:
         active = next(
             (
                 row["artifacts"].get("claim_owner")
                 for row in reversed(records)
-                if row["phase"] in {"MINING_IN_FLIGHT", "HYBRID_BRIEF_IN_FLIGHT", "RESUME_IN_FLIGHT"}
+                if row["phase"] in {
+                    "MINING_IN_FLIGHT",
+                    "HYBRID_BRIEF_IN_FLIGHT",
+                    "RESUME_IN_FLIGHT",
+                }
             ),
             None,
         )
@@ -1119,7 +1128,15 @@ def _execute_hybrid(
                     else None
                 ),
                 on_resume_verified=(
-                    partial(_claim_hybrid_resume, runner, number, bundle_sha, scope, identity, owner)
+                    partial(
+                        _claim_hybrid_resume,
+                        runner,
+                        number,
+                        bundle_sha,
+                        scope,
+                        identity,
+                        owner,
+                    )
                     if mode == "hybrid-resume" and identity is not None
                     else None
                 ),
