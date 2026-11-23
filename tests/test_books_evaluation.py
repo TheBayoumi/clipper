@@ -921,3 +921,119 @@ def test_kokoro_failed_provider_leaves_durable_started_marker(tmp_path: Path) ->
     markers = list((runner.root / "book-candidates/evaluations").rglob("audio-*/attempts/*.json"))
     assert len(markers) == 1
     assert json.loads(markers[0].read_bytes())["status"] == "STARTED_UNRESOLVED"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "wrong-progress-path",
+        "unbound-section-scope",
+        "progress-status",
+        "progress-count",
+        "missing-unit",
+        "altered-unit",
+        "bad-skipped-count",
+        "unscoped-export-scope",
+        "empty-book-list",
+        "bad-book-authorization",
+        "short-lesson-list",
+        "nonobject-lesson",
+        "wrong-source-anchor",
+        "wrong-occurrence-id",
+        "malformed-occurrence",
+        "duplicate-lesson-id",
+    ],
+)
+def test_immutable_mining_ledger_and_candidate_tampering_fail_closed(
+    tmp_path: Path, mutation: str
+) -> None:
+    runner, ref, progress_path, _candidates = _mined(tmp_path)
+    export_path = (
+        runner.root
+        / "book-candidates/analysis/exports"
+        / progress_path.parent.name
+        / progress_path.name
+    )
+    if mutation == "wrong-progress-path":
+        outside = tmp_path / "untrusted-progress.json"
+        outside.write_bytes(progress_path.read_bytes())
+        progress_path = outside
+    elif mutation in {
+        "unbound-section-scope", "progress-status", "progress-count",
+        "missing-unit", "altered-unit", "bad-skipped-count",
+    }:
+        ledger = json.loads(progress_path.read_bytes())
+        if mutation == "unbound-section-scope":
+            ledger["section_scope"] = {"section_ids": ["foreign"]}
+        elif mutation == "progress-status":
+            ledger["status"] = "incomplete"
+        elif mutation == "progress-count":
+            ledger["candidate_count"] += 1
+        elif mutation == "missing-unit":
+            ledger["progress"].pop()
+        elif mutation == "altered-unit":
+            ledger["progress"][0]["unit_fingerprint"] = "0" * 64
+        elif mutation == "bad-skipped-count":
+            ledger["counts"]["skipped"] += 1
+        progress_path.write_text(json.dumps(ledger), encoding="utf-8")
+    else:
+        export = json.loads(export_path.read_bytes())
+        book = export["books"][0]
+        lessons = book["lessons"]
+        if mutation == "unscoped-export-scope":
+            export["section_scope"] = {"section_ids": ["foreign"]}
+        elif mutation == "empty-book-list":
+            export["books"] = []
+        elif mutation == "bad-book-authorization":
+            book["authorization_status"] = "approved_for_publication"
+        elif mutation == "short-lesson-list":
+            lessons.pop()
+        elif mutation == "nonobject-lesson":
+            lessons[0] = "untrusted-generated-string"
+        elif mutation == "wrong-source-anchor":
+            lessons[0]["evidence_anchor"]["anchor"] = "foreign-origin"
+        elif mutation == "wrong-occurrence-id":
+            lessons[0]["evidence_anchor"]["selected_occurrence"]["id"] = "foreign-pair"
+        elif mutation == "malformed-occurrence":
+            lessons[0]["evidence_anchor"]["selected_occurrence"] = "not-an-occurrence"
+        elif mutation == "duplicate-lesson-id":
+            assert len(lessons) > 1
+            lessons[1]["id"] = lessons[0]["id"]
+        export_path.write_text(json.dumps(export), encoding="utf-8")
+    with pytest.raises(evaluation.EvaluationStop) as caught:
+        runner.evaluate_candidate(ref, progress_path=progress_path)
+    assert "Invented paragraph" not in str(caught.value)
+    assert "untrusted-generated-string" not in str(caught.value)
+
+
+def test_cached_text_shot_timing_tamper_rejected_without_new_model_call(
+    tmp_path: Path
+) -> None:
+    runner, ref, progress, candidates = _mined(tmp_path)
+    review = _review(tmp_path, progress, candidates)
+    script = Mock(return_value=json.dumps(_episode()))
+    direction = Mock(side_effect=_shots)
+    kwargs = {
+        "progress_path": progress,
+        "review_file": review,
+        "options": evaluation.EvaluationOptions(script_cpu=True, direction_cpu=True),
+        "script_completion": script,
+        "direction_completion": direction,
+    }
+    first = runner.evaluate_candidate(ref, **kwargs)
+    assert first["status"] == "PREVISUAL_TEXT_READY_UNREVIEWED"
+    path = next(
+        (runner.root / "book-candidates/evaluations").rglob("validated-text-shots.json")
+    )
+    saved = json.loads(path.read_bytes())
+    saved["shots"][0]["timing"]["duration_seconds"] = 0.01
+    path.write_text(json.dumps(saved), encoding="utf-8")
+    with pytest.raises(evaluation.EvaluationStop, match="shot timing or content changed"):
+        runner.evaluate_candidate(
+            ref, progress_path=progress, review_file=review,
+            options=kwargs["options"],
+            script_completion=Mock(side_effect=AssertionError("repeated script")),
+            direction_completion=Mock(side_effect=AssertionError("repeated direction")),
+        )
+    script.assert_called_once()
+    direction.assert_called_once()
