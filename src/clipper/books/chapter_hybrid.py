@@ -178,7 +178,7 @@ def request(
 ) -> tuple[dict[str, object], str, int]:
     """Exact pinned-template preflight supplied by caller, never a byte proxy."""
     if (
-        stage not in {"argument", "audit", "reconcile"}
+        stage not in {"argument", "audit", "reconcile", "adaptation", "chapter_script", "chapter_direction"}
         or type(output_tokens) is not int
         or not 1024 <= output_tokens <= 8192
         or not producer_identity
@@ -516,3 +516,99 @@ def validate_human_review(
     if decided != beat_ids:
         raise HybridStop("hybrid meaning and qualifications have not been human attested")
     return doc
+
+def validate_adaptation(
+    raw: object, brief: dict[str, Any], plan: Any
+) -> dict[str, Any]:
+    """Reuse the existing chapter creative contract without a lexical meaning proxy.
+
+    Exact original spans and qualifications are appended to the validated artifact,
+    not regenerated or copied from an invented illustration.
+    """
+    from . import chapter
+
+    beats = _list(brief["beats"], plan.max_beats)
+    if not beats:
+        raise HybridStop("hybrid adaptation has no reviewed source beats")
+    # Old chapter's lexical containment checks are not semantic verification.
+    # The source is bound separately and kept in the validated artifact.
+    shape = {
+        "beats": [
+            {
+                "beat_id": beat["beat_id"],
+                "unit_id": beat["spans"][0]["original_source_id"],
+                "qualification": "",
+                "essential": True,
+            }
+            for beat in beats
+        ]
+    }
+    decisions = {
+        beat["beat_id"]: {"decision": "support_attested", "qualifier_quote": ""}
+        for beat in beats
+    }
+    try:
+        adapted = chapter._adapt_validate(raw, shape, decisions, plan)
+    except chapter.ChapterStop as error:
+        raise HybridStop("hybrid chapter adaptation violated creative contract") from error
+    if any(item["decision"] == "omit" for item in adapted["beats"]):
+        raise HybridStop("reviewed hybrid beat cannot disappear without new human approval")
+    return {
+        **adapted,
+        "source_spans_by_beat": {beat["beat_id"]: beat["spans"] for beat in beats},
+        "reviewed_qualification_by_beat": {
+            beat["beat_id"]: beat["qualification"] for beat in beats
+        },
+        "brief_sha256": brief["brief_sha256"],
+    }
+
+
+def validate_script(
+    raw: object, adaptation: dict[str, Any], brief: dict[str, Any], plan: Any
+) -> dict[str, Any]:
+    """Validate the existing chapter scene graph, retaining source-span metadata."""
+    from . import chapter
+
+    base_adaptation = {
+        **adaptation,
+        "beats": [{**beat, "qualification": ""} for beat in adaptation["beats"]],
+    }
+    base_brief = {
+        "beats": [
+            {
+                "beat_id": beat["beat_id"],
+                "unit_id": beat["spans"][0]["original_source_id"],
+                "qualification": "",
+            }
+            for beat in brief["beats"]
+        ]
+    }
+    decisions = {
+        beat["beat_id"]: {"decision": "support_attested", "qualifier_quote": ""}
+        for beat in brief["beats"]
+    }
+    try:
+        script = chapter._script_validate(
+            raw, base_adaptation, decisions, plan, brief=base_brief
+        )
+    except chapter.ChapterStop as error:
+        raise HybridStop("hybrid script violated connected chapter scene contract") from error
+    source_beats = {beat["beat_id"]: beat for beat in brief["beats"]}
+    annotated: list[dict[str, Any]] = []
+    for scene in script["scenes"]:
+        spans = [
+            span
+            for bid in scene["beat_ids"]
+            for span in source_beats[bid]["spans"]
+        ]
+        annotated.append(
+            {
+                **scene,
+                "source_spans": spans,
+                "reviewed_qualifications": {
+                    bid: source_beats[bid]["qualification"] for bid in scene["beat_ids"]
+                },
+                "semantic_review": "NO_AUTOMATIC_SEMANTIC_CERTIFICATION",
+            }
+        )
+    return {**script, "scenes": annotated, "brief_sha256": brief["brief_sha256"]}
