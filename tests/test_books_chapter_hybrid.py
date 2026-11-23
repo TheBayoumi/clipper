@@ -1219,8 +1219,8 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
         Path(__file__).resolve().parents[1] / "scripts/private_chapter_external_supervisor.sh"
     )
     owner_shell = owner_script.read_text(encoding="utf-8")
-    owner_verifier = owner_shell.split("if bounded python3 -c '\\n", 1)[1].split(
-        '\\n\\' "$session/recovery-created.json"', 1
+    owner_verifier = owner_shell.split("if bounded python3 -c '\n", 1)[1].split(
+        '\n\' "$session/recovery-created.json"', 1
     )[0]
     archive_path = private / "private-host/chapter-recovery.tar"
     with tarfile.open(archive_path, "r:") as recovered_tar:
