@@ -2347,6 +2347,7 @@ def evaluate_hybrid_chapter(
                         {
                             "id": "audit-d01",
                             "issue": "missing/contradictory arguments requiring revision",
+                            "proposed_change": "What should change and why",
                             "evidence": [
                                 {"id": "core ID", "start": 0, "end": 10, "role": "ASSERTION"}
                             ],
