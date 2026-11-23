@@ -1001,6 +1001,46 @@ def _stage_output_entries(
     if len(matched) != 1:
         raise PrivateHostStop("reviewed chapter stage identity absent or ambiguous")
     selected = matched[0]
+    # Reuse the production cache replay verifier. A validated/raw pair alone
+    # does NOT establish an exclusive winning claim or prior retry history.
+    # Without the original source-bound validator context, require the exact
+    # stage's canonical top-level schema and conservatively reject any prior
+    # parseable same-schema response as unverifiable (never bless a retry).
+    shapes: dict[str, set[str]] = {
+        "brief": {"argument", "beats", "coverage"},
+        "adaptation": {
+            "throughline", "narrative_form", "choice_reason",
+            "beats", "characters", "locations", "props",
+        },
+        "chapter_script": {"title", "scenes"},
+        "chapter_direction": {"shots"},
+    }
+    if stage not in shapes:
+        raise PrivateHostStop("unsupported reviewed chapter text stage")
+    selected_record = _parse_recovery_artifact(
+        _read_recovery_artifact(selected / "validated.json", 250_000)
+    )
+    if not isinstance(selected_record, dict):
+        raise PrivateHostStop("reviewed chapter validated replay envelope malformed")
+    request_key = selected.name
+    provenance = selected_record.get("provenance")
+    if provenance not in {"ACTUAL_CPU_QWEN", "INJECTED_TEST_PRODUCER"}:
+        raise PrivateHostStop("reviewed chapter stage provenance invalid")
+    try:
+        _, replay_identity = chapter._verified_text_artifact(
+            root / "book-candidates",
+            selected,
+            stage,
+            request_key,
+            provenance,
+            lambda raw: chapter._shape(raw, shapes[stage], "chapter recovery shape invalid"),
+            2,
+            8192,
+        )
+    except chapter.ChapterStop:
+        raise PrivateHostStop("reviewed chapter replay history cannot be verified") from None
+    if replay_identity != identity:
+        raise PrivateHostStop("reviewed chapter replay identity changed")
     files = list(selected.iterdir())
     if len(files) > 24:
         raise PrivateHostStop("reviewed chapter replay file inventory exceeds finite limit")
@@ -1192,35 +1232,73 @@ def _save_final_manifest(
 
 def private_recovery_archive(artifact_root: Path) -> dict[str, object]:
     """Package only checksum-verified scoped outputs into a private owner archive."""
-    status = recovery_report(artifact_root)
+    status = recovery_report(artifact_root, tolerate_corrupt=True)
     root = artifact_root.resolve()
     manifests: list[dict[str, object]] = []
     files: dict[str, dict[str, object]] = {}
     chapters = cast(dict[str, dict[str, object]], status["chapters"])
     for number in (1, 7):
         info = chapters[str(number)]
-        if info["recovery_state"] == "NEVER_STARTED":
+        state = info["recovery_state"]
+        if state in {"NEVER_STARTED", "INCOMPLETE"}:
+            manifests.append({
+                "chapter": number,
+                "inventory_status": "NOT_STARTED" if state == "NEVER_STARTED" else "INCOMPLETE",
+                "files": [],
+            })
             continue
-        manifest = _chapter_output_manifest(
-            root, number, str(info["bundle_sha256"]), str(info["scope_sha256"])
-        )
-        if info["recovery_state"] == "READY":
-            saved_path = (
-                root / "book-candidates/private-host" / f"chapter-{number}-output-manifest.json"
+        try:
+            manifest = _chapter_output_manifest(
+                root, number, str(info["bundle_sha256"]), str(info["scope_sha256"])
             )
-            raw = _read_recovery_artifact(saved_path, 150_000)
-            if raw != evaluation._json_bytes(manifest):
-                raise PrivateHostStop(
-                    "chapter output inventory differs from final committed manifest"
+            if state == "READY":
+                saved_path = (
+                    root / "book-candidates/private-host"
+                    / f"chapter-{number}-output-manifest.json"
                 )
-            if hashlib.sha256(raw).hexdigest() != info["output_manifest_sha256"]:
-                raise PrivateHostStop("chapter output inventory digest changed")
-        manifests.append(manifest)
-        for entry in cast(list[dict[str, object]], manifest["files"]):
+                raw = _read_recovery_artifact(saved_path, 150_000)
+                if raw != evaluation._json_bytes(manifest):
+                    raise PrivateHostStop(
+                        "chapter output inventory differs from final committed manifest"
+                    )
+                if hashlib.sha256(raw).hexdigest() != info["output_manifest_sha256"]:
+                    raise PrivateHostStop("chapter output inventory digest changed")
+            scoped = cast(list[dict[str, object]], manifest["files"])
+            # Check ALL collisions before mutating the accepted file inventory.
+            for entry in scoped:
+                key = str(entry["relative_path"])
+                previous = files.get(key)
+                if previous is not None and any(
+                    previous[field] != entry[field]
+                    for field in ("kind", "sha256", "bytes")
+                ):
+                    raise PrivateHostStop("private shared output hash or type conflict")
+        except (PrivateHostStop, evaluation.EvaluationStop, ValueError, OSError, KeyError):
+            info["retrieval_status"] = "INCOMPLETE"
+            manifests.append({
+                "chapter": number,
+                "inventory_status": "INCOMPLETE",
+                "files": [],
+            })
+            continue
+        info["retrieval_status"] = "INVENTORY_VERIFIED_NOT_RETRIEVED"
+        manifests.append({**manifest, "inventory_status": "VERIFIED"})
+        for entry in scoped:
             key = str(entry["relative_path"])
-            if key in files and files[key] != entry:
-                raise PrivateHostStop("private chapter recovery entries conflict")
-            files[key] = entry
+            if key in files:
+                owned = cast(list[int], files[key]["chapters"])
+                if number not in owned:
+                    owned.append(number)
+            else:
+                files[key] = {
+                    "kind": entry["kind"],
+                    "relative_path": key,
+                    "sha256": entry["sha256"],
+                    "bytes": entry["bytes"],
+                    "chapters": [number],
+                }
+    if len(files) > 512:
+        raise PrivateHostStop("shared chapter private recovery file limit exceeded")
     listing = {
         "schema": "clipper-chapter-private-recovery-archive-manifest-v1",
         "chapters": manifests,
@@ -1275,7 +1353,9 @@ def private_recovery_archive(artifact_root: Path) -> dict[str, object]:
     }
 
 
-def recovery_report(artifact_root: Path) -> dict[str, object]:
+def recovery_report(
+    artifact_root: Path, *, tolerate_corrupt: bool = False
+) -> dict[str, object]:
     """Read-only, bounded, model-free owner recovery manifest with no source prose.
 
     This is checkpoint evidence, not proof that remote files were recovered.
@@ -1292,77 +1372,90 @@ def recovery_report(artifact_root: Path) -> dict[str, object]:
         raise PrivateHostStop("private recovery report needs a separate absolute artifact root")
     chapters: dict[str, dict[str, object]] = {}
     for number in (1, 7):
-        head_path = _phase_head(root, number)
-        folder = root / "book-candidates/private-host" / f"chapter-{number}-phase-events"
-        if not head_path.exists() and not head_path.is_symlink() and not folder.exists():
+        try:
+            head_path = _phase_head(root, number)
+            folder = root / "book-candidates/private-host" / f"chapter-{number}-phase-events"
+            if not head_path.exists() and not head_path.is_symlink() and not folder.exists():
+                chapters[str(number)] = {
+                    "recovery_state": "NEVER_STARTED",
+                    "last_subphase": "NOT_STARTED",
+                    "runtime_journal_status": "NOT_STARTED",
+                    "retrieval_status": "NOT_ATTEMPTED",
+                    "last_verified_artifact_identities": {},
+                }
+                continue
+            head_raw = _read_recovery_artifact(head_path, 16384)
+            head = _parse_recovery_artifact(head_raw)
+            if (
+                not isinstance(head, dict)
+                or head.get("chapter") != number
+                or not isinstance(head.get("bundle_sha256"), str)
+                or DIGEST.fullmatch(head["bundle_sha256"]) is None
+                or not isinstance(head.get("scope_sha256"), str)
+                or DIGEST.fullmatch(head["scope_sha256"]) is None
+            ):
+                raise PrivateHostStop("private recovery journal head cannot be trusted")
+            records = _phase_records(root, number, head["bundle_sha256"], head["scope_sha256"])
+            if not records:
+                raise PrivateHostStop("private recovery journal empty")
+            phase = str(records[-1]["phase"])
+            identities: dict[str, str] = {}
+            for record in reversed(records):
+                artifacts = record["artifacts"]
+                for key in (
+                    "brief_identity",
+                    "adaptation_identity",
+                    "script_identity",
+                    "narration_report_identity",
+                    "direction_identity",
+                    "final_result_identity",
+                    "output_manifest_sha256",
+                    "progress_sha256",
+                ):
+                    value = artifacts.get(key)
+                    if key not in identities and isinstance(value, str) and DIGEST.fullmatch(value):
+                        identities[key] = value
+            last_subphase = (
+                str(records[-2]["phase"]) if phase == "STOPPED" and len(records) > 1 else phase
+            )
+            category = (
+                "READY"
+                if phase == "PREPRODUCTION_READY"
+                else "NEVER_STARTED"
+                if phase == "NOT_STARTED"
+                else "IN_FLIGHT"
+                if phase.endswith("_IN_FLIGHT")
+                else "AWAITING_REVIEW"
+                if phase == "AWAITING_HUMAN_REVIEW"
+                else "INTERRUPTED"
+            )
             chapters[str(number)] = {
-                "recovery_state": "NEVER_STARTED",
-                "last_subphase": "NOT_STARTED",
-                "runtime_journal_status": "NOT_STARTED",
+                "recovery_state": category,
+                "last_subphase": last_subphase,
+                "runtime_journal_status": phase,
                 "retrieval_status": "NOT_ATTEMPTED",
+                "bundle_sha256": head["bundle_sha256"],
+                "scope_sha256": head["scope_sha256"],
+                "last_verified_artifact_identities": identities,
+                "committed_phase_event_sha256": head["event_sha256"],
+                **(
+                    {"output_manifest_sha256": identities["output_manifest_sha256"]}
+                    if phase == "PREPRODUCTION_READY" and "output_manifest_sha256" in identities
+                    else {}
+                ),
+            }
+        except (PrivateHostStop, evaluation.EvaluationStop, ValueError, OSError):
+            if not tolerate_corrupt:
+                raise
+            # Keep the other chapter's scope independently recoverable.
+            # No unverified stage identity may be surfaced as recovered.
+            chapters[str(number)] = {
+                "recovery_state": "INCOMPLETE",
+                "last_subphase": "UNVERIFIED",
+                "runtime_journal_status": "UNVERIFIED",
+                "retrieval_status": "INCOMPLETE",
                 "last_verified_artifact_identities": {},
             }
-            continue
-        head_raw = _read_recovery_artifact(head_path, 16384)
-        head = _parse_recovery_artifact(head_raw)
-        if (
-            not isinstance(head, dict)
-            or head.get("chapter") != number
-            or not isinstance(head.get("bundle_sha256"), str)
-            or DIGEST.fullmatch(head["bundle_sha256"]) is None
-            or not isinstance(head.get("scope_sha256"), str)
-            or DIGEST.fullmatch(head["scope_sha256"]) is None
-        ):
-            raise PrivateHostStop("private recovery journal head cannot be trusted")
-        records = _phase_records(root, number, head["bundle_sha256"], head["scope_sha256"])
-        if not records:
-            raise PrivateHostStop("private recovery journal empty")
-        phase = str(records[-1]["phase"])
-        identities: dict[str, str] = {}
-        for record in reversed(records):
-            artifacts = record["artifacts"]
-            for key in (
-                "brief_identity",
-                "adaptation_identity",
-                "script_identity",
-                "narration_report_identity",
-                "direction_identity",
-                "final_result_identity",
-                "output_manifest_sha256",
-                "progress_sha256",
-            ):
-                value = artifacts.get(key)
-                if key not in identities and isinstance(value, str) and DIGEST.fullmatch(value):
-                    identities[key] = value
-        last_subphase = (
-            str(records[-2]["phase"]) if phase == "STOPPED" and len(records) > 1 else phase
-        )
-        category = (
-            "READY"
-            if phase == "PREPRODUCTION_READY"
-            else "NEVER_STARTED"
-            if phase == "NOT_STARTED"
-            else "IN_FLIGHT"
-            if phase.endswith("_IN_FLIGHT")
-            else "AWAITING_REVIEW"
-            if phase == "AWAITING_HUMAN_REVIEW"
-            else "INTERRUPTED"
-        )
-        chapters[str(number)] = {
-            "recovery_state": category,
-            "last_subphase": last_subphase,
-            "runtime_journal_status": phase,
-            "retrieval_status": "NOT_ATTEMPTED",
-            "bundle_sha256": head["bundle_sha256"],
-            "scope_sha256": head["scope_sha256"],
-            "last_verified_artifact_identities": identities,
-            "committed_phase_event_sha256": head["event_sha256"],
-            **(
-                {"output_manifest_sha256": identities["output_manifest_sha256"]}
-                if phase == "PREPRODUCTION_READY" and "output_manifest_sha256" in identities
-                else {}
-            ),
-        }
     return {
         "schema": "clipper-private-chapter-safe-recovery-v1",
         "status": "PRIVATE_CHAPTER_RECOVERY_CHECKPOINT_ONLY",
