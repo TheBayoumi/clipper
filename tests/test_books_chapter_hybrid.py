@@ -331,10 +331,7 @@ def test_actual_pinned_public_tokenizer_template_and_same_count_tokens_bind_requ
     from clipper.books import constrained
 
     home = tmp_path / "local-huggingface"
-    snapshot = (
-        home / "hub" / "models--Qwen--Qwen3-1.7B"
-        / "snapshots" / scripting.SCRIPT_REVISION
-    )
+    snapshot = home / "hub" / "models--Qwen--Qwen3-1.7B" / "snapshots" / scripting.SCRIPT_REVISION
     snapshot.mkdir(parents=True)
     tokenizer_json = b"synthetic pinned public tokenizer JSON (not production weights)"
     (snapshot / "tokenizer.json").write_bytes(tokenizer_json)
@@ -350,6 +347,7 @@ def test_actual_pinned_public_tokenizer_template_and_same_count_tokens_bind_requ
     class PublicTokenizer:
         name_or_path = str(snapshot)
         chat_template = "synthetic template A"
+
         def __init__(self) -> None:
             self.ids = [71, 72, 73, 74]
 
@@ -378,13 +376,16 @@ def test_actual_pinned_public_tokenizer_template_and_same_count_tokens_bind_requ
         scripting._chapter_prompt_encoding(request_a["messages"])
     )
     assert scripting._chapter_context_tokens(request_a) == 4
-    assert hybrid.request(
-        "argument",
-        payload,
-        output_tokens=1024,
-        token_count=scripting._chapter_prompt_encoding,
-        producer_identity=identity,
-    )[1] == key_a
+    assert (
+        hybrid.request(
+            "argument",
+            payload,
+            output_tokens=1024,
+            token_count=scripting._chapter_prompt_encoding,
+            producer_identity=identity,
+        )[1]
+        == key_a
+    )
 
     for change in ("tokens_same_count", "effective_template", "tokenizer_config"):
         if change == "tokens_same_count":
