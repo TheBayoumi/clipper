@@ -1,4 +1,5 @@
 """Private previsual evaluation regression tests; synthetic source and fake producers only."""
+
 from __future__ import annotations
 
 import hashlib
@@ -24,17 +25,21 @@ def _mined(tmp_path: Path) -> tuple[BookOrchestrator, Path, Path, list[dict]]:
     def fake_miner(request: dict[str, object]) -> str:
         model_free_calls.append(request)
         span = request["constraints"]["spans"][0]  # type: ignore[index]
-        return json.dumps({
-            "lessons": [{
-                "id": span["id"],
-                "topic": "Rehearsal and observation",
-                "claim": "An invented workshop recorded a specific observation before revising a step.",
-                "hook_angle": "What changed after a small rehearsal?",
-                "visual_action": "A worker revises the named tool on a checklist.",
-                "evidence": span["text"],
-                "evidence_field": request["constraints"]["evidence_field"],  # type: ignore[index]
-            }]
-        })
+        return json.dumps(
+            {
+                "lessons": [
+                    {
+                        "id": span["id"],
+                        "topic": "Rehearsal and observation",
+                        "claim": "An invented workshop recorded a specific observation before revising a step.",
+                        "hook_angle": "What changed after a small rehearsal?",
+                        "visual_action": "A worker revises the named tool on a checklist.",
+                        "evidence": span["text"],
+                        "evidence_field": request["constraints"]["evidence_field"],  # type: ignore[index]
+                    }
+                ]
+            }
+        )
 
     result = runner.evaluate_candidate(
         acquired.analysis_ref_path,
@@ -46,7 +51,9 @@ def _mined(tmp_path: Path) -> tuple[BookOrchestrator, Path, Path, list[dict]]:
     assert len(model_free_calls) == len(work.units)
     paths = list((runner.root / "book-candidates/analysis/progress").rglob("*.json"))
     assert len(paths) == 1
-    candidate_paths = list((runner.root / "book-candidates/evaluations").rglob("mined-candidates.json"))
+    candidate_paths = list(
+        (runner.root / "book-candidates/evaluations").rglob("mined-candidates.json")
+    )
     assert len(candidate_paths) == 1
     data = json.loads(candidate_paths[0].read_bytes())
     assert data["review_status"] == "MINED_UNREVIEWED"
@@ -54,8 +61,12 @@ def _mined(tmp_path: Path) -> tuple[BookOrchestrator, Path, Path, list[dict]]:
 
 
 def _review(
-    tmp_path: Path, progress: Path, candidates: list[dict], *,
-    selected: str | None = "first", corrupt: bool = False,
+    tmp_path: Path,
+    progress: Path,
+    candidates: list[dict],
+    *,
+    selected: str | None = "first",
+    corrupt: bool = False,
 ) -> Path:
     raw_progress = progress.read_bytes()
     decisions = [
@@ -91,7 +102,7 @@ def _episode() -> dict[str, object]:
     return {
         "title": "Test the next instruction",
         "scenes": [
-            {"headline": f"Scene {i+1}", "narration": sentence}
+            {"headline": f"Scene {i + 1}", "narration": sentence}
             for i, sentence in enumerate(sentences)
         ],
     }
@@ -99,21 +110,23 @@ def _episode() -> dict[str, object]:
 
 def _shots(req: dict[str, object]) -> str:
     context = json.loads(req["messages"][1]["content"])  # type: ignore[index]
-    return json.dumps({
-        "shots": [
-            {
-                "scene_id": scene["scene_id"],
-                "purpose": f"Show the mechanism in scene {i+1}",
-                "subject": "A workshop worker and a shared instruction card",
-                "action": "The worker marks the missing tool and retests the instruction",
-                "environment": "A small fabrication workshop with shared tools",
-                "mechanism": "One wording change removes an ambiguous physical action",
-                "continuity": "The same worker and marked instruction remain in view",
-                "evidence_id": context["source_context"]["candidate_id"],
-            }
-            for i, scene in enumerate(context["scenes"])
-        ]
-    })
+    return json.dumps(
+        {
+            "shots": [
+                {
+                    "scene_id": scene["scene_id"],
+                    "purpose": f"Show the mechanism in scene {i + 1}",
+                    "subject": "A workshop worker and a shared instruction card",
+                    "action": "The worker marks the missing tool and retests the instruction",
+                    "environment": "A small fabrication workshop with shared tools",
+                    "mechanism": "One wording change removes an ambiguous physical action",
+                    "continuity": "The same worker and marked instruction remain in view",
+                    "evidence_id": context["source_context"]["candidate_id"],
+                }
+                for i, scene in enumerate(context["scenes"])
+            ]
+        }
+    )
 
 
 def _wav(narration: str, voice: str) -> bytes:
@@ -168,9 +181,12 @@ def test_abstention_and_review_rejections_are_private_and_no_script(
     bad_producer = Mock(side_effect=AssertionError("should abstain without inference"))
     review = _review(tmp_path, progress, candidates, selected=None)
     result = runner.evaluate_candidate(
-        ref, progress_path=progress, review_file=review,
+        ref,
+        progress_path=progress,
+        review_file=review,
         options=evaluation.EvaluationOptions(script_cpu=True, direction_cpu=True, kokoro_cpu=True),
-        script_completion=bad_producer, direction_completion=bad_producer,
+        script_completion=bad_producer,
+        direction_completion=bad_producer,
         narration_producer=bad_producer,
     )
     assert result["status"] == "ABSTAINED_ZERO_SOURCE_SUPPORTED_LESSONS"
@@ -206,9 +222,12 @@ def test_actual_script_injected_generated_direction_and_no_visual_stage(
 
     director.side_effect = retry_direction
     result = runner.evaluate_candidate(
-        ref, progress_path=progress, review_file=review,
+        ref,
+        progress_path=progress,
+        review_file=review,
         options=evaluation.EvaluationOptions(script_cpu=True, direction_cpu=True),
-        script_completion=scripts, direction_completion=director,
+        script_completion=scripts,
+        direction_completion=director,
     )
     assert result["status"] == "PREVISUAL_TEXT_READY_UNREVIEWED"
     assert result["visual_generation_calls"] == 0
@@ -272,8 +291,12 @@ def test_opt_in_kokoro_real_wav_metadata_and_replay(
     # text direction must NOT allow the model producer to be reinvoked.
     no_more = Mock(side_effect=AssertionError("no repeat inference"))
     runner.evaluate_candidate(
-        ref, progress_path=progress, review_file=review, options=kwargs["options"],
-        script_completion=no_more, direction_completion=no_more,
+        ref,
+        progress_path=progress,
+        review_file=review,
+        options=kwargs["options"],
+        script_completion=no_more,
+        direction_completion=no_more,
         narration_producer=no_more,
     )
     no_more.assert_not_called()
@@ -284,7 +307,9 @@ def test_bounded_script_retries_record_every_raw_and_no_source_repair(tmp_path: 
     review = _review(tmp_path, progress, candidates)
     broken = Mock(side_effect=['{"title":"bad","scenes":[]}', json.dumps(_episode())])
     result = runner.evaluate_candidate(
-        ref, progress_path=progress, review_file=review,
+        ref,
+        progress_path=progress,
+        review_file=review,
         options=evaluation.EvaluationOptions(script_cpu=True),
         script_completion=broken,
     )
@@ -320,15 +345,26 @@ def test_review_identity_qualifiers_private_errors_and_tampering(tmp_path: Path)
         runner.evaluate_candidate(ref, progress_path=progress)
 
 
-@pytest.mark.parametrize("mutation", [
-    {"max_new_units": 0}, {"max_new_units": True}, {"mine_cpu": "true"},
-    {"voice": "not-a-voice"}, {"pillar": "other"},
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"max_new_units": 0},
+        {"max_new_units": True},
+        {"mine_cpu": "true"},
+        {"voice": "not-a-voice"},
+        {"pillar": "other"},
+    ],
+)
 def test_cpu_manifest_must_be_explicit_and_bounded(mutation: dict) -> None:
     params = {
         "schema": evaluation.MANIFEST_SCHEMA,
-        "mine_cpu": False, "script_cpu": False, "direction_cpu": False,
-        "kokoro_cpu": False, "max_new_units": 1, "pillar": "business", "voice": "af_heart",
+        "mine_cpu": False,
+        "script_cpu": False,
+        "direction_cpu": False,
+        "kokoro_cpu": False,
+        "max_new_units": 1,
+        "pillar": "business",
+        "voice": "af_heart",
     }
     params.update(mutation)
     with pytest.raises(evaluation.EvaluationStop):
@@ -339,8 +375,12 @@ def test_no_implicit_inference_from_default_options(tmp_path: Path) -> None:
     runner, ref, progress, candidates = _mined(tmp_path)
     script = Mock(side_effect=AssertionError("implicit script inference"))
     result = runner.evaluate_candidate(
-        ref, progress_path=progress, review_file=_review(tmp_path, progress, candidates),
-        script_completion=script, direction_completion=script, narration_producer=script,
+        ref,
+        progress_path=progress,
+        review_file=_review(tmp_path, progress, candidates),
+        script_completion=script,
+        direction_completion=script,
+        narration_producer=script,
     )
     assert result["status"] == "AWAITING_EXPLICIT_CPU_SCRIPT_PERMISSION"
     script.assert_not_called()
@@ -351,7 +391,8 @@ def test_reject_invalid_direction_twice_and_keep_raw(tmp_path: Path) -> None:
     failure = Mock(return_value=json.dumps({"shots": []}))
     with pytest.raises(evaluation.EvaluationStop, match="two recorded attempts"):
         runner.evaluate_candidate(
-            ref, progress_path=progress,
+            ref,
+            progress_path=progress,
             review_file=_review(tmp_path, progress, candidates),
             options=evaluation.EvaluationOptions(script_cpu=True, direction_cpu=True),
             script_completion=Mock(return_value=json.dumps(_episode())),
@@ -360,16 +401,28 @@ def test_reject_invalid_direction_twice_and_keep_raw(tmp_path: Path) -> None:
     assert failure.call_count == 2
     raw = list((runner.root / "book-candidates/evaluations").rglob("raw-*.json"))
     assert len(raw) == 3  # 1 script and 2 direction attempts
-    assert len(list((runner.root / "book-candidates/evaluations").rglob("validated-text-shots.json"))) == 0
+    assert (
+        len(list((runner.root / "book-candidates/evaluations").rglob("validated-text-shots.json")))
+        == 0
+    )
 
 
 def test_prompt_version_keeps_legacy_cache_stable_and_strengthens_evidence() -> None:
-    request = scripting._script_request(scripting.NicheConfig(
-        niche="Private", audience="Adults", brand="CLIPPER", voice="af_heart",
-        facts=(), topic="An invented workshop",
-    ))
+    request = scripting._script_request(
+        scripting.NicheConfig(
+            niche="Private",
+            audience="Adults",
+            brand="CLIPPER",
+            voice="af_heart",
+            facts=(),
+            topic="An invented workshop",
+        )
+    )
     assert "evaluation_source_context" not in str(request)
     assert whole_book.LOCAL_PRODUCER_CONTRACT.endswith("v8")
     assert whole_book.LOCAL_GENERATION["max_new_tokens"] == 960
     assert len(scripting.QWEN_GENERATION_SETTINGS) == 3
-    assert "exact selected evidence entry ALONE" in whole_book._request_for_identity.__code__.co_consts.__str__()
+    assert (
+        "exact selected evidence entry ALONE"
+        in whole_book._request_for_identity.__code__.co_consts.__str__()
+    )

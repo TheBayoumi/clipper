@@ -105,7 +105,8 @@ def configure_books_parser(subparsers: Any) -> None:
     )
     evaluate.add_argument("--review-file", type=Path, help="private human source-support verdicts")
     evaluate.add_argument(
-        "--run-manifest", type=Path,
+        "--run-manifest",
+        type=Path,
         help="separate explicit private CPU permissions; omitted means model-free",
     )
     evaluate.add_argument("--responses", type=Path, help="model-free recorded mining responses")
@@ -416,8 +417,7 @@ def dispatch_books(args: argparse.Namespace) -> int:
             response_bytes = evaluation._read(args.responses, 64_000_000)
             parsed: object = json.loads(response_bytes)
             if not isinstance(parsed, dict) or any(
-                not isinstance(k, str) or re.fullmatch(r"[0-9a-f]{64}", k) is None
-                for k in parsed
+                not isinstance(k, str) or re.fullmatch(r"[0-9a-f]{64}", k) is None for k in parsed
             ):
                 raise evaluation.EvaluationStop("recorded responses require SHA-256 keys")
             replies = parsed
@@ -432,14 +432,31 @@ def dispatch_books(args: argparse.Namespace) -> int:
             response_file_sha256=response_sha,
         )
         # Public stdout never includes private quotes, titles, paths or slug IDs.
-        safe = {key: result[key] for key in (
-            "schema", "status", "progress_sha256", "review_sha256",
-            "candidate_count", "accepted_lessons", "script_scene_count",
-            "script_attempts", "direction_attempts", "text_shot_count",
-            "narration_included", "measured_duration_seconds", "timing_basis",
-            "publish_eligible", "source_authorization", "recovery_status",
-            "execution", "model_calls_authorized", "visual_generation_calls"
-        ) if key in result}
+        safe = {
+            key: result[key]
+            for key in (
+                "schema",
+                "status",
+                "progress_sha256",
+                "review_sha256",
+                "candidate_count",
+                "accepted_lessons",
+                "script_scene_count",
+                "script_attempts",
+                "direction_attempts",
+                "text_shot_count",
+                "narration_included",
+                "measured_duration_seconds",
+                "timing_basis",
+                "publish_eligible",
+                "source_authorization",
+                "recovery_status",
+                "execution",
+                "model_calls_authorized",
+                "visual_generation_calls",
+            )
+            if key in result
+        }
         print(json.dumps(safe, sort_keys=True))
         return 0 if result["status"] == "PREVISUAL_TEXT_READY_UNREVIEWED" else 2
     catalog = _json(args.catalog)

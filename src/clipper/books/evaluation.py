@@ -3,6 +3,7 @@
 Only a canonical candidate analysis ref or its immutable mined ledger is accepted.
 This deliberately does not use the legacy editorial catalog/plan/run selector.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -28,8 +29,16 @@ MAX_PRIVATE_JSON = 2_000_000
 MAX_DIRECTION_ATTEMPTS = 2
 MAX_DIRECTION_BYTES = 16_384
 SHOT_FIELDS = frozenset(
-    {"scene_id", "purpose", "subject", "action", "environment", "mechanism",
-     "continuity", "evidence_id"}
+    {
+        "scene_id",
+        "purpose",
+        "subject",
+        "action",
+        "environment",
+        "mechanism",
+        "continuity",
+        "evidence_id",
+    }
 )
 
 
@@ -51,13 +60,26 @@ class EvaluationOptions:
 
     @classmethod
     def from_manifest(cls, raw: object) -> EvaluationOptions:
-        if not isinstance(raw, dict) or set(raw) != {
-            "schema", "mine_cpu", "script_cpu", "direction_cpu",
-            "kokoro_cpu", "max_new_units", "pillar", "voice"
-        } or raw["schema"] != MANIFEST_SCHEMA:
+        if (
+            not isinstance(raw, dict)
+            or set(raw)
+            != {
+                "schema",
+                "mine_cpu",
+                "script_cpu",
+                "direction_cpu",
+                "kokoro_cpu",
+                "max_new_units",
+                "pillar",
+                "voice",
+            }
+            or raw["schema"] != MANIFEST_SCHEMA
+        ):
             raise EvaluationStop("invalid private evaluation run manifest")
-        if any(type(raw[field]) is not bool for field in
-               ("mine_cpu", "script_cpu", "direction_cpu", "kokoro_cpu")):
+        if any(
+            type(raw[field]) is not bool
+            for field in ("mine_cpu", "script_cpu", "direction_cpu", "kokoro_cpu")
+        ):
             raise EvaluationStop("CPU permissions must be explicit booleans")
         if type(raw["max_new_units"]) is not int or not 1 <= raw["max_new_units"] <= 8:
             raise EvaluationStop("private CPU mining budget must be between 1 and 8")
@@ -101,7 +123,8 @@ def _mined_export(
     progress_raw = _read(progress_path, 20_000_000)
     progress: object = json.loads(progress_raw)
     if not isinstance(progress, dict) or any(
-        progress.get(k) != v for k, v in {
+        progress.get(k) != v
+        for k, v in {
             "schema": whole_book.RESULT_SCHEMA,
             "book_id": ref.book_id,
             "book_fingerprint": book.fingerprint,
@@ -120,7 +143,8 @@ def _mined_export(
     export_path = base / "analysis" / "exports" / ref.book_id / progress_path.name
     export: object = json.loads(_read(export_path, 20_000_000))
     if not isinstance(export, dict) or any(
-        export.get(k) != v for k, v in {
+        export.get(k) != v
+        for k, v in {
             "schema": "clipper-book-editorial-catalog-v1",
             "input_kind": "mined_separate_unreviewed_whole_book",
             "review_status": "MINED_UNREVIEWED",
@@ -136,13 +160,16 @@ def _mined_export(
     if not isinstance(records, list) or len(records) != 1 or not isinstance(records[0], dict):
         raise EvaluationStop("mined export book identity mismatch")
     record = records[0]
-    if any(record.get(k) != v for k, v in {
-        "id": ref.book_id,
-        "source_fingerprint": book.source_fingerprint,
-        "authorization_status": "unverified",
-        "review_status": "MINED_UNREVIEWED",
-        "publish_eligible": False,
-    }.items()):
+    if any(
+        record.get(k) != v
+        for k, v in {
+            "id": ref.book_id,
+            "source_fingerprint": book.source_fingerprint,
+            "authorization_status": "unverified",
+            "review_status": "MINED_UNREVIEWED",
+            "publish_eligible": False,
+        }.items()
+    ):
         raise EvaluationStop("mined export provenance mismatch")
     lessons = record.get("lessons")
     if not isinstance(lessons, list) or len(lessons) != progress.get("candidate_count"):
@@ -154,39 +181,52 @@ def _mined_export(
         if not isinstance(item, dict) or not isinstance(item.get("evidence_anchor"), dict):
             raise EvaluationStop("mined candidate evidence is malformed")
         evidence = item["evidence_anchor"]
-        unit = by_anchor.get((evidence.get("anchor"), evidence.get("word_offset"),
-                              evidence.get("text_sha256")))
+        unit = by_anchor.get(
+            (evidence.get("anchor"), evidence.get("word_offset"), evidence.get("text_sha256"))
+        )
         occurrence = evidence.get("selected_occurrence")
         if (
-            unit is None or not isinstance(occurrence, dict)
+            unit is None
+            or not isinstance(occurrence, dict)
             or item.get("review_status") != "MINED_UNREVIEWED"
             or item.get("publish_eligible") is not False
             or item.get("claim_source_url") != book.source.source_uri
             or item.get("id") in seen
-            or any(evidence.get(k) != v for k, v in {
-                "section_id": unit.section_id, "source_path": unit.source_path,
-                "field": unit.evidence_field, "origin": unit.origin,
-                "review_status": unit.review_status,
-                "research_link_status": unit.research_link_status,
-                "source_sha256": book.content_sha256,
-            }.items())
+            or any(
+                evidence.get(k) != v
+                for k, v in {
+                    "section_id": unit.section_id,
+                    "source_path": unit.source_path,
+                    "field": unit.evidence_field,
+                    "origin": unit.origin,
+                    "review_status": unit.review_status,
+                    "research_link_status": unit.research_link_status,
+                    "source_sha256": book.content_sha256,
+                }.items()
+            )
         ):
             raise EvaluationStop("mined candidate identity or source context mismatch")
         start, end = occurrence.get("unit_start"), occurrence.get("unit_end")
-        if (type(start) is not int or type(end) is not int or
-            not 0 <= start < end <= len(unit.text) or
-            unit.text[start:end] != evidence.get("quote") or
-            occurrence.get("id") != item.get("proposed_id") or
-            occurrence.get("quote_sha256") != _sha(unit.text[start:end].encode("utf-8"))):
+        if (
+            type(start) is not int
+            or type(end) is not int
+            or not 0 <= start < end <= len(unit.text)
+            or unit.text[start:end] != evidence.get("quote")
+            or occurrence.get("id") != item.get("proposed_id")
+            or occurrence.get("quote_sha256") != _sha(unit.text[start:end].encode("utf-8"))
+        ):
             raise EvaluationStop("mined source occurrence is inconsistent")
         item["_evaluation_context"] = {
-            "anchor": unit.anchor, "section_id": unit.section_id,
-            "source_path": unit.source_path, "unit_word_offset": unit.word_offset,
-            "evidence_field": unit.evidence_field, "origin": unit.origin,
+            "anchor": unit.anchor,
+            "section_id": unit.section_id,
+            "source_path": unit.source_path,
+            "unit_word_offset": unit.word_offset,
+            "evidence_field": unit.evidence_field,
+            "origin": unit.origin,
             "source_review_status": unit.review_status,
             "research_link_status": unit.research_link_status,
             "evidence_quote": evidence["quote"],
-            "source_context": unit.text[max(0, start - 250):min(len(unit.text), end + 250)],
+            "source_context": unit.text[max(0, start - 250) : min(len(unit.text), end + 250)],
             "recovery_status": book.recovery_status,
             "authorization_status": book.source.authorization_status,
         }
@@ -195,33 +235,43 @@ def _mined_export(
 
 
 def _review(lessons: list[dict[str, Any]], raw: object, progress_sha: str) -> dict[str, Any] | None:
-    if not isinstance(raw, dict) or set(raw) != {
-        "schema", "progress_sha256", "reviewer", "selected_candidate_id", "decisions"
-    } or raw["schema"] != REVIEW_SCHEMA or raw["progress_sha256"] != progress_sha:
+    if (
+        not isinstance(raw, dict)
+        or set(raw)
+        != {"schema", "progress_sha256", "reviewer", "selected_candidate_id", "decisions"}
+        or raw["schema"] != REVIEW_SCHEMA
+        or raw["progress_sha256"] != progress_sha
+    ):
         raise EvaluationStop("source-support review schema or mining identity mismatch")
-    if (not isinstance(raw["reviewer"], str) or not 2 <= len(raw["reviewer"]) <= 80
-        or not isinstance(raw["decisions"], list)):
+    if (
+        not isinstance(raw["reviewer"], str)
+        or not 2 <= len(raw["reviewer"]) <= 80
+        or not isinstance(raw["decisions"], list)
+    ):
         raise EvaluationStop("source-support review must identify a human reviewer")
     candidates = {item["id"]: item for item in lessons}
     if len(candidates) != len(lessons):
         raise EvaluationStop("duplicate mined candidate IDs")
     decisions: dict[str, dict[str, str]] = {}
     for record in raw["decisions"]:
-        if not isinstance(record, dict) or set(record) != {
-            "candidate_id", "decision", "reason", "qualifier_quote"
-        } or not all(isinstance(x, str) for x in record.values()):
+        if (
+            not isinstance(record, dict)
+            or set(record) != {"candidate_id", "decision", "reason", "qualifier_quote"}
+            or not all(isinstance(x, str) for x in record.values())
+        ):
             raise EvaluationStop("invalid human source-support decision")
         cid = record["candidate_id"]
-        if (cid not in candidates or cid in decisions
+        if (
+            cid not in candidates
+            or cid in decisions
             or record["decision"] not in {"accept_direct", "reject"}
-            or not 8 <= len(record["reason"].strip()) <= 600):
+            or not 8 <= len(record["reason"].strip()) <= 600
+        ):
             raise EvaluationStop("missing, duplicate or unsupported source-review decision")
         qualifier = record["qualifier_quote"]
-        if (len(qualifier) > 400 or
-            (
-                qualifier
-                and qualifier not in candidates[cid]["_evaluation_context"]["source_context"]
-            )):
+        if len(qualifier) > 400 or (
+            qualifier and qualifier not in candidates[cid]["_evaluation_context"]["source_context"]
+        ):
             raise EvaluationStop("review qualifier must quote the exact source context")
         decisions[cid] = cast(dict[str, str], record)
     if set(decisions) != set(candidates):
@@ -229,61 +279,101 @@ def _review(lessons: list[dict[str, Any]], raw: object, progress_sha: str) -> di
     selected = raw["selected_candidate_id"]
     if selected is None and all(d["decision"] == "reject" for d in decisions.values()):
         return None
-    if (not isinstance(selected, str) or selected not in decisions or
-        decisions[selected]["decision"] != "accept_direct" or
-        sum(d["decision"] == "accept_direct" for d in decisions.values()) != 1):
+    if (
+        not isinstance(selected, str)
+        or selected not in decisions
+        or decisions[selected]["decision"] != "accept_direct"
+        or sum(d["decision"] == "accept_direct" for d in decisions.values()) != 1
+    ):
         raise EvaluationStop("evaluation requires exactly one reviewer-selected direct claim")
-    return {"selected": candidates[selected], "decision": decisions[selected],
-            "reviewer": raw["reviewer"], "decisions": list(decisions.values())}
+    return {
+        "selected": candidates[selected],
+        "decision": decisions[selected],
+        "reviewer": raw["reviewer"],
+        "decisions": list(decisions.values()),
+    }
 
 
-def _script_config(book: object, candidate: dict[str, Any], options: EvaluationOptions,
-                   review_fingerprint: str) -> scripting.NicheConfig:
+def _script_config(
+    book: object, candidate: dict[str, Any], options: EvaluationOptions, review_fingerprint: str
+) -> scripting.NicheConfig:
     source = cast(Any, book).source
     lesson_id = cast(str, candidate["proposed_id"])
     book_id = "-".join(re.findall(r"[a-z0-9]+", source.title.casefold()))[:60] or "source"
     # A private evaluation identity cannot collide with a catalog-created production episode.
     return scripting.NicheConfig(
-        niche="private_book_evaluation", audience="Adults seeking one testable lesson",
-        brand="CLIPPER EVALUATION ONLY", voice=options.voice,
-        facts=(), topic=candidate["topic"], format="book_lesson",
-        pillar=options.pillar, book_title=source.title, book_author=source.author,
-        source_url=source.source_uri, book_id=book_id, lesson_id=lesson_id,
-        angle_id="assisted-eval", episode_id=f"{book_id}--{lesson_id}--assisted-eval",
+        niche="private_book_evaluation",
+        audience="Adults seeking one testable lesson",
+        brand="CLIPPER EVALUATION ONLY",
+        voice=options.voice,
+        facts=(),
+        topic=candidate["topic"],
+        format="book_lesson",
+        pillar=options.pillar,
+        book_title=source.title,
+        book_author=source.author,
+        source_url=source.source_uri,
+        book_id=book_id,
+        lesson_id=lesson_id,
+        angle_id="assisted-eval",
+        episode_id=f"{book_id}--{lesson_id}--assisted-eval",
         script_version=scripting.BOOK_EDIT_CONTRACT,
         selection_fingerprint=review_fingerprint,
-        hook_angle=candidate["hook_angle"], visual_action=candidate["visual_action"],
+        hook_angle=candidate["hook_angle"],
+        visual_action=candidate["visual_action"],
     )
 
 
-def _shot_request(script: scripting.Episode, source_context: dict[str, object],
-                  timings: list[dict[str, object]]) -> dict[str, object]:
-    scenes = [{"scene_id": f"scene-{i:02d}", "headline": s.headline,
-               "narration": s.narration, "timing": timings[i]}
-              for i, s in enumerate(script.scenes)]
+def _shot_request(
+    script: scripting.Episode, source_context: dict[str, object], timings: list[dict[str, object]]
+) -> dict[str, object]:
+    scenes = [
+        {
+            "scene_id": f"scene-{i:02d}",
+            "headline": s.headline,
+            "narration": s.narration,
+            "timing": timings[i],
+        }
+        for i, s in enumerate(script.scenes)
+    ]
     return {
-        "model": scripting.SCRIPT_MODEL, "revision": scripting.SCRIPT_REVISION,
-        "seed": 42, "max_new_tokens": 960,
+        "model": scripting.SCRIPT_MODEL,
+        "revision": scripting.SCRIPT_REVISION,
+        "seed": 42,
+        "max_new_tokens": 960,
         "messages": [
-            {"role": "system", "content": (
-                "Return exactly one JSON object with a 'shots' array, exactly one shot per "
-                "input scene in the same order. Each shot has exactly scene_id, purpose, "
-                "subject, action, environment, mechanism, continuity, evidence_id. "
-                "Every value is specific nonempty text, <= 220 characters. scene_id and "
-                "evidence_id must be copied verbatim. Ground the shot in the actual "
-                "narration and provided source context. Show a physical causal mechanism "
-                "rather than generic text, charts or decoration. Preserve qualifications. "
-                "Do not claim any images or video already exist. JSON only."
-            )},
-            {"role": "user", "content": json.dumps(
-                {"schema": DIRECTION_SCHEMA, "scenes": scenes,
-                 "source_context": source_context}, ensure_ascii=False, sort_keys=True)}
+            {
+                "role": "system",
+                "content": (
+                    "Return exactly one JSON object with a 'shots' array, exactly one shot per "
+                    "input scene in the same order. Each shot has exactly scene_id, purpose, "
+                    "subject, action, environment, mechanism, continuity, evidence_id. "
+                    "Every value is specific nonempty text, <= 220 characters. scene_id and "
+                    "evidence_id must be copied verbatim. Ground the shot in the actual "
+                    "narration and provided source context. Show a physical causal mechanism "
+                    "rather than generic text, charts or decoration. Preserve qualifications. "
+                    "Do not claim any images or video already exist. JSON only."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "schema": DIRECTION_SCHEMA,
+                        "scenes": scenes,
+                        "source_context": source_context,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            },
         ],
     }
 
 
-def _shots(raw: str, script: scripting.Episode, evidence_id: str,
-           timings: list[dict[str, object]]) -> list[dict[str, object]]:
+def _shots(
+    raw: str, script: scripting.Episode, evidence_id: str, timings: list[dict[str, object]]
+) -> list[dict[str, object]]:
     if len(raw.encode("utf-8")) > MAX_DIRECTION_BYTES:
         raise EvaluationStop("direction reply exceeds bounded raw limit")
     try:
@@ -301,18 +391,24 @@ def _shots(raw: str, script: scripting.Episode, evidence_id: str,
         raise EvaluationStop("direction does not cover every script scene")
     validated = []
     for i, shot in enumerate(shots):
-        if (not isinstance(shot, dict) or set(shot) != SHOT_FIELDS or
-            any(not isinstance(v, str) or not v.strip() or len(v) > 220
-                for v in shot.values()) or
-            shot["scene_id"] != f"scene-{i:02d}" or shot["evidence_id"] != evidence_id):
+        if (
+            not isinstance(shot, dict)
+            or set(shot) != SHOT_FIELDS
+            or any(not isinstance(v, str) or not v.strip() or len(v) > 220 for v in shot.values())
+            or shot["scene_id"] != f"scene-{i:02d}"
+            or shot["evidence_id"] != evidence_id
+        ):
             raise EvaluationStop("direction shot identity, text, or source mapping mismatch")
-        validated.append({**shot, "scene_headline": script.scenes[i].headline,
-                          "timing": timings[i]})
+        validated.append(
+            {**shot, "scene_headline": script.scenes[i].headline, "timing": timings[i]}
+        )
     return validated
 
 
 def evaluate_candidate(
-    runner: BookOrchestrator, ref_path: Path, *,
+    runner: BookOrchestrator,
+    ref_path: Path,
+    *,
     progress_path: Path | None = None,
     review_file: Path | None = None,
     options: EvaluationOptions = EvaluationOptions(),
@@ -334,13 +430,17 @@ def evaluate_candidate(
     elif options.mine_cpu:
         if recorded_responses is not None or response_file_sha256 is not None:
             raise EvaluationStop("recorded mining and real CPU mining are mutually exclusive")
-        mined = runner.mine_candidate(ref_path, local_cpu=True,
-                                     max_new_units=options.max_new_units,
-                                     local_completion=mine_completion)
+        mined = runner.mine_candidate(
+            ref_path,
+            local_cpu=True,
+            max_new_units=options.max_new_units,
+            local_completion=mine_completion,
+        )
         progress_path = Path(mined["progress_path"])
     elif recorded_responses is not None and response_file_sha256 is not None:
-        mined = runner.mine_candidate(ref_path, responses=recorded_responses,
-                                     response_file_sha256=response_file_sha256)
+        mined = runner.mine_candidate(
+            ref_path, responses=recorded_responses, response_file_sha256=response_file_sha256
+        )
         progress_path = Path(mined["progress_path"])
     else:
         raise EvaluationStop("evaluation requires pinned progress or explicit mining inputs")
@@ -349,21 +449,31 @@ def evaluate_candidate(
     _progress, lessons, book = _mined_export(runner, ref_path, progress_path)
     progress_sha = _sha(_read(progress_path, 20_000_000))
     private_root = runner.root / "book-candidates"
-    evaluation_key = content_fingerprint({
-        "schema": EVALUATION_SCHEMA, "progress_sha256": progress_sha
-    })
+    evaluation_key = content_fingerprint(
+        {"schema": EVALUATION_SCHEMA, "progress_sha256": progress_sha}
+    )
     evaluation_root = private_root / "evaluations" / evaluation_key
-    _store(private_root, evaluation_root / "mined-candidates.json", {
-        "schema": EVALUATION_SCHEMA, "progress_sha256": progress_sha,
-        "source_fingerprint": book.source_fingerprint, "candidate_count": len(lessons),
-        "candidates": lessons, "review_status": "MINED_UNREVIEWED",
-        "publish_eligible": False,
-    })
+    _store(
+        private_root,
+        evaluation_root / "mined-candidates.json",
+        {
+            "schema": EVALUATION_SCHEMA,
+            "progress_sha256": progress_sha,
+            "source_fingerprint": book.source_fingerprint,
+            "candidate_count": len(lessons),
+            "candidates": lessons,
+            "review_status": "MINED_UNREVIEWED",
+            "publish_eligible": False,
+        },
+    )
     summary: dict[str, object] = {
-        "schema": EVALUATION_SCHEMA, "progress_sha256": progress_sha,
-        "candidate_count": len(lessons), "publish_eligible": False,
+        "schema": EVALUATION_SCHEMA,
+        "progress_sha256": progress_sha,
+        "candidate_count": len(lessons),
+        "publish_eligible": False,
         "source_authorization": book.source.authorization_status,
-        "recovery_status": book.recovery_status, "execution": "ASSISTED_EVALUATION",
+        "recovery_status": book.recovery_status,
+        "execution": "ASSISTED_EVALUATION",
         "model_calls_authorized": {
             "mining_new_units_max": options.max_new_units if options.mine_cpu else 0,
             "script_attempts_max": scripting.MAX_SCRIPT_ATTEMPTS if options.script_cpu else 0,
@@ -376,47 +486,72 @@ def evaluate_candidate(
     review_bytes = _read(review_file)
     review = _review(lessons, json.loads(review_bytes), progress_sha)
     review_sha = _sha(review_bytes)
-    _store(private_root, evaluation_root / f"review-{review_sha}.json", {
-        "review_sha256": review_sha, "review": json.loads(review_bytes),
-        "assisted_only": True, "publish_eligible": False,
-    })
+    _store(
+        private_root,
+        evaluation_root / f"review-{review_sha}.json",
+        {
+            "review_sha256": review_sha,
+            "review": json.loads(review_bytes),
+            "assisted_only": True,
+            "publish_eligible": False,
+        },
+    )
     if review is None:
-        return {**summary, "status": "ABSTAINED_ZERO_SOURCE_SUPPORTED_LESSONS",
-                "review_sha256": review_sha, "accepted_lessons": 0}
+        return {
+            **summary,
+            "status": "ABSTAINED_ZERO_SOURCE_SUPPORTED_LESSONS",
+            "review_sha256": review_sha,
+            "accepted_lessons": 0,
+        }
     selected = review["selected"]
     source_context = {
         **selected["_evaluation_context"],
-        "book_title": book.source.title, "book_author": book.source.author,
+        "book_title": book.source.title,
+        "book_author": book.source.author,
         "source_sha256": book.content_sha256,
-        "candidate_id": selected["id"], "claim": selected["claim"],
+        "candidate_id": selected["id"],
+        "claim": selected["claim"],
         "reviewer_support_reason": review["decision"]["reason"],
         "reviewer_qualifier_quote": review["decision"]["qualifier_quote"],
         "editorial_status": "HUMAN_ASSISTED_EVALUATION_NOT_APPROVED",
         "publish_eligible": False,
     }
-    _store(private_root, evaluation_root / f"selection-{review_sha}.json", {
-        "selected_candidate_id": selected["id"], "source_context": source_context,
-        "decisions": review["decisions"], "review_sha256": review_sha,
-        "human_assisted": True, "publish_eligible": False,
-    })
-    status = {**summary, "selected_candidate_id": selected["id"],
-              "review_sha256": review_sha, "accepted_lessons": 1}
+    _store(
+        private_root,
+        evaluation_root / f"selection-{review_sha}.json",
+        {
+            "selected_candidate_id": selected["id"],
+            "source_context": source_context,
+            "decisions": review["decisions"],
+            "review_sha256": review_sha,
+            "human_assisted": True,
+            "publish_eligible": False,
+        },
+    )
+    status = {
+        **summary,
+        "selected_candidate_id": selected["id"],
+        "review_sha256": review_sha,
+        "accepted_lessons": 1,
+    }
     if not options.script_cpu:
         return {**status, "status": "AWAITING_EXPLICIT_CPU_SCRIPT_PERMISSION"}
-    config = _script_config(book, selected, options, content_fingerprint({
-        "progress": progress_sha, "review": review_sha, "candidate": selected["id"]
-    }))
+    config = _script_config(
+        book,
+        selected,
+        options,
+        content_fingerprint(
+            {"progress": progress_sha, "review": review_sha, "candidate": selected["id"]}
+        ),
+    )
     if script_completion is None:
         script_completion = scripting._local_script_completion
     script_root = evaluation_root / f"script-{review_sha}"
     acquisition._private_directory(script_root, private_root=private_root)
-    expected_script_key = scripting._script_fingerprint(
-        config, evaluation_context=source_context
-    )
-    if (
-        (script_root / "script_diagnostics" / f"{expected_script_key}.json").exists()
-        and not (script_root / "scripts" / f"{expected_script_key}.json").is_file()
-    ):
+    expected_script_key = scripting._script_fingerprint(config, evaluation_context=source_context)
+    if (script_root / "script_diagnostics" / f"{expected_script_key}.json").exists() and not (
+        script_root / "scripts" / f"{expected_script_key}.json"
+    ).is_file():
         raise EvaluationStop(
             "previous unsuccessful script attempts cannot be automatically repeated"
         )
@@ -430,24 +565,34 @@ def evaluate_candidate(
         try:
             raw = script_completion(request)
         except Exception as exc:
-            _store(private_root, script_root / f"attempt-{script_attempts}.json", {
-                "attempt": script_attempts, "status": "PRODUCER_FAILED",
-                "category": type(exc).__name__,
-            })
+            _store(
+                private_root,
+                script_root / f"attempt-{script_attempts}.json",
+                {
+                    "attempt": script_attempts,
+                    "status": "PRODUCER_FAILED",
+                    "category": type(exc).__name__,
+                },
+            )
             raise EvaluationStop(
                 "script producer failed; inspect private attempt history"
             ) from None
         if not isinstance(raw, str):
             raise EvaluationStop("script producer returned nontext output")
-        _store(private_root, script_root / f"raw-{script_attempts}.json", {
-            "attempt": script_attempts, "raw": raw, "sha256": _sha(raw.encode("utf-8")),
-        })
+        _store(
+            private_root,
+            script_root / f"raw-{script_attempts}.json",
+            {
+                "attempt": script_attempts,
+                "raw": raw,
+                "sha256": _sha(raw.encode("utf-8")),
+            },
+        )
         return raw
 
     try:
         episode, script_key = scripting.generate_episode(
-            config, script_root, completion=script_produce,
-            evaluation_context=source_context
+            config, script_root, completion=script_produce, evaluation_context=source_context
         )
     except (scripting.NicheVideoError, EvaluationStop):
         raise EvaluationStop("script generation failed; private attempts retained") from None
@@ -471,52 +616,79 @@ def evaluate_candidate(
             except (ValueError, OSError, scripting.NicheVideoError):
                 raise EvaluationStop("Kokoro narration failed or WAV invalid") from None
             seconds = frames / rate
-            track_data.append({
-                "scene_id": f"scene-{index:02d}", "sha256": _sha(wav),
-                "samples": frames, "sample_rate": rate, "channels": channels,
-                "duration_seconds": round(seconds, 4), "source": "actual_cpu_kokoro_wav",
-            })
+            track_data.append(
+                {
+                    "scene_id": f"scene-{index:02d}",
+                    "sha256": _sha(wav),
+                    "samples": frames,
+                    "sample_rate": rate,
+                    "channels": channels,
+                    "duration_seconds": round(seconds, 4),
+                    "source": "actual_cpu_kokoro_wav",
+                }
+            )
             precision = "measured_wav"
         else:
             seconds = words[index] * 60 / 140
             precision = "estimated_no_audio"
-        timings.append({
-            "start_seconds": round(elapsed, 4), "duration_seconds": round(seconds, 4),
-            "basis": precision,
-        })
+        timings.append(
+            {
+                "start_seconds": round(elapsed, 4),
+                "duration_seconds": round(seconds, 4),
+                "basis": precision,
+            }
+        )
         elapsed += seconds
-    _store(private_root, evaluation_root / f"script-report-{review_sha}.json", {
-        "script_fingerprint": script_key, "script": episode.to_dict(),
-        "model": scripting.SCRIPT_MODEL, "revision": scripting.SCRIPT_REVISION,
-        "attempts": attempts, "raw_attempt_count": script_attempts,
-        "estimated_or_actual_duration_seconds": round(elapsed, 4),
-        "narration": track_data, "voice_id": options.voice,
-        "voice_model": scripting.VOICE_MODEL, "voice_revision_label": scripting.VOICE_REVISION,
-        "voice_revision_resolved_commit": None, "voice_identity_verified": False,
-        "publish_eligible": False, "script_semantic_review": "PENDING",
-    })
-    status.update({
-        "script_scene_count": len(episode.scenes),
-        "script_attempts": script_attempts,
-        "narration_included": options.kokoro_cpu,
-        "measured_duration_seconds": round(elapsed, 4) if options.kokoro_cpu else None,
-        "timing_basis": "measured_wav" if options.kokoro_cpu else "estimated_no_audio",
-    })
+    _store(
+        private_root,
+        evaluation_root / f"script-report-{review_sha}.json",
+        {
+            "script_fingerprint": script_key,
+            "script": episode.to_dict(),
+            "model": scripting.SCRIPT_MODEL,
+            "revision": scripting.SCRIPT_REVISION,
+            "attempts": attempts,
+            "raw_attempt_count": script_attempts,
+            "estimated_or_actual_duration_seconds": round(elapsed, 4),
+            "narration": track_data,
+            "voice_id": options.voice,
+            "voice_model": scripting.VOICE_MODEL,
+            "voice_revision_label": scripting.VOICE_REVISION,
+            "voice_revision_resolved_commit": None,
+            "voice_identity_verified": False,
+            "publish_eligible": False,
+            "script_semantic_review": "PENDING",
+        },
+    )
+    status.update(
+        {
+            "script_scene_count": len(episode.scenes),
+            "script_attempts": script_attempts,
+            "narration_included": options.kokoro_cpu,
+            "measured_duration_seconds": round(elapsed, 4) if options.kokoro_cpu else None,
+            "timing_basis": "measured_wav" if options.kokoro_cpu else "estimated_no_audio",
+        }
+    )
     if not options.direction_cpu:
         return {**status, "status": "AWAITING_EXPLICIT_CPU_TEXT_DIRECTION_PERMISSION"}
     if direction_completion is None:
         direction_completion = scripting._local_script_completion
     request = _shot_request(episode, source_context, timings)
-    request_key = content_fingerprint({
-        "request": request, "script": episode.to_dict(), "review": review_sha,
-        "contract": DIRECTION_SCHEMA,
-    })
+    request_key = content_fingerprint(
+        {
+            "request": request,
+            "script": episode.to_dict(),
+            "review": review_sha,
+            "contract": DIRECTION_SCHEMA,
+        }
+    )
     direction_root = evaluation_root / f"direction-{request_key}"
     completed_direction = direction_root / "validated-text-shots.json"
     if completed_direction.is_file():
         cached: object = json.loads(_read(completed_direction))
         if (
-            not isinstance(cached, dict) or cached.get("schema") != DIRECTION_SCHEMA
+            not isinstance(cached, dict)
+            or cached.get("schema") != DIRECTION_SCHEMA
             or cached.get("script_fingerprint") != script_key
             or cached.get("review_sha256") != review_sha
             or cached.get("source_context") != source_context
@@ -525,47 +697,79 @@ def evaluate_candidate(
             or not isinstance(cached.get("shots"), list)
         ):
             raise EvaluationStop("cached text direction review or script identity changed")
-        simplified = [{key: shot.get(key) for key in SHOT_FIELDS}
-                      for shot in cached["shots"] if isinstance(shot, dict)]
+        simplified = [
+            {key: shot.get(key) for key in SHOT_FIELDS}
+            for shot in cached["shots"]
+            if isinstance(shot, dict)
+        ]
         validated = _shots(json.dumps({"shots": simplified}), episode, selected["id"], timings)
         if validated != cached["shots"]:
             raise EvaluationStop("cached shot timing or content changed")
-        return {**status, "status": "PREVISUAL_TEXT_READY_UNREVIEWED",
-                "direction_attempts": 0, "direction_cache_reused": True,
-                "text_shot_count": len(validated), "visual_generation_calls": 0}
+        return {
+            **status,
+            "status": "PREVISUAL_TEXT_READY_UNREVIEWED",
+            "direction_attempts": 0,
+            "direction_cache_reused": True,
+            "text_shot_count": len(validated),
+            "visual_generation_calls": 0,
+        }
     if direction_root.is_dir() and any(direction_root.glob("raw-*.json")):
         raise EvaluationStop("previous unsuccessful direction must not be automatically retried")
     for index in range(1, MAX_DIRECTION_ATTEMPTS + 1):
         try:
             raw = direction_completion(request)
         except Exception as exc:
-            _store(private_root, direction_root / f"attempt-{index}.json", {
-                "attempt": index, "status": "PRODUCER_FAILED",
-                "category": type(exc).__name__,
-            })
+            _store(
+                private_root,
+                direction_root / f"attempt-{index}.json",
+                {
+                    "attempt": index,
+                    "status": "PRODUCER_FAILED",
+                    "category": type(exc).__name__,
+                },
+            )
             raise EvaluationStop("text direction producer failed") from None
         if not isinstance(raw, str):
             raise EvaluationStop("direction producer returned nontext output")
-        _store(private_root, direction_root / f"raw-{index}.json", {
-            "attempt": index, "raw": raw, "sha256": _sha(raw.encode("utf-8")),
-        })
+        _store(
+            private_root,
+            direction_root / f"raw-{index}.json",
+            {
+                "attempt": index,
+                "raw": raw,
+                "sha256": _sha(raw.encode("utf-8")),
+            },
+        )
         try:
             shots = _shots(raw, episode, selected["id"], timings)
         except EvaluationStop:
-            _store(private_root, direction_root / f"attempt-{index}.json", {
-                "attempt": index, "status": "REJECTED_SCHEMA_OR_SCENE_MAPPING"
-            })
+            _store(
+                private_root,
+                direction_root / f"attempt-{index}.json",
+                {"attempt": index, "status": "REJECTED_SCHEMA_OR_SCENE_MAPPING"},
+            )
             if index == MAX_DIRECTION_ATTEMPTS:
                 raise EvaluationStop("text direction failed after two recorded attempts") from None
             continue
-        _store(private_root, direction_root / "validated-text-shots.json", {
-            "schema": DIRECTION_SCHEMA, "shots": shots,
-            "script_fingerprint": script_key, "review_sha256": review_sha,
-            "source_context": source_context,
-            "timing_basis": status["timing_basis"],
-            "semantic_visual_review": "PENDING", "publish_eligible": False,
-        })
-        return {**status, "status": "PREVISUAL_TEXT_READY_UNREVIEWED",
-                "direction_attempts": index, "text_shot_count": len(shots),
-                "visual_generation_calls": 0}
+        _store(
+            private_root,
+            direction_root / "validated-text-shots.json",
+            {
+                "schema": DIRECTION_SCHEMA,
+                "shots": shots,
+                "script_fingerprint": script_key,
+                "review_sha256": review_sha,
+                "source_context": source_context,
+                "timing_basis": status["timing_basis"],
+                "semantic_visual_review": "PENDING",
+                "publish_eligible": False,
+            },
+        )
+        return {
+            **status,
+            "status": "PREVISUAL_TEXT_READY_UNREVIEWED",
+            "direction_attempts": index,
+            "text_shot_count": len(shots),
+            "visual_generation_calls": 0,
+        }
     raise AssertionError("unreachable direction attempt limit")
