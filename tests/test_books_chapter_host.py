@@ -1534,9 +1534,7 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         }[damage]
         tampered_result = {**result, field: bad_value}
         altered_id = content_fingerprint(tampered_result)
-        evaluation._store(
-            base, base_dir / f"chapter-result-{altered_id}.json", tampered_result
-        )
+        evaluation._store(base, base_dir / f"chapter-result-{altered_id}.json", tampered_result)
         expected_error = (
             "human review identity missing"
             if damage == "forged_human_review"
