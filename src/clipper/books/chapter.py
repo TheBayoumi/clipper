@@ -319,7 +319,7 @@ def _timings(
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     start = 0.0
-    for i, scene in enumerate(script["scenes"]):
+    for scene in script["scenes"]:
         if audio is None:
             word_count = len(scene["narration"].split()) + sum(
                 len(v["text"].split()) for v in scene["dialogue"]
@@ -634,7 +634,7 @@ def _narrate(
             try:
                 wave_path = evaluation._capture_private_generator(
                     root, audio_root,
-                    lambda: narration.synthesize_scene(
+                    lambda item=item: narration.synthesize_scene(
                         item, config, audio_root, producer=producer
                     ),
                 )
