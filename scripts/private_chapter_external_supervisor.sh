@@ -7,18 +7,15 @@ umask 077
 
 : "${CODESPACE_NAME:?Exact existing Codespace name required}"
 : "${PRIVATE_CHAPTER_APPROVED_SHA:?Reviewed commit SHA required}"
-: "${PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY:?Owner external signing key required}"
-: "${PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY:?Owner public key required}"
-: "${PRIVATE_CHAPTER_ROOT:?Absolute private Codespace directory required}"
-: "${PRIVATE_CHAPTER_RECOVERY_DIR:?Absolute owner-side private recovery directory required}"
+# A restart inside the cleanup-only reserve must not depend on old signing
+# keys or a usable retrieval path. Identity recheck precedes those preflights.
+PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY="${PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY:-}"
+PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY="${PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY:-}"
+PRIVATE_CHAPTER_ROOT="${PRIVATE_CHAPTER_ROOT:-}"
+PRIVATE_CHAPTER_RECOVERY_DIR="${PRIVATE_CHAPTER_RECOVERY_DIR:-}"
 if [[ "${CODESPACES:-}" == "true" ||
       ! "$PRIVATE_CHAPTER_APPROVED_SHA" =~ ^[0-9a-f]{40}$ ||
-      "$PRIVATE_CHAPTER_ROOT" != /* ||
-      "$PRIVATE_CHAPTER_RECOVERY_DIR" != /* ||
-      -L "$PRIVATE_CHAPTER_RECOVERY_DIR" ||
-      ! "$CODESPACE_NAME" =~ ^[a-zA-Z0-9_-]+$ ||
-      ! -f "$PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY" ||
-      ! -f "$PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY" ]]; then
+      ! "$CODESPACE_NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
   echo "EXTERNAL_SUPERVISOR_IDENTITY_OR_OWNER_KEY_INVALID" >&2
   exit 2
 fi
@@ -60,6 +57,7 @@ verified_identity=0
 recovery_allowed=0
 remote_safe=0
 cleanup_only=0
+owner_recovery_safe=0
 
 # Initial identity alone is NOT permission to DELETE a name that has since
 # been replaced. Recheck numeric instance ID + repo + name + creation stamp
@@ -314,16 +312,17 @@ terminate_host() {
 trap 'exit 2' INT TERM HUP
 trap terminate_host EXIT
 
-# Recovery is an owner-side private destination, never a git worktree even
-# when its requested path traverses symlinks or resolves through "..".
-if ! bounded python3 -c '
+# This is a retrieval capability check only. An invalid owner path must
+# NEVER veto independent REST STOP/DELETE after the numeric host ID matches.
+if [[ "$PRIVATE_CHAPTER_RECOVERY_DIR" == /* &&
+      ! -L "$PRIVATE_CHAPTER_RECOVERY_DIR" ]] &&
+   bounded python3 -c '
 import pathlib, sys
 target = pathlib.Path(sys.argv[1]).resolve()
 if any((part / ".git").exists() for part in (target, *target.parents)):
     sys.exit(2)
 ' "$PRIVATE_CHAPTER_RECOVERY_DIR"; then
-  echo "EXTERNAL_SUPERVISOR_RECOVERY_DESTINATION_UNSAFE" >&2
-  exit 2
+  owner_recovery_safe=1
 fi
 
 metadata="$(bounded gh api "user/codespaces/$CODESPACE_NAME")" || {
@@ -368,12 +367,13 @@ if [[ "$PRIVATE_CHAPTER_ROOT" =~ ^/[a-zA-Z0-9_./-]+$ &&
       "$PRIVATE_CHAPTER_ROOT" != *"/../"* &&
       "$PRIVATE_CHAPTER_ROOT" != *"/./"* &&
       "$PRIVATE_CHAPTER_ROOT" != *"/.." &&
-      "$PRIVATE_CHAPTER_ROOT" != *"/." ]]; then
+      "$PRIVATE_CHAPTER_ROOT" != *"/." &&
+      "$owner_recovery_safe" == 1 ]]; then
   remote_safe=1
   # Retrieval is armed only after safe SSH setup and public-key transfer.
   recovery_allowed=0
 else
-  echo "EXTERNAL_SUPERVISOR_UNSAFE_REMOTE_PATH_CLEANUP_ONLY" >&2
+  echo "EXTERNAL_SUPERVISOR_UNSAFE_RETRIEVAL_CONFIG_CLEANUP_ONLY" >&2
   exit 2
 fi
 
@@ -383,6 +383,11 @@ if [[ "$lifecycle_mode" == "CLEANUP_ONLY" ]]; then
   cleanup_only=1
   echo "EXTERNAL_SUPERVISOR_EXISTING_HOST_CLEANUP_RESERVE" >&2
   exit 0
+fi
+if [[ ! -f "$PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY" ||
+      ! -f "$PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY" ]]; then
+  echo "EXTERNAL_SUPERVISOR_EXECUTION_SIGNER_UNAVAILABLE_CLEANUP_ONLY" >&2
+  exit 2
 fi
 remote="$PRIVATE_CHAPTER_ROOT/book-candidates/private-host"
 identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_CHANGED" >&2; exit 2; }
