@@ -384,15 +384,97 @@ with tarfile.open(archive_path, mode="r:") as source:
                     raise ValueError("hybrid local audit identities invalid")
 
                 def stage_artifact(stage, identity):
-                    candidates = [r["relative_path"] for r in contents
-                                  if r["kind"] == "text"
-                                  and r["relative_path"].startswith("book-candidates/"+stage+"/")
-                                  and r["relative_path"].endswith("/validated.json")]
-                    matching = [path for path in candidates
-                                if member_json(path, 250_000).get("artifact_identity") == identity]
-                    if len(matching) != 1:
-                        raise ValueError("hybrid stage identity absent or ambiguous")
-                    return member_json(matching[0], 250_000)
+                    # Reproduce EXACTLY the production chapter text-artifact
+                    # contract, independently of the host's saved labels.
+                    # Archive/file-level SHA hashes only prove transport, not
+                    # the immutable source->response->validated-stage identity.
+                    candidates = [
+                        r["relative_path"] for r in contents
+                        if r["kind"] == "text"
+                        and r["relative_path"].startswith("book-candidates/"+stage+"/")
+                        and r["relative_path"].endswith("/validated.json")
+                    ]
+                    if len(candidates) > 128:
+                        raise ValueError("hybrid recovered stage inventory oversized")
+                    matching = [
+                        (path, member_json(path, 250_000)) for path in candidates
+                        if paths[path]["bytes"] <= 250_000
+                    ]
+                    selected = [
+                        (path, artifact) for path, artifact in matching
+                        if isinstance(artifact,dict) and artifact.get("artifact_identity")==identity
+                    ]
+                    if len(selected) != 1:
+                        raise ValueError("hybrid recovered stage identity absent or ambiguous")
+                    path, artifact = selected[0]
+                    required = {
+                        "request_key","provenance","contract","validator_contract",
+                        "payload","owner","attempt","raw_sha256","payload_sha256",
+                        "token_receipt","artifact_identity",
+                    }
+                    optional = {"prior_rejection_sha256"}
+                    if (not required.issubset(artifact) or
+                        set(artifact)-required-optional or
+                        artifact["contract"] != stage or
+                        artifact["validator_contract"] != "clipper-chapter-validated-text-artifact-v4" or
+                        artifact["provenance"] not in ("ACTUAL_CPU_QWEN","INJECTED_TEST_PRODUCER") or
+                        type(artifact["attempt"]) is not int or
+                        not 1 <= artifact["attempt"] <= 2 or
+                        not isinstance(artifact["owner"],str) or
+                        not re.fullmatch(r"[0-9a-f]{32}", artifact["owner"]) or
+                        not all(isinstance(artifact[k],str) and dig.fullmatch(artifact[k])
+                                for k in ("request_key","raw_sha256","payload_sha256",
+                                          "artifact_identity")) or
+                        path != ("book-candidates/"+stage+"/"+artifact["request_key"]+
+                                 "/validated.json")):
+                        raise ValueError("hybrid recovered stage envelope malformed")
+                    prior = artifact.get("prior_rejection_sha256")
+                    if ((prior is not None and (
+                         artifact["attempt"] != 2 or not isinstance(prior,str)
+                         or not dig.fullmatch(prior))) or
+                        (artifact["attempt"] == 2 and prior is None)):
+                        raise ValueError("hybrid recovered stage winning rejection missing")
+                    receipt = artifact["token_receipt"]
+                    if artifact["provenance"] == "ACTUAL_CPU_QWEN":
+                        if (not isinstance(receipt,dict) or
+                            set(receipt) != {"raw_sha256","generated_token_count",
+                                             "terminal_token_id","eos_decision"} or
+                            receipt["raw_sha256"] != artifact["raw_sha256"] or
+                            type(receipt["generated_token_count"]) is not int or
+                            not 1 <= receipt["generated_token_count"] <= 8192 or
+                            type(receipt["terminal_token_id"]) is not int or
+                            receipt["terminal_token_id"] < 0 or
+                            receipt["eos_decision"] != "EOS_VERIFIED"):
+                            raise ValueError("hybrid actual token receipt invalid")
+                    elif receipt is not None:
+                        raise ValueError("hybrid injected-stage token receipt forged")
+                    # evaluation._json_bytes(payload): sorted UTF-8 JSON, with
+                    # standard whitespace and one trailing newline.
+                    payload_bytes = (
+                        json.dumps(artifact["payload"],ensure_ascii=False,sort_keys=True)+"\n"
+                    ).encode("utf-8")
+                    if hashlib.sha256(payload_bytes).hexdigest()!=artifact["payload_sha256"]:
+                        raise ValueError("hybrid recovered stage payload digest changed")
+                    # chapter._text_artifact_identity: content_fingerprint uses
+                    # compact sorted UTF-8 JSON WITHOUT a trailing newline.
+                    identity_fields = {
+                        "validator_contract":"clipper-chapter-validated-text-artifact-v4",
+                        "stage":stage,
+                        "request_key":artifact["request_key"],
+                        "provenance":artifact["provenance"],
+                        "raw_sha256":artifact["raw_sha256"],
+                        "payload_sha256":artifact["payload_sha256"],
+                        "token_receipt":receipt,
+                    }
+                    if prior is not None:
+                        identity_fields["prior_rejection_sha256"]=prior
+                    actual_identity = hashlib.sha256(
+                        json.dumps(identity_fields,ensure_ascii=False,sort_keys=True,
+                                   separators=(",",":")).encode("utf-8")
+                    ).hexdigest()
+                    if actual_identity!=identity or artifact["artifact_identity"]!=identity:
+                        raise ValueError("hybrid recovered stage content identity changed")
+                    return artifact
 
                 stage_artifact("hybrid_argument", argument_id)
                 audit_paths = [r["relative_path"] for r in contents
