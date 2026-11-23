@@ -830,3 +830,53 @@ def test_private_host_cli_never_leaks_missing_private_source_details(
     printed = capsys.readouterr().err
     assert "PRIVATE_CHAPTER_HOST_FAILED_CLOSED" in printed
     assert "synthetic-private-missing.json" not in printed
+
+
+def test_private_host_sequential_model_cache_release_is_model_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    qwen_clear = Mock()
+    kokoro_clear = Mock()
+    monkeypatch.setattr(
+        chapter_host.scripting,
+        "_script_pipeline",
+        SimpleNamespace(cache_clear=qwen_clear),
+    )
+    monkeypatch.setattr(
+        chapter_host.narration,
+        "_kokoro_pipeline",
+        SimpleNamespace(cache_clear=kokoro_clear),
+    )
+    chapter_host._release_models()
+    qwen_clear.assert_called_once_with()
+    kokoro_clear.assert_called_once_with()
+
+
+def test_private_host_rejects_rest_creation_clock_disagreement_before_any_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, path, _ = _private_setup(tmp_path, monkeypatch)
+    original_verify = chapter_lifecycle.verify_lifecycle
+
+    def mismatched(
+        root: Path, *, caller_created_at: str, codespace_name: str
+    ) -> chapter_lifecycle.VerifiedLifecycle:
+        valid = original_verify(
+            root, caller_created_at=caller_created_at, codespace_name=codespace_name
+        )
+        return chapter_lifecycle.VerifiedLifecycle(
+            valid.codespace_id,
+            valid.codespace_name,
+            valid.created_at - timedelta(minutes=1),
+            valid.approved_sha,
+            valid.expires_at,
+        )
+
+    monkeypatch.setattr(chapter_lifecycle, "verify_lifecycle", mismatched)
+    producer = Mock(side_effect=AssertionError("REST time mismatch reached model"))
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", producer)
+    with pytest.raises(chapter_host.PrivateHostStop, match="creation time mismatch"):
+        _call(runner, path, "brief")
+    producer.assert_not_called()
