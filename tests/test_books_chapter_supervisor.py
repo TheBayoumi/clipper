@@ -17,9 +17,16 @@ _SCRIPT = Path(__file__).resolve().parents[1] / "scripts/private_chapter_externa
 @pytest.mark.parametrize(
     "hang",
     [
-        "ssh", "copy", "stop", "wrong_identity",
-        "swap_before_stop", "swap_after_stop",
-        "cleanup_116", "expired_121", "unsafe_remote", "shell_metacharacters",
+        "ssh",
+        "copy",
+        "stop",
+        "wrong_identity",
+        "swap_before_stop",
+        "swap_after_stop",
+        "cleanup_116",
+        "expired_121",
+        "unsafe_remote",
+        "shell_metacharacters",
     ],
 )
 def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
