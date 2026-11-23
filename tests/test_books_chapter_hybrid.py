@@ -1210,6 +1210,28 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
     assert archive["files_retrieved"] is False
     assert archive["host_cleanup_verified"] is False
 
+    # Corrupted plan records must not become recoverable post-review phases,
+    # even if a caller presents the historical valid stage identifiers.
+    journal = private / "private-host" / "chapter-1-brief-record.json"
+    journal_bytes = journal.read_bytes()
+    for field in ("plan", "plan_fingerprint"):
+        mutated = json.loads(journal_bytes)
+        if field == "plan":
+            mutated["plan"]["max_attempts_per_stage"] = True
+        else:
+            mutated["plan_fingerprint"] = "0" * 64
+        try:
+            journal.write_bytes(evaluation._json_bytes(mutated))
+            with pytest.raises(chapter_host.PrivateHostStop, match="CPU plan"):
+                chapter_host._hybrid_output_manifest(
+                    runner.root,
+                    1,
+                    inputs["chapter_1"]["bundle_sha256"],
+                    inputs["chapter_1"]["scope_sha256"],
+                )
+        finally:
+            journal.write_bytes(journal_bytes)
+
     # Every original byte is restored after the intentionally corrupted private artifact.
     # Recovery must reject exact-source, producer, reviewer, raw, and WAV tampering.
     first = inputs["chapter_1"]
@@ -1984,6 +2006,51 @@ def test_private_hybrid_review_packet_rejects_stale_source_and_brief(
             chapter_host._hybrid_review_packet(runner, 1, valid)
     finally:
         validated.write_bytes(saved)
+
+    envelope = json.loads(saved)
+    envelope["payload"]["ledger_sha256"] = "0" * 64
+    try:
+        validated.write_bytes(evaluation._json_bytes(envelope))
+        with pytest.raises(chapter_host.PrivateHostStop, match="detached from source ledger"):
+            chapter_host._hybrid_review_packet(runner, 1, valid)
+    finally:
+        validated.write_bytes(saved)
+
+    ledger_path = (
+        runner.root
+        / "book-candidates"
+        / "chapter-evaluations"
+        / valid["chapter_scope_identity"]
+        / "source-ledger.json"
+    )
+    original_ledger = ledger_path.read_bytes()
+    malformed_ledger = evaluation._json_bytes([])
+    try:
+        ledger_path.write_bytes(malformed_ledger)
+        bound_claim = {
+            **valid,
+            "source_ledger_sha256": hashlib.sha256(malformed_ledger).hexdigest(),
+        }
+        with pytest.raises(chapter_host.PrivateHostStop, match="source ledger malformed"):
+            chapter_host._hybrid_review_packet(runner, 1, bound_claim)
+    finally:
+        ledger_path.write_bytes(original_ledger)
+
+    stage_root = runner.root / "book-candidates" / "hybrid_reconcile"
+    overflow = [
+        stage_root / f"synthetic-untrusted-extra-reconcile-{index:03d}"
+        for index in range(128)
+    ]
+    try:
+        for directory in overflow:
+            directory.mkdir()
+            (directory / "validated.json").write_bytes(b"{}\n")
+        with pytest.raises(chapter_host.PrivateHostStop, match="inventory exceeds finite bound"):
+            chapter_host._hybrid_review_packet(runner, 1, valid)
+    finally:
+        for directory in overflow:
+            (directory / "validated.json").unlink(missing_ok=True)
+            directory.rmdir()
     chapter_host._hybrid_review_packet(runner, 1, valid)
 
 
@@ -2180,3 +2247,38 @@ def test_hybrid_private_host_finite_scope_preflight_precedes_any_attempt(
     assert not list((runner.root / "book-candidates" / "private-host").glob(
         "*phase-events"
     ))
+
+
+@pytest.mark.parametrize("failure", ("mismatched_output_budget", "real_context_overflow"))
+def test_hybrid_reserved_stage_rejects_invalid_output_before_any_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    callback = Mock(side_effect=AssertionError("no model call before bound preflight"))
+    plan = chapter.ChapterPlan()
+    request = {"max_new_tokens": plan.max_new_tokens}
+    if failure == "mismatched_output_budget":
+        request["max_new_tokens"] += 1
+    else:
+        monkeypatch.setattr(scripting, "_ORIGINAL_LOCAL_CHAPTER_COMPLETION", callback)
+        monkeypatch.setattr(scripting, "_local_chapter_completion", callback)
+        monkeypatch.setattr(
+            scripting, "_chapter_context_tokens", lambda _request: hybrid.SAFE_CONTEXT_TOKENS
+        )
+    with pytest.raises(
+        chapter.ChapterStop,
+        match="reservation differs from plan|reserved output exceed safe context",
+    ):
+        chapter._stage(
+            tmp_path / "book-candidates",
+            "hybrid_argument",
+            {"synthetic": "exact original context preflight"},
+            plan,
+            lambda raw: raw,
+            callback,
+            prepared_request=request,
+            contract_version="clipper-hybrid-argument-v1",
+            safe_context_tokens=hybrid.SAFE_CONTEXT_TOKENS,
+            hybrid_request_identity="a" * 64,
+        )
+    callback.assert_not_called()
+    assert not list(tmp_path.rglob("started-*.json"))
