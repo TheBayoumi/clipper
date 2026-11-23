@@ -2315,6 +2315,7 @@ def evaluate_hybrid_chapter(
     audit_keys: list[str] = []
     audit_attempts = 0
     for window in chapter_hybrid.audit_windows(ledger):
+
         def validate_local(raw: object, scoped: dict[str, object] = window) -> dict[str, Any]:
             return chapter_hybrid.validate_audit(raw, ledger, scoped)
 
