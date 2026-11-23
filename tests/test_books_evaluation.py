@@ -599,11 +599,20 @@ def test_immutable_exact_five_unit_section_scope_and_incomplete_fail_stop(
     complete_path = next(
         p for p in ledger_paths if json.loads(p.read_bytes())["status"] == "complete"
     )
-    args = parser.parse_args([
-        "books", "evaluate", "--artifact-root", str(runner.root),
-        "--candidate-ref", str(acquired.analysis_ref_path),
-        "--progress", str(complete_path), "--section-manifest", str(path),
-    ])
+    args = parser.parse_args(
+        [
+            "books",
+            "evaluate",
+            "--artifact-root",
+            str(runner.root),
+            "--candidate-ref",
+            str(acquired.analysis_ref_path),
+            "--progress",
+            str(complete_path),
+            "--section-manifest",
+            str(path),
+        ]
+    )
     assert cli.dispatch_books(args) == 2
     public_stdout, public_stderr = capsys.readouterr()
     assert chosen not in public_stdout + public_stderr
@@ -681,10 +690,7 @@ def test_cli_private_model_keys_and_provider_output_do_not_escape(
     assert any(private_token in item.read_text(encoding="utf-8") for item in console_logs)
 
 
-
-def test_recorded_source_pairs_are_independently_validated_without_rewrites(
-    tmp_path: Path
-) -> None:
+def test_recorded_source_pairs_are_independently_validated_without_rewrites(tmp_path: Path) -> None:
     runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
     work = whole_book.plan_for(acquired.book)
     responses: dict[str, object] = {}
@@ -692,19 +698,22 @@ def test_recorded_source_pairs_are_independently_validated_without_rewrites(
         request = whole_book.request_for(acquired.book, unit)
         span = constrained.span_pool(unit.text, unit.evidence_field)["spans"][0]
         responses[content_fingerprint(request)] = {
-            "lessons": [{
-                "id": span["id"],
-                "topic": "An invented observed workshop detail",
-                "claim": "The invented source describes a specific workshop observation.",
-                "hook_angle": "What was observed during the synthetic workshop?",
-                "visual_action": "A worker points to a labeled instruction",
-                "evidence": span["text"],
-                "evidence_field": unit.evidence_field,
-            }]
+            "lessons": [
+                {
+                    "id": span["id"],
+                    "topic": "An invented observed workshop detail",
+                    "claim": "The invented source describes a specific workshop observation.",
+                    "hook_angle": "What was observed during the synthetic workshop?",
+                    "visual_action": "A worker points to a labeled instruction",
+                    "evidence": span["text"],
+                    "evidence_field": unit.evidence_field,
+                }
+            ]
         }
     raw = json.dumps(responses, sort_keys=True).encode()
     result = runner.evaluate_candidate(
-        acquired.analysis_ref_path, recorded_responses=responses,
+        acquired.analysis_ref_path,
+        recorded_responses=responses,
         response_file_sha256=hashlib.sha256(raw).hexdigest(),
     )
     assert result["status"] == "AWAITING_HUMAN_SOURCE_SUPPORT_REVIEW"
@@ -714,8 +723,7 @@ def test_recorded_source_pairs_are_independently_validated_without_rewrites(
     originals = json.loads(exports[0].read_bytes())["candidates"]
     assert all(
         item["evidence_anchor"].get("selected_occurrence") is None
-        and item["_evaluation_context"]["evidence_quote"]
-        == item["evidence_anchor"]["quote"]
+        and item["_evaluation_context"]["evidence_quote"] == item["evidence_anchor"]["quote"]
         for item in originals
     )
     corrupted = json.loads(raw)
@@ -724,16 +732,27 @@ def test_recorded_source_pairs_are_independently_validated_without_rewrites(
     changed = json.dumps(corrupted, sort_keys=True).encode()
     with pytest.raises(evaluation.EvaluationStop, match="source-exact"):
         runner.evaluate_candidate(
-            acquired.analysis_ref_path, recorded_responses=corrupted,
+            acquired.analysis_ref_path,
+            recorded_responses=corrupted,
             response_file_sha256=hashlib.sha256(changed).hexdigest(),
         )
 
 
-@pytest.mark.parametrize("mutation", [
-    "invalid-json", "missing-field", "wrong-source", "wrong-count",
-    "not-list", "unknown-id", "duplicate-id", "reverse-order", "oversize",
-    "symlink",
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "invalid-json",
+        "missing-field",
+        "wrong-source",
+        "wrong-count",
+        "not-list",
+        "unknown-id",
+        "duplicate-id",
+        "reverse-order",
+        "oversize",
+        "symlink",
+    ],
+)
 def test_private_section_manifest_rejects_unpinned_or_inexact_boundaries(
     tmp_path: Path, mutation: str
 ) -> None:
@@ -782,11 +801,19 @@ def test_private_section_manifest_rejects_unpinned_or_inexact_boundaries(
         evaluation._section_scope(runner, acquired.analysis_ref_path, file)
 
 
-@pytest.mark.parametrize("mutation", [
-    "bad-reviewer", "missing-decisions", "duplicate-decision",
-    "wrong-candidate", "wrong-decision", "selected-rejected",
-    "invalid-record", "unmatched-qualifier",
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "bad-reviewer",
+        "missing-decisions",
+        "duplicate-decision",
+        "wrong-candidate",
+        "wrong-decision",
+        "selected-rejected",
+        "invalid-record",
+        "unmatched-qualifier",
+    ],
+)
 def test_private_human_review_rejects_unverified_semantic_attestation(
     tmp_path: Path, mutation: str
 ) -> None:
@@ -814,29 +841,40 @@ def test_private_human_review_rejects_unverified_semantic_attestation(
         runner.evaluate_candidate(ref, progress_path=progress, review_file=path)
 
 
-@pytest.mark.parametrize("mutation", [
-    "too-large", "invalid-json", "wrong-schema", "no-scenes",
-    "wrong-scene-id", "wrong-evidence-id", "missing-field",
-    "empty-action", "extra-field",
-])
-def test_generated_text_direction_fail_closed_schema(
-    mutation: str
-) -> None:
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "too-large",
+        "invalid-json",
+        "wrong-schema",
+        "no-scenes",
+        "wrong-scene-id",
+        "wrong-evidence-id",
+        "missing-field",
+        "empty-action",
+        "extra-field",
+    ],
+)
+def test_generated_text_direction_fail_closed_schema(mutation: str) -> None:
     episode = scripting.Episode.from_json(_episode())
     evidence_id = "synthetic-evidence-id"
-    timings = [{
-        "start_seconds": i * 8.0, "duration_seconds": 8.0, "basis": "measured_wav"
-    } for i in range(len(episode.scenes))]
-    shots = [{
-        "scene_id": f"scene-{i:02d}",
-        "purpose": "Explain a small observed change",
-        "subject": "A workshop worker",
-        "action": "Marks the named tool on a checklist",
-        "environment": "A small local workshop",
-        "mechanism": "Identifies the missing tool to reduce ambiguity",
-        "continuity": "Same worker and same paper card throughout",
-        "evidence_id": evidence_id,
-    } for i in range(len(episode.scenes))]
+    timings = [
+        {"start_seconds": i * 8.0, "duration_seconds": 8.0, "basis": "measured_wav"}
+        for i in range(len(episode.scenes))
+    ]
+    shots = [
+        {
+            "scene_id": f"scene-{i:02d}",
+            "purpose": "Explain a small observed change",
+            "subject": "A workshop worker",
+            "action": "Marks the named tool on a checklist",
+            "environment": "A small local workshop",
+            "mechanism": "Identifies the missing tool to reduce ambiguity",
+            "continuity": "Same worker and same paper card throughout",
+            "evidence_id": evidence_id,
+        }
+        for i in range(len(episode.scenes))
+    ]
     doc: dict[str, object] = {"shots": shots}
     if mutation == "too-large":
         raw = "x" * (evaluation.MAX_DIRECTION_BYTES + 1)
@@ -862,9 +900,7 @@ def test_generated_text_direction_fail_closed_schema(
         evaluation._shots(raw, episode, evidence_id, timings)
 
 
-def test_kokoro_failed_provider_leaves_durable_started_marker(
-    tmp_path: Path
-) -> None:
+def test_kokoro_failed_provider_leaves_durable_started_marker(tmp_path: Path) -> None:
     runner, ref, progress, candidates = _mined(tmp_path)
     review = _review(tmp_path, progress, candidates)
     audio = Mock(side_effect=RuntimeError("PRIVATE_AUDIO_SENTINEL"))
@@ -882,8 +918,6 @@ def test_kokoro_failed_provider_leaves_durable_started_marker(
         runner.evaluate_candidate(ref, **kwargs)
     audio.assert_called_once()
     script.assert_called_once()
-    markers = list(
-        (runner.root / "book-candidates/evaluations").rglob("audio-*/attempts/*.json")
-    )
+    markers = list((runner.root / "book-candidates/evaluations").rglob("audio-*/attempts/*.json"))
     assert len(markers) == 1
     assert json.loads(markers[0].read_bytes())["status"] == "STARTED_UNRESOLVED"

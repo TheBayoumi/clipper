@@ -354,9 +354,7 @@ def _mined_export(
             # the raw proposed ID/quote against the exact canonical span menu;
             # do not rewrite or promote any mined original field.
             try:
-                request = whole_book._request_for_identity(
-                    book, candidate_unit, book.fingerprint
-                )
+                request = whole_book._request_for_identity(book, candidate_unit, book.fingerprint)
                 declared = constrained.selected_span(
                     {
                         "id": item["proposed_id"],
