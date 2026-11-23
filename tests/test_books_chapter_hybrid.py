@@ -350,7 +350,8 @@ def test_actual_pinned_public_tokenizer_template_and_same_count_tokens_bind_requ
     class PublicTokenizer:
         name_or_path = str(snapshot)
         chat_template = "synthetic template A"
-        ids = [71, 72, 73, 74]
+        def __init__(self) -> None:
+            self.ids = [71, 72, 73, 74]
 
         def apply_chat_template(self, *_args: object, **kwargs: object) -> list[int]:
             assert kwargs["enable_thinking"] is False
