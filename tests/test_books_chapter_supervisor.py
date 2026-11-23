@@ -71,7 +71,7 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
             "PRIVATE_CHAPTER_APPROVED_SHA": "a" * 40,
             "PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY": str(key),
             "PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY": str(public),
-            "PRIVATE_CHAPTER_ROOT": "/tmp/clipper-synthetic-host",
+            "PRIVATE_CHAPTER_ROOT": str(tmp_path / "synthetic-host"),
             "MOCK_HANG": hang,
             "MOCK_GH_LOG": str(log),
             "MOCK_STOPPED": str(tmp_path / "synthetic-stopped.txt"),
