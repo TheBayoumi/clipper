@@ -1786,17 +1786,26 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         "missing_winning_rejection_binding",
         "too_many_untrusted_history_files",
         "changed_first_raw",
+        "duplicate_key_first_valid_second",
+        "duplicate_key_tampered_receipt",
+        "duplicate_key_missing_claim",
     ],
 )
-def test_same_shape_semantically_invalid_source_retries_and_recovers_with_original_receipt(
+def test_source_or_duplicate_key_rejection_retries_and_recovers_with_original_receipt(
     tmp_path: Path, tamper: str
 ) -> None:
-    """No model: the FIRST complete JSON reply fails its SOURCE identity, not its shape."""
+    """No model: first raw fails strict duplicate-key parsing or exact source identity."""
     root = tmp_path / "synthetic-host"
     base = root / "book-candidates"
     first = {"argument": "synthetic", "beats": [], "coverage": ["wrong-source"]}
     second = {"argument": "synthetic", "beats": [], "coverage": ["unit-verified"]}
-    producer = Mock(side_effect=[json.dumps(first), json.dumps(second)])
+    duplicate_key = tamper.startswith("duplicate_key_")
+    first_raw = (
+        '{"argument":"synthetic","argument":"duplicate","beats":[],"coverage":["unit-verified"]}'
+        if duplicate_key
+        else json.dumps(first)
+    )
+    producer = Mock(side_effect=[first_raw, json.dumps(second)])
     plan = chapter.ChapterPlan()
 
     def real_source_bound_validator(raw: object) -> dict:
@@ -1829,6 +1838,8 @@ def test_same_shape_semantically_invalid_source_retries_and_recovers_with_origin
     first_failure = json.loads((stage_dir / "failed-1.json").read_bytes())
     receipt = first_failure["validation_evidence"]
     assert receipt["contract"] == chapter.REJECTION_EVIDENCE_CONTRACT
+    assert receipt["failure_type"] == ("BookMiningError" if duplicate_key else "ChapterStop")
+    assert json.loads((stage_dir / "raw-1.json").read_bytes())["raw"] == first_raw
     assert receipt["request_key"] == stage_dir.name
     assert receipt["raw_sha256"] == json.loads((stage_dir / "raw-1.json").read_bytes())["sha256"]
 
@@ -1850,9 +1861,13 @@ def test_same_shape_semantically_invalid_source_retries_and_recovers_with_origin
         )
     if tamper == "missing_winning_claim":
         (stage_dir / "started-2.json").unlink()
+    elif tamper == "duplicate_key_missing_claim":
+        (stage_dir / "started-1.json").unlink()
+        with pytest.raises(chapter.ChapterStop, match="text artifact cannot be verified"):
+            chapter._stage(*arguments, Mock(side_effect=AssertionError("unexpected call")))
     elif tamper == "missing_first_rejection":
         (stage_dir / "failed-1.json").unlink()
-    elif tamper == "changed_original_rejection_receipt":
+    elif tamper in {"changed_original_rejection_receipt", "duplicate_key_tampered_receipt"}:
         first_failure["validation_evidence"]["failure_sha256"] = "f" * 64
         (stage_dir / "failed-1.json").write_bytes(evaluation._json_bytes(first_failure))
         # Ordinary replay independently checks the ORIGINAL source validator
@@ -1891,7 +1906,7 @@ def test_same_shape_semantically_invalid_source_retries_and_recovers_with_origin
         changed["raw"] = json.dumps(second)
         path.write_bytes(evaluation._json_bytes(changed))
 
-    if tamper == "none":
+    if tamper in {"none", "duplicate_key_first_valid_second"}:
         with pytest.raises(chapter.ChapterStop, match="prior attempt history cannot be verified"):
             chapter._verified_rejected_attempt(
                 base,
