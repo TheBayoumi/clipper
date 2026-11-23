@@ -1579,6 +1579,7 @@ def evaluate_chapter(
     selected_scope_path: Path | None = None,
     expected_brief_identity: str | None = None,
     on_resume_verified: Callable[[], None] | None = None,
+    on_stage_progress: Callable[[str, str | None], None] | None = None,
 ) -> dict[str, object]:
     """Finite, source-bound chapter preproduction; no legacy catalog, short or render."""
     limits = plan if plan is not None else ChapterPlan()
@@ -1782,6 +1783,8 @@ def evaluate_chapter(
         on_resume_verified()
     if not limits.adaptation_cpu:
         return {**summary, "status": "AWAITING_EXPLICIT_CPU_CHAPTER_ADAPTATION"}
+    if on_stage_progress is not None:
+        on_stage_progress("ADAPTATION_IN_FLIGHT", None)
     treatment, adapt_key, adapt_origin, adapt_attempts = _stage(
         root,
         "adaptation",
@@ -1796,8 +1799,12 @@ def evaluate_chapter(
         adaptation_completion,
     )
     summary.update({"adaptation_identity": adapt_key, "adaptation_attempts": adapt_attempts})
+    if on_stage_progress is not None:
+        on_stage_progress("ADAPTATION_VERIFIED", adapt_key)
     if not limits.script_cpu:
         return {**summary, "status": "AWAITING_EXPLICIT_CPU_CHAPTER_SCRIPT"}
+    if on_stage_progress is not None:
+        on_stage_progress("SCRIPT_IN_FLIGHT", None)
     script, script_key, script_origin, script_attempts = _stage(
         root,
         "chapter_script",
@@ -1825,13 +1832,19 @@ def evaluate_chapter(
             "script_attempts": script_attempts,
         }
     )
+    if on_stage_progress is not None:
+        on_stage_progress("SCRIPT_VERIFIED", script_key)
     audio: list[dict[str, Any]] | None = None
     audio_origin = "NO_AUDIO"
     narration_report_key: str | None = None
     if limits.kokoro_cpu:
+        if on_stage_progress is not None:
+            on_stage_progress("NARRATION_IN_FLIGHT", None)
         audio, audio_origin, narration_report_key = _narrate(
             root, script, limits, narration_producer
         )
+        if on_stage_progress is not None:
+            on_stage_progress("NARRATION_VERIFIED", narration_report_key)
     times = _timings(script, limits, audio)
     summary.update(
         {
@@ -1844,6 +1857,8 @@ def evaluate_chapter(
     )
     if not limits.direction_cpu:
         return {**summary, "status": "AWAITING_EXPLICIT_CPU_CHAPTER_DIRECTION"}
+    if on_stage_progress is not None:
+        on_stage_progress("DIRECTION_IN_FLIGHT", None)
     shots, direction_key, direction_origin, direction_attempts = _stage(
         root,
         "chapter_direction",
@@ -1859,6 +1874,8 @@ def evaluate_chapter(
         lambda x: _direction_validate(x, script, treatment, times, limits),
         direction_completion,
     )
+    if on_stage_progress is not None:
+        on_stage_progress("DIRECTION_VERIFIED", direction_key)
     synthetic = (
         any(
             v == "INJECTED_TEST_PRODUCER"
