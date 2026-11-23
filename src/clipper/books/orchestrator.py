@@ -689,9 +689,12 @@ class BookOrchestrator:
         request_sha256: str,
         unit: whole_book.WorkUnit,
         producer_fingerprint: str,
-        completion: Callable[[dict[str, object]], str],
+        completion: Callable[
+            [dict[str, object]], str | scripting.PinnedQwenRawReceipt
+        ],
+        actual_provider: bool = False,
     ) -> dict[str, object]:
-        """Store bounded raw model evidence before validating; failed DAG stages can retry."""
+        """Preserve model token receipt and exact original raw, never synthetic claims."""
         truncated = False
         try:
             response = completion(request)
@@ -709,7 +712,19 @@ class BookOrchestrator:
             raise whole_book.LocalReplyFailure("pinned_model_cache_unavailable") from exc
         except Exception as exc:
             raise whole_book.LocalReplyFailure("runtime_error") from exc
-        if not isinstance(response, str):
+        receipt: dict[str, object] | None = None
+        if actual_provider:
+            if not isinstance(response, scripting.PinnedQwenRawReceipt):
+                raise whole_book.LocalReplyFailure("missing_real_token_receipt")
+            receipt = {
+                "raw_sha256": response.raw_sha256,
+                "generated_token_count": response.generated_token_count,
+                "terminal_token_id": response.terminal_token_id,
+                "eos_decision": response.eos_decision,
+            }
+            response = response.raw
+        elif not isinstance(response, str):
+            # Injected producers cannot attest real generated token IDs or EOS.
             raise whole_book.LocalReplyFailure("non_text_reply")
         try:
             payload = response.encode("utf-8")
@@ -732,6 +747,18 @@ class BookOrchestrator:
         )
         if len(payload) > whole_book.MAX_RECORDED_REPLY_BYTES:
             raise whole_book.LocalReplyFailure("oversized_reply", digest)
+        if actual_provider and (
+            not isinstance(receipt, dict)
+            or receipt["raw_sha256"] != digest
+            or type(receipt["generated_token_count"]) is not int
+            or not 1 <= cast(int, receipt["generated_token_count"]) <= cast(
+                int, request["max_new_tokens"]
+            )
+            or type(receipt["terminal_token_id"]) is not int
+            or cast(int, receipt["terminal_token_id"]) < 0
+            or receipt["eos_decision"] != "EOS_VERIFIED"
+        ):
+            raise whole_book.LocalReplyFailure("invalid_real_token_receipt", digest)
         if truncated:
             raise whole_book.LocalReplyFailure("incomplete_constrained_generation", digest)
         try:
@@ -745,6 +772,7 @@ class BookOrchestrator:
             "producer_fingerprint": producer_fingerprint,
             "raw_sha256": digest,
             "lessons": lessons,
+            **({"provider_receipt": receipt} if actual_provider else {}),
         }
 
     def _read_local_unit(
@@ -757,12 +785,16 @@ class BookOrchestrator:
         unit: whole_book.WorkUnit,
         producer_fingerprint: str,
         stored: object,
+        actual_provider: bool = False,
     ) -> tuple[dict[str, object], str]:
         """Fail closed if raw immutable completion and validated DAG output diverge."""
         if (
             not isinstance(stored, dict)
             or set(stored)
-            != {"schema", "request_sha256", "producer_fingerprint", "raw_sha256", "lessons"}
+            != (
+                {"schema", "request_sha256", "producer_fingerprint", "raw_sha256", "lessons"}
+                | ({"provider_receipt"} if actual_provider else set())
+            )
             or stored["schema"] != whole_book.LOCAL_COMPLETION_SCHEMA
             or stored["request_sha256"] != request_sha256
             or stored["producer_fingerprint"] != producer_fingerprint
@@ -771,6 +803,23 @@ class BookOrchestrator:
         ):
             raise BookRunError("cached local model output identity mismatch")
         digest = stored["raw_sha256"]
+        if actual_provider:
+            receipt = stored.get("provider_receipt")
+            if (
+                not isinstance(receipt, dict)
+                or set(receipt) != {
+                    "raw_sha256", "generated_token_count", "terminal_token_id", "eos_decision"
+                }
+                or receipt["raw_sha256"] != digest
+                or type(receipt["generated_token_count"]) is not int
+                or not 1 <= receipt["generated_token_count"] <= cast(
+                    int, request["max_new_tokens"]
+                )
+                or type(receipt["terminal_token_id"]) is not int
+                or receipt["terminal_token_id"] < 0
+                or receipt["eos_decision"] != "EOS_VERIFIED"
+            ):
+                raise BookRunError("real model raw token receipt changed")
         path = (
             self.root
             / "book-candidates"
@@ -1007,6 +1056,7 @@ class BookOrchestrator:
                             unit=current_unit,
                             producer_fingerprint=producer_fingerprint,
                             completion=producer,
+                            actual_provider=local_completion is None,
                         )
 
                     try:
@@ -1034,6 +1084,7 @@ class BookOrchestrator:
                                 unit=unit,
                                 producer_fingerprint=producer_fingerprint,
                                 stored=stored_local,
+                                actual_provider=local_completion is None,
                             )
                             response_digest = content_fingerprint(answer)
                             has_answer = True

@@ -538,7 +538,20 @@ def _script_pipeline() -> tuple[Any, Any]:
     return model, tokenizer
 
 
-def _run_pinned_qwen(request: dict[str, object], *, normalize_script: bool) -> str:
+@dataclass(frozen=True, slots=True)
+class PinnedQwenRawReceipt:
+    """Created only from model.generate token IDs, never from injected text."""
+
+    raw: str
+    raw_sha256: str
+    generated_token_count: int
+    terminal_token_id: int
+    eos_decision: str
+
+
+def _run_pinned_qwen(
+    request: dict[str, object], *, normalize_script: bool, capture_receipt: bool = False
+) -> str | PinnedQwenRawReceipt:
     """Decode exact generated tokens; book mode retains unmodified raw response."""
     torch = importlib.import_module("torch")
 
@@ -589,6 +602,16 @@ def _run_pinned_qwen(request: dict[str, object], *, normalize_script: bool) -> s
         last_token = int(output_ids[-1]) if len(output_ids) else None
         if last_token is None or last_token not in end_tokens:
             raise IncompleteConstrainedResponse(result)
+    if capture_receipt:
+        if normalize_script:
+            raise NicheVideoError("model token receipt is only valid for original book mining")
+        return PinnedQwenRawReceipt(
+            raw=result,
+            raw_sha256=hashlib.sha256(result.encode("utf-8")).hexdigest(),
+            generated_token_count=len(output_ids),
+            terminal_token_id=int(output_ids[-1]),
+            eos_decision="EOS_VERIFIED",
+        )
     if normalize_script:
         result = result.strip()
         if result.startswith(chr(96) * 3):
@@ -678,10 +701,13 @@ MAX_CHAPTER_CONTEXT = 40_960
 
 def _local_script_completion(request: dict[str, object]) -> str:
     """Generate locally; keep weights resident for bounded script repair."""
-    return _run_pinned_qwen(request, normalize_script=True)
+    value = _run_pinned_qwen(request, normalize_script=True)
+    if not isinstance(value, str):
+        raise NicheVideoError("script mode must return plain generated text")
+    return value
 
 
-def _local_book_completion(request: dict[str, object]) -> str:
+def _local_book_completion(request: dict[str, object]) -> PinnedQwenRawReceipt:
     """Opt-in only: validate source choices before pinned CPU-only inference."""
     from . import constrained
 
@@ -693,7 +719,10 @@ def _local_book_completion(request: dict[str, object]) -> str:
     model, _tokenizer = _script_pipeline()
     if str(model.device) != "cpu":
         raise NicheVideoError("local book completion requires CPU-resident pinned Qwen weights")
-    return _run_pinned_qwen(request, normalize_script=False)
+    value = _run_pinned_qwen(request, normalize_script=False, capture_receipt=True)
+    if not isinstance(value, PinnedQwenRawReceipt):
+        raise NicheVideoError("real book miner requires generated token/EOS receipt")
+    return value
 
 
 def _script_feedback(raw: object, error: Exception) -> str:
