@@ -1138,7 +1138,7 @@ def _verified_rejected_attempt(
                     evidence["failure_type"] != type(error).__name__
                     or evidence["failure_sha256"] != _validator_rejection_digest(error)
                 ):
-                    raise ChapterStop("chapter rejection differs from original validator")
+                    raise ChapterStop("chapter rejection differs from original validator") from None
             else:
                 raise ChapterStop("chapter prior recorded rejection is not reproducible")
     except (ValueError, TypeError, KeyError, OSError, RecursionError, OverflowError):
