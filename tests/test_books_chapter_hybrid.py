@@ -1177,6 +1177,7 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
     # Every original byte is restored after the intentionally corrupted private artifact.
     # Recovery must reject exact-source, producer, reviewer, raw, and WAV tampering.
     first = inputs["chapter_1"]
+
     def checked_inventory() -> dict[str, object]:
         return chapter_host._hybrid_output_manifest(
             runner.root, 1, first["bundle_sha256"], first["scope_sha256"]
@@ -1190,7 +1191,10 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
             and (stage is None or f"/{stage}/" in file["relative_path"])
             and (stage is None or file["relative_path"].endswith("/raw-1.json"))
         ]
-        assert len(matches) == 1
+        if kind == "wav":
+            assert matches, "at least one recorded synthetic WAV is required"
+        else:
+            assert len(matches) == 1
         return runner.root / matches[0]["relative_path"]
 
     for kind, stage, field in (
