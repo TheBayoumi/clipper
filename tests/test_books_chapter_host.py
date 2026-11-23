@@ -1656,6 +1656,9 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         saved_manifest = json.load(archive.extractfile("private-recovery-manifest.json"))
         assert saved_manifest["schema"] == "clipper-chapter-private-recovery-archive-manifest-v1"
         assert any(entry["kind"] == "wav" for entry in saved_manifest["files"])
+    if damage == "valid_prior_rejection_before_manifest":
+        assert archive_report["file_count"] > 0
+        return
     final_path = base_dir / f"chapter-result-{final_key}.json"
     report_path = base / f"narration-report-{report_identity}.json"
     source_path = base_dir / "source-ledger.json"
