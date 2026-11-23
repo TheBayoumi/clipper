@@ -498,7 +498,10 @@ def dispatch_books(args: argparse.Namespace) -> int:
             "execution",
             "model_calls_authorized",
             "visual_generation_calls",
-            "section_scope",
+            "scope_sha256",
+            "scope_section_count",
+            "scope_included_units",
+            "scope_excluded_units",
             "parent_full_book_complete",
         )
         safe = {key: evaluation_result[key] for key in keys if key in evaluation_result}

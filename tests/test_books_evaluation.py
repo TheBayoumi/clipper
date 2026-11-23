@@ -14,8 +14,9 @@ from unittest.mock import Mock
 import pytest
 from test_books_whole_book import ingested
 
-from clipper.books import cli, evaluation, narration, scripting, selection, whole_book
+from clipper.books import cli, constrained, evaluation, narration, scripting, selection, whole_book
 from clipper.books.orchestrator import BookOrchestrator
+from clipper.stage_contracts import content_fingerprint
 
 
 def _mined(tmp_path: Path) -> tuple[BookOrchestrator, Path, Path, list[dict]]:
@@ -510,7 +511,9 @@ def test_direction_failed_provider_never_reinvoked_on_identical_resume(
     assert len(direction_starts) == 1
 
 
-def test_immutable_exact_five_unit_section_scope_and_incomplete_fail_stop(tmp_path: Path) -> None:
+def test_immutable_exact_five_unit_section_scope_and_incomplete_fail_stop(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     runner, acquired, _ = ingested(tmp_path, paragraphs=12, with_image=False)
     parent = whole_book.plan_for(acquired.book)
     grouped: dict[str, int] = {}
@@ -590,6 +593,24 @@ def test_immutable_exact_five_unit_section_scope_and_incomplete_fail_stop(tmp_pa
     assert complete["total_work_units"] == 5
     assert complete["parent_book_fingerprint"] == acquired.book.fingerprint
     assert complete["section_scope"]["parent_full_book_complete"] is False
+    parser = argparse.ArgumentParser()
+    root = parser.add_subparsers(dest="command", required=True)
+    cli.configure_books_parser(root)
+    complete_path = next(
+        p for p in ledger_paths if json.loads(p.read_bytes())["status"] == "complete"
+    )
+    args = parser.parse_args([
+        "books", "evaluate", "--artifact-root", str(runner.root),
+        "--candidate-ref", str(acquired.analysis_ref_path),
+        "--progress", str(complete_path), "--section-manifest", str(path),
+    ])
+    assert cli.dispatch_books(args) == 2
+    public_stdout, public_stderr = capsys.readouterr()
+    assert chosen not in public_stdout + public_stderr
+    public_summary = json.loads(public_stdout)
+    assert public_summary["scope_included_units"] == 5
+    assert public_summary["scope_excluded_units"] == len(parent.units) - 5
+    assert "section_scope" not in public_summary
     manifest["included_units"] = 4
     path.write_text(json.dumps(manifest))
     with pytest.raises(evaluation.EvaluationStop, match="bounds"):
@@ -658,3 +679,211 @@ def test_cli_private_model_keys_and_provider_output_do_not_escape(
     console_logs = list((runner.root / "book-candidates/evaluations").rglob("log-*.json"))
     assert console_logs
     assert any(private_token in item.read_text(encoding="utf-8") for item in console_logs)
+
+
+
+def test_recorded_source_pairs_are_independently_validated_without_rewrites(
+    tmp_path: Path
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=3, with_image=False)
+    work = whole_book.plan_for(acquired.book)
+    responses: dict[str, object] = {}
+    for unit in work.units:
+        request = whole_book.request_for(acquired.book, unit)
+        span = constrained.span_pool(unit.text, unit.evidence_field)["spans"][0]
+        responses[content_fingerprint(request)] = {
+            "lessons": [{
+                "id": span["id"],
+                "topic": "An invented observed workshop detail",
+                "claim": "The invented source describes a specific workshop observation.",
+                "hook_angle": "What was observed during the synthetic workshop?",
+                "visual_action": "A worker points to a labeled instruction",
+                "evidence": span["text"],
+                "evidence_field": unit.evidence_field,
+            }]
+        }
+    raw = json.dumps(responses, sort_keys=True).encode()
+    result = runner.evaluate_candidate(
+        acquired.analysis_ref_path, recorded_responses=responses,
+        response_file_sha256=hashlib.sha256(raw).hexdigest(),
+    )
+    assert result["status"] == "AWAITING_HUMAN_SOURCE_SUPPORT_REVIEW"
+    assert result["candidate_count"] == len(work.units)
+    exports = list((runner.root / "book-candidates/evaluations").rglob("mined-candidates.json"))
+    assert len(exports) == 1
+    originals = json.loads(exports[0].read_bytes())["candidates"]
+    assert all(
+        item["evidence_anchor"].get("selected_occurrence") is None
+        and item["_evaluation_context"]["evidence_quote"]
+        == item["evidence_anchor"]["quote"]
+        for item in originals
+    )
+    corrupted = json.loads(raw)
+    first = next(iter(corrupted))
+    corrupted[first]["lessons"][0]["id"] = "unpaired-but-syntactically-valid"
+    changed = json.dumps(corrupted, sort_keys=True).encode()
+    with pytest.raises(evaluation.EvaluationStop, match="source-exact"):
+        runner.evaluate_candidate(
+            acquired.analysis_ref_path, recorded_responses=corrupted,
+            response_file_sha256=hashlib.sha256(changed).hexdigest(),
+        )
+
+
+@pytest.mark.parametrize("mutation", [
+    "invalid-json", "missing-field", "wrong-source", "wrong-count",
+    "not-list", "unknown-id", "duplicate-id", "reverse-order", "oversize",
+    "symlink",
+])
+def test_private_section_manifest_rejects_unpinned_or_inexact_boundaries(
+    tmp_path: Path, mutation: str
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=12, with_image=False)
+    parent = whole_book.plan_for(acquired.book)
+    section_id = parent.units[0].section_id
+    scoped = whole_book.plan_for(acquired.book, section_ids=(section_id,))
+    doc: dict[str, object] = {
+        "schema": evaluation.SECTION_MANIFEST_SCHEMA,
+        "book_fingerprint": acquired.book.fingerprint,
+        "source_fingerprint": acquired.book.source_fingerprint,
+        "ingest_stage_key": acquired.stage_key,
+        "parent_plan_fingerprint": parent.fingerprint,
+        "section_ids": [section_id],
+        "parent_total_units": len(parent.units),
+        "included_units": len(scoped.units),
+        "excluded_units": scoped.excluded_units,
+    }
+    file = tmp_path / "bounded-section.json"
+    if mutation == "invalid-json":
+        file.write_text("{")
+    elif mutation == "oversize":
+        file.write_text(" " * 16_385)
+    elif mutation == "symlink":
+        target = tmp_path / "real.json"
+        target.write_text(json.dumps(doc))
+        file.symlink_to(target)
+    else:
+        if mutation == "missing-field":
+            del doc["parent_plan_fingerprint"]
+        elif mutation == "wrong-source":
+            doc["source_fingerprint"] = "b" * 64
+        elif mutation == "wrong-count":
+            doc["included_units"] = 2000
+        elif mutation == "not-list":
+            doc["section_ids"] = section_id
+        elif mutation == "unknown-id":
+            doc["section_ids"] = ["missing-parent-section"]
+        elif mutation == "duplicate-id":
+            doc["section_ids"] = [section_id, section_id]
+        elif mutation == "reverse-order":
+            another = next(u.section_id for u in parent.units if u.section_id != section_id)
+            doc["section_ids"] = [another, section_id]
+        file.write_text(json.dumps(doc))
+    with pytest.raises(evaluation.EvaluationStop):
+        evaluation._section_scope(runner, acquired.analysis_ref_path, file)
+
+
+@pytest.mark.parametrize("mutation", [
+    "bad-reviewer", "missing-decisions", "duplicate-decision",
+    "wrong-candidate", "wrong-decision", "selected-rejected",
+    "invalid-record", "unmatched-qualifier",
+])
+def test_private_human_review_rejects_unverified_semantic_attestation(
+    tmp_path: Path, mutation: str
+) -> None:
+    runner, ref, progress, candidates = _mined(tmp_path)
+    path = _review(tmp_path, progress, candidates)
+    doc = json.loads(path.read_text())
+    if mutation == "bad-reviewer":
+        doc["reviewer"] = 77
+    elif mutation == "missing-decisions":
+        doc["decisions"] = []
+    elif mutation == "duplicate-decision":
+        doc["decisions"].append(dict(doc["decisions"][0]))
+    elif mutation == "wrong-candidate":
+        doc["decisions"][0]["candidate_id"] = "nonexistent-candidate"
+    elif mutation == "wrong-decision":
+        doc["decisions"][0]["decision"] = "approve_for_publication"
+    elif mutation == "selected-rejected":
+        doc["decisions"][0]["decision"] = "reject"
+    elif mutation == "invalid-record":
+        del doc["decisions"][0]["reason"]
+    elif mutation == "unmatched-qualifier":
+        doc["decisions"][0]["qualifier_quote"] = "PRIVATE_UNMATCHED_CONTEXT"
+    path.write_text(json.dumps(doc))
+    with pytest.raises(evaluation.EvaluationStop):
+        runner.evaluate_candidate(ref, progress_path=progress, review_file=path)
+
+
+@pytest.mark.parametrize("mutation", [
+    "too-large", "invalid-json", "wrong-schema", "no-scenes",
+    "wrong-scene-id", "wrong-evidence-id", "missing-field",
+    "empty-action", "extra-field",
+])
+def test_generated_text_direction_fail_closed_schema(
+    mutation: str
+) -> None:
+    episode = scripting.Episode.from_json(_episode())
+    evidence_id = "synthetic-evidence-id"
+    timings = [{
+        "start_seconds": i * 8.0, "duration_seconds": 8.0, "basis": "measured_wav"
+    } for i in range(len(episode.scenes))]
+    shots = [{
+        "scene_id": f"scene-{i:02d}",
+        "purpose": "Explain a small observed change",
+        "subject": "A workshop worker",
+        "action": "Marks the named tool on a checklist",
+        "environment": "A small local workshop",
+        "mechanism": "Identifies the missing tool to reduce ambiguity",
+        "continuity": "Same worker and same paper card throughout",
+        "evidence_id": evidence_id,
+    } for i in range(len(episode.scenes))]
+    doc: dict[str, object] = {"shots": shots}
+    if mutation == "too-large":
+        raw = "x" * (evaluation.MAX_DIRECTION_BYTES + 1)
+    elif mutation == "invalid-json":
+        raw = "{"
+    else:
+        if mutation == "wrong-schema":
+            doc["unapproved"] = True
+        elif mutation == "no-scenes":
+            doc["shots"] = []
+        elif mutation == "wrong-scene-id":
+            shots[0]["scene_id"] = "scene-99"
+        elif mutation == "wrong-evidence-id":
+            shots[0]["evidence_id"] = "unrelated-evidence"
+        elif mutation == "missing-field":
+            del shots[0]["purpose"]
+        elif mutation == "empty-action":
+            shots[0]["action"] = " "
+        elif mutation == "extra-field":
+            shots[0]["invented_visual"] = "Already rendered 4K video"
+        raw = json.dumps(doc)
+    with pytest.raises(evaluation.EvaluationStop):
+        evaluation._shots(raw, episode, evidence_id, timings)
+
+
+def test_kokoro_failed_provider_leaves_durable_started_marker(
+    tmp_path: Path
+) -> None:
+    runner, ref, progress, candidates = _mined(tmp_path)
+    review = _review(tmp_path, progress, candidates)
+    audio = Mock(side_effect=RuntimeError("PRIVATE_AUDIO_SENTINEL"))
+    script = Mock(return_value=json.dumps(_episode()))
+    kwargs = {
+        "progress_path": progress,
+        "review_file": review,
+        "options": evaluation.EvaluationOptions(script_cpu=True, kokoro_cpu=True),
+        "script_completion": script,
+        "narration_producer": audio,
+    }
+    with pytest.raises(evaluation.EvaluationStop, match="Kokoro"):
+        runner.evaluate_candidate(ref, **kwargs)
+    with pytest.raises(evaluation.EvaluationStop, match="previous Kokoro attempt"):
+        runner.evaluate_candidate(ref, **kwargs)
+    audio.assert_called_once()
+    script.assert_called_once()
+    markers = list(
+        (runner.root / "book-candidates/evaluations").rglob("audio-*/attempts/*.json")
+    )
+    assert len(markers) == 1
+    assert json.loads(markers[0].read_bytes())["status"] == "STARTED_UNRESOLVED"

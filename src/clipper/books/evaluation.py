@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from clipper.stage_contracts import content_fingerprint
 
-from . import acquisition, narration, scripting, whole_book
+from . import acquisition, constrained, narration, scripting, whole_book
 from .contracts import BookText
 
 if TYPE_CHECKING:
@@ -328,10 +328,8 @@ def _mined_export(
         candidate_unit = by_anchor.get(
             (evidence.get("anchor"), evidence.get("word_offset"), evidence.get("text_sha256"))
         )
-        occurrence = evidence.get("selected_occurrence")
         if (
             candidate_unit is None
-            or not isinstance(occurrence, dict)
             or item.get("review_status") != "MINED_UNREVIEWED"
             or item.get("publish_eligible") is not False
             or item.get("claim_source_url") != book.source.source_uri
@@ -350,6 +348,33 @@ def _mined_export(
             )
         ):
             raise EvaluationStop("mined candidate identity or source context mismatch")
+        occurrence = evidence.get("selected_occurrence")
+        if occurrence is None:
+            # Recorded responses have no local_span sidecar. Independently verify
+            # the raw proposed ID/quote against the exact canonical span menu;
+            # do not rewrite or promote any mined original field.
+            try:
+                request = whole_book._request_for_identity(
+                    book, candidate_unit, book.fingerprint
+                )
+                declared = constrained.selected_span(
+                    {
+                        "id": item["proposed_id"],
+                        "evidence": evidence["quote"],
+                        "evidence_field": evidence["field"],
+                    },
+                    request,
+                )
+            except (ValueError, KeyError, TypeError):
+                raise EvaluationStop("recorded candidate quote pairing is not source-exact") from None
+            occurrence = {
+                "unit_start": declared["start"],
+                "unit_end": declared["end"],
+                "id": declared["id"],
+                "quote_sha256": declared["sha256"],
+            }
+        if not isinstance(occurrence, dict):
+            raise EvaluationStop("mined candidate occurrence is malformed")
         start, end = occurrence.get("unit_start"), occurrence.get("unit_end")
         if (
             type(start) is not int
@@ -636,6 +661,10 @@ def evaluate_candidate(
         "progress_sha256": progress_sha,
         "candidate_count": len(lessons),
         "section_scope": section_plan.section_scope if section_plan else None,
+        "scope_sha256": section_manifest_sha256,
+        "scope_section_count": len(section_plan.section_ids) if section_plan else 0,
+        "scope_included_units": len(section_plan.units) if section_plan else 0,
+        "scope_excluded_units": section_plan.excluded_units if section_plan else 0,
         "parent_full_book_complete": False if section_plan else None,
         "publish_eligible": False,
         "source_authorization": book.source.authorization_status,
@@ -819,7 +848,7 @@ def evaluate_candidate(
                 wav_path = narration.synthesize_scene(scene, config, audio_root, producer=producer)
                 wav = _read(wav_path, 40_000_000)
                 channels, rate, frames = narration.validated_wav(wav, cached=True)
-            except (ValueError, OSError, scripting.NicheVideoError):
+            except Exception:
                 raise EvaluationStop("Kokoro narration failed or WAV invalid") from None
             seconds = frames / rate
             track_data.append(
