@@ -477,8 +477,12 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     assert cleanup["host_stop_verified"] is True
     assert cleanup["host_deletion_verified"] is True
     assert verification["retrieval_status"] == (
-        "INCOMPLETE" if tamper_archive else "VERIFIED_PRIVATE_ARCHIVE_PARTIAL"
-    )
+        "INCOMPLETE"
+        if tamper_archive
+        else "VERIFIED_PRIVATE_ARCHIVE"
+        if scenario == "all_ready"
+        else "VERIFIED_PRIVATE_ARCHIVE_PARTIAL"
+    ), (result.stderr, verification)
     if not tamper_archive:
         expected = {
             "brief_only": ({"1": "PARTIAL_OUTPUTS", "7": "NOT_STARTED"}, "PARTIAL"),
