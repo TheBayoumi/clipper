@@ -1120,3 +1120,36 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
     )
     assert calls == frozen
     miner.assert_not_called()
+
+
+def test_hybrid_producer_binding_reacts_to_tokenizer_template_and_generation_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = {
+        "ledger_sha256": "a" * 64,
+        "chapter_scope_sha256": "b" * 64,
+        "selected_bundle_sha256": "c" * 64,
+        "plan_fingerprint": "d" * 64,
+        "model_producer": {"runtime": "synthetic"},
+    }
+
+    def bound() -> str:
+        return hybrid.digest(hybrid.producer_identity(**identity))
+
+    original = bound()
+    with monkeypatch.context() as patch:
+        patch.setattr(hybrid.constrained, "PINNED_TOKENIZER_SHA256", "0" * 64)
+        assert bound() != original
+    with monkeypatch.context() as patch:
+        patch.setattr(hybrid, "CHAT_TEMPLATE_CONTRACT", "synthetic-new-template")
+        assert bound() != original
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            hybrid.scripting,
+            "QWEN_GENERATION_SETTINGS",
+            {**hybrid.scripting.QWEN_GENERATION_SETTINGS, "temperature": 0.123},
+        )
+        assert bound() != original
+    with monkeypatch.context() as patch:
+        patch.setattr(hybrid.scripting, "SCRIPT_REVISION", "synthetic-new-revision")
+        assert bound() != original
