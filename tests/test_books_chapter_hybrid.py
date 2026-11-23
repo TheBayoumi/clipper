@@ -1520,3 +1520,290 @@ def test_invalid_creative_replies_still_fail_despite_source_span_metadata() -> N
         hybrid.validate_adaptation({}, {"beats": []}, plan)
     with pytest.raises(hybrid.HybridStop):
         hybrid.validate_script({}, {"beats": []}, brief, plan)
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "wrong_stage",
+        "low_output",
+        "high_output",
+        "missing_producer",
+        "zero_tokens",
+        "noninteger_tokens",
+        "over_context",
+        "oversize_request",
+    ),
+)
+def test_hybrid_real_request_preflight_refuses_bad_context_and_contract(
+    case: str,
+) -> None:
+    stage = "argument"
+    output_tokens = 4096
+    producer = {"runtime": "synthetic"}
+    payload: dict[str, object] = {"original_source": [["s0001", "text", "source"]]}
+    count: object = 1200
+    if case == "wrong_stage":
+        stage = "unknown"
+    elif case == "low_output":
+        output_tokens = 900
+    elif case == "high_output":
+        output_tokens = 8193
+    elif case == "missing_producer":
+        producer = {}
+    elif case == "zero_tokens":
+        count = 0
+    elif case == "noninteger_tokens":
+        count = True
+    elif case == "over_context":
+        count = 32000
+    elif case == "oversize_request":
+        payload = {"exact_original_source": "x" * hybrid.MAX_REQUEST_BYTES}
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.request(
+            stage,
+            payload,
+            output_tokens=output_tokens,
+            token_count=lambda _messages: count,
+            producer_identity=producer,
+        )
+
+
+def test_hybrid_window_finite_output_call_cap_is_not_silently_reduced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = _ledger(45)
+    monkeypatch.setattr(hybrid, "MAX_CORE_UNITS", 1)
+    with pytest.raises(hybrid.HybridStop, match="audit count"):
+        hybrid.audit_windows(ledger)
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "bad_question",
+        "bad_links",
+        "unknown_source",
+        "negative_offset",
+        "boolean_offset",
+        "end_after_source",
+        "invalid_role",
+        "invalid_quote_range",
+    ),
+)
+def test_argument_original_spans_reject_forged_unicode_and_source_boundaries(
+    case: str,
+) -> None:
+    ledger = _ledger(25)
+    argument = _argument(ledger)
+    if case == "bad_question":
+        argument["questions"] = [None]
+    elif case == "bad_links":
+        argument["source_links"] = "not-a-list"
+    else:
+        link = argument["source_links"][0]
+        if case == "unknown_source":
+            link["id"] = "s9999"
+        elif case == "negative_offset":
+            link["start"] = -1
+        elif case == "boolean_offset":
+            link["start"] = True
+        elif case == "end_after_source":
+            link["end"] = 99999
+        elif case == "invalid_role":
+            link["role"] = "INVENTED_AUTHOR_ACCOUNT"
+        elif case == "invalid_quote_range":
+            link["start"] = link["end"]
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_argument(argument, ledger)
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "wrong_core",
+        "unknown_core_id",
+        "missing_decision",
+        "duplicated_decision",
+        "bad_decision",
+        "nontext_reason",
+        "oversize_reason",
+        "evidence_in_halo",
+        "bad_disagreement_change",
+        "bad_disagreement_evidence",
+        "gap_kept",
+    ),
+)
+def test_hybrid_local_audit_requires_complete_core_grounding(
+    case: str,
+) -> None:
+    ledger = _ledger(25)
+    windows = hybrid.audit_windows(ledger)
+    window = windows[-1] if case == "gap_kept" else windows[0]
+    raw = copy.deepcopy(_audit_outputs(ledger)[-1 if case == "gap_kept" else 0])
+    if case == "wrong_core":
+        raw["core_ids"] = list(reversed(raw["core_ids"]))
+    elif case == "unknown_core_id":
+        raw["decisions"][0]["id"] = "s9999"
+    elif case == "missing_decision":
+        raw["decisions"].pop()
+    elif case == "duplicated_decision":
+        raw["decisions"][1]["id"] = raw["decisions"][0]["id"]
+    elif case == "bad_decision":
+        raw["decisions"][0]["decision"] = "silently_omit"
+    elif case == "nontext_reason":
+        raw["decisions"][0]["reason"] = None
+    elif case == "oversize_reason":
+        raw["decisions"][0]["reason"] = "x" * 801
+    elif case == "evidence_in_halo":
+        raw["decisions"][0]["evidence"][0]["id"] = "s0013"
+    elif case == "gap_kept":
+        raw["decisions"][-1]["decision"] = "keep"
+    else:
+        raw["disagreements"] = [
+            {
+                "id": "a001-d01",
+                "issue": "Reconsider contrary text",
+                "proposed_change": None
+                if case == "bad_disagreement_change"
+                else "Qualify the argument",
+                "evidence": []
+                if case == "bad_disagreement_evidence"
+                else [{"id": "s0001", "start": 0, "end": 10, "role": "ASSERTION"}],
+            }
+        ]
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_audit(raw, ledger, window)
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "duplicate_amendment",
+        "gap_amendment",
+        "unknown_amendment",
+        "bad_amendment_reason",
+        "duplicate_resolution",
+        "invalid_resolution",
+        "resolution_without_evidence",
+        "beat_without_source",
+        "beat_bad_essential",
+        "beat_bad_causality",
+    ),
+)
+def test_hybrid_reconciliation_rejects_unjustified_global_rewrites(
+    case: str,
+) -> None:
+    ledger = _ledger(25)
+    audits = _audit_outputs(ledger)
+    response = _reconciliation(ledger)
+    amendment = {
+        "id": "s0001",
+        "from": "keep",
+        "to": "omit",
+        "reason": "Explicit revision from a source-supported counterexample",
+        "evidence": [{"id": "s0002", "start": 0, "end": 10, "role": "COUNTEREXAMPLE"}],
+    }
+    resolution = {
+        "id": "a001-d01",
+        "resolution": "qualified",
+        "reason": "Bounded argument after contradictory source review",
+        "evidence": [{"id": "s0002", "start": 0, "end": 10, "role": "COUNTEREXAMPLE"}],
+    }
+    if case == "duplicate_amendment":
+        response["amendments"] = [amendment, copy.deepcopy(amendment)]
+    elif case == "gap_amendment":
+        response["amendments"] = [
+            {**amendment, "id": "s0026", "from": "omit", "to": "keep"}
+        ]
+    elif case == "unknown_amendment":
+        response["amendments"] = [{**amendment, "id": "s9999"}]
+    elif case == "bad_amendment_reason":
+        response["amendments"] = [{**amendment, "reason": None}]
+    elif case == "duplicate_resolution":
+        audits[0]["disagreements"] = [
+            {
+                "id": resolution["id"],
+                "issue": "Main argument needs qualification",
+                "proposed_change": "Revise scope",
+                "evidence": resolution["evidence"],
+            }
+        ]
+        response["resolutions"] = [resolution, copy.deepcopy(resolution)]
+    elif case == "invalid_resolution":
+        audits[0]["disagreements"] = [
+            {
+                "id": resolution["id"],
+                "issue": "Main argument needs qualification",
+                "proposed_change": "Revise scope",
+                "evidence": resolution["evidence"],
+            }
+        ]
+        response["resolutions"] = [{**resolution, "resolution": "unresolved"}]
+    elif case == "resolution_without_evidence":
+        audits[0]["disagreements"] = [
+            {
+                "id": resolution["id"],
+                "issue": "Main argument needs qualification",
+                "proposed_change": "Revise scope",
+                "evidence": resolution["evidence"],
+            }
+        ]
+        response["resolutions"] = [{**resolution, "evidence": []}]
+    elif case == "beat_without_source":
+        response["beats"][0]["spans"][0]["id"] = "s9999"
+    elif case == "beat_bad_essential":
+        response["beats"][0]["essential"] = 1
+    else:
+        response["beats"][0]["causal_link"] = ""
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.reconcile(response, ledger, _argument(ledger), audits)
+
+
+def test_review_packets_reject_rehashed_but_semantically_mismatched_brief() -> None:
+    ledger = _ledger(25)
+    brief = hybrid.reconcile(
+        _reconciliation(ledger), ledger, _argument(ledger), _audit_outputs(ledger)
+    )
+    brief["argument"] = "Test-only altered interpretation."
+    with pytest.raises(hybrid.HybridStop, match="immutable source"):
+        hybrid.human_review_packet(brief, ledger)
+
+
+@pytest.mark.parametrize(
+    "case", ("duplicate_unit", "missing_unit", "duplicate_beat", "missing_beat", "no_reason")
+)
+def test_human_attestation_refuses_partial_editorial_signoff(case: str) -> None:
+    ledger = _ledger(25)
+    brief = hybrid.reconcile(
+        _reconciliation(ledger), ledger, _argument(ledger), _audit_outputs(ledger)
+    )
+    review = {
+        "schema": hybrid.REVIEW_SCHEMA,
+        "brief_sha256": brief["brief_sha256"],
+        "reviewer": "Synthetic editor",
+        "unit_decisions": [
+            {"id": unit["id"], "review": "accept", "reason": "Original unit checked"}
+            for unit in ledger["entries"]
+        ],
+        "beat_decisions": [
+            {
+                "beat_id": beat["beat_id"],
+                "review": "support_attested",
+                "reason": "Qualification and logical meaning checked",
+            }
+            for beat in brief["beats"]
+        ],
+    }
+    if case == "duplicate_unit":
+        review["unit_decisions"][0]["id"] = review["unit_decisions"][1]["id"]
+    elif case == "missing_unit":
+        review["unit_decisions"].pop()
+    elif case == "duplicate_beat":
+        review["beat_decisions"][0]["beat_id"] = review["beat_decisions"][1]["beat_id"]
+    elif case == "missing_beat":
+        review["beat_decisions"].pop()
+    elif case == "no_reason":
+        review["beat_decisions"][0]["reason"] = ""
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_human_review(review, brief, ledger)
