@@ -530,9 +530,8 @@ def _script_validate(
         ):
             raise ChapterStop("chapter scene cites omitted/unknown source beats")
         observed.update(beat_ids)
-        if (
-            scene["illustration_label"] == "SOURCE_ACCOUNT"
-            and any(adapted[bid]["illustration"] == "INVENTED_ILLUSTRATION" for bid in beat_ids)
+        if scene["illustration_label"] == "SOURCE_ACCOUNT" and any(
+            adapted[bid]["illustration"] == "INVENTED_ILLUSTRATION" for bid in beat_ids
         ):
             raise ChapterStop("chapter scene cannot relabel invented adaptation as source account")
         for bid in beat_ids:
@@ -985,18 +984,21 @@ def _stage(
             )
         except Exception:
             evaluation._store(
-                root, directory / f"failed-{index}.json",
+                root,
+                directory / f"failed-{index}.json",
                 {"attempt": index, "owner": owner, "status": "PRODUCER_FAILURE"},
             )
             raise ChapterStop("private chapter producer failed; no automatic retry") from None
         if not isinstance(response, str) or len(response.encode("utf-8")) > MAX_RAW_BYTES:
             evaluation._store(
-                root, directory / f"failed-{index}.json",
+                root,
+                directory / f"failed-{index}.json",
                 {"attempt": index, "owner": owner, "status": "NON_TEXT_OR_OVERSIZE"},
             )
             raise ChapterStop("chapter producer returned invalid bounded raw output")
         evaluation._store(
-            root, directory / f"raw-{index}.json",
+            root,
+            directory / f"raw-{index}.json",
             {
                 "attempt": index,
                 "owner": owner,
@@ -1008,7 +1010,8 @@ def _stage(
             result = validate(whole_book.load_strict_reply(response))
         except (ValueError, TypeError, KeyError, RecursionError):
             evaluation._store(
-                root, directory / f"failed-{index}.json",
+                root,
+                directory / f"failed-{index}.json",
                 {"attempt": index, "owner": owner, "status": "SCHEMA_OR_SOURCE_REJECTED"},
             )
             if index == plan.max_attempts_per_stage:
@@ -1457,9 +1460,7 @@ def evaluate_chapter(
         "publish_eligible": False,
     }
     result_identity = content_fingerprint(result_record)
-    evaluation._store(
-        root, base / f"chapter-result-{result_identity}.json", result_record
-    )
+    evaluation._store(root, base / f"chapter-result-{result_identity}.json", result_record)
     return {
         **summary,
         "status": final_status,

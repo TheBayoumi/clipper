@@ -1216,8 +1216,7 @@ def test_local_cpu_limited_resume_private_raw_and_exact_cache_replay(
         assert export["publish_eligible"] is False
         assert export["books"][0]["lessons"][0]["evidence_anchor"]["field"] == "native_text"
         assert all(
-            row["completion_origin"] == "INJECTED_TEST_PRODUCER"
-            for row in progress["progress"]
+            row["completion_origin"] == "INJECTED_TEST_PRODUCER" for row in progress["progress"]
         )
         assert all(row["raw_completion_sha256"] for row in progress["progress"])
         completion_root = root / "book-candidates/analysis/completions"

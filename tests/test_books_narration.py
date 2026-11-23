@@ -207,7 +207,9 @@ def test_synthetic_kokoro_pipeline_and_wave_conversion_without_model_weights(
 
 
 @pytest.mark.parametrize("cached", [False, True])
-@pytest.mark.parametrize("mutation", ["data-claims-more", "missing-pcm", "wrong-sample-width", "trailing-data"])
+@pytest.mark.parametrize(
+    "mutation", ["data-claims-more", "missing-pcm", "wrong-sample-width", "trailing-data"]
+)
 def test_wav_validation_uses_real_pcm_frames_not_forged_metadata(
     tmp_path: Path, cached: bool, mutation: str
 ) -> None:

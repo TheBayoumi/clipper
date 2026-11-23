@@ -1195,6 +1195,7 @@ def test_concurrent_chapter_stage_exclusive_owner_and_legacy_cache_rejection(
     monkeypatch.setattr(chapter, "_claim", synchronized_claim)
     provider = Mock(return_value='{"ok": true}')
     args = (tmp_path / "root", "brief", {"scope": "synthetic"}, _plan(max_attempts_per_stage=1))
+
     def run() -> tuple[dict, str, str, int]:
         return chapter._stage(*args, lambda v: v, provider)
 
@@ -1235,6 +1236,7 @@ def test_concurrent_chapter_narration_single_winner_and_interrupted_block(
     monkeypatch.setattr(chapter, "_claim", synchronized_claim)
     producer = Mock(side_effect=_wav)
     script = {"scenes": [{"scene_id": "scene-01", "narration": "synthetic", "dialogue": []}]}
+
     def run() -> tuple[list[dict], str, str]:
         return chapter._narrate(tmp_path / "root", script, _plan(), producer)
 
@@ -1266,29 +1268,45 @@ def test_qualified_invented_beats_cannot_be_relabeled_or_silently_denarrated() -
     request = {
         "messages": [
             {"role": "system", "content": ""},
-            {"role": "user", "content": json.dumps({
-                "input": {"adaptation": {"beats": [
-                    {"beat_id": f"beat-{i:02d}"} for i in range(1, 6)
-                ]}}
-            })},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "input": {
+                            "adaptation": {
+                                "beats": [{"beat_id": f"beat-{i:02d}"} for i in range(1, 6)]
+                            }
+                        }
+                    }
+                ),
+            },
         ]
     }
     script = json.loads(_script(request))
-    adaptation = json.loads(_adapt({
-        "messages": [
-            {"role": "system", "content": ""},
-            {"role": "user", "content": json.dumps({
-                "input": {
-                    "source": {"authorization_status": "unverified"},
-                    "human_review": {"reviewer": "synthetic-human-reviewer"},
-                    "brief": {"beats": [{"beat_id": f"beat-{i:02d}"} for i in range(1, 6)]},
-                }
-            })},
-        ]
-    }))
-    reviews = {
-        f"beat-{i:02d}": {"qualifier_quote": ""} for i in range(1, 6)
-    }
+    adaptation = json.loads(
+        _adapt(
+            {
+                "messages": [
+                    {"role": "system", "content": ""},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "input": {
+                                    "source": {"authorization_status": "unverified"},
+                                    "human_review": {"reviewer": "synthetic-human-reviewer"},
+                                    "brief": {
+                                        "beats": [{"beat_id": f"beat-{i:02d}"} for i in range(1, 6)]
+                                    },
+                                }
+                            }
+                        ),
+                    },
+                ]
+            }
+        )
+    )
+    reviews = {f"beat-{i:02d}": {"qualifier_quote": ""} for i in range(1, 6)}
     for scene in script["scenes"]:
         scene["illustration_label"] = "SOURCE_ACCOUNT"
         scene["dialogue"] = []
@@ -1300,27 +1318,37 @@ def test_qualified_invented_beats_cannot_be_relabeled_or_silently_denarrated() -
     with pytest.raises(chapter.ChapterStop, match="narration lost"):
         chapter._script_validate(script, adaptation, reviews, _plan())
     script["scenes"][0]["narration"] += " only within this synthetic trial"
-    brief = {"beats": [
-        {
-            "beat_id": f"beat-{i:02d}",
-            "unit_id": f"unit-{i}",
-            "qualification": "source specifically limits this trial" if i == 1 else "",
-        }
-        for i in range(1, 6)
-    ]}
-    review = {"unit_decisions": [
-        {"source_id": f"unit-{i}", "qualifier_quote": "qualified unit reviewer" if i == 1 else ""}
-        for i in range(1, 6)
-    ]}
+    brief = {
+        "beats": [
+            {
+                "beat_id": f"beat-{i:02d}",
+                "unit_id": f"unit-{i}",
+                "qualification": "source specifically limits this trial" if i == 1 else "",
+            }
+            for i in range(1, 6)
+        ]
+    }
+    review = {
+        "unit_decisions": [
+            {
+                "source_id": f"unit-{i}",
+                "qualifier_quote": "qualified unit reviewer" if i == 1 else "",
+            }
+            for i in range(1, 6)
+        ]
+    }
     with pytest.raises(chapter.ChapterStop, match="narration lost"):
         chapter._script_validate(
             script, adaptation, reviews, _plan(), brief=brief, human_review=review
         )
     script["scenes"][0]["narration"] += " source specifically limits this trial"
     script["scenes"][0]["narration"] += " qualified unit reviewer"
-    assert chapter._script_validate(
-        script, adaptation, reviews, _plan(), brief=brief, human_review=review
-    ) == script
+    assert (
+        chapter._script_validate(
+            script, adaptation, reviews, _plan(), brief=brief, human_review=review
+        )
+        == script
+    )
 
 
 @pytest.mark.parametrize("delta", [0.01, -0.01, float("nan"), float("inf")])
@@ -1328,33 +1356,55 @@ def test_chapter_shot_timing_is_gap_free_and_finite(delta: float) -> None:
     dummy = {
         "messages": [
             {"role": "system", "content": ""},
-            {"role": "user", "content": json.dumps({
-                "input": {"adaptation": {"beats": [
-                    {"beat_id": f"beat-{i:02d}"} for i in range(1, 6)
-                ]}}
-            })},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "input": {
+                            "adaptation": {
+                                "beats": [{"beat_id": f"beat-{i:02d}"} for i in range(1, 6)]
+                            }
+                        }
+                    }
+                ),
+            },
         ]
     }
     script = json.loads(_script(dummy))
-    adaptation = json.loads(_adapt({
-        "messages": [
-            {"role": "system", "content": ""},
-            {"role": "user", "content": json.dumps({
-                "input": {
-                    "source": {"authorization_status": "unverified"},
-                    "human_review": {"reviewer": "synthetic-human-reviewer"},
-                    "brief": {"beats": [{"beat_id": f"beat-{i:02d}"} for i in range(1, 6)]},
-                }
-            })},
-        ]
-    }))
+    adaptation = json.loads(
+        _adapt(
+            {
+                "messages": [
+                    {"role": "system", "content": ""},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "input": {
+                                    "source": {"authorization_status": "unverified"},
+                                    "human_review": {"reviewer": "synthetic-human-reviewer"},
+                                    "brief": {
+                                        "beats": [{"beat_id": f"beat-{i:02d}"} for i in range(1, 6)]
+                                    },
+                                }
+                            }
+                        ),
+                    },
+                ]
+            }
+        )
+    )
     timings = chapter._timings(script, _plan(), None)
-    directions = json.loads(_direction({
-        "messages": [
-            {"role": "system", "content": ""},
-            {"role": "user", "content": json.dumps({"input": {"timings": timings}})},
-        ]
-    }))
+    directions = json.loads(
+        _direction(
+            {
+                "messages": [
+                    {"role": "system", "content": ""},
+                    {"role": "user", "content": json.dumps({"input": {"timings": timings}})},
+                ]
+            }
+        )
+    )
     directions["shots"][1]["start_seconds"] += delta
     with pytest.raises(chapter.ChapterStop, match="timing gap"):
         chapter._direction_validate(directions, script, adaptation, timings, _plan())
@@ -1388,8 +1438,9 @@ def test_final_result_identity_binds_full_provenance_and_same_length_wav_bytes(
         identities.append((result["direction_identity"], result["final_result_identity"], payload))
     assert identities[0][0] == identities[1][0]  # Same content/timing: direction can reuse.
     assert identities[0][1] != identities[1][1]  # Different WAV bytes: result cannot alias.
-    assert identities[0][2]["audio_records"][0]["sha256"] != (
-        identities[1][2]["audio_records"][0]["sha256"]
+    assert (
+        identities[0][2]["audio_records"][0]["sha256"]
+        != (identities[1][2]["audio_records"][0]["sha256"])
     )
     copy = dict(identities[0][2])
     copy["script_key"] = "different-producer-script-same-scenes"
@@ -1412,6 +1463,7 @@ def test_omitted_qualified_unit_needs_human_disposition(tmp_path: Path) -> None:
     with pytest.raises(chapter.ChapterStop, match="explicit reviewer disposition"):
         chapter._review_validate(review, brief, first["brief_identity"], source["units"], [])
     review["unit_decisions"][0]["reason"] += review["unit_decisions"][0]["qualifier_quote"]
-    assert chapter._review_validate(
-        review, brief, first["brief_identity"], source["units"], []
-    )[0] == review
+    assert (
+        chapter._review_validate(review, brief, first["brief_identity"], source["units"], [])[0]
+        == review
+    )
