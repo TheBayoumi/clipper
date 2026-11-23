@@ -328,6 +328,8 @@ def _phase_records(root: Path, number: int, bundle: str, scope: str) -> list[dic
         return []
     if folder.is_symlink() or not folder.is_dir():
         raise PrivateHostStop("private chapter phase history is redirected")
+    if not any(folder.iterdir()):
+        raise PrivateHostStop("existing private phase history cannot be empty")
     records: list[dict[str, Any]] = []
     for path in sorted(folder.iterdir()):
         if path.is_symlink() or not path.is_file():
