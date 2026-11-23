@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -328,7 +329,7 @@ def _phase_head(root: Path, number: int) -> Path:
 
 
 @contextmanager
-def _phase_lock(root: Path, number: int) -> Any:
+def _phase_lock(root: Path, number: int) -> Iterator[None]:
     """Exclusive process-level claim around read/append/committed-head updates."""
     import fcntl
     import stat
@@ -680,10 +681,13 @@ def execute(
                     cast(str, record["brief_identity"]) if mode == "resume" else None
                 ),
                 on_resume_verified=(
-                    lambda: _phase(
+                    (lambda: _phase(
                         runner, number, digest, scope_sha, "RESUME_IN_FLIGHT",
-                        {"brief_identity": record["brief_identity"], "progress_path": str(progress_path)},
-                    )
+                        {
+                            "brief_identity": record["brief_identity"],
+                            "progress_path": str(progress_path),
+                        },
+                    ))
                     if mode == "resume"
                     else None
                 ),
