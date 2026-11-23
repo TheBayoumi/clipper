@@ -1635,6 +1635,7 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
         "wrong_mode",
         "review_record",
         "source_ledger",
+        "reconcile_ledger",
         "final_result",
         "human_review",
         "wav",
@@ -1645,8 +1646,13 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
             listing["chapters"][0]["source_mode"] = "LEGACY_MINED_CHAPTER"
             forged["private-recovery-manifest.json"] = evaluation._json_bytes(listing)
         else:
-            kind = "review_record" if attack == "review_record" else attack
-            item = next(row for row in listing["chapters"][0]["files"] if row["kind"] == kind)
+            kind = "text" if attack == "reconcile_ledger" else attack
+            item = next(
+                row for row in listing["chapters"][0]["files"]
+                if row["kind"] == kind
+                and (attack != "reconcile_ledger" or
+                     row["relative_path"].startswith("book-candidates/hybrid_reconcile/"))
+            )
             path = item["relative_path"]
             if attack == "wav":
                 forged[path] += b"tampered-real-narration-reference"
@@ -1656,6 +1662,8 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
                     evidence["review"]["reviewer"] = "Unauthorized archive-side editor"
                 elif attack == "source_ledger":
                     evidence["identity"]["selected_bundle_sha256"] = "0" * 64
+                elif attack == "reconcile_ledger":
+                    evidence["payload"]["ledger_sha256"] = "0" * 64
                 else:
                     evidence["producer_identity_sha256"] = "0" * 64
                 forged[path] = evaluation._json_bytes(evidence)
