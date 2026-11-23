@@ -914,6 +914,14 @@ class BookOrchestrator:
             producer_material = {
                 **whole_book.local_producer_material(),
                 "execution_provenance": producer_provenance,
+                **(
+                    {
+                        "source_boundary": book.source_boundary,
+                        "selected_scope_bundle_sha256": chosen.bundle_sha256,
+                    }
+                    if selected_scope_path is not None
+                    else {}
+                ),
             }
             producer_fingerprint = content_fingerprint(producer_material)
             producer = local_completion or scripting._local_book_completion
@@ -950,6 +958,9 @@ class BookOrchestrator:
             for unit in window:
                 unit_fingerprint = unit.fingerprint
                 request = whole_book._request_for_identity(book, unit, book_fingerprint)
+                if selected_scope_path is not None:
+                    request["source_boundary"] = book.source_boundary
+                    request["selected_scope_bundle_sha256"] = chosen.bundle_sha256
                 request_key = content_fingerprint(request)
                 status = "unresolved"
                 count = 0
@@ -999,10 +1010,18 @@ class BookOrchestrator:
                         )
 
                     try:
-                        if local_attempts >= budget:
-                            hit, stored_local = self.dag._cache_hit(identity_local)
-                            if not hit:
-                                stored_local = None
+                        cached_pass, cached_value = self.dag._cache_hit(identity_local)
+                        prior_attempts = self.dag.attempt_count(identity_local)
+                        if not cached_pass and prior_attempts:
+                            # DAG attempt history is persistent across fresh runners and
+                            # reclaimed failed claims. Never rerun a consumed request.
+                            failure_category = "prior_attempt_interrupted_or_failed"
+                            status = "failed"
+                            hit, stored_local = False, None
+                        elif cached_pass:
+                            hit, stored_local = True, cached_value
+                        elif local_attempts >= budget:
+                            hit, stored_local = False, None
                         else:
                             stored_local, _reused = self.dag.execute(identity_local, generate)
                             hit = True

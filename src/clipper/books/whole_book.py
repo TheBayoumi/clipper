@@ -272,7 +272,7 @@ def plan_for(
         raise mining.BookMiningError("section scope contains no faithful source work units")
     order = tuple(
         section_id
-        for section_id in dict.fromkeys(unit.section_id for unit in parent.units)
+        for section_id in dict.fromkeys(block.section_id for block in faithful.reading_blocks(book))
         if section_id in selected
     )
     if order != section_ids:

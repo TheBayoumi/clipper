@@ -1790,6 +1790,14 @@ def evaluate_chapter(
         "schema": "clipper-chapter-private-preproduction-result-v2",
         "chapter_scope_identity": chapter_key,
         "source_ledger_sha256": hashlib.sha256(evaluation._json_bytes(source)).hexdigest(),
+        "source_boundary": source["source_boundary"],
+        "selected_source_bundle_sha256": source["selected_source_bundle_sha256"],
+        "parent_original_reverified_on_host": source["parent_original_reverified_on_host"],
+        "linked_section_completeness": (
+            "UNVERIFIED_REQUIRES_SOURCE_REVIEW"
+            if selected_scope_path is not None
+            else "NOT_ATTESTED"
+        ),
         "source_mining_provenance": source["mining_provenance"],
         "source_mining_producer_fingerprint": source["mining_producer_fingerprint"],
         "progress_sha256": source["progress_sha256"],
