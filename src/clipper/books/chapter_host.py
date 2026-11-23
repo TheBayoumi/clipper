@@ -513,7 +513,8 @@ def _append_phase_locked(
             (
                 row["artifacts"].get("claim_owner")
                 for row in reversed(records)
-                if row["phase"] in {
+                if row["phase"]
+                in {
                     "MINING_IN_FLIGHT",
                     "HYBRID_BRIEF_IN_FLIGHT",
                     "RESUME_IN_FLIGHT",
@@ -920,6 +921,7 @@ def execute(
 
 
 
+
 def _claim_hybrid_resume(
     runner: BookOrchestrator,
     number: int,
@@ -1000,9 +1002,7 @@ def _hybrid_review_packet(
                 ],
             },
         }
-    )
-    evaluation._store(
-        base, base / "private-host" / f"chapter-{number}-review-packet.json", packet
+
     )
 
 
@@ -1030,9 +1030,8 @@ def _execute_hybrid(
         bundle_sha = verified.bundle_sha256
         prior = _phase_records(root, number, bundle_sha, scope)[-1]
         state = str(prior["phase"])
-        if (
-            (mode == "hybrid-brief" and state != "NOT_STARTED")
-            or (mode == "hybrid-resume" and state != "AWAITING_HUMAN_REVIEW")
+        if (mode == "hybrid-brief" and state != "NOT_STARTED") or (
+            mode == "hybrid-resume" and state != "AWAITING_HUMAN_REVIEW"
         ):
             outcomes[str(number)] = _outcome_from_phase(prior)
             continue
@@ -1059,7 +1058,8 @@ def _execute_hybrid(
                 record: object = whole_book.load_strict_reply(evaluation._read(saved, 16384))
                 if (
                     not isinstance(record, dict)
-                    or set(record) != {
+                    or set(record)
+                    != {
                         "chapter_mode",
                         "chapter",
                         "phase",
@@ -1071,7 +1071,7 @@ def _execute_hybrid(
                         "audit_identities",
                         "plan_fingerprint",
                         "plan",
-                    "chapter_scope_identity",
+                        "chapter_scope_identity",
                     }
                     or record["chapter_mode"] != "DIRECT_SOURCE_HYBRID"
                     or record["chapter"] != number
@@ -1086,8 +1086,7 @@ def _execute_hybrid(
                     or record["brief_identity"] != prior["artifacts"].get("brief_identity")
                     or record["source_ledger_sha256"]
                     != prior["artifacts"].get("source_ledger_sha256")
-                    or record["argument_identity"]
-                    != prior["artifacts"].get("argument_identity")
+                    or record["argument_identity"] != prior["artifacts"].get("argument_identity")
                     or record["audit_identities"] != prior["artifacts"].get("audit_identities")
                     or not isinstance(record["brief_identity"], str)
                     or DIGEST.fullmatch(record["brief_identity"]) is None
@@ -1164,10 +1163,7 @@ def _execute_hybrid(
                     "plan_fingerprint": plan.fingerprint,
                     "plan": {
                         "schema": chapter.PLAN_SCHEMA,
-                        **{
-                            key: getattr(plan, key)
-                            for key in plan.__dataclass_fields__
-                        },
+                        **{key: getattr(plan, key) for key in plan.__dataclass_fields__},
                     },
                 }
                 evaluation._store(private, saved, evidence)
@@ -1486,10 +1482,7 @@ def _chapter_output_manifest(
 ) -> dict[str, object]:
     """Scoped, private, bounded inventory from committed stage identities."""
     records = _phase_records(root, number, bundle, scope)
-    if any(
-        record["artifacts"].get("chapter_mode") == "DIRECT_SOURCE_HYBRID"
-        for record in records
-    ):
+    if any(record["artifacts"].get("chapter_mode") == "DIRECT_SOURCE_HYBRID" for record in records):
         return _hybrid_output_manifest(
             root, number, bundle, scope, final_result_identity=final_result_identity
         )
@@ -1598,6 +1591,7 @@ def _chapter_output_manifest(
 
 
 
+
 def _hybrid_output_manifest(
     root: Path,
     number: int,
@@ -1690,14 +1684,10 @@ def _hybrid_output_manifest(
     def verified_stage(
         stage: str, identity: str, validator: Callable[[object], dict[str, Any]]
     ) -> dict[str, Any]:
-        evidence = _stage_output_entries(
-            root, number, stage, identity, validate=validator
-        )
+        evidence = _stage_output_entries(root, number, stage, identity, validate=validator)
         files.extend(evidence)
         records_for_stage = [
-            item
-            for item in evidence
-            if str(item["relative_path"]).endswith("/validated.json")
+            item for item in evidence if str(item["relative_path"]).endswith("/validated.json")
         ]
         if len(records_for_stage) != 1:
             raise PrivateHostStop("hybrid stage validated source record not unique")
@@ -1723,9 +1713,7 @@ def _hybrid_output_manifest(
         verified_stage(
             "hybrid_audit",
             identity,
-            lambda raw, window=window: chapter_hybrid.validate_audit(
-                raw, ledger_obj, window
-            ),
+            lambda raw, window=window: chapter_hybrid.validate_audit(raw, ledger_obj, window),
         )
         for window, identity in zip(windows, audit_ids, strict=True)
     ]
@@ -1784,11 +1772,7 @@ def _hybrid_output_manifest(
             lambda raw: chapter_hybrid.validate_script(raw, treatment, brief, plan),
         )
     if "narration_report_identity" in derived:
-        files.extend(
-            _narration_output_entries(
-                root, number, derived["narration_report_identity"]
-            )
-        )
+        files.extend(_narration_output_entries(root, number, derived["narration_report_identity"]))
     if final_result_identity is not None:
         if DIGEST.fullmatch(final_result_identity) is None:
             raise PrivateHostStop("hybrid final identity invalid")
@@ -2157,7 +2141,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "mode",
         choices=(
-            "inspect", "brief", "resume", "hybrid-brief", "hybrid-resume", "status", "recover"
+            "inspect",
+            "brief",
+            "resume",
+            "hybrid-brief",
+            "hybrid-resume",
+            "status",
+            "recover",
         ),
     )
     parser.add_argument("--artifact-root", type=Path, required=True)
