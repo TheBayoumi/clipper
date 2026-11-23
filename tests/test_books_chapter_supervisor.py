@@ -797,20 +797,25 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
             assert actions.count("external-supervisor-public.pem") >= 3
     else:
         assert "external-supervisor-heartbeat-envelope.watchdog.pending" not in actions
-    # Cleanup is required to recover any scoped, independently verifiable
-    # private outputs. It must not be mistaken for execution authorization.
-    host_calls = [
-        call for call in actions.splitlines() if "clipper.books.chapter_host" in call
-    ]
+    # Cleanup may retrieve the scoped recovery archive and, if that fails,
+    # read its safe status. Neither operation authorizes generation or setup.
+    host_calls = [call for call in actions.splitlines() if "clipper.books.chapter_host" in call]
     allowed_recovery = "python3 -m clipper.books.chapter_host recover --artifact-root "
-    assert all(allowed_recovery in call for call in host_calls), host_calls
+    allowed_status = "python3 -m clipper.books.chapter_host status --artifact-root "
+    assert all(
+        allowed_recovery in call or allowed_status in call for call in host_calls
+    ), host_calls
     if scenario in ("provisioning_then_ready", "transient_ssh", "transient_cp"):
-        assert host_calls, "Successful bootstrap must preserve owner recovery on exit"
+        assert any(allowed_recovery in call for call in host_calls), host_calls
     else:
-        assert not host_calls, "Unready or unverified bootstrap must not run a host command"
-    assert not any(
-        forbidden in actions
-        for forbidden in ("pip install", "chapter_host brief", "chapter_host resume",
-                          "chapter_host hybrid-brief", "chapter_host hybrid-resume",
-                          "chapter_host inspect", "model.generate")
-    )
+        assert not host_calls, "Unready or unverified bootstrap must not run host commands"
+    for forbidden in (
+        "pip install",
+        "chapter_host brief",
+        "chapter_host resume",
+        "chapter_host hybrid-brief",
+        "chapter_host hybrid-resume",
+        "chapter_host inspect",
+        "model.generate",
+    ):
+        assert forbidden not in actions
