@@ -2008,3 +2008,56 @@ def test_actual_provider_truncated_mining_keeps_original_raw_before_receipt_fail
         / f"{digest}.txt"
     )
     assert stored.read_bytes() == raw.encode("utf-8")
+
+
+@pytest.mark.parametrize(
+    ("error_type", "category"),
+    [
+        (constrained.NoEligibleSpans, "no_eligible_source_span"),
+        (constrained.DecoderUnavailable, "constrained_decoder_unavailable"),
+        (constrained.ConstraintError, "invalid_constrained_request"),
+        (scripting.PinnedQwenSnapshotError, "pinned_model_cache_unavailable"),
+        (RuntimeError, "runtime_error"),
+    ],
+)
+def test_actual_mining_preflight_failures_retain_original_sanitized_categories(
+    tmp_path: Path, error_type: type[Exception], category: str
+) -> None:
+    from types import SimpleNamespace
+
+    runner = BookOrchestrator(tmp_path)
+    with pytest.raises(whole_book.LocalReplyFailure) as failure:
+        runner._produce_local_unit(
+            ref=SimpleNamespace(book_id="synthetic-only"),
+            identity=SimpleNamespace(cache_key="synthetic-stage"),
+            request={"max_new_tokens": 1024},
+            request_sha256="a" * 64,
+            unit=Mock(),
+            producer_fingerprint="b" * 64,
+            completion=Mock(side_effect=error_type("synthetic preflight failed")),
+            actual_provider=True,
+        )
+    assert failure.value.category == category
+    assert failure.value.raw_sha256 is None
+    assert not list((runner.root / "book-candidates").rglob("*.txt"))
+
+
+def test_actual_mining_success_text_without_token_receipt_is_not_trusted(
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    runner = BookOrchestrator(tmp_path)
+    with pytest.raises(whole_book.LocalReplyFailure) as failure:
+        runner._produce_local_unit(
+            ref=SimpleNamespace(book_id="synthetic-only"),
+            identity=SimpleNamespace(cache_key="synthetic-stage"),
+            request={"max_new_tokens": 1024},
+            request_sha256="a" * 64,
+            unit=Mock(),
+            producer_fingerprint="b" * 64,
+            completion=lambda _: '{"synthetic":"not an authenticated token receipt"}',
+            actual_provider=True,
+        )
+    assert failure.value.category == "missing_real_token_receipt"
+    assert not list((runner.root / "book-candidates").rglob("*.txt"))

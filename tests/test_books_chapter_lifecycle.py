@@ -375,3 +375,53 @@ def test_replaced_legacy_files_cannot_change_verified_payload_after_snapshot(
     assert did_swap
     with pytest.raises(chapter_lifecycle.LifecycleStop):
         _check(root, record)
+
+
+@pytest.mark.parametrize(
+    "fault", ["bad_base64", "oversized_payload", "wrong_envelope_schema", "invalid_signature"]
+)
+def test_atomic_signed_envelope_rejects_malformed_or_untrusted_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    root, record, heartbeat, signature = _fixture(tmp_path, monkeypatch)
+    payload = heartbeat.read_bytes()
+    signed = signature.read_bytes()
+    schema = "clipper-external-supervisor-envelope-v1"
+    if fault == "bad_base64":
+        encoded_payload = "not-base64!"
+    elif fault == "oversized_payload":
+        encoded_payload = base64.b64encode(b"x" * 8193).decode("ascii")
+    else:
+        encoded_payload = base64.b64encode(payload).decode("ascii")
+    if fault == "wrong_envelope_schema":
+        schema = "untrusted-envelope"
+    if fault == "invalid_signature":
+        signed = b"not an OpenSSL signature"
+    envelope = {
+        "schema": schema,
+        "payload_b64": encoded_payload,
+        "signature_b64": base64.b64encode(signed).decode("ascii"),
+    }
+    (heartbeat.parent / "external-supervisor-heartbeat-envelope.json").write_bytes(
+        json.dumps(envelope, sort_keys=True).encode("utf-8")
+    )
+    with pytest.raises(chapter_lifecycle.LifecycleStop):
+        _check(root, record)
+
+
+def test_bounded_heartbeat_snapshot_rejects_device_race_and_oversize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Simulate a pathname replaced between the trusted stat and the actual
+    # open; even a successful open of a directory cannot count as a snapshot.
+    monkeypatch.setattr(chapter_lifecycle, "_trusted_file", lambda *_args: tmp_path)
+    with pytest.raises(chapter_lifecycle.LifecycleStop, match="regular file"):
+        chapter_lifecycle._snapshot(tmp_path, "synthetic", 8)
+    monkeypatch.setattr(chapter_lifecycle, "_trusted_file", lambda *_args: tmp_path / "missing")
+    with pytest.raises(chapter_lifecycle.LifecycleStop, match="cannot be snapshotted"):
+        chapter_lifecycle._snapshot(tmp_path, "synthetic", 8)
+    oversized = tmp_path / "changed-after-stat.bin"
+    oversized.write_bytes(b"x" * 32)
+    monkeypatch.setattr(chapter_lifecycle, "_trusted_file", lambda *_args: oversized)
+    with pytest.raises(chapter_lifecycle.LifecycleStop, match="finite limit"):
+        chapter_lifecycle._snapshot(tmp_path, "synthetic", 8)

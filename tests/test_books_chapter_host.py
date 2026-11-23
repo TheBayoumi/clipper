@@ -1046,6 +1046,14 @@ def test_resume_missing_review_or_changed_plan_keeps_same_review_checkpoint(
     missing = _call(runner, path, "resume")
     assert all(c["review_status"] == "REVIEW_REQUIRED" for c in missing["chapters"].values())
     assert counter.call_count == 2
+    # An explicitly named but unavailable private review is still a checkpoint,
+    # not a consumed attempt or permission to invoke a model callback.
+    for n in (1, 7):
+        config[f"chapter_{n}"]["review_file"] = str(runner.root / "not-yet-supplied.json")
+    path.write_bytes(evaluation._json_bytes(config))
+    unavailable = _call(runner, path, "resume")
+    assert all(c["review_status"] == "REVIEW_REQUIRED" for c in unavailable["chapters"].values())
+    assert counter.call_count == 2
     review = runner.root / "synthetic-invalid-human-review.json"
     review.write_text("not valid human review", encoding="utf-8")
     for n in (1, 7):
@@ -1069,3 +1077,40 @@ def test_resume_missing_review_or_changed_plan_keeps_same_review_checkpoint(
         c["review_status"] == "RESUME_PREFLIGHT_BLOCKED" for c in blocked["chapters"].values()
     )
     assert counter.call_count == 4
+
+
+def test_recovery_status_cli_is_sanitized_and_rejects_invalid_journal_heads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner, path, config = _private_setup(tmp_path, monkeypatch)
+    assert chapter_host.main(["status", "--artifact-root", str(runner.root)]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["status"] == "PRIVATE_CHAPTER_RECOVERY_CHECKPOINT_ONLY"
+    assert status["chapters"]["1"]["recovery_state"] == "NEVER_STARTED"
+    assert "source_ledger" not in json.dumps(status)
+    assert chapter_host.main(["brief", "--artifact-root", str(runner.root)]) == 2
+    assert "PRIVATE_CHAPTER_HOST_FAILED_CLOSED" in capsys.readouterr().err
+    with pytest.raises(chapter_host.PrivateHostStop, match="absolute artifact root"):
+        chapter_host.recovery_report(Path("relative-only"))
+
+    _locked(runner, path, config)
+    digest = config["chapter_1"]["bundle_sha256"]
+    scope = config["chapter_1"]["scope_sha256"]
+    chapter_host._phase(runner, 1, digest, scope, "NOT_STARTED")
+    head_path = chapter_host._phase_head(runner.root, 1)
+    original = head_path.read_bytes()
+    changed = json.loads(original)
+    changed["bundle_sha256"] = "non-digest"
+    head_path.write_bytes(evaluation._json_bytes(changed))
+    with pytest.raises(chapter_host.PrivateHostStop, match="cannot be trusted"):
+        chapter_host.recovery_report(runner.root)
+    head_path.write_bytes(original)
+
+    folder = runner.root / "book-candidates/private-host/chapter-1-phase-events"
+    for event in folder.iterdir():
+        event.unlink()
+    folder.rmdir()
+    with pytest.raises(chapter_host.PrivateHostStop, match="missing from committed head"):
+        chapter_host._phase_records(runner.root, 1, digest, scope)

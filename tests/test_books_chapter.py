@@ -2226,3 +2226,74 @@ def test_actual_chapter_missing_eos_durably_preserves_bounded_raw_first(
     with pytest.raises(chapter.ChapterStop, match="unresolved"):
         chapter._stage(*args)
     real.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("raw_sha256", "f" * 64),
+        ("generated_token_count", 9000),
+        ("terminal_token_id", -1),
+        ("eos_decision", "MISSING_EOS"),
+    ],
+)
+def test_actual_chapter_invalid_token_receipt_keeps_raw_and_consumes_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    replacement: object,
+) -> None:
+    raw = '{"value":"original synthetic response"}'
+    fields: dict[str, object] = {
+        "raw": raw,
+        "raw_sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "generated_token_count": 23,
+        "terminal_token_id": 151645,
+        "eos_decision": "EOS_VERIFIED",
+    }
+    fields[field] = replacement
+    fake_provider = Mock(return_value=scripting.PinnedQwenRawReceipt(**fields))
+    monkeypatch.setattr(scripting, "_local_chapter_completion", fake_provider)
+    monkeypatch.setattr(scripting, "_ORIGINAL_LOCAL_CHAPTER_COMPLETION", fake_provider)
+    monkeypatch.setattr(scripting, "_chapter_context_tokens", lambda _: 12)
+    root = tmp_path / "raw-bound"
+    args = (root, "brief", {"fixture": "invalid CPU receipt"}, chapter.ChapterPlan())
+    with pytest.raises(chapter.ChapterStop, match="token/EOS receipt unavailable"):
+        chapter._stage(*args, lambda value: value, fake_provider)
+    raw_file = next(root.rglob("raw-1.json"))
+    failed_file = next(root.rglob("failed-1.json"))
+    assert json.loads(raw_file.read_bytes())["raw"] == raw
+    assert json.loads(failed_file.read_bytes())["status"] == "INVALID_ACTUAL_TOKEN_RECEIPT"
+    with pytest.raises(chapter.ChapterStop, match="prior unresolved"):
+        chapter._stage(*args, lambda value: value, fake_provider)
+    fake_provider.assert_called_once()
+
+
+def test_injected_chapter_cache_cannot_relabel_text_as_actual_token_evidence(
+    tmp_path: Path,
+) -> None:
+    producer = Mock(return_value='{"value":"original synthetic text"}')
+    root = tmp_path / "injected-evidence"
+    args = (root, "brief", {"fixture": "no trusted tokens"}, chapter.ChapterPlan())
+    chapter._stage(*args, lambda value: value, producer)
+    path = next(root.rglob("validated.json"))
+    record = json.loads(path.read_bytes())
+    receipt: dict[str, object] = {
+        "raw_sha256": record["raw_sha256"],
+        "generated_token_count": 13,
+        "terminal_token_id": 151645,
+        "eos_decision": "EOS_VERIFIED",
+    }
+    record["token_receipt"] = receipt
+    record["artifact_identity"] = chapter._text_artifact_identity(
+        "brief",
+        record["request_key"],
+        record["provenance"],
+        record["raw_sha256"],
+        record["payload_sha256"],
+        receipt,
+    )
+    path.write_bytes(evaluation._json_bytes(record))
+    with pytest.raises(chapter.ChapterStop, match="cannot be verified"):
+        chapter._stage(*args, lambda value: value, producer, replay_only=True)
+    producer.assert_called_once()
