@@ -116,7 +116,9 @@ def _unique(values: list[str], code: str) -> None:
         raise ChapterStop(code)
 
 
-def _brief_validate(raw: object, evidence: list[dict[str, Any]], plan: ChapterPlan) -> dict:
+def _brief_validate(
+    raw: object, evidence: list[dict[str, Any]], plan: ChapterPlan
+) -> dict[str, Any]:
     obj = _shape(raw, {"argument", "beats", "coverage"}, "chapter brief schema")
     _words(obj["argument"], "chapter argument missing")
     source_ids = {x["candidate_id"] for x in evidence}
@@ -159,15 +161,15 @@ def _brief_validate(raw: object, evidence: list[dict[str, Any]], plan: ChapterPl
 
 
 def _review_validate(
-    raw: object, brief: dict, brief_identity: str, evidence: list[dict[str, Any]]
-) -> tuple[dict, dict[str, dict]]:
+    raw: object, brief: dict[str, Any], brief_identity: str, evidence: list[dict[str, Any]]
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]:
     doc = _shape(raw, {"schema", "brief_sha256", "reviewer", "decisions"}, "chapter review schema")
     if doc["schema"] != REVIEW_SCHEMA or doc["brief_sha256"] != brief_identity:
         raise ChapterStop("chapter human review does not match generated brief")
     _words(doc["reviewer"], "chapter human reviewer identifier required", 80)
     sources = {entry["candidate_id"]: entry for entry in evidence}
     beats = {entry["beat_id"]: entry for entry in brief["beats"]}
-    decisions: dict[str, dict] = {}
+    decisions: dict[str, dict[str, Any]] = {}
     for item in _items(doc["decisions"], len(beats), "chapter review size mismatch"):
         choice = _shape(
             item,
@@ -197,8 +199,8 @@ def _review_validate(
 
 
 def _adapt_validate(
-    raw: object, brief: dict, decisions: dict[str, dict], plan: ChapterPlan
-) -> dict:
+    raw: object, brief: dict[str, Any], decisions: dict[str, dict[str, Any]], plan: ChapterPlan
+) -> dict[str, Any]:
     obj = _shape(
         raw,
         {
@@ -276,8 +278,8 @@ def _adapt_validate(
 
 
 def _script_validate(
-    raw: object, adaptation: dict, decisions: dict[str, dict], plan: ChapterPlan
-) -> dict:
+    raw: object, adaptation: dict[str, Any], decisions: dict[str, dict[str, Any]], plan: ChapterPlan
+) -> dict[str, Any]:
     obj = _shape(raw, {"title", "scenes"}, "chapter script schema")
     _words(obj["title"], "chapter title missing", 140)
     scenes = _items(obj["scenes"], plan.max_scenes, "chapter scene budget")
@@ -350,7 +352,7 @@ def _script_validate(
 
 
 def _timings(
-    script: dict, plan: ChapterPlan, audio: list[dict[str, Any]] | None
+    script: dict[str, Any], plan: ChapterPlan, audio: list[dict[str, Any]] | None
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     start = 0.0
@@ -383,8 +385,12 @@ def _timings(
 
 
 def _direction_validate(
-    raw: object, script: dict, adaptation: dict, timings: list[dict[str, Any]], plan: ChapterPlan
-) -> dict:
+    raw: object,
+    script: dict[str, Any],
+    adaptation: dict[str, Any],
+    timings: list[dict[str, Any]],
+    plan: ChapterPlan
+) -> dict[str, Any]:
     obj = _shape(raw, {"shots"}, "chapter shot schema")
     shots = _items(
         obj["shots"], plan.max_scenes * plan.max_shots_per_scene, "chapter shot budget exceeded"
@@ -475,7 +481,7 @@ def _direction_validate(
     return obj
 
 
-def _request(stage: str, payload: dict, plan: ChapterPlan) -> dict[str, object]:
+def _request(stage: str, payload: dict[str, Any], plan: ChapterPlan) -> dict[str, object]:
     descriptions = {
         "brief": "Produce a source-bound argument with candidate coverage and grounded beats. "
         "Keep uncertainty; OMIT means explicit loss, not approval.",
@@ -610,11 +616,11 @@ def _request(stage: str, payload: dict, plan: ChapterPlan) -> dict[str, object]:
 def _stage(
     root: Path,
     stage: str,
-    payload: dict,
+    payload: dict[str, Any],
     plan: ChapterPlan,
-    validate: Callable[[object], dict],
+    validate: Callable[[object], dict[str, Any]],
     completion: Callable[[dict[str, object]], str] | None,
-) -> tuple[dict, str, str, int]:
+) -> tuple[dict[str, Any], str, str, int]:
     """Raw-preserving, immutable, content-bound stage with a pre-call reservation."""
     request = _request(stage, payload, plan)
     provenance = "INJECTED_TEST_PRODUCER" if completion is not None else "ACTUAL_CPU_QWEN"
@@ -732,7 +738,7 @@ def _stage(
 
 def _narrate(
     root: Path,
-    script: dict,
+    script: dict[str, Any],
     plan: ChapterPlan,
     producer: Callable[[str, str], bytes] | None,
 ) -> tuple[list[dict[str, Any]], str]:
@@ -771,12 +777,13 @@ def _narrate(
                     root, marker, {"status": "STARTED_UNRESOLVED", "request_sha256": marker_key}
                 )
             try:
+                def make_utterance(utterance: Scene = item) -> Path:
+                    return narration.synthesize_scene(
+                        utterance, config, audio_root, producer=producer
+                    )
+
                 wave_path = evaluation._capture_private_generator(
-                    root,
-                    audio_root,
-                    lambda item=item: narration.synthesize_scene(
-                        item, config, audio_root, producer=producer
-                    ),
+                    root, audio_root, make_utterance
                 )
                 data = evaluation._read(wave_path, 40_000_000)
                 channels, sample_rate, frames = narration.validated_wav(data, cached=True)
