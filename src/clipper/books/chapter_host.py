@@ -186,9 +186,15 @@ def _inspection(
         "footnote_caption_figure_completeness": "UNVERIFIED_REQUIRES_SOURCE_INSPECTION",
         "semantic_scope_approval": "NOT_ATTESTED",
     }
-    evaluation._store(root, root / "private-host" / "scope-inspection.json", report)
+    report_sha256 = hashlib.sha256(evaluation._json_bytes(report)).hexdigest()
+    evaluation._store(
+        root,
+        root / "private-host" / f"scope-inspection-{report_sha256}.json",
+        report,
+    )
     return {
         "status": "SCOPE_INSPECTION_REQUIRES_HUMAN_SELECTION_LOCK",
+        "inspection_sha256": report_sha256,
         "chapters": {
             key: {
                 "scope_sha256": item["scope_manifest_sha256"],

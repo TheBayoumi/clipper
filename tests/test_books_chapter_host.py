@@ -85,8 +85,11 @@ def test_scope_inspection_only_two_sections_and_exposes_source_gaps(
         assert info["work_units"] >= 1
         assert info["words"] >= 1
         assert "skipped_markers" not in info
-    report_file = runner.root / "book-candidates/private-host/scope-inspection.json"
-    report = json.loads(report_file.read_bytes())
+    report_files = list(
+        (runner.root / "book-candidates/private-host").glob("scope-inspection-*.json")
+    )
+    assert len(report_files) == 1
+    report = json.loads(report_files[0].read_bytes())
     assert report["semantic_scope_approval"] == "NOT_ATTESTED"
     assert report["footnote_caption_figure_completeness"] == (
         "UNVERIFIED_REQUIRES_SOURCE_INSPECTION"

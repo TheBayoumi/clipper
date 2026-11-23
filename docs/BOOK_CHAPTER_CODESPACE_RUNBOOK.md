@@ -115,8 +115,8 @@ Inspect *without inference*:
 bash scripts/private_chapter_codespace.sh inspect
 ```
 
-Privately review `book-candidates/private-host/scope-inspection.json`:
-all selected work units, source bytes, warnings, image/figure/caption/footnote
+Privately review `book-candidates/private-host/scope-inspection-<SHA256>.json`
+(where the SHA-256 is returned by `inspect`): all selected work units, source bytes, warnings, image/figure/caption/footnote
 gaps, unselected sections, exclusions, page warnings and recovery status.
 The rough source expectations are ~4,372 whitespace words for chapter 1 and
 ~1,567 for chapter 7; they are **not** trusted exact hashes or permission to
