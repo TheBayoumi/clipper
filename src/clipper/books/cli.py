@@ -16,7 +16,18 @@ from uuid import uuid4
 
 from clipper.stage_contracts import content_fingerprint
 
-from . import acquisition, evaluation, faithful, ingest, mining, scripting, selection, storyboards
+from . import (
+    acquisition,
+    chapter,
+    evaluation,
+    faithful,
+    ingest,
+    mining,
+    scripting,
+    selection,
+    storyboards,
+    whole_book,
+)
 from .contracts import SourceUnresolved
 from .orchestrator import BookOrchestrator, BookRunError
 
@@ -119,6 +130,16 @@ def configure_books_parser(subparsers: Any) -> None:
     evaluate.add_argument("--responses", type=Path, help="model-free recorded mining responses")
     evaluate.add_argument("--artifact-root", type=Path, default=Path("artifacts/books"))
 
+    chapter_cmd = actions.add_parser(
+        "chapter-evaluate", help="private chapter-to-text-continuity preproduction; no rendering"
+    )
+    chapter_cmd.add_argument("--candidate-ref", type=Path, required=True)
+    chapter_cmd.add_argument("--progress", type=Path, required=True)
+    chapter_cmd.add_argument("--section-manifest", type=Path, required=True)
+    chapter_cmd.add_argument("--review-file", type=Path)
+    chapter_cmd.add_argument("--run-manifest", type=Path)
+    chapter_cmd.add_argument("--artifact-root", type=Path, default=Path("artifacts/books"))
+
     validate = actions.add_parser("validate", help="validate catalog and niche configuration")
     validate.add_argument("--catalog", type=Path, default=selection.CATALOG_PATH)
     validate.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -164,6 +185,35 @@ def _json(path: Path) -> Any:
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _run_legacy_private_evaluation(
+    args: argparse.Namespace, permissions: evaluation.EvaluationOptions
+) -> dict[str, object]:
+    """Keep the existing one-lesson evaluation behavior and privacy boundary."""
+    evaluation_replies: dict[str, object] | None = None
+    response_sha: str | None = None
+    if args.responses is not None:
+        response_bytes = evaluation._read(args.responses, 64_000_000)
+        parsed: object = json.loads(response_bytes)
+        if not isinstance(parsed, dict) or any(
+            not isinstance(k, str) or re.fullmatch(r"[0-9a-f]{64}", k) is None
+            for k in parsed
+        ):
+            raise evaluation.EvaluationStop(
+                "recorded responses require SHA-256 keys"
+            )
+        evaluation_replies = parsed
+        response_sha = hashlib.sha256(response_bytes).hexdigest()
+    return BookOrchestrator(args.artifact_root).evaluate_candidate(
+        args.candidate_ref,
+        progress_path=args.progress,
+        section_manifest=args.section_manifest,
+        review_file=args.review_file,
+        options=permissions,
+        recorded_responses=evaluation_replies,
+        response_file_sha256=response_sha,
+    )
 
 
 def dispatch_books(args: argparse.Namespace) -> int:
@@ -410,7 +460,7 @@ def dispatch_books(args: argparse.Namespace) -> int:
             )
         )
         return 0
-    if args.books_action == "evaluate":
+    if args.books_action in {"evaluate", "chapter-evaluate"}:
         # This branch is a private evaluation. Even legacy/script/model diagnostics
         # (unexpected JSON key names included) must not reach public Actions logs.
         evaluation_result: dict[str, object] | None = None
@@ -419,36 +469,33 @@ def dispatch_books(args: argparse.Namespace) -> int:
         with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as sink:
             try:
                 with redirect_stdout(sink), redirect_stderr(sink):
-                    permissions = (
-                        evaluation.EvaluationOptions.from_manifest(
-                            json.loads(evaluation._read(args.run_manifest, 16_384))
-                        )
-                        if args.run_manifest is not None
-                        else evaluation.EvaluationOptions()
-                    )
-                    evaluation_replies: dict[str, object] | None = None
-                    response_sha: str | None = None
-                    if args.responses is not None:
-                        response_bytes = evaluation._read(args.responses, 64_000_000)
-                        parsed: object = json.loads(response_bytes)
-                        if not isinstance(parsed, dict) or any(
-                            not isinstance(k, str) or re.fullmatch(r"[0-9a-f]{64}", k) is None
-                            for k in parsed
-                        ):
-                            raise evaluation.EvaluationStop(
-                                "recorded responses require SHA-256 keys"
+                    if args.books_action == "chapter-evaluate":
+                        chapter_plan = (
+                            chapter.ChapterPlan.from_manifest(
+                                whole_book.load_strict_reply(
+                                    evaluation._read(args.run_manifest, 16_384)
+                                )
                             )
-                        evaluation_replies = parsed
-                        response_sha = hashlib.sha256(response_bytes).hexdigest()
-                    evaluation_result = BookOrchestrator(args.artifact_root).evaluate_candidate(
-                        args.candidate_ref,
-                        progress_path=args.progress,
-                        section_manifest=args.section_manifest,
-                        review_file=args.review_file,
-                        options=permissions,
-                        recorded_responses=evaluation_replies,
-                        response_file_sha256=response_sha,
-                    )
+                            if args.run_manifest is not None
+                            else chapter.ChapterPlan()
+                        )
+                        evaluation_result = chapter.evaluate_chapter(
+                            BookOrchestrator(args.artifact_root),
+                            args.candidate_ref,
+                            args.progress,
+                            args.section_manifest,
+                            review_file=args.review_file,
+                            plan=chapter_plan,
+                        )
+                    else:
+                        permissions = (
+                            evaluation.EvaluationOptions.from_manifest(
+                                json.loads(evaluation._read(args.run_manifest, 16_384))
+                            )
+                            if args.run_manifest is not None
+                            else evaluation.EvaluationOptions()
+                        )
+                        evaluation_result = _run_legacy_private_evaluation(args, permissions)
                     success = True
             except Exception:
                 # Never expose provider exceptions, private input or generated keys.
@@ -477,6 +524,33 @@ def dispatch_books(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
+        if args.books_action == "chapter-evaluate":
+            chapter_fields = (
+                "schema", "status", "section_scope_sha256", "parent_full_book_complete",
+                "included_units", "excluded_units", "candidate_count",
+                "source_review", "recovery_status", "authorization_status",
+                "publish_eligible", "visual_calls", "max_text_attempts",
+                "max_kokoro_utterances", "actual_audio", "automation_claim",
+                "brief_identity", "brief_provenance", "brief_attempts",
+                "human_review_sha256", "human_attested_beat_count",
+                "adaptation_identity", "adaptation_attempts",
+                "script_identity", "script_scene_count", "script_words",
+                "script_attempts", "audio_provenance", "duration_seconds",
+                "timing_basis", "direction_identity", "direction_attempts",
+                "shot_count",
+            )
+            safe = {
+                key: evaluation_result[key]
+                for key in chapter_fields if key in evaluation_result
+            }
+            print(json.dumps(safe, sort_keys=True))
+            return (
+                0 if evaluation_result["status"] in {
+                    "CHAPTER_PREPRODUCTION_READY_UNREVIEWED",
+                    "CHAPTER_TEXT_PLAN_READY_NO_AUDIO_UNREVIEWED",
+                    "TEST_DOUBLE_CHAPTER_TEXT_READY_UNREVIEWED",
+                } else 2
+            )
         # No source quotations, book titles, file paths or mined IDs on stdout.
         keys = (
             "schema",

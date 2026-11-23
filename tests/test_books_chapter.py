@@ -1,0 +1,640 @@
+"""Synthetic chapter preproduction only: no model, private source or video calls."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import io
+import json
+import sys
+import wave
+from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
+from test_books_whole_book import ingested
+
+from clipper.books import chapter, cli, evaluation, narration, scripting, selection, whole_book
+from clipper.books.orchestrator import BookOrchestrator
+
+
+def _source(tmp_path: Path) -> tuple[BookOrchestrator, Path, Path, Path, list[dict]]:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=12, with_image=False)
+    parent = whole_book.plan_for(acquired.book)
+    grouped: dict[str, int] = {}
+    for unit in parent.units:
+        grouped[unit.section_id] = grouped.get(unit.section_id, 0) + 1
+    selected = next((sid for sid, count in grouped.items() if count == 5), None)
+    assert selected is not None
+    scoped = whole_book.plan_for(acquired.book, section_ids=(selected,))
+    manifest = {
+        "schema": evaluation.SECTION_MANIFEST_SCHEMA,
+        "book_fingerprint": acquired.book.fingerprint,
+        "source_fingerprint": acquired.book.source_fingerprint,
+        "ingest_stage_key": acquired.stage_key,
+        "parent_plan_fingerprint": parent.fingerprint,
+        "section_ids": [selected],
+        "parent_total_units": len(parent.units),
+        "included_units": 5,
+        "excluded_units": len(parent.units) - 5,
+    }
+    section_path = tmp_path / "private-test-section.json"
+    section_path.write_text(json.dumps(manifest), encoding="utf-8")
+    def fake_miner(req: dict[str, object]) -> str:
+        span = req["constraints"]["spans"][0]  # type: ignore[index]
+        return json.dumps({
+            "lessons": [{
+                "id": span["id"], "evidence": span["text"],
+                "evidence_field": req["constraints"]["evidence_field"],  # type: ignore[index]
+                "topic": "Synthetic learning-by-doing example",
+                "claim": "One synthetic rehearsal recorded an observed step.",
+                "hook_angle": "A specific limited observation",
+                "visual_action": "A participant marks a missing tool.",
+            }]
+        })
+    output = runner.evaluate_candidate(
+        acquired.analysis_ref_path,
+        section_manifest=section_path,
+        options=evaluation.EvaluationOptions(mine_cpu=True, max_new_units=5),
+        mine_completion=fake_miner,
+    )
+    assert output["scope_included_units"] == 5
+    progress = next((runner.root / "book-candidates/analysis/progress").rglob("*.json"))
+    _ledger, candidates, _book = evaluation._mined_export(
+        runner, acquired.analysis_ref_path, progress,
+        section_plan=scoped,
+        section_manifest_sha256=hashlib.sha256(section_path.read_bytes()).hexdigest(),
+    )
+    return runner, acquired.analysis_ref_path, progress, section_path, candidates
+
+
+def _input(request: dict[str, object]) -> dict:
+    return json.loads(request["messages"][1]["content"])["input"]  # type: ignore[index]
+
+
+def _brief(request: dict[str, object]) -> str:
+    source = _input(request)["source"]
+    evidence = source["evidence"]
+    assert source["scope"]["included_units"] == 5
+    return json.dumps({
+        "argument": "An invented workshop learns through repeated observation and action.",
+        "beats": [{
+            "beat_id": f"beat-{i:02d}",
+            "candidate_id": item["candidate_id"],
+            "meaning": "A bounded invented observation about a workshop procedure.",
+            "qualification": "", "essential": True,
+            "source_role": "AUTHOR_EXAMPLE",
+        } for i, item in enumerate(evidence, 1)],
+        "coverage": [{
+            "candidate_id": item["candidate_id"], "decision": "include",
+            "reason": "Retained as part of a connected evidence-grounded chapter story.",
+        } for item in evidence],
+    })
+
+
+def _adapt(request: dict[str, object]) -> str:
+    context = _input(request)
+    assert context["source"]["authorization_status"] == "unverified"
+    assert context["human_review"]["reviewer"] == "synthetic-human-reviewer"
+    return json.dumps({
+        "throughline": "A worker notices ambiguity, retests it, and changes the shared procedure.",
+        "narrative_form": "DRAMATIZED_ILLUSTRATION",
+        "choice_reason": "Invented people enact a mechanism without claiming real author events.",
+        "beats": [{
+            "beat_id": item["beat_id"], "decision": "keep",
+            "reason": "The event makes the chapter argument more concrete.",
+            "qualification": "", "illustration": "INVENTED_ILLUSTRATION",
+        } for item in context["brief"]["beats"]],
+        "characters": [{
+            "id": "worker", "name": "Invented workshop worker",
+            "initial_state": "observing a blank procedure",
+        }],
+        "locations": [{
+            "id": "workroom", "name": "Invented workroom",
+            "initial_state": "unchanged workbench",
+        }],
+        "props": [{
+            "id": "card", "name": "Paper checklist", "initial_state": "blank",
+        }],
+    })
+
+
+def _script(request: dict[str, object]) -> str:
+    context = _input(request)
+    beats = [item["beat_id"] for item in context["adaptation"]["beats"]]
+    narration = (
+        "An invented workshop worker notices a small ambiguity in a shared instruction. "
+        "Rather than claim that every team has the same problem, the worker tests one "
+        "change and records exactly what happens next. The process remains limited "
+        "to this example, which motivates a more careful next action for the group."
+    )
+    scenes = []
+    for i in range(3):
+        scenes.append({
+            "scene_id": f"scene-{i+1:02d}",
+            "previous_id": f"scene-{i:02d}" if i else None,
+            "next_id": f"scene-{i+2:02d}" if i < 2 else None,
+            "purpose": "Explain one physically demonstrated step of a limited argument",
+            "action": "The worker tests and then revises the named procedure.",
+            "environment_id": "workroom",
+            "narration": narration,
+            "dialogue": [{
+                "speaker_id": "worker",
+                "text": "I will check the next step rather than assume a cause.",
+                "fiction_label": "INVENTED_DIALOGUE",
+            }] if i == 1 else [],
+            "beat_ids": beats[0:2] if i == 0 else beats[2:4] if i == 1 else beats[4:],
+            "illustration_label": "INVENTED_ILLUSTRATION",
+            "transition": "The prior observation motivates the next controlled action.",
+            "consequence": "The card is visibly changed, with no unearned general claim.",
+        })
+    return json.dumps({"title": "An invented chapter rehearsal", "scenes": scenes})
+
+
+def _direction(request: dict[str, object]) -> str:
+    content = _input(request)
+    before = "blank"
+    shots = []
+    for i, timing in enumerate(content["timings"]):
+        after = f"marked step {i+1}"
+        shots.append({
+            "shot_id": f"shot-{i+1:03d}", "scene_id": timing["scene_id"],
+            "purpose": "Show how observing one limitation changes a physical instruction",
+            "action": "A worker marks the shared card and retries the procedure.",
+            "environment_id": "workroom",
+            "camera": "Medium close tracking shot on the workbench and worker's hand",
+            "transition": "Follow the modified card into the next causal action",
+            "entity_ids": ["card"], "state_before": {"card": before},
+            "state_after": {"card": after},
+            "start_seconds": timing["start_seconds"],
+            "end_seconds": timing["end_seconds"],
+        })
+        before = after
+    return json.dumps({"shots": shots})
+
+
+def _wav(_text: str, voice: str) -> bytes:
+    assert voice == "af_heart"
+    output = io.BytesIO()
+    with wave.open(output, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(24000)
+        writer.writeframes(b"\0\0" * 24_000 * 8)
+    return output.getvalue()
+
+
+def _plan(**updates: object) -> chapter.ChapterPlan:
+    payload: dict[str, object] = {
+        "schema": chapter.PLAN_SCHEMA,
+        "brief_cpu": True, "adaptation_cpu": True,
+        "script_cpu": True, "direction_cpu": True,
+        "kokoro_cpu": False,
+        "max_scenes": 8, "max_words": 1000,
+        "max_beats": 20, "max_shots_per_scene": 3,
+        "max_new_tokens": 4096, "max_attempts_per_stage": 2,
+        "max_runtime_seconds": 900, "voice": "af_heart",
+    }
+    payload.update(updates)
+    return chapter.ChapterPlan.from_manifest(payload)
+
+
+def _review(tmp_path: Path, brief_id: str, brief: dict, *, reject_all: bool = False) -> Path:
+    file = tmp_path / "private-human-chapter-review.json"
+    file.write_text(json.dumps({
+        "schema": chapter.REVIEW_SCHEMA, "brief_sha256": brief_id,
+        "reviewer": "synthetic-human-reviewer",
+        "decisions": [{
+            "beat_id": item["beat_id"],
+            "decision": "reject" if reject_all else "support_attested",
+            "reason": "Synthetic reviewer explicitly checks a narrowly supported example.",
+            "qualifier_quote": "",
+        } for item in brief["beats"]],
+    }), encoding="utf-8")
+    return file
+
+
+def _first_brief(
+    runner: BookOrchestrator, ref: Path, progress: Path, section: Path, plan: chapter.ChapterPlan
+) -> tuple[dict, dict]:
+    result = chapter.evaluate_chapter(
+        runner, ref, progress, section, plan=plan,
+        brief_completion=_brief,
+    )
+    assert result["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
+    paths = list((runner.root / "book-candidates/brief").rglob("validated.json"))
+    assert len(paths) == 1
+    return result, json.loads(paths[0].read_bytes())["payload"]
+
+
+def _full_kwargs(review: Path, *, kokoro: bool = False) -> dict:
+    return {
+        "review_file": review,
+        "plan": _plan(kokoro_cpu=kokoro),
+        "brief_completion": _brief,
+        "adaptation_completion": _adapt,
+        "script_completion": _script,
+        "direction_completion": _direction,
+        "narration_producer": _wav if kokoro else None,
+    }
+
+
+def test_chapter_default_plan_is_model_free_and_source_pinned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, ref, progress, section, source = _source(tmp_path)
+    no_model = Mock(side_effect=AssertionError("unexpected model"))
+    monkeypatch.setattr(scripting, "_local_script_completion", no_model)
+    monkeypatch.setattr(narration, "_kokoro_wav", no_model)
+    monkeypatch.setattr(selection, "choose_lesson", no_model)
+    monkeypatch.setattr(runner, "run", no_model)
+    result = chapter.evaluate_chapter(runner, ref, progress, section)
+    assert result["status"] == "AWAITING_EXPLICIT_CPU_CHAPTER_BRIEF"
+    assert result["source_review"] == "MINED_UNREVIEWED"
+    assert result["parent_full_book_complete"] is False
+    assert result["included_units"] == 5
+    assert result["candidate_count"] == len(source)
+    assert result["visual_calls"] == 0
+    assert result["actual_audio"] is False
+    assert result["automation_claim"] == "NOT_YET_GENERATED"
+    no_model.assert_not_called()
+
+
+def test_complete_injected_chapter_is_connected_and_exceeds_short_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, ref, progress, section, evidence = _source(tmp_path)
+    initial, brief = _first_brief(
+        runner, ref, progress, section, _plan(adaptation_cpu=False, script_cpu=False,
+                                             direction_cpu=False)
+    )
+    review = _review(tmp_path, initial["brief_identity"], brief)
+    forbidden = Mock(side_effect=AssertionError("catalog/render/short compactor called"))
+    monkeypatch.setattr(selection, "choose_lesson", forbidden)
+    monkeypatch.setattr(runner, "run", forbidden)
+    monkeypatch.setattr(runner, "require_unported", forbidden)
+    monkeypatch.setattr(scripting, "_compact_book_sentences", forbidden)
+    monkeypatch.setattr(narration, "_kokoro_wav", forbidden)
+    result = chapter.evaluate_chapter(
+        runner, ref, progress, section, **_full_kwargs(review)
+    )
+    assert result["status"] == "TEST_DOUBLE_CHAPTER_TEXT_READY_UNREVIEWED"
+    assert result["actual_audio"] is False
+    assert result["timing_basis"] == "NO_AUDIO_ESTIMATE"
+    assert result["visual_calls"] == 0
+    assert result["script_scene_count"] == 3
+    assert result["script_words"] > 125
+    assert result["shot_count"] == 3
+    assert result["human_attested_beat_count"] == len(evidence)
+    assert result["automation_claim"] == "INJECTED_TEST"
+    source_record = next(
+        (runner.root / "book-candidates/chapter-evaluations").rglob("source-ledger.json")
+    )
+    original = json.loads(source_record.read_bytes())
+    assert original["source_review"] == "MINED_UNREVIEWED"
+    assert original["scope"]["included_units"] == 5
+    assert original["parent_full_book_complete"] is False
+    assert original["evidence"][0]["source_path"]
+    assert original["evidence"][0]["anchor"]
+    assert original["evidence"][0]["candidate_id"] == evidence[0]["id"]
+    assert original["evidence"][0]["review_status"] == "MINED_UNREVIEWED"
+    script_saved = next(
+        (runner.root / "book-candidates/chapter_script").rglob("validated.json")
+    )
+    scenes = json.loads(script_saved.read_bytes())["payload"]["scenes"]
+    assert scenes[0]["previous_id"] is None
+    assert scenes[-1]["next_id"] is None
+    assert scenes[1]["dialogue"][0]["fiction_label"] == "INVENTED_DIALOGUE"
+    assert sum(len(x["narration"].split()) for x in scenes) > 125
+    forbidden.assert_not_called()
+
+
+def test_injected_real_wav_geometry_and_immutable_audio_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, ref, progress, section, _ = _source(tmp_path)
+    first, brief = _first_brief(runner, ref, progress, section, _plan())
+    review = _review(tmp_path, first["brief_identity"], brief)
+    audio = Mock(side_effect=_wav)
+    supplied = _full_kwargs(review, kokoro=True)
+    supplied["narration_producer"] = audio
+    first_run = chapter.evaluate_chapter(runner, ref, progress, section, **supplied)
+    assert first_run["actual_audio"] is False
+    assert first_run["audio_provenance"] == "INJECTED_TEST_WAV"
+    assert first_run["timing_basis"] == "MEASURED_WAV"
+    assert first_run["duration_seconds"] == 32
+    assert audio.call_count == 4
+    reports = list(
+        (runner.root / "book-candidates").rglob("narration-report-*.json")
+    )
+    assert len(reports) == 1
+    report = json.loads(reports[0].read_bytes())
+    assert len(report["records"]) == 4
+    assert report["resolved_model_commit"] is None
+    assert report["resolved_commit_verified"] is False
+    never = Mock(side_effect=AssertionError("must not regenerate"))
+    repeat = chapter.evaluate_chapter(
+        runner, ref, progress, section, review_file=review, plan=_plan(kokoro_cpu=True),
+        brief_completion=never, adaptation_completion=never,
+        script_completion=never, direction_completion=never,
+        narration_producer=never,
+    )
+    # All stage caches are content-addressed and replayed without inference.
+    assert repeat["status"] == "TEST_DOUBLE_CHAPTER_TEXT_READY_UNREVIEWED"
+    assert repeat["brief_attempts"] == 0
+    assert repeat["direction_attempts"] == 0
+    never.assert_not_called()
+    estimated = chapter.evaluate_chapter(
+        runner, ref, progress, section, **_full_kwargs(review)
+    )
+    assert estimated["timing_basis"] == "NO_AUDIO_ESTIMATE"
+    assert estimated["direction_identity"] != first_run["direction_identity"]
+    assert estimated["script_identity"] == first_run["script_identity"]
+    assert audio.call_count == 4
+
+
+def test_human_review_abstains_before_adaptation_and_no_provider_called(tmp_path: Path) -> None:
+    runner, ref, progress, section, _ = _source(tmp_path)
+    initial, brief = _first_brief(runner, ref, progress, section, _plan())
+    review = _review(tmp_path, initial["brief_identity"], brief, reject_all=True)
+    never = Mock(side_effect=AssertionError("review abstention must stop"))
+    result = chapter.evaluate_chapter(
+        runner, ref, progress, section, review_file=review, plan=_plan(),
+        brief_completion=_brief, adaptation_completion=never,
+        script_completion=never, direction_completion=never,
+        narration_producer=never,
+    )
+    assert result["status"] == "ABSTAINED_INSUFFICIENT_ATTESTED_CHAPTER_BEATS"
+    assert result["human_attested_beat_count"] == 0
+    never.assert_not_called()
+
+
+@pytest.mark.parametrize("stage", chapter.TEXT_STAGES)
+def test_durable_provider_failure_does_not_reinvoke_identical_stage(
+    tmp_path: Path, stage: str
+) -> None:
+    runner, ref, progress, section, _ = _source(tmp_path)
+    initial, brief = _first_brief(runner, ref, progress, section, _plan())
+    review = _review(tmp_path, initial["brief_identity"], brief)
+    kwargs = _full_kwargs(review)
+    injections = {
+        "brief": "brief_completion", "adaptation": "adaptation_completion",
+        "chapter_script": "script_completion", "chapter_direction": "direction_completion"
+    }
+    if stage == "brief":
+        # A different explicit test provenance+request budget creates new authority.
+        altered = _plan(max_attempts_per_stage=1)
+        kwargs["plan"] = altered
+    failure = Mock(side_effect=RuntimeError("PRIVATE_UNTRUSTED_MODEL_TEXT"))
+    kwargs[injections[stage]] = failure
+    with pytest.raises(chapter.ChapterStop):
+        chapter.evaluate_chapter(runner, ref, progress, section, **kwargs)
+    with pytest.raises(chapter.ChapterStop, match="prior unresolved"):
+        chapter.evaluate_chapter(runner, ref, progress, section, **kwargs)
+    failure.assert_called_once()
+    started = list((runner.root / "book-candidates" / stage).rglob("started-1.json"))
+    assert started
+
+
+@pytest.mark.parametrize("failure_mode", ["invalid-json", "nontext", "oversize"])
+def test_failed_brief_attempts_are_recorded_and_not_repeated(
+    tmp_path: Path, failure_mode: str
+) -> None:
+    runner, ref, progress, section, _ = _source(tmp_path)
+    out: object = "{" if failure_mode == "invalid-json" else (
+        {"bad": "nontext"} if failure_mode == "nontext"
+        else "x" * (chapter.MAX_RAW_BYTES + 1)
+    )
+    generated = Mock(return_value=out)
+    with pytest.raises(chapter.ChapterStop):
+        chapter.evaluate_chapter(
+            runner, ref, progress, section, plan=_plan(brief_cpu=True),
+            brief_completion=generated,
+        )
+    assert generated.call_count == (2 if failure_mode == "invalid-json" else 1)
+    with pytest.raises(chapter.ChapterStop, match="prior unresolved"):
+        chapter.evaluate_chapter(
+            runner, ref, progress, section, plan=_plan(brief_cpu=True),
+            brief_completion=generated,
+        )
+    assert generated.call_count == (2 if failure_mode == "invalid-json" else 1)
+
+
+@pytest.mark.parametrize("mutation", [
+    "unknown-candidate", "missing-coverage", "duplicate-beat",
+    "wrong-essential", "wrong-beat-id", "empty-argument", "single-beat",
+])
+def test_brief_rejects_source_and_coverage_forgery(mutation: str) -> None:
+    source = [{"candidate_id": f"candidate-{i}"} for i in range(3)]
+    fake = {
+        "argument": "A narrow example",
+        "beats": [{
+            "beat_id": f"beat-{i+1:02d}", "candidate_id": f"candidate-{i}",
+            "meaning": "One grounded observation", "qualification": "",
+            "essential": True, "source_role": "AUTHOR_EXAMPLE",
+        } for i in range(3)],
+        "coverage": [{
+            "candidate_id": f"candidate-{i}", "decision": "include",
+            "reason": "This individual beat is substantive",
+        } for i in range(3)],
+    }
+    if mutation == "unknown-candidate":
+        fake["beats"][0]["candidate_id"] = "not-pinned"
+    elif mutation == "missing-coverage":
+        fake["coverage"].pop()
+    elif mutation == "duplicate-beat":
+        fake["beats"][1]["candidate_id"] = "candidate-0"
+    elif mutation == "wrong-essential":
+        fake["beats"][0]["essential"] = "yes"
+    elif mutation == "wrong-beat-id":
+        fake["beats"][1]["beat_id"] = "beat-89"
+    elif mutation == "empty-argument":
+        fake["argument"] = " "
+    elif mutation == "single-beat":
+        fake["beats"] = fake["beats"][:1]
+    with pytest.raises(chapter.ChapterStop):
+        chapter._brief_validate(fake, source, _plan())
+
+
+@pytest.mark.parametrize("mutation", [
+    "unreviewed-beat", "bad-qualifier", "deleted-essential",
+    "missing-beat", "unknown-entity", "duplicate-entity", "bad-narrative-form",
+])
+def test_adaptation_fiction_qualifier_and_essential_coverage_enforced(mutation: str) -> None:
+    brief = {
+        "beats": [{
+            "beat_id": "beat-01", "candidate_id": "one", "essential": True,
+            "qualification": "only in this one case",
+        }, {
+            "beat_id": "beat-02", "candidate_id": "two", "essential": True,
+            "qualification": "",
+        }]
+    }
+    decisions = {
+        key: {"decision": "support_attested", "qualifier_quote": ""}
+        for key in ("beat-01", "beat-02")
+    }
+    adap = {
+        "throughline": "A specific limited example motivates an action.",
+        "narrative_form": "DRAMATIZED_ILLUSTRATION",
+        "choice_reason": "Invented characters demonstrate a mechanism.",
+        "beats": [{
+            "beat_id": item["beat_id"], "decision": "keep",
+            "reason": "This detail is necessary for the causal argument.",
+            "qualification": item["qualification"],
+            "illustration": "INVENTED_ILLUSTRATION",
+        } for item in brief["beats"]],
+        "characters": [{
+            "id": "worker", "name": "Worker", "initial_state": "observing",
+        }],
+        "locations": [{
+            "id": "workroom", "name": "Workshop", "initial_state": "lit",
+        }],
+        "props": [{
+            "id": "card", "name": "Card", "initial_state": "blank",
+        }],
+    }
+    if mutation == "unreviewed-beat":
+        decisions["beat-01"]["decision"] = "reject"
+    elif mutation == "bad-qualifier":
+        adap["beats"][0]["qualification"] = ""
+    elif mutation == "deleted-essential":
+        adap["beats"][0]["decision"] = "omit"
+    elif mutation == "missing-beat":
+        adap["beats"].pop()
+    elif mutation == "unknown-entity":
+        adap["props"][0]["id"] = "wrong&invalid"
+    elif mutation == "duplicate-entity":
+        adap["props"][0]["id"] = "worker"
+    elif mutation == "bad-narrative-form":
+        adap["narrative_form"] = "AUTOMATIC_FILM_RENDER"
+    with pytest.raises(chapter.ChapterStop):
+        chapter._adapt_validate(adap, brief, decisions, _plan())
+
+
+@pytest.mark.parametrize("mutation", [
+    "short-words", "wrong-link", "unknown-beat", "missing-beat",
+    "unlabeled-dialogue", "unknown-speaker", "wrong-location", "lost-qualifier",
+])
+def test_chapter_script_graph_fiction_and_qualification_fail_closed(mutation: str) -> None:
+    dummy = {"messages": [{"role": "system", "content": ""},
+                          {"role": "user", "content": json.dumps({
+                              "input": {"adaptation": {
+                                  "beats": [{"beat_id": "beat-01"}, {"beat_id": "beat-02"}]
+                              }}
+                          })}]}
+    text = json.loads(_script(dummy))
+    adapt = json.loads(_adapt({"messages": [
+        {"role": "system", "content": ""},
+        {"role": "user", "content": json.dumps({"input": {
+            "source": {"authorization_status": "unverified"},
+            "human_review": {"reviewer": "synthetic-human-reviewer"},
+            "brief": {"beats": [{"beat_id": "beat-01"}, {"beat_id": "beat-02"}]},
+        }})},
+    ]}))
+    decisions = {
+        "beat-01": {"qualifier_quote": ""},
+        "beat-02": {"qualifier_quote": ""},
+    }
+    # Restore generated coverage: two beats only.
+    text["scenes"][1]["beat_ids"] = ["beat-02"]
+    text["scenes"][2]["beat_ids"] = ["beat-02"]
+    text["scenes"][0]["beat_ids"] = ["beat-01"]
+    if mutation == "short-words":
+        for item in text["scenes"]:
+            item["narration"] = "Brief example"
+    elif mutation == "wrong-link":
+        text["scenes"][1]["previous_id"] = "scene-99"
+    elif mutation == "unknown-beat":
+        text["scenes"][0]["beat_ids"] = ["beat-99"]
+    elif mutation == "missing-beat":
+        text["scenes"][1]["beat_ids"] = ["beat-01"]
+        text["scenes"][2]["beat_ids"] = ["beat-01"]
+    elif mutation == "unlabeled-dialogue":
+        text["scenes"][1]["illustration_label"] = "SOURCE_ACCOUNT"
+    elif mutation == "unknown-speaker":
+        text["scenes"][1]["dialogue"][0]["speaker_id"] = "unlisted"
+    elif mutation == "wrong-location":
+        text["scenes"][0]["environment_id"] = "unknown"
+    elif mutation == "lost-qualifier":
+        decisions["beat-01"]["qualifier_quote"] = "exact source qualification"
+    with pytest.raises(chapter.ChapterStop):
+        chapter._script_validate(text, adapt, decisions, _plan())
+
+
+@pytest.mark.parametrize("mutation", [
+    "unknown-entity", "bad-before", "missing-after", "wrong-location",
+    "gap", "overlap", "orphan-scene", "missing-scene", "no-state-change",
+])
+def test_continuity_and_timing_are_enforced_without_visual_generation(mutation: str) -> None:
+    script = json.loads(_script({"messages": [
+        {"role": "system", "content": ""},
+        {"role": "user", "content": json.dumps({"input": {
+            "adaptation": {"beats": [{"beat_id": f"beat-{i:02d}"} for i in range(1, 6)]}
+        }})},
+    ]}))
+    adaptation = json.loads(_adapt({"messages": [
+        {"role": "system", "content": ""},
+        {"role": "user", "content": json.dumps({"input": {
+            "source": {"authorization_status": "unverified"},
+            "human_review": {"reviewer": "synthetic-human-reviewer"},
+            "brief": {"beats": [{"beat_id": f"beat-{i:02d}"} for i in range(1, 6)]},
+        }})},
+    ]}))
+    timings = chapter._timings(script, _plan(), None)
+    shots = json.loads(_direction({"messages": [
+        {"role": "system", "content": ""},
+        {"role": "user", "content": json.dumps({"input": {"timings": timings}})},
+    ]}))
+    if mutation == "unknown-entity":
+        shots["shots"][0]["entity_ids"] = ["unregistered"]
+    elif mutation == "bad-before":
+        shots["shots"][1]["state_before"]["card"] = "blank"
+    elif mutation == "missing-after":
+        shots["shots"][1]["state_after"] = {}
+    elif mutation == "wrong-location":
+        shots["shots"][0]["environment_id"] = "not-a-room"
+    elif mutation == "gap":
+        shots["shots"][1]["start_seconds"] += 1.0
+    elif mutation == "overlap":
+        shots["shots"][1]["start_seconds"] -= 1.0
+    elif mutation == "orphan-scene":
+        shots["shots"][1]["scene_id"] = "scene-99"
+    elif mutation == "missing-scene":
+        shots["shots"].pop()
+    elif mutation == "no-state-change":
+        shots["shots"][0]["state_after"] = {"card": "blank"}
+        shots["shots"][1]["state_before"] = {"card": "blank"}
+    with pytest.raises(chapter.ChapterStop):
+        chapter._direction_validate(shots, script, adaptation, timings, _plan())
+
+
+def test_cli_chapter_mode_does_not_leak_private_model_keys_or_source_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner, ref, progress, section, evidence = _source(tmp_path)
+    marker = "PRIVATE_CHAPTER_SENTINEL_9BCD"
+    def hostile(_request: dict[str, object]) -> str:
+        print(marker)
+        print(marker, file=sys.stderr)
+        return json.dumps({marker: "a book excerpt should not leak"})
+    monkeypatch.setattr(scripting, "_local_script_completion", hostile)
+    plan = _plan(adaptation_cpu=False, script_cpu=False, direction_cpu=False)
+    from dataclasses import asdict
+    manifest = {"schema": chapter.PLAN_SCHEMA, **asdict(plan)}
+    manifest_path = tmp_path / "private-chapter-run-manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    parser = argparse.ArgumentParser()
+    cli.configure_books_parser(parser.add_subparsers(dest="command", required=True))
+    args = parser.parse_args([
+        "books", "chapter-evaluate", "--artifact-root", str(runner.root),
+        "--candidate-ref", str(ref), "--section-manifest", str(section),
+        "--progress", str(progress), "--run-manifest", str(manifest_path),
+    ])
+    assert cli.dispatch_books(args) == 2
+    stdout, stderr = capsys.readouterr()
+    assert marker not in stdout + stderr
+    assert evidence[0]["id"] not in stdout + stderr
+    assert "PRIVATE_EVALUATION_FAILED_CLOSED" in stderr
+    raw = list((runner.root / "book-candidates/brief").rglob("raw-*.json"))
+    assert len(raw) == 2
+    assert marker in raw[0].read_text(encoding="utf-8")
