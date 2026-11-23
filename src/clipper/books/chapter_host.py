@@ -15,7 +15,7 @@ import re
 import sys
 import tarfile
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -1071,12 +1071,15 @@ def _execute_hybrid(
                         "audit_identities",
                         "plan_fingerprint",
                         "plan",
+                    "chapter_scope_identity",
                     }
                     or record["chapter_mode"] != "DIRECT_SOURCE_HYBRID"
                     or record["chapter"] != number
                     or record["phase"] != "AWAITING_HUMAN_REVIEW"
                     or record["scope_sha256"] != scope
                     or record["bundle_sha256"] != bundle_sha
+                    or not isinstance(record["chapter_scope_identity"], str)
+                    or DIGEST.fullmatch(record["chapter_scope_identity"]) is None
                     or record["plan_fingerprint"] != plan.fingerprint
                     or chapter.ChapterPlan.from_manifest(record["plan"]).fingerprint
                     != plan.fingerprint
@@ -1151,6 +1154,7 @@ def _execute_hybrid(
                     "chapter_mode": "DIRECT_SOURCE_HYBRID",
                     "chapter": number,
                     "phase": "AWAITING_HUMAN_REVIEW",
+                    "chapter_scope_identity": output["chapter_scope_identity"],
                     "scope_sha256": scope,
                     "bundle_sha256": bundle_sha,
                     "brief_identity": output["brief_identity"],
@@ -1183,6 +1187,7 @@ def _execute_hybrid(
                                 "argument_identity",
                                 "audit_identities",
                                 "chapter_mode",
+                                "chapter_scope_identity",
                             )
                         },
                         "claim_owner": owner,
@@ -1289,7 +1294,12 @@ def _private_output_entry(
 
 
 def _stage_output_entries(
-    root: Path, number: int, stage: str, identity: str
+    root: Path,
+    number: int,
+    stage: str,
+    identity: str,
+    *,
+    validate: Callable[[object], dict[str, Any]] | None = None,
 ) -> list[dict[str, object]]:
     """Select one exact validated chapter stage; retain bounded replay evidence."""
     base = root / "book-candidates" / stage
@@ -1367,7 +1377,7 @@ def _stage_output_entries(
         "chapter_script": {"title", "scenes"},
         "chapter_direction": {"shots"},
     }
-    if stage not in shapes:
+    if validate is None and stage not in shapes:
         raise PrivateHostStop("unsupported reviewed chapter text stage")
     selected_record = _parse_recovery_artifact(
         _read_recovery_artifact(selected / "validated.json", 250_000)
@@ -1385,7 +1395,9 @@ def _stage_output_entries(
             stage,
             request_key,
             provenance,
-            lambda raw: chapter._shape(raw, shapes[stage], "chapter recovery shape invalid"),
+            validate
+            if validate is not None
+            else lambda raw: chapter._shape(raw, shapes[stage], "chapter recovery shape invalid"),
             2,
             8192,
             recovery_evidence_only=True,
@@ -1474,6 +1486,13 @@ def _chapter_output_manifest(
 ) -> dict[str, object]:
     """Scoped, private, bounded inventory from committed stage identities."""
     records = _phase_records(root, number, bundle, scope)
+    if any(
+        record["artifacts"].get("chapter_mode") == "DIRECT_SOURCE_HYBRID"
+        for record in records
+    ):
+        return _hybrid_output_manifest(
+            root, number, bundle, scope, final_result_identity=final_result_identity
+        )
     identities: dict[str, str] = {}
     for item in records:
         for key in (
