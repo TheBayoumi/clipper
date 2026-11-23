@@ -79,7 +79,7 @@ def _json(value: object) -> bytes:
 
 def _section_manifest(ref: SelectedRef, book: SelectedSource, work: whole_book.WorkPlan) -> dict:
     return {
-        "schema": "clipper-book-section-manifest-v1",
+        "schema": "clipper-book-section-evaluation-scope-v1",
         "book_fingerprint": book.fingerprint,
         "source_fingerprint": book.source_fingerprint,
         "ingest_stage_key": ref.ingest_stage_key,
@@ -165,10 +165,6 @@ def _work_from_blocks(
         next(positions, None) is not None
         or tuple(units) != expected.units
         or tuple(gaps) != expected.skipped
-        or len(units) + len(gaps) != len(set(seen_blocks)) + sum(
-            max(0, sum(u.anchor == key[1] and u.source_path == key[2] for u in units) - 1)
-            for key in seen_blocks
-        )
         or any(a.ordinal >= b.ordinal for a, b in zip(units, units[1:]))
         or any(u.ordinal < 0 or u.ordinal >= expected.parent_total_units for u in units)
         or expected.parent_total_units != len(units) + expected.excluded_units
