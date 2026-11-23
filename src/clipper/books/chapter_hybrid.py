@@ -278,10 +278,13 @@ def request(
             or any(type(value) is not int or value < 0 for value in ids)
             or counted["tokenizer_json_sha256"] != constrained.PINNED_TOKENIZER_SHA256
             or any(
-                not isinstance(counted[field], str)
-                or len(counted[field]) != 64
-                or any(char not in "0123456789abcdef" for char in counted[field])
-                for field in ("tokenizer_config_sha256", "chat_template_sha256")
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(char not in "0123456789abcdef" for char in value)
+                for value in (
+                    counted["tokenizer_config_sha256"],
+                    counted["chat_template_sha256"],
+                )
             )
         ):
             raise HybridStop("hybrid effective token encoding provenance invalid")
