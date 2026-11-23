@@ -425,11 +425,7 @@ def test_effective_public_tokenizer_provenance_and_input_guards_fail_closed(
     from clipper.books import constrained
 
     snapshot = (
-        tmp_path
-        / "hub"
-        / "models--Qwen--Qwen3-1.7B"
-        / "snapshots"
-        / scripting.SCRIPT_REVISION
+        tmp_path / "hub" / "models--Qwen--Qwen3-1.7B" / "snapshots" / scripting.SCRIPT_REVISION
     )
     snapshot.mkdir(parents=True)
     config = snapshot / "tokenizer_config.json"
@@ -499,21 +495,14 @@ def test_effective_tokenizer_cache_status_and_cpu_context_fail_closed(
     monkeypatch.setenv("HF_HOME", str(tmp_path))
     assert scripting._cached_chapter_tokenizer_material()["status"] == "TOKENIZER_NOT_CACHED"
     snapshot = (
-        tmp_path
-        / "hub"
-        / "models--Qwen--Qwen3-1.7B"
-        / "snapshots"
-        / scripting.SCRIPT_REVISION
+        tmp_path / "hub" / "models--Qwen--Qwen3-1.7B" / "snapshots" / scripting.SCRIPT_REVISION
     )
     snapshot.mkdir(parents=True)
     config = snapshot / "tokenizer_config.json"
     tokenizer = snapshot / "tokenizer.json"
     tokenizer.write_bytes(b"synthetic-public")
     config.write_bytes(b"")
-    assert (
-        scripting._cached_chapter_tokenizer_material()["status"]
-        == "TOKENIZER_CONFIG_UNVERIFIED"
-    )
+    assert scripting._cached_chapter_tokenizer_material()["status"] == "TOKENIZER_CONFIG_UNVERIFIED"
     config.write_bytes(b'{"chat_template":"pinned"}')
     assert scripting._cached_chapter_tokenizer_material()["status"] == "TOKENIZER_JSON_UNVERIFIED"
     monkeypatch.setattr(
@@ -528,10 +517,7 @@ def test_effective_tokenizer_cache_status_and_cpu_context_fail_closed(
         return read(path)
 
     monkeypatch.setattr(Path, "read_bytes", unreadable)
-    assert (
-        scripting._cached_chapter_tokenizer_material()["status"]
-        == "TOKENIZER_CONFIG_UNVERIFIED"
-    )
+    assert scripting._cached_chapter_tokenizer_material()["status"] == "TOKENIZER_CONFIG_UNVERIFIED"
     monkeypatch.setattr(Path, "read_bytes", read)
 
     class FakePublicTokenizer:
@@ -578,7 +564,7 @@ def test_effective_tokenizer_cache_status_and_cpu_context_fail_closed(
     ],
 )
 def test_hybrid_request_rejects_unverifiable_effective_input_tokens(
-    bad_encoding: dict[str, object]
+    bad_encoding: dict[str, object],
 ) -> None:
     good: dict[str, object] = {
         "token_ids": [1, 2],
