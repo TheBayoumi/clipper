@@ -983,6 +983,7 @@ def _stage_output_entries(
                     record["raw_sha256"],
                     record["payload_sha256"],
                     record["token_receipt"],
+                    record.get("prior_rejection_sha256"),
                 )
                 != identity
             ):
