@@ -2006,3 +2006,120 @@ def test_consistently_rewritten_second_attempt_rejected_under_one_attempt_plan(
     with pytest.raises(chapter.ChapterStop, match="artifact cannot be verified"):
         chapter._stage(*args, lambda x: x, producer)
     producer.assert_called_once()
+
+
+
+@pytest.mark.parametrize(
+    ("record_name", "mutation"),
+    [
+        ("started-1.json", "delete"),
+        ("raw-1.json", "delete"),
+        ("failed-1.json", "delete"),
+        ("started-1.json", "partial"),
+        ("raw-1.json", "partial"),
+        ("failed-1.json", "partial"),
+        ("started-1.json", "bool_attempt"),
+        ("raw-1.json", "bool_attempt"),
+        ("failed-1.json", "bool_attempt"),
+        ("started-1.json", "owner"),
+        ("raw-1.json", "owner"),
+        ("failed-1.json", "owner"),
+        ("started-1.json", "request_key"),
+        ("started-1.json", "status"),
+        ("raw-1.json", "raw_digest"),
+        ("raw-1.json", "raw_content"),
+        ("failed-1.json", "status"),
+        ("started-1.json", "noncanonical"),
+        ("raw-1.json", "noncanonical"),
+        ("failed-1.json", "noncanonical"),
+    ],
+)
+def test_cached_second_text_attempt_requires_full_first_rejection_history(
+    tmp_path: Path, record_name: str, mutation: str
+) -> None:
+    root = tmp_path / "private"
+    producer = Mock(side_effect=["{", '{"value":"accepted synthetic"}'])
+    args = (root, "brief", {"fixture": "first-rejected-second-accepted"}, _plan())
+    first, identity, _, attempts = chapter._stage(*args, lambda x: x, producer)
+    assert first == {"value": "accepted synthetic"}
+    assert attempts == 2
+    directory = next((root / "brief").iterdir())
+    target = directory / record_name
+    original = target.read_bytes()
+    if mutation == "delete":
+        target.unlink()
+    elif mutation == "partial":
+        target.write_bytes(b"{")
+    elif mutation == "noncanonical":
+        target.write_bytes(original + b" ")
+    else:
+        record = json.loads(original)
+        if mutation == "bool_attempt":
+            record["attempt"] = True
+        elif mutation == "owner":
+            record["owner"] = "0" * 32
+        elif mutation == "request_key":
+            record["request_key"] = "f" * 64
+        elif mutation == "status":
+            record["status"] = "PRODUCER_FAILURE"
+        elif mutation == "raw_digest":
+            record["sha256"] = "f" * 64
+        else:
+            assert mutation == "raw_content"
+            record["raw"] = "["
+        target.write_bytes(evaluation._json_bytes(record))
+    no_provider = Mock(side_effect=AssertionError("missing prior attempt cannot replay"))
+    with pytest.raises(chapter.ChapterStop, match="prior attempt history"):
+        chapter._stage(*args, lambda x: x, no_provider)
+    no_provider.assert_not_called()
+    assert producer.call_count == 2
+    assert json.loads((directory / "validated.json").read_bytes())[
+        "artifact_identity"
+    ] == identity
+
+
+@pytest.mark.parametrize("deleted_record", ["started-1.json", "raw-1.json", "failed-1.json"])
+def test_live_chapter_retry_checks_rejected_history_before_second_callback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, deleted_record: str
+) -> None:
+    root = tmp_path / "private"
+    store = evaluation._store
+
+    def intercept(private_root: Path, path: Path, value: object) -> None:
+        store(private_root, path, value)
+        if path.name == "failed-1.json":
+            (path.parent / deleted_record).unlink()
+
+    monkeypatch.setattr(evaluation, "_store", intercept)
+    producer = Mock(side_effect=["{", '{"value":"must never run"}'])
+    with pytest.raises(chapter.ChapterStop, match="prior attempt history"):
+        chapter._stage(
+            root, "brief", {"fixture": "live-retry-history"}, _plan(),
+            lambda x: x, producer,
+        )
+    producer.assert_called_once()
+    assert not list((root / "brief").rglob("started-2.json"))
+    assert not list((root / "brief").rglob("validated.json"))
+
+
+@pytest.mark.parametrize("rejected_first", [False, True])
+def test_valid_first_or_second_chapter_attempt_replays_without_producer(
+    tmp_path: Path, rejected_first: bool
+) -> None:
+    root = tmp_path / "private"
+    answers = (
+        ["{", '{"value":"synthetic"}']
+        if rejected_first
+        else ['{"value":"synthetic"}']
+    )
+    provider = Mock(side_effect=answers)
+    args = (root, "brief", {"fixture": "valid-history"}, _plan())
+    first, identity, _, attempt = chapter._stage(*args, lambda x: x, provider)
+    assert attempt == (2 if rejected_first else 1)
+    no_provider = Mock(side_effect=AssertionError("cached replay invoked provider"))
+    replay, replay_identity, _, produced = chapter._stage(
+        *args, lambda x: x, no_provider
+    )
+    assert (replay, replay_identity, produced) == (first, identity, 0)
+    no_provider.assert_not_called()
+    assert provider.call_count == attempt
