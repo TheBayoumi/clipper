@@ -474,7 +474,7 @@ with tarfile.open(archive_path, mode="r:") as source:
                 if not isinstance(review_data, dict):
                     raise ValueError("hybrid human approval malformed")
                 review_digest = hashlib.sha256(
-                    (json.dumps(review_data,ensure_ascii=False,sort_keys=True)+"\\n").encode("utf-8")
+                    (json.dumps(review_data,ensure_ascii=False,sort_keys=True)+"\n").encode("utf-8")
                 ).hexdigest()
                 if (human.get("review_sha256") != review_id
                     or review_digest != review_id
