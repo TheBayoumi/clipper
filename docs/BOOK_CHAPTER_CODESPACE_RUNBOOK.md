@@ -99,8 +99,18 @@ there. The host will reject bundles whose name or bytes disagree.
 - **Mandatory external enforcement:** `scripts/private_chapter_external_supervisor.sh`
   runs on the owner's **separate computer**, not inside the Codespace, and
   begins immediately after creation **before** installing dependencies. It
-  continuously signs and privately transfers 45-second-verifiable heartbeats
-  (owner signing private key stays outside host) and forcibly stops/deletes
+  waits for the exact REST instance to reach Available within an immutable
+  **creation +10-minute bootstrap deadline**, then performs bounded SSH
+  readiness retries and public-key transfer before issuing its first signed
+  heartbeat. Startup and retries also reserve at least 60 seconds before
+  creation +115 minutes; provisioning never resets the original clock.
+  Unexpected/terminal REST state, lost REST access, replacement numeric ID,
+  exhausted startup budget, or hung CLI fails closed into identity-checked
+  cleanup. No dependencies, private book transfer, model execution or setup
+  are permitted before the authenticated signed heartbeat is available.
+  After bootstrap it continuously signs and privately transfers
+  45-second-verifiable heartbeats (owner signing private key stays outside
+  host) and forcibly stops/deletes
   that exact Codespace at creation +115 minutes, independently checking REST
   stop/deletion. If restarted with the exact approved REST instance between
   minute 115 and minute 120, it enters **cleanup-only**, with no setup or
