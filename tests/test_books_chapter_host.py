@@ -12,7 +12,7 @@ from unittest.mock import Mock
 import pytest
 from test_books_whole_book import ingested
 
-from clipper.books import chapter, chapter_host, evaluation, scripting, whole_book
+from clipper.books import chapter, chapter_host, evaluation, scripting
 from clipper.books.orchestrator import BookOrchestrator
 
 

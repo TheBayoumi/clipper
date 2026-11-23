@@ -120,14 +120,18 @@ explicit stages for the **later** privately authorized real run; they are
 }
 ```
 
-Omit `--run-manifest` for a zero-inference source-scope checkpoint. **Today,
-even with a manifest and `brief_cpu=true`, real chapter execution makes zero
-provider calls** and reports exit code 2 and fixed stderr status
-`PRIVATE_CHAPTER_BOUNDED_HOST_UNVERIFIED`. This applies specifically to the
-known missing free, private, memory/timeout-bounded host; unexpected provider
-failures retain the generic `PRIVATE_EVALUATION_FAILED_CLOSED` status.
-No manifest flag overrides the host guard. The following review file is
-a **future** artifact after an authorized real brief is produced:
+Omit `--run-manifest` for a zero-inference source-scope checkpoint. The
+**ordinary `clipper books chapter-evaluate` CLI remains blocked** for real
+providers, even with `brief_cpu=true`: it emits fixed
+`PRIVATE_CHAPTER_BOUNDED_HOST_UNVERIFIED`. The only prepared real CPU adapter
+entrypoint is `python -m clipper.books.chapter_host`, guarded by
+`scripts/private_chapter_codespace.sh` and the independently reviewed
+**single Codespace** contract in
+[BOOK_CHAPTER_CODESPACE_RUNBOOK.md](BOOK_CHAPTER_CODESPACE_RUNBOOK.md).
+This has not yet run on a real host. Synthetic callback stages stay separate
+from real Qwen/Kokoro provenance. A run manifest cannot bypass the ordinary
+CLI host block. The following review file is a private artifact **only after**
+an independently inspected real brief is produced:
 
 ```json
 {
@@ -182,14 +186,16 @@ Configuration enforces **2–20 scenes**, **130–2400 total words**, **2–24
 source beats and original source-unit/gap coverage entries**, **1–4 shots
 per scene**, **1024–8192 output tokens per call**, **1–2 attempts per
 each of four text stages**, and **60–900 seconds chapter runtime**.
-No source unit is truncated: if the complete original source ledger
-exceeds **25,000 bytes**, or if the full serialized prompt (conservatively
-bounded by UTF-8 bytes, with a **512-token chat-template reserve**) plus
-output reservation exceeds the pinned **40,960-token** context, the stage
-fails *before* any model call; narrow the original canonical section.
-The byte-based upper bound avoids model/tokenizer initialization during
-coding but is deliberately conservative rather than a tokenizer-exact
-runtime benchmark. With example plan: max **8 Qwen generation calls** +
+No source unit is truncated. The private source ledger has an absolute
+**163,840-byte** bound derived from 4× the pinned 40,960-token model
+context; it is **not a token-equivalence claim**. Up to **64 original
+work units and unresolved source markers** are exposed to the reviewer.
+For model-free tests the conservative full UTF-8 request plus 512-token
+reserve and output budget still rejects excessive prompts. On the separately
+approved real CPU host, the pinned Qwen tokenizer checks the **exact full
+chat template and all output tokens before loading weights or reserving
+the attempt**. Failure is a stop with no truncation, source-scope narrowing
+or short Episode fallback. With example plan: max **8 Qwen generation calls** +
 **24 Kokoro utterance calls** (8 scenes × narration plus up to 2 dialogue).
 These are upper bounds, not guarantees of adequate context or timely finish.
 An external private host must enforce CPU, offline snapshot cache, memory,
@@ -232,10 +238,13 @@ separately authorized multi-shot generation later; this stage has none.
 
 ### Execution status and source provenance
 
-Chapter text and Kokoro provider calls are **blocked** until a verified, private,
-externally bounded host is available. `max_runtime_seconds` constrains the
-resulting **story timeline**, not wall-clock inference or speech synthesis time.
-This repository does not assert a host-level timeout or memory cap. Injected
+Ordinary chapter CLI text/Kokoro provider calls remain **blocked**.
+A separate explicitly guarded Codespace integration is prepared, not
+provisioned or runtime-proven. Its shell wrapper obtains the live approved
+Codespace metadata, enforces a single creation-time deadline with a hard
+process timeout for inspection, mining, both briefs, human review and both
+resumes, and reserves cleanup time. `max_runtime_seconds` still constrains
+the **resulting story timeline**, not inference wall-clock. Injected
 model-free producers remain available for synthetic tests; historical mining
 artifacts without explicit producer origin are `LEGACY_LOCAL_CPU_UNKNOWN` or
 `LEGACY_UNKNOWN`, not retrospective proof of CPU inference. Chapter final-result
