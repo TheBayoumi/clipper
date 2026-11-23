@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
+from uuid import uuid4
 
 from . import (
     acquisition,
@@ -41,6 +42,10 @@ DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 class PrivateHostStop(ValueError):
     """Sanitized private-host phase refusal; source text is never emitted."""
+
+
+class PhaseClaimContended(PrivateHostStop):
+    """A concurrent caller lost an immutable claim; observation only."""
 
 
 def _created_at(value: str, now: datetime | None = None) -> datetime:
@@ -325,6 +330,24 @@ def _release_models() -> None:
     gc.collect()
 
 
+PHASE_TRANSITIONS: dict[str | None, set[str]] = {
+    None: {"NOT_STARTED"},
+    "NOT_STARTED": {"MINING_IN_FLIGHT", "STOPPED"},
+    "MINING_IN_FLIGHT": {"SCOPED_MINING_INCOMPLETE", "BRIEF_IN_FLIGHT", "STOPPED"},
+    "BRIEF_IN_FLIGHT": {"AWAITING_HUMAN_REVIEW", "STOPPED"},
+    "AWAITING_HUMAN_REVIEW": {"RESUME_IN_FLIGHT", "STOPPED"},
+    "RESUME_IN_FLIGHT": {"ADAPTATION_IN_FLIGHT", "PREPRODUCTION_READY", "STOPPED"},
+    "ADAPTATION_IN_FLIGHT": {"ADAPTATION_VERIFIED", "STOPPED"},
+    "ADAPTATION_VERIFIED": {"SCRIPT_IN_FLIGHT", "STOPPED"},
+    "SCRIPT_IN_FLIGHT": {"SCRIPT_VERIFIED", "STOPPED"},
+    "SCRIPT_VERIFIED": {"NARRATION_IN_FLIGHT", "STOPPED"},
+    "NARRATION_IN_FLIGHT": {"NARRATION_VERIFIED", "STOPPED"},
+    "NARRATION_VERIFIED": {"DIRECTION_IN_FLIGHT", "STOPPED"},
+    "DIRECTION_IN_FLIGHT": {"DIRECTION_VERIFIED", "STOPPED"},
+    "DIRECTION_VERIFIED": {"PREPRODUCTION_READY", "STOPPED"},
+}
+
+
 def _phase_head(root: Path, number: int) -> Path:
     return root / "book-candidates/private-host" / f"chapter-{number}-phase-head.json"
 
@@ -470,16 +493,21 @@ def _append_phase_locked(
     root = runner.root
     records = _phase_records(root, number, bundle, scope)
     previous = str(records[-1]["phase"]) if records else None
-    legal: dict[str | None, set[str]] = {
-        None: {"NOT_STARTED"},
-        "NOT_STARTED": {"MINING_IN_FLIGHT", "STOPPED"},
-        "MINING_IN_FLIGHT": {"SCOPED_MINING_INCOMPLETE", "BRIEF_IN_FLIGHT", "STOPPED"},
-        "BRIEF_IN_FLIGHT": {"AWAITING_HUMAN_REVIEW", "STOPPED"},
-        "AWAITING_HUMAN_REVIEW": {"RESUME_IN_FLIGHT", "STOPPED"},
-        "RESUME_IN_FLIGHT": {"PREPRODUCTION_READY", "STOPPED"},
-    }
-    if state not in legal.get(previous, set()):
-        raise PrivateHostStop("duplicate or invalid private chapter phase claim")
+    if state not in PHASE_TRANSITIONS.get(previous, set()):
+        raise PhaseClaimContended("duplicate or superseded chapter phase claim")
+    # Terminal/follow-on transitions are reserved for the caller which won
+    # MINING_IN_FLIGHT or RESUME_IN_FLIGHT. No losing caller may STOP a winner.
+    if state not in {"NOT_STARTED", "MINING_IN_FLIGHT", "RESUME_IN_FLIGHT"}:
+        active = next(
+            (
+                row["artifacts"].get("claim_owner")
+                for row in reversed(records)
+                if row["phase"] in {"MINING_IN_FLIGHT", "RESUME_IN_FLIGHT"}
+            ),
+            None,
+        )
+        if active is not None and (artifacts or {}).get("claim_owner") != active:
+            raise PhaseClaimContended("private chapter transition owner mismatch")
     record: dict[str, Any] = {
         "schema": "clipper-private-chapter-phase-event-v1",
         "sequence": len(records) + 1,
@@ -510,6 +538,7 @@ def _claim_reviewed_resume(
     scope_sha: str,
     brief_identity: str | None,
     progress_path: Path,
+    claim_owner: str,
 ) -> None:
     """Bind the immutable review identity before any post-review CPU producer."""
     if brief_identity is None:
@@ -520,8 +549,37 @@ def _claim_reviewed_resume(
         digest,
         scope_sha,
         "RESUME_IN_FLIGHT",
-        {"brief_identity": brief_identity, "progress_path": str(progress_path)},
+        {
+            "brief_identity": brief_identity,
+            "progress_path": str(progress_path),
+            "claim_owner": claim_owner,
+        },
     )
+
+
+def _record_verified_stage(
+    runner: BookOrchestrator,
+    number: int,
+    bundle: str,
+    scope: str,
+    claim_owner: str,
+    stage: str,
+    identity: str | None,
+) -> None:
+    key = {
+        "ADAPTATION_VERIFIED": "adaptation_identity",
+        "SCRIPT_VERIFIED": "script_identity",
+        "NARRATION_VERIFIED": "narration_report_identity",
+        "DIRECTION_VERIFIED": "direction_identity",
+    }.get(stage)
+    if key is None and not stage.endswith("_IN_FLIGHT"):
+        raise PrivateHostStop("unsupported private chapter subphase")
+    if key is not None and (identity is None or DIGEST.fullmatch(identity) is None):
+        raise PrivateHostStop("private chapter stage has no verified artifact identity")
+    artifacts = {"claim_owner": claim_owner}
+    if key is not None:
+        artifacts[key] = identity
+    _phase(runner, number, bundle, scope, stage, artifacts)
 
 
 def _outcome_from_phase(record: dict[str, Any]) -> dict[str, object]:
@@ -534,6 +592,14 @@ def _outcome_from_phase(record: dict[str, Any]) -> dict[str, object]:
         "BRIEF_IN_FLIGHT": "INTERRUPTED_DURING_CHAPTER_BRIEF",
         "AWAITING_HUMAN_REVIEW": "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW",
         "RESUME_IN_FLIGHT": "INTERRUPTED_DURING_CHAPTER_RESUME",
+        "ADAPTATION_IN_FLIGHT": "INTERRUPTED_DURING_ADAPTATION",
+        "ADAPTATION_VERIFIED": "ADAPTATION_VERIFIED_CHECKPOINT",
+        "SCRIPT_IN_FLIGHT": "INTERRUPTED_DURING_CHAPTER_SCRIPT",
+        "SCRIPT_VERIFIED": "SCRIPT_VERIFIED_CHECKPOINT",
+        "NARRATION_IN_FLIGHT": "INTERRUPTED_DURING_NARRATION",
+        "NARRATION_VERIFIED": "NARRATION_VERIFIED_CHECKPOINT",
+        "DIRECTION_IN_FLIGHT": "INTERRUPTED_DURING_DIRECTION",
+        "DIRECTION_VERIFIED": "DIRECTION_VERIFIED_CHECKPOINT",
         "PREPRODUCTION_READY": "CHAPTER_PREPRODUCTION_READY_UNREVIEWED",
         "STOPPED": "PRIVATE_CHAPTER_PHASE_STOPPED_REVIEW_PRIVATE_EVIDENCE",
     }.get(state, "PRIVATE_CHAPTER_PHASE_STOPPED_REVIEW_PRIVATE_EVIDENCE")
@@ -595,7 +661,11 @@ def execute(
     # irreversible call. A terminated process leaves an IN_FLIGHT marker.
     for number, _block, _bundle, verified, _section, scope_sha, _counts in prepared:
         if not _phase_records(root, number, verified.bundle_sha256, scope_sha):
-            _phase(runner, number, verified.bundle_sha256, scope_sha, "NOT_STARTED")
+            try:
+                _phase(runner, number, verified.bundle_sha256, scope_sha, "NOT_STARTED")
+            except PhaseClaimContended:
+                # Concurrent initialization already committed the same phase.
+                pass
 
     outcomes: dict[str, object] = {}
     for number, block, bundle, verified, section_path, scope_sha, counts in prepared:
@@ -612,6 +682,7 @@ def execute(
         private_root = root / "book-candidates"
         saved = private_root / "private-host" / f"chapter-{number}-brief-record.json"
         journaled_brief_identity: str | None = None
+        claim_owner = uuid4().hex
         try:
             # The independent heartbeat must remain current between chapter
             # phases; a previous invocation never extends the creation clock.
@@ -620,7 +691,10 @@ def execute(
             )
             _check_deadline(created)
             if mode == "brief":
-                _phase(runner, number, digest, scope_sha, "MINING_IN_FLIGHT")
+                _phase(
+                    runner, number, digest, scope_sha, "MINING_IN_FLIGHT",
+                    {"claim_owner": claim_owner},
+                )
                 mined = runner.mine_candidate(
                     bundle,
                     local_cpu=True,
@@ -639,6 +713,7 @@ def execute(
                         {
                             "progress_path": mined.get("progress_path"),
                             "units": mined.get("total_work_units"),
+                            "claim_owner": claim_owner,
                         },
                     )
                     outcomes[str(number)] = _outcome_from_phase(last)
@@ -691,7 +766,7 @@ def execute(
                     digest,
                     scope_sha,
                     "BRIEF_IN_FLIGHT",
-                    {"progress_path": str(progress_path)},
+                    {"progress_path": str(progress_path), "claim_owner": claim_owner},
                 )
             output = chapter.evaluate_chapter(
                 runner,
@@ -707,6 +782,13 @@ def execute(
                 direction_completion=scripting._local_chapter_completion,
                 narration_producer=narration._kokoro_wav,
                 expected_brief_identity=journaled_brief_identity,
+                on_stage_progress=(
+                    partial(
+                        _record_verified_stage, runner, number, digest, scope_sha, claim_owner
+                    )
+                    if mode == "resume"
+                    else None
+                ),
                 on_resume_verified=(
                     partial(
                         _claim_reviewed_resume,
@@ -716,6 +798,7 @@ def execute(
                         scope_sha,
                         journaled_brief_identity,
                         progress_path,
+                        claim_owner,
                     )
                     if mode == "resume"
                     else None
@@ -748,6 +831,7 @@ def execute(
                         "brief_identity": output["brief_identity"],
                         "progress_path": str(progress_path),
                         "progress_sha256": evidence["progress_sha256"],
+                        "claim_owner": claim_owner,
                     },
                 )
             else:
@@ -762,9 +846,14 @@ def execute(
                     {
                         "final_result_identity": output.get("final_result_identity"),
                         "audio_provenance": output.get("audio_provenance"),
+                        "claim_owner": claim_owner,
                     },
                 )
             outcomes[str(number)] = _outcome_from_phase(last)
+        except PhaseClaimContended:
+            # The caller that lost a MINING/RESUME claim can only observe.
+            current = _phase_records(root, number, digest, scope_sha)[-1]
+            outcomes[str(number)] = _outcome_from_phase(current)
         except chapter.ChapterReviewPending:
             # No RESUME_IN_FLIGHT claim was written; a corrected human decision
             # file can be submitted on the same immutable brief checkpoint.
@@ -782,7 +871,13 @@ def execute(
                     "review_status": "RESUME_PREFLIGHT_BLOCKED",
                 }
             else:
-                stopped = _phase(runner, number, digest, scope_sha, "STOPPED")
+                try:
+                    stopped = _phase(
+                        runner, number, digest, scope_sha, "STOPPED",
+                        {"claim_owner": claim_owner},
+                    )
+                except PhaseClaimContended:
+                    stopped = _phase_records(root, number, digest, scope_sha)[-1]
                 outcomes[str(number)] = _outcome_from_phase(stopped)
         finally:
             _release_models()
