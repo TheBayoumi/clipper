@@ -298,9 +298,26 @@ private output manifest **before** marking retrieval verified. If the
 download/hash check fails, the archive must **not** be treated as recovered;
 the status records `retrieval_status=INCOMPLETE`, with a best-effort safe
 phase-only status. This never vetoes or delays a separate, identity-checked
-STOP/DELETE operation. Report retrieval completeness and REST host deletion
-**separately**: recovered files are not proof of deletion, and successful
-deletion is not proof that any files survived.
+STOP/DELETE operation. **Within the final seconds of the original 120-minute
+deadline, DELETE precedes STOP and polling**, after a fresh numeric REST
+identity check; waiting for a hung graceful STOP must not consume the DELETE
+slot. A verified DELETE with no STOP attestation is reported distinctly,
+and an expired deadline is never misreported as a rejected host identity.
+Report retrieval completeness and REST host deletion **separately**: recovered
+files are not proof of deletion, and successful deletion is not proof that
+any files survived.
+
+The private TAR indexes each physical WAV or other identical file **once**,
+while retaining both chapter-number references when both attested narration
+reports refer to the same content hash. Per-chapter inventories explicitly
+distinguish `VERIFIED`, `INCOMPLETE`, and `NOT_STARTED`. A missing or
+corrupt chapter-7 artifact must not discard independently verified chapter-1
+outputs; a failed chapter is never described as recovered. The owner verifies
+the TAR hash, each member hash, each chapter-reference mapping and its
+individual retrieval status before treating even partial output as saved.
+Text-stage recovery first checks the exact winning claim and any prior
+rejected raw/failure history with the normal bounded stage replay verifier;
+validated/raw files alone never make a stage recoverable.
 
 The safe status only exposes stage names, source-independent SHA identities,
 and `runtime_journal_status` versus `retrieval_status`; it never contains
