@@ -168,7 +168,6 @@ def projection(entries: list[dict[str, Any]]) -> list[list[object]]:
     ]
 
 
-
 def producer_identity(
     *,
     ledger_sha256: str,
