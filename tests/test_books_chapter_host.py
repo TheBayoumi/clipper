@@ -1525,7 +1525,19 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
             evaluation._store(
                 base,
                 stage_directory / "failed-1.json",
-                {"attempt": 1, "owner": prior_owner, "status": "SCHEMA_OR_SOURCE_REJECTED"},
+                {
+                    "attempt": 1,
+                    "owner": prior_owner,
+                    "status": "SCHEMA_OR_SOURCE_REJECTED",
+                    "validation_evidence": chapter._rejection_evidence(
+                        stage_directory,
+                        request_key,
+                        1,
+                        prior_owner,
+                        first_digest,
+                        chapter.ChapterStop("chapter adaptation schema"),
+                    ),
+                },
             )
         existing_raw = json.loads((stage_directory / "raw-1.json").read_bytes())
         assert existing_raw["owner"] == prior_owner
