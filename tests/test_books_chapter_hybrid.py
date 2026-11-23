@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from test_books_chapter_host import _call, _locked, _private_setup
 from test_books_selected_scope import _bundle
 from test_books_whole_book import ingested
 
@@ -1016,3 +1017,86 @@ def test_runtime_only_change_invalidates_actual_hybrid_stage_artifacts_and_revie
         )
         == pending_a["producer_identity_sha256"]
     )
+
+
+def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner, manifest, inputs = _private_setup(tmp_path, monkeypatch)
+    _locked(runner, manifest, inputs)
+    original = whole_book.local_producer_material()
+    runtime = {"probe": "A"}
+    monkeypatch.setattr(
+        whole_book,
+        "local_producer_material",
+        lambda: {**original, "synthetic_probe": runtime["probe"]},
+    )
+    miner = Mock(side_effect=AssertionError("direct source must not call the miner"))
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", miner)
+    evaluate = chapter.evaluate_hybrid_chapter
+    calls = {"argument": 0, "audit": 0, "reconcile": 0}
+
+    def fake(name: str):
+        def call(request: dict[str, object]) -> str:
+            calls[name] += 1
+            return _injected_hybrid_response(name, request)
+
+        return call
+
+    def injected(*args: object, **kwargs: object) -> dict[str, object]:
+        kwargs.update(
+            argument_completion=fake("argument"),
+            audit_completion=fake("audit"),
+            reconcile_completion=fake("reconcile"),
+            token_counter=lambda _messages: 1000,
+        )
+        return evaluate(*args, **kwargs)
+
+    monkeypatch.setattr(chapter, "evaluate_hybrid_chapter", injected)
+    monkeypatch.setattr(chapter_host, "_release_models", lambda: None)
+    report = _call(runner, manifest, "hybrid-brief")
+    assert report["status"] == "PRIVATE_TWO_CHAPTER_HYBRID_CHECKPOINT"
+    assert set(report["chapters"]) == {"1", "7"}
+    assert all(
+        record["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
+        for record in report["chapters"].values()
+    )
+    assert calls["argument"] == 2
+    assert calls["reconcile"] == 2
+    assert calls["audit"] >= 2
+    miner.assert_not_called()
+
+    for number in (1, 7):
+        block = inputs[f"chapter_{number}"]
+        inventory = chapter_host._hybrid_output_manifest(
+            runner.root,
+            number,
+            block["bundle_sha256"],
+            block["scope_sha256"],
+        )
+        assert inventory["source_mode"] == "DIRECT_SOURCE_HYBRID"
+        assert inventory["publish_eligible"] is False
+        assert inventory["verified_artifact_identities"]["producer_identity_sha256"]
+        kinds = {record["kind"] for record in inventory["files"]}
+        assert "source_ledger" in kinds
+        assert "text" in kinds
+        assert "review" in kinds
+    frozen = dict(calls)
+    runtime["probe"] = "B"
+    for number in (1, 7):
+        block = inputs[f"chapter_{number}"]
+        with pytest.raises(chapter_host.PrivateHostStop, match="producer/runtime"):
+            chapter_host._hybrid_output_manifest(
+                runner.root,
+                number,
+                block["bundle_sha256"],
+                block["scope_sha256"],
+            )
+    blocked = _call(runner, manifest, "hybrid-resume")
+    assert all(
+        record["review_status"] == "RESUME_PREFLIGHT_BLOCKED"
+        for record in blocked["chapters"].values()
+    )
+    assert calls == frozen
+    miner.assert_not_called()
