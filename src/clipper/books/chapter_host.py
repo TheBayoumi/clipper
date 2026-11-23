@@ -714,6 +714,7 @@ def execute(
                     {
                         "brief_identity": output["brief_identity"],
                         "progress_path": str(progress_path),
+                        "progress_sha256": evidence["progress_sha256"],
                     },
                 )
             else:
@@ -759,14 +760,91 @@ def execute(
     }
 
 
+def recovery_report(artifact_root: Path) -> dict[str, object]:
+    """Read-only, bounded, model-free owner recovery manifest with no source prose.
+
+    This is checkpoint evidence, not proof that remote files were recovered.
+    Any corrupt history fails closed instead of guessing a resumable phase.
+    """
+    root = artifact_root.resolve()
+    worktree = Path(__file__).resolve().parents[3]
+    if (
+        not artifact_root.is_absolute()
+        or artifact_root.is_symlink()
+        or root == Path("/")
+        or root.is_relative_to(worktree)
+    ):
+        raise PrivateHostStop("private recovery report needs a separate absolute artifact root")
+    chapters: dict[str, dict[str, object]] = {}
+    for number in (1, 7):
+        head_path = _phase_head(root, number)
+        folder = root / "book-candidates/private-host" / f"chapter-{number}-phase-events"
+        if not head_path.exists() and not head_path.is_symlink() and not folder.exists():
+            chapters[str(number)] = {
+                "recovery_state": "NEVER_STARTED",
+                "last_subphase": "NOT_STARTED",
+                "last_verified_artifact_identities": {},
+            }
+            continue
+        head_raw = evaluation._read(head_path, 16384)
+        head = whole_book.load_strict_reply(head_raw)
+        if (
+            not isinstance(head, dict)
+            or head.get("chapter") != number
+            or not isinstance(head.get("bundle_sha256"), str)
+            or DIGEST.fullmatch(head["bundle_sha256"]) is None
+            or not isinstance(head.get("scope_sha256"), str)
+            or DIGEST.fullmatch(head["scope_sha256"]) is None
+        ):
+            raise PrivateHostStop("private recovery journal head cannot be trusted")
+        records = _phase_records(root, number, head["bundle_sha256"], head["scope_sha256"])
+        if not records:
+            raise PrivateHostStop("private recovery journal empty")
+        phase = str(records[-1]["phase"])
+        identities: dict[str, str] = {}
+        for record in reversed(records):
+            artifacts = record["artifacts"]
+            for key in ("brief_identity", "final_result_identity", "progress_sha256"):
+                value = artifacts.get(key)
+                if key not in identities and isinstance(value, str) and DIGEST.fullmatch(value):
+                    identities[key] = value
+        category = (
+            "READY" if phase == "PREPRODUCTION_READY"
+            else "NEVER_STARTED" if phase == "NOT_STARTED"
+            else "IN_FLIGHT" if phase.endswith("_IN_FLIGHT")
+            else "AWAITING_REVIEW" if phase == "AWAITING_HUMAN_REVIEW"
+            else "INTERRUPTED"
+        )
+        chapters[str(number)] = {
+            "recovery_state": category,
+            "last_subphase": phase,
+            "bundle_sha256": head["bundle_sha256"],
+            "scope_sha256": head["scope_sha256"],
+            "last_verified_artifact_identities": identities,
+            "committed_phase_event_sha256": head["event_sha256"],
+        }
+    return {
+        "schema": "clipper-private-chapter-safe-recovery-v1",
+        "status": "PRIVATE_CHAPTER_RECOVERY_CHECKPOINT_ONLY",
+        "chapters": chapters,
+        "files_retrieved": False,
+        "publish_eligible": False,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Private two-chapter Codespace checkpoint")
-    parser.add_argument("mode", choices=("inspect", "brief", "resume"))
+    parser.add_argument("mode", choices=("inspect", "brief", "resume", "status"))
     parser.add_argument("--artifact-root", type=Path, required=True)
-    parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--codespace-created-at", required=True)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--codespace-created-at")
     args = parser.parse_args(argv)
     try:
+        if args.mode == "status":
+            print(json.dumps(recovery_report(args.artifact_root), sort_keys=True))
+            return 0
+        if args.manifest is None or args.codespace_created_at is None:
+            raise PrivateHostStop("private host manifest and creation timestamp required")
         result = execute(
             mode=args.mode,
             artifact_root=args.artifact_root,
