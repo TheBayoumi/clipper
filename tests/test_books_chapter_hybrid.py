@@ -12,9 +12,8 @@ import pytest
 from test_books_selected_scope import _bundle
 
 from clipper.books import chapter, evaluation, selected_scope
-from clipper.books.orchestrator import BookOrchestrator
-
 from clipper.books import chapter_hybrid as hybrid
+from clipper.books.orchestrator import BookOrchestrator
 
 
 def _original(
