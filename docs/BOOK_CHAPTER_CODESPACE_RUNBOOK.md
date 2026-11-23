@@ -93,7 +93,7 @@ there. The host will reject bundles whose name or bytes disagree.
   `review/unified-tts-cleanup`, **4 cores / 16 GiB / 32 GiB**, no other
   machine, account, repository or branch. Maximum **eight included core-hours**.
 - **Two hours total starting at Codespace creation**, including setup, source
-  inspection, both chapter mining+briefs, independent human reviews, any
+  inspection, both chapter source-driven argument/audit/reconciliation briefs, independent human reviews, any
   resumes, failure handling and cleanup. A machine-time cap is **not**
   assurance that either chapter completes.
 - **Mandatory external enforcement:** `scripts/private_chapter_external_supervisor.sh`
@@ -228,21 +228,24 @@ do not copy full source onto the host. Lock each exact `scope_sha256`
 reported for its own selected bundle in the private manifest. Neither the
 scope lock nor a tokenizer-valid prompt constitutes human semantic approval.
 
-**Phase brief — real CPU, sequential per selected chapter:**
+**Phase hybrid brief — selected-source argument, local audit and reconciliation, sequential per chapter:**
 
 ```sh
-bash scripts/private_chapter_codespace.sh brief
+bash scripts/private_chapter_codespace.sh hybrid-brief
 ```
 
-Both bundle identities and scopes are verified **before the first mining call**.
-The pinned Qwen3-1.7B model/tokenizer and constrained per-unit miner work on
-the original selected work units only, with one shared Hugging Face cache and
-distinct immutable per-chapter mining evidence. Source-ledger limits remain
-finite; the full chat/template plus max output token budget receives an
-independent exact pinned-tokenizer preflight before chapter attempts. Raw
-failed attempts, owner claims and cache replay checks are preserved. No
-truncation, excluded-chapter ingestion, short Episode fallback, paid fallback,
-or generating images/video. Kokoro does not run during brief.
+Both bundle identities and scopes are verified **before the first producer call**.
+The quality-first hybrid route **does not call the per-unit miner**: it freezes
+every original selected source unit and unresolved gap, drafts the chapter-level
+argument, audits disjoint contiguous source windows, and reconciles an
+explicit unit-level keep/compress/omit decision and source-anchored beats.
+Source-ledger/input/output caps remain finite; exact rendered token-ID hashes,
+effective chat-template and tokenizer-config identities, and the full reserved
+output receive public-only pinned-tokenizer checks **before** chapter attempts.
+The very token tensor consumed by real CPU generation must match that
+preflight. Raw failures, two-attempt owner claims and replay guards remain.
+No truncation, short Episode fallback, paid fallback, images or video.
+Kokoro does not run during the hybrid brief.
 
 The complete selected chapter brief and full original-unit/gap review packet
 are private `book-candidates/private-host/chapter-1-review-packet.json`
@@ -252,21 +255,27 @@ OMIT and each beat requires a substantive independent source decision.
 Missing/uncertain notes, source qualification and omissions must be treated
 explicitly. Each chapter has a separate review and brief identity.
 
-**Phase resume — only after explicit two independent human reviews:**
+**Phase hybrid resume — only after explicit two independent source-level human reviews:**
 
 Set each `review_file` to its own full reviewed JSON, with no placeholder
 values. Continue only if the **same** Codespace has time:
 
 ```sh
-bash scripts/private_chapter_codespace.sh resume
+bash scripts/private_chapter_codespace.sh hybrid-resume
 ```
 
-The original selected bundle, scope, complete mining progress, original raw
-brief artifact and human review are verified again, followed by existing
-adaptation, connected script, shot/direction continuity and real Kokoro
-narration with measured WAV timing. CPU model phases release caches
+The original selected bundle, scope, complete direct-source ledger, the
+argument/local-audit/reconciled brief raw replay, producer/tokenizer identity
+and human review are verified again, followed by adaptation, connected
+script, shot/direction continuity and Kokoro narration with measured WAV timing. CPU model phases release caches
 sequentially. Two chapter artifacts remain independent, and even completed
 text preproduction has `publish_eligible=false`.
+
+The wrapper still accepts legacy `brief` and `resume` modes for their
+separately reviewed legacy path, but **they are not the authorized
+quality-first hybrid commands** for this checkpoint. An `inspect` report
+is not a semantic sign-off; a `hybrid-brief` result is not authority
+to run `hybrid-resume` until BOTH independent private human reviews exist.
 
 If one chapter fails or time expires, report **its actual last completed
 phase and private evidence**; never claim the other chapter succeeded,
