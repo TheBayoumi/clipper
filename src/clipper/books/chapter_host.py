@@ -13,12 +13,16 @@ import json
 import os
 import re
 import sys
+import tarfile
 import tempfile
+from io import BytesIO
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
+
+from clipper.stage_contracts import content_fingerprint
 from typing import Any, cast
 from uuid import uuid4
 
@@ -837,6 +841,9 @@ def execute(
             else:
                 if output["status"] != "CHAPTER_PREPRODUCTION_READY_UNREVIEWED":
                     raise PrivateHostStop("chapter resume did not produce real complete audio")
+                output_manifest_sha = _save_final_manifest(
+                    root, number, digest, scope_sha, str(output["final_result_identity"])
+                )
                 last = _phase(
                     runner,
                     number,
@@ -845,6 +852,7 @@ def execute(
                     "PREPRODUCTION_READY",
                     {
                         "final_result_identity": output.get("final_result_identity"),
+                        "output_manifest_sha256": output_manifest_sha,
                         "audio_provenance": output.get("audio_provenance"),
                         "claim_owner": claim_owner,
                     },
@@ -888,6 +896,332 @@ def execute(
     }
 
 
+def _private_output_entry(
+    root: Path, path: Path, number: int, kind: str, limit: int
+) -> dict[str, object]:
+    """Integrity snapshot for an allowlisted private file, never prose in status."""
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        raise PrivateHostStop("recovery artifact escaped private root") from None
+    if (
+        not rel.parts
+        or rel.parts[0] != "book-candidates"
+        or any(part in {"", ".", ".."} for part in rel.parts)
+        or path.is_symlink()
+        or not path.is_file()
+    ):
+        raise PrivateHostStop("recovery artifact is missing or redirected")
+    raw = evaluation._read(path, limit)
+    return {
+        "chapter": number,
+        "kind": kind,
+        "relative_path": rel.as_posix(),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "bytes": len(raw),
+    }
+
+
+def _stage_output_entries(
+    root: Path, number: int, stage: str, identity: str
+) -> list[dict[str, object]]:
+    """Select one exact validated chapter stage; retain bounded replay evidence."""
+    base = root / "book-candidates" / stage
+    if base.is_symlink() or not base.is_dir():
+        raise PrivateHostStop("reviewed chapter stage directory missing")
+    matched: list[Path] = []
+    directories = list(base.iterdir())
+    if len(directories) > 128:
+        raise PrivateHostStop("reviewed chapter stage inventory exceeds finite limit")
+    for directory in directories:
+        if directory.is_symlink() or not directory.is_dir():
+            raise PrivateHostStop("reviewed chapter stage directory redirected")
+        candidate = directory / "validated.json"
+        if not candidate.exists():
+            continue
+        record = whole_book.load_strict_reply(evaluation._read(candidate, 250_000))
+        if isinstance(record, dict) and record.get("artifact_identity") == identity:
+            if (
+                record.get("contract") != stage
+                or record.get("request_key") != directory.name
+                or record.get("validator_contract") != chapter.TEXT_ARTIFACT_CONTRACT
+                or not isinstance(record.get("raw_sha256"), str)
+                or DIGEST.fullmatch(record["raw_sha256"]) is None
+                or not isinstance(record.get("payload_sha256"), str)
+                or DIGEST.fullmatch(record["payload_sha256"]) is None
+                or hashlib.sha256(evaluation._json_bytes(record["payload"])).hexdigest()
+                != record["payload_sha256"]
+                or chapter._text_artifact_identity(
+                    stage, record["request_key"], record["provenance"],
+                    record["raw_sha256"], record["payload_sha256"], record["token_receipt"]
+                ) != identity
+            ):
+                raise PrivateHostStop("reviewed chapter stage identity changed")
+            raw_path = directory / f"raw-{record['attempt']}.json"
+            raw_record = whole_book.load_strict_reply(evaluation._read(raw_path, 110_000))
+            if (
+                not isinstance(raw_record, dict)
+                or not isinstance(raw_record.get("raw"), str)
+                or hashlib.sha256(raw_record["raw"].encode("utf-8")).hexdigest()
+                != record["raw_sha256"]
+                or raw_record.get("owner") != record.get("owner")
+            ):
+                raise PrivateHostStop("reviewed chapter raw evidence changed")
+            matched.append(directory)
+    if len(matched) != 1:
+        raise PrivateHostStop("reviewed chapter stage identity absent or ambiguous")
+    selected = matched[0]
+    files = list(selected.iterdir())
+    if len(files) > 24:
+        raise PrivateHostStop("reviewed chapter replay file inventory exceeds finite limit")
+    allowed = re.compile(r"(?:validated|started-[12]|raw-[12]|failed-[12])\.json\Z")
+    collected = [
+        _private_output_entry(root, file, number, "text", 250_000)
+        for file in files if allowed.fullmatch(file.name)
+    ]
+    if not any(row["relative_path"] == (selected / "validated.json").relative_to(root).as_posix()
+               for row in collected):
+        raise PrivateHostStop("reviewed chapter validated replay artifact absent")
+    return collected
+
+
+def _narration_output_entries(
+    root: Path, number: int, key: str
+) -> list[dict[str, object]]:
+    path = root / "book-candidates" / f"narration-report-{key}.json"
+    report = whole_book.load_strict_reply(evaluation._read(path, 300_000))
+    if (
+        not isinstance(report, dict)
+        or content_fingerprint(report) != key
+        or report.get("schema") != "clipper-chapter-narration-v2"
+        or not isinstance(report.get("records"), list)
+        or len(report["records"]) > 80
+        or report.get("provenance") not in {"ACTUAL_CPU_KOKORO", "INJECTED_TEST_WAV"}
+    ):
+        raise PrivateHostStop("chapter narration report identity changed")
+    results = [_private_output_entry(root, path, number, "narration_report", 300_000)]
+    expected_prefix = f"chapter-audio-{report['provenance'].lower()}"
+    for record in report["records"]:
+        if not isinstance(record, dict):
+            raise PrivateHostStop("chapter WAV inventory malformed")
+        rel_text = record.get("wav_relative_path")
+        if (
+            not isinstance(rel_text, str)
+            or not isinstance(record.get("sha256"), str)
+            or DIGEST.fullmatch(record["sha256"]) is None
+        ):
+            raise PrivateHostStop("chapter WAV inventory malformed")
+        rel = Path(rel_text)
+        if (
+            rel.is_absolute()
+            or not rel.parts
+            or rel.parts[0] != expected_prefix
+            or any(part in {"", ".", ".."} for part in rel.parts)
+            or rel.suffix.lower() != ".wav"
+        ):
+            raise PrivateHostStop("chapter WAV path escaped attested audio scope")
+        audio = _private_output_entry(
+            root, root / "book-candidates" / rel, number, "wav", narration.MAX_WAV_BYTES
+        )
+        if audio["sha256"] != record["sha256"]:
+            raise PrivateHostStop("chapter WAV hash changed after report")
+        results.append(audio)
+    return results
+
+
+def _chapter_output_manifest(
+    root: Path,
+    number: int,
+    bundle: str,
+    scope: str,
+    *,
+    final_result_identity: str | None = None,
+) -> dict[str, object]:
+    """Scoped, private, bounded inventory from committed stage identities."""
+    records = _phase_records(root, number, bundle, scope)
+    identities: dict[str, str] = {}
+    for item in records:
+        for key in (
+            "brief_identity", "adaptation_identity", "script_identity",
+            "narration_report_identity", "direction_identity", "final_result_identity",
+        ):
+            value = item["artifacts"].get(key)
+            if isinstance(value, str) and DIGEST.fullmatch(value):
+                if key in identities and identities[key] != value:
+                    raise PrivateHostStop("chapter recovery identity changed within journal")
+                identities[key] = value
+    if final_result_identity is not None:
+        if DIGEST.fullmatch(final_result_identity) is None:
+            raise PrivateHostStop("chapter final result identity invalid")
+        identities["final_result_identity"] = final_result_identity
+    entries: list[dict[str, object]] = []
+    for key, stage in (
+        ("brief_identity", "brief"),
+        ("adaptation_identity", "adaptation"),
+        ("script_identity", "chapter_script"),
+        ("direction_identity", "chapter_direction"),
+    ):
+        if key in identities:
+            entries.extend(_stage_output_entries(root, number, stage, identities[key]))
+    if "narration_report_identity" in identities:
+        entries.extend(_narration_output_entries(root, number, identities["narration_report_identity"]))
+    if "brief_identity" in identities:
+        folder = root / "book-candidates/private-host"
+        for name in (f"chapter-{number}-brief-record.json", f"chapter-{number}-review-packet.json"):
+            path = folder / name
+            if path.is_file():
+                obj = whole_book.load_strict_reply(evaluation._read(path, 250_000))
+                if (
+                    not isinstance(obj, dict)
+                    or obj.get("brief_identity") != identities["brief_identity"]
+                ):
+                    raise PrivateHostStop("private chapter review record changed")
+                entries.append(_private_output_entry(root, path, number, "review", 250_000))
+    if "final_result_identity" in identities:
+        result_id = identities["final_result_identity"]
+        eval_root = root / "book-candidates/chapter-evaluations"
+        matches = list(eval_root.glob(f"*/chapter-result-{result_id}.json"))
+        if len(matches) != 1:
+            raise PrivateHostStop("chapter final result missing or ambiguous")
+        result_file = matches[0]
+        result = whole_book.load_strict_reply(evaluation._read(result_file, 500_000))
+        if (
+            not isinstance(result, dict)
+            or content_fingerprint(result) != result_id
+            or result.get("selected_source_bundle_sha256") != bundle
+            or result.get("source_boundary")
+            != "HOST_VERIFIED_SELECTED_BUNDLE_EXPORTER_ATTESTED_PARENT"
+            or result.get("parent_original_reverified_on_host") is not False
+            or result.get("publish_eligible") is not False
+            or result.get("brief_key") != identities.get("brief_identity")
+            or result.get("adaptation_key") != identities.get("adaptation_identity")
+            or result.get("script_key") != identities.get("script_identity")
+            or result.get("direction_key") != identities.get("direction_identity")
+            or result.get("narration_report_key") != identities.get("narration_report_identity")
+        ):
+            raise PrivateHostStop("private chapter final result differs from reviewed stages")
+        entries.append(_private_output_entry(root, result_file, number, "final_result", 500_000))
+        source = result_file.parent / "source-ledger.json"
+        source_entry = _private_output_entry(root, source, number, "source_ledger", 300_000)
+        if source_entry["sha256"] != result["source_ledger_sha256"]:
+            raise PrivateHostStop("private chapter source ledger identity changed")
+        entries.append(source_entry)
+        review_id = result.get("human_review_sha256")
+        if not isinstance(review_id, str) or DIGEST.fullmatch(review_id) is None:
+            raise PrivateHostStop("private chapter human review identity missing")
+        entries.append(
+            _private_output_entry(
+                root, result_file.parent / f"human-review-{review_id}.json",
+                number, "human_review", 250_000
+            )
+        )
+    unique: dict[str, dict[str, object]] = {}
+    for item in entries:
+        name = str(item["relative_path"])
+        if name in unique and unique[name] != item:
+            raise PrivateHostStop("private chapter output path conflicted")
+        unique[name] = item
+    if len(unique) > 256:
+        raise PrivateHostStop("private chapter output count exceeds finite allowance")
+    return {
+        "schema": "clipper-chapter-private-output-manifest-v1",
+        "chapter": number,
+        "bundle_sha256": bundle,
+        "scope_sha256": scope,
+        "verified_artifact_identities": identities,
+        "files": [unique[key] for key in sorted(unique)],
+        "publish_eligible": False,
+    }
+
+
+def _save_final_manifest(
+    root: Path, number: int, bundle: str, scope: str, final_result_identity: str
+) -> str:
+    manifest = _chapter_output_manifest(
+        root, number, bundle, scope, final_result_identity=final_result_identity
+    )
+    raw = evaluation._json_bytes(manifest)
+    digest = hashlib.sha256(raw).hexdigest()
+    evaluation._store(
+        root / "book-candidates",
+        root / "book-candidates/private-host" / f"chapter-{number}-output-manifest.json",
+        manifest,
+    )
+    return digest
+
+
+def private_recovery_archive(artifact_root: Path) -> dict[str, object]:
+    """Package only checksum-verified scoped outputs into a private owner archive."""
+    status = recovery_report(artifact_root)
+    root = artifact_root.resolve()
+    manifests: list[dict[str, object]] = []
+    files: dict[str, dict[str, object]] = {}
+    for number in (1, 7):
+        info = status["chapters"][str(number)]
+        if info["recovery_state"] == "NEVER_STARTED":
+            continue
+        manifest = _chapter_output_manifest(
+            root, number, str(info["bundle_sha256"]), str(info["scope_sha256"])
+        )
+        if info["recovery_state"] == "READY":
+            saved_path = root / "book-candidates/private-host" / f"chapter-{number}-output-manifest.json"
+            raw = evaluation._read(saved_path, 150_000)
+            if raw != evaluation._json_bytes(manifest):
+                raise PrivateHostStop("chapter output inventory differs from final committed manifest")
+            if hashlib.sha256(raw).hexdigest() != info["output_manifest_sha256"]:
+                raise PrivateHostStop("chapter output inventory digest changed")
+        manifests.append(manifest)
+        for entry in manifest["files"]:
+            key = str(entry["relative_path"])
+            if key in files and files[key] != entry:
+                raise PrivateHostStop("private chapter recovery entries conflict")
+            files[key] = entry
+    listing = {
+        "schema": "clipper-chapter-private-recovery-archive-manifest-v1",
+        "chapters": manifests,
+        "files": [files[key] for key in sorted(files)],
+        "runtime_status_sha256": hashlib.sha256(evaluation._json_bytes(status)).hexdigest(),
+    }
+    target = root / "book-candidates/private-host/chapter-recovery.tar"
+    if target.is_symlink():
+        raise PrivateHostStop("private chapter recovery archive is redirected")
+    with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as output:
+        temporary = Path(output.name)
+    try:
+        with tarfile.open(temporary, mode="w", format=tarfile.PAX_FORMAT) as archive:
+            for entry in listing["files"]:
+                path = root / str(entry["relative_path"])
+                raw = evaluation._read(path, narration.MAX_WAV_BYTES)
+                if hashlib.sha256(raw).hexdigest() != entry["sha256"]:
+                    raise PrivateHostStop("private chapter output changed during archive creation")
+                member = tarfile.TarInfo(name=str(entry["relative_path"]))
+                member.size = len(raw)
+                member.mode = 0o600
+                archive.addfile(member, BytesIO(raw))
+            data = evaluation._json_bytes(listing)
+            member = tarfile.TarInfo(name="private-recovery-manifest.json")
+            member.size = len(data)
+            member.mode = 0o600
+            archive.addfile(member, BytesIO(data))
+            safe = evaluation._json_bytes(status)
+            member = tarfile.TarInfo(name="safe-recovery-status.json")
+            member.size = len(safe)
+            member.mode = 0o600
+            archive.addfile(member, BytesIO(safe))
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return {
+        "schema": "clipper-private-chapter-recovery-created-v1",
+        "archive_sha256": hashlib.sha256(evaluation._read(target, 800_000_000)).hexdigest(),
+        "manifest_sha256": hashlib.sha256(evaluation._json_bytes(listing)).hexdigest(),
+        "file_count": len(files),
+        "files_retrieved": False,
+        "host_cleanup_verified": False,
+    }
+
+
 def recovery_report(artifact_root: Path) -> dict[str, object]:
     """Read-only, bounded, model-free owner recovery manifest with no source prose.
 
@@ -911,6 +1245,8 @@ def recovery_report(artifact_root: Path) -> dict[str, object]:
             chapters[str(number)] = {
                 "recovery_state": "NEVER_STARTED",
                 "last_subphase": "NOT_STARTED",
+                "runtime_journal_status": "NOT_STARTED",
+                "retrieval_status": "NOT_ATTEMPTED",
                 "last_verified_artifact_identities": {},
             }
             continue
@@ -932,10 +1268,17 @@ def recovery_report(artifact_root: Path) -> dict[str, object]:
         identities: dict[str, str] = {}
         for record in reversed(records):
             artifacts = record["artifacts"]
-            for key in ("brief_identity", "final_result_identity", "progress_sha256"):
+            for key in (
+                "brief_identity", "adaptation_identity", "script_identity",
+                "narration_report_identity", "direction_identity",
+                "final_result_identity", "output_manifest_sha256", "progress_sha256",
+            ):
                 value = artifacts.get(key)
                 if key not in identities and isinstance(value, str) and DIGEST.fullmatch(value):
                     identities[key] = value
+        last_subphase = (
+            str(records[-2]["phase"]) if phase == "STOPPED" and len(records) > 1 else phase
+        )
         category = (
             "READY"
             if phase == "PREPRODUCTION_READY"
@@ -949,11 +1292,18 @@ def recovery_report(artifact_root: Path) -> dict[str, object]:
         )
         chapters[str(number)] = {
             "recovery_state": category,
-            "last_subphase": phase,
+            "last_subphase": last_subphase,
+            "runtime_journal_status": phase,
+            "retrieval_status": "NOT_ATTEMPTED",
             "bundle_sha256": head["bundle_sha256"],
             "scope_sha256": head["scope_sha256"],
             "last_verified_artifact_identities": identities,
             "committed_phase_event_sha256": head["event_sha256"],
+            **(
+                {"output_manifest_sha256": identities["output_manifest_sha256"]}
+                if phase == "PREPRODUCTION_READY" and "output_manifest_sha256" in identities
+                else {}
+            ),
         }
     return {
         "schema": "clipper-private-chapter-safe-recovery-v1",
@@ -966,7 +1316,7 @@ def recovery_report(artifact_root: Path) -> dict[str, object]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Private two-chapter Codespace checkpoint")
-    parser.add_argument("mode", choices=("inspect", "brief", "resume", "status"))
+    parser.add_argument("mode", choices=("inspect", "brief", "resume", "status", "recover"))
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--codespace-created-at")
@@ -974,6 +1324,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.mode == "status":
             print(json.dumps(recovery_report(args.artifact_root), sort_keys=True))
+            return 0
+        if args.mode == "recover":
+            print(json.dumps(private_recovery_archive(args.artifact_root), sort_keys=True))
             return 0
         if args.manifest is None or args.codespace_created_at is None:
             raise PrivateHostStop("private host manifest and creation timestamp required")
