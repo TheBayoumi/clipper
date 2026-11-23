@@ -418,6 +418,185 @@ def test_actual_pinned_public_tokenizer_template_and_same_count_tokens_bind_requ
         scripting._chapter_prompt_encoding(request_a["messages"])
 
 
+def test_effective_public_tokenizer_provenance_and_input_guards_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No weights: actual provenance rejects missing, altered and oversized files."""
+    from clipper.books import constrained
+
+    snapshot = (
+        tmp_path
+        / "hub"
+        / "models--Qwen--Qwen3-1.7B"
+        / "snapshots"
+        / scripting.SCRIPT_REVISION
+    )
+    snapshot.mkdir(parents=True)
+    config = snapshot / "tokenizer_config.json"
+    token_file = snapshot / "tokenizer.json"
+    token_file.write_bytes(b"public-synthetic-tokenizer")
+    config.write_bytes(b'{"chat_template":"synthetic valid"}')
+    monkeypatch.setattr(
+        constrained, "PINNED_TOKENIZER_SHA256", hashlib.sha256(token_file.read_bytes()).hexdigest()
+    )
+
+    class FakeTokenizer:
+        name_or_path = str(snapshot)
+        chat_template: object = "synthetic valid"
+
+        def __init__(self) -> None:
+            self.ids: object = [13, 14, 15]
+
+        def apply_chat_template(self, *_args: object, **_kwargs: object) -> object:
+            return self.ids
+
+    fake = FakeTokenizer()
+    messages = [{"role": "user", "content": "synthetic, no book contents"}]
+    original = scripting._chapter_prompt_encoding(messages, tokenizer=fake)
+    assert original["token_ids"] == [13, 14, 15]
+    assert scripting._chapter_tokenizer_material(fake)["tokenizer_config_sha256"]
+
+    fake.name_or_path = str(tmp_path)
+    with pytest.raises(scripting.PinnedQwenSnapshotError, match="snapshot identity"):
+        scripting._chapter_tokenizer_material(fake)
+    fake.name_or_path = str(snapshot)
+    config.unlink()
+    with pytest.raises(scripting.PinnedQwenSnapshotError, match="provenance unavailable"):
+        scripting._chapter_tokenizer_material(fake)
+    config.write_bytes(b"")
+    with pytest.raises(scripting.PinnedQwenSnapshotError, match="config absent or oversized"):
+        scripting._chapter_tokenizer_material(fake)
+    config.write_bytes(b"{" + b"x" * 1_000_001 + b"}")
+    with pytest.raises(scripting.PinnedQwenSnapshotError, match="config absent or oversized"):
+        scripting._chapter_tokenizer_material(fake)
+    config.write_bytes(b'{"chat_template":"synthetic valid"}')
+    token_file.write_bytes(b"wrong token bytes")
+    with pytest.raises(scripting.PinnedQwenSnapshotError, match="tokenizer JSON"):
+        scripting._chapter_tokenizer_material(fake)
+    token_file.write_bytes(b"public-synthetic-tokenizer")
+    fake.chat_template = None
+    with pytest.raises(scripting.PinnedQwenSnapshotError, match="chat template absent"):
+        scripting._chapter_tokenizer_material(fake)
+    fake.chat_template = "synthetic valid"
+
+    for ids in (None, [], [0, -2], [True, 2], [1] * (scripting.MAX_CHAPTER_CONTEXT + 1)):
+        fake.ids = ids
+        with pytest.raises(scripting.PinnedQwenSnapshotError, match="rendered input"):
+            scripting._chapter_prompt_encoding(messages, tokenizer=fake)
+    fake.ids = [13, 14, 15]
+    for ids in ([], [False], ["invalid"], [-1]):
+        with pytest.raises(scripting.PinnedQwenSnapshotError, match="verified token"):
+            scripting._chapter_encoding_receipt({"token_ids": ids})
+    assert scripting._chapter_encoding_receipt(original)["input_token_ids_sha256"]
+
+
+def test_effective_tokenizer_cache_status_and_cpu_context_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify missing/mutated public tokenizer config cannot masquerade as pinned."""
+    from clipper.books import constrained
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    assert scripting._cached_chapter_tokenizer_material()["status"] == "TOKENIZER_NOT_CACHED"
+    snapshot = (
+        tmp_path
+        / "hub"
+        / "models--Qwen--Qwen3-1.7B"
+        / "snapshots"
+        / scripting.SCRIPT_REVISION
+    )
+    snapshot.mkdir(parents=True)
+    config = snapshot / "tokenizer_config.json"
+    tokenizer = snapshot / "tokenizer.json"
+    tokenizer.write_bytes(b"synthetic-public")
+    config.write_bytes(b"")
+    assert (
+        scripting._cached_chapter_tokenizer_material()["status"]
+        == "TOKENIZER_CONFIG_UNVERIFIED"
+    )
+    config.write_bytes(b'{"chat_template":"pinned"}')
+    assert scripting._cached_chapter_tokenizer_material()["status"] == "TOKENIZER_JSON_UNVERIFIED"
+    monkeypatch.setattr(
+        constrained, "PINNED_TOKENIZER_SHA256", hashlib.sha256(tokenizer.read_bytes()).hexdigest()
+    )
+    assert scripting._cached_chapter_tokenizer_material()["status"] == "PINNED_PUBLIC_TOKENIZER"
+    read = Path.read_bytes
+
+    def unreadable(path: Path) -> bytes:
+        if path == config:
+            raise OSError("private synthetic permission error")
+        return read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    assert (
+        scripting._cached_chapter_tokenizer_material()["status"]
+        == "TOKENIZER_CONFIG_UNVERIFIED"
+    )
+    monkeypatch.setattr(Path, "read_bytes", read)
+
+    class FakePublicTokenizer:
+        def __init__(self) -> None:
+            self.ids: list[int] = [7]
+
+        def apply_chat_template(self, *_args: object, **_kwargs: object) -> list[int]:
+            return self.ids
+
+    public = FakePublicTokenizer()
+    monkeypatch.setattr(scripting, "_public_book_context", lambda: (public, 1500))
+    request = {
+        "model": scripting.SCRIPT_MODEL,
+        "revision": scripting.SCRIPT_REVISION,
+        "seed": 42,
+        "max_new_tokens": 1024,
+        "messages": [{"role": "user", "content": "synthetic only"}],
+    }
+    assert scripting._chapter_context_tokens(request) == 1
+    public.ids = []
+    with pytest.raises(scripting.NicheVideoError, match="token context"):
+        scripting._chapter_context_tokens(request)
+    public.ids = [8] * 600
+    with pytest.raises(scripting.NicheVideoError, match="token context"):
+        scripting._chapter_context_tokens(request)
+    with pytest.raises(scripting.NicheVideoError, match="output budget mismatch"):
+        scripting._chapter_context_tokens({**request, "max_new_tokens": 8193})
+    request["verified_input_encoding"] = {"incorrect": "reserved digest"}
+    # An absent actual tokenizer identity fails before CPU invocation or raw claim.
+    with pytest.raises(scripting.NicheVideoError, match="tokenizer preflight"):
+        scripting._chapter_context_tokens(request)
+
+
+@pytest.mark.parametrize(
+    "bad_encoding",
+    [
+        {"token_ids": "not-a-list"},
+        {"token_ids": []},
+        {"token_ids": [-1]},
+        {"token_ids": [True]},
+        {"token_ids": [1], "chat_template_sha256": "g" * 64},
+        {"token_ids": [1], "tokenizer_config_sha256": "1" * 63},
+        {"token_ids": [1], "tokenizer_json_sha256": "0" * 64},
+    ],
+)
+def test_hybrid_request_rejects_unverifiable_effective_input_tokens(
+    bad_encoding: dict[str, object]
+) -> None:
+    good: dict[str, object] = {
+        "token_ids": [1, 2],
+        "tokenizer_config_sha256": "a" * 64,
+        "chat_template_sha256": "b" * 64,
+        "tokenizer_json_sha256": hybrid.constrained.PINNED_TOKENIZER_SHA256,
+    }
+    candidate = {**good, **bad_encoding}
+    with pytest.raises(hybrid.HybridStop, match="effective token encoding"):
+        hybrid.request(
+            "argument",
+            {"source": hybrid.projection(hybrid.validate_ledger(_ledger(1)))},
+            output_tokens=1024,
+            token_count=lambda _messages: candidate,
+            producer_identity={"schema": "synthetic-producer"},
+        )
+
+
 def test_exact_quotes_cannot_prove_meaning_or_keyword_faithfulness() -> None:
     ledger = _ledger()
     audits = _audit_outputs(ledger)
