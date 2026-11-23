@@ -13,6 +13,8 @@ import json
 import os
 import re
 import sys
+import tempfile
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -321,10 +323,70 @@ def _release_models() -> None:
     gc.collect()
 
 
+def _phase_head(root: Path, number: int) -> Path:
+    return root / "book-candidates/private-host" / f"chapter-{number}-phase-head.json"
+
+
+@contextmanager
+def _phase_lock(root: Path, number: int) -> Any:
+    """Exclusive process-level claim around read/append/committed-head updates."""
+    import fcntl
+    import stat
+
+    folder = root / "book-candidates/private-host"
+    acquisition._private_directory(folder, private_root=root / "book-candidates")
+    path = folder / f"chapter-{number}-phase.lock"
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise PrivateHostStop("private phase lock is not a regular file")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _commit_phase_head(root: Path, number: int, record: dict[str, Any], raw: bytes) -> None:
+    """Atomically replace fsynced journal head; unmatched event/head fails closed."""
+    path = _phase_head(root, number)
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise PrivateHostStop("private chapter journal head redirected")
+    head = {
+        "schema": "clipper-private-chapter-committed-head-v1",
+        "sequence": record["sequence"],
+        "event_sha256": hashlib.sha256(raw).hexdigest(),
+        "chapter": number,
+        "bundle_sha256": record["bundle_sha256"],
+        "scope_sha256": record["scope_sha256"],
+    }
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        try:
+            handle.write(evaluation._json_bytes(head))
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.chmod(temporary, 0o600)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        os.replace(temporary, path)
+        folder_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(folder_fd)
+        finally:
+            os.close(folder_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _phase_records(root: Path, number: int, bundle: str, scope: str) -> list[dict[str, Any]]:
     """Verify every exact, append-only private transition before trusting resume."""
     folder = root / "book-candidates/private-host" / f"chapter-{number}-phase-events"
+    head_path = _phase_head(root, number)
     if not folder.exists():
+        if head_path.exists() or head_path.is_symlink():
+            raise PrivateHostStop("private chapter journal events missing from committed head")
         return []
     if folder.is_symlink() or not folder.is_dir():
         raise PrivateHostStop("private chapter phase history is redirected")
@@ -364,6 +426,21 @@ def _phase_records(root: Path, number: int, bundle: str, scope: str) -> list[dic
         ):
             raise PrivateHostStop("private chapter phase history changed or is incomplete")
         records.append(record)
+    if head_path.is_symlink() or not head_path.is_file():
+        raise PrivateHostStop("private chapter committed journal head missing")
+    head_raw = evaluation._read(head_path, 16384)
+    head = whole_book.load_strict_reply(head_raw)
+    last_raw = evaluation._json_bytes(records[-1])
+    expected = {
+        "schema": "clipper-private-chapter-committed-head-v1",
+        "sequence": len(records),
+        "event_sha256": hashlib.sha256(last_raw).hexdigest(),
+        "chapter": number,
+        "bundle_sha256": bundle,
+        "scope_sha256": scope,
+    }
+    if head != expected or head_raw != evaluation._json_bytes(expected):
+        raise PrivateHostStop("private chapter phase tail differs from committed head")
     return records
 
 
@@ -376,7 +453,31 @@ def _phase(
     artifacts: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     root = runner.root
+    with _phase_lock(root, number):
+        return _append_phase_locked(runner, number, bundle, scope, state, artifacts)
+
+
+def _append_phase_locked(
+    runner: BookOrchestrator,
+    number: int,
+    bundle: str,
+    scope: str,
+    state: str,
+    artifacts: dict[str, object] | None,
+) -> dict[str, Any]:
+    root = runner.root
     records = _phase_records(root, number, bundle, scope)
+    previous = str(records[-1]["phase"]) if records else None
+    legal: dict[str | None, set[str]] = {
+        None: {"NOT_STARTED"},
+        "NOT_STARTED": {"MINING_IN_FLIGHT", "STOPPED"},
+        "MINING_IN_FLIGHT": {"SCOPED_MINING_INCOMPLETE", "BRIEF_IN_FLIGHT", "STOPPED"},
+        "BRIEF_IN_FLIGHT": {"AWAITING_HUMAN_REVIEW", "STOPPED"},
+        "AWAITING_HUMAN_REVIEW": {"RESUME_IN_FLIGHT", "STOPPED"},
+        "RESUME_IN_FLIGHT": {"PREPRODUCTION_READY", "STOPPED"},
+    }
+    if state not in legal.get(previous, set()):
+        raise PrivateHostStop("duplicate or invalid private chapter phase claim")
     record: dict[str, Any] = {
         "schema": "clipper-private-chapter-phase-event-v1",
         "sequence": len(records) + 1,
@@ -396,6 +497,7 @@ def _phase(
         / f"{len(records) + 1:05d}-{hashlib.sha256(raw).hexdigest()}.json"
     )
     acquisition._private_write(path, raw, private_root=base)
+    _commit_phase_head(root, number, record, raw)
     return record
 
 
