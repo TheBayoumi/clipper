@@ -73,6 +73,7 @@ def local_producer_material() -> dict[str, object]:
         "schema": LOCAL_COMPLETION_SCHEMA,
         "generation": {**LOCAL_GENERATION, **scripting.QWEN_GENERATION_SETTINGS},
         "runtime": runtime,
+        "effective_tokenizer_cache": scripting._cached_chapter_tokenizer_material(),
         "request_schema": PLAN_SCHEMA,
         "reply_max_bytes": MAX_RECORDED_REPLY_BYTES,
         "validator": "exact-quote-evidence-field-and-0-to-3-lessons-v1",
