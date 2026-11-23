@@ -9,13 +9,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, cast
-
-from clipper.stage_contracts import content_fingerprint
+from typing import Any
 
 from . import acquisition, faithful, mining, whole_book
 from .contracts import BookSource, BookText, ReadingBlock
@@ -158,14 +157,16 @@ def _work_from_blocks(
                 research_link_status=block.research_link_status,
                 text=" ".join(words[offset : offset + mining.CHUNK_WORDS]),
             )
-            if derived != original:
-                raise SelectedSourceStop("selected original source unit does not match reading block")
+            if derived != original or type(original.ordinal) is not int:
+                raise SelectedSourceStop(
+                    "selected original source unit does not match reading block"
+                )
             units.append(derived)
     if (
         next(positions, None) is not None
         or tuple(units) != expected.units
         or tuple(gaps) != expected.skipped
-        or any(a.ordinal >= b.ordinal for a, b in zip(units, units[1:]))
+        or any(a.ordinal >= b.ordinal for a, b in itertools.pairwise(units))
         or any(u.ordinal < 0 or u.ordinal >= expected.parent_total_units for u in units)
         or expected.parent_total_units != len(units) + expected.excluded_units
         or expected.parent_plan_fingerprint is None
@@ -286,7 +287,9 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
             or DIGEST.fullmatch(path.stem) is None
             or path.suffix != ".json"
         ):
-            raise SelectedSourceStop("selected bundle path is not content-addressed private evidence")
+            raise SelectedSourceStop(
+                "selected bundle path is not content-addressed private evidence"
+            )
         raw = acquisition._read_bounded_file(path, MAX_BUNDLE_BYTES + 1)
         if len(raw) > MAX_BUNDLE_BYTES or hashlib.sha256(raw).hexdigest() != path.stem:
             raise SelectedSourceStop("selected chapter bundle length/hash mismatch")
@@ -303,7 +306,8 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
             raise SelectedSourceStop("selected chapter bundle is noncanonical or wrong schema")
         if (
             data["schema"] != SCHEMA
-            or data["verification"] != "PARENT_VERIFIED_AT_EXPORTER_SELECTED_BUNDLE_VERIFIED_ON_HOST"
+            or data["verification"]
+            != "PARENT_VERIFIED_AT_EXPORTER_SELECTED_BUNDLE_VERIFIED_ON_HOST"
             or data["parent_original_reverified_on_host"] is not False
             or data["parent_full_book_complete"] is not False
             or data["publish_eligible"] is not False
@@ -314,9 +318,13 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
             or type(data["parent_excluded_page_count"]) is not int
             or data["parent_excluded_page_count"] < 0
         ):
-            raise SelectedSourceStop("selected source boundary falsely claims approval/completeness")
+            raise SelectedSourceStop(
+                "selected source boundary falsely claims approval/completeness"
+            )
         reference = data["parent_ref"]
-        if not isinstance(reference, dict) or set(reference) != set(SelectedRef.__dataclass_fields__):
+        if not isinstance(reference, dict) or set(reference) != set(
+            SelectedRef.__dataclass_fields__
+        ):
             raise SelectedSourceStop("selected original parent references malformed")
         ref = SelectedRef(**reference)
         if not isinstance(ref.book_id, str) or not ref.book_id or any(
@@ -349,10 +357,16 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
             or source.authorization_status != "unverified"
         ):
             raise SelectedSourceStop("selected original source parent hashes disagree")
-        if not isinstance(data["reading_blocks"], list) or not 1 <= len(data["reading_blocks"]) <= 100:
+        if (
+            not isinstance(data["reading_blocks"], list)
+            or not 1 <= len(data["reading_blocks"]) <= 100
+        ):
             raise SelectedSourceStop("selected original reading blocks absent/oversized")
         allowed = set(ReadingBlock.__dataclass_fields__)
-        if any(not isinstance(block, dict) or set(block) != allowed for block in data["reading_blocks"]):
+        if any(
+            not isinstance(block, dict) or set(block) != allowed
+            for block in data["reading_blocks"]
+        ):
             raise SelectedSourceStop("selected reading block shape invalid")
         blocks = tuple(ReadingBlock(**block) for block in data["reading_blocks"])
         if not isinstance(data["work_plan"], dict) or set(data["work_plan"]) != {
@@ -366,7 +380,11 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
             or not 1 <= len(record["units"]) <= whole_book.MAX_PLAN_UNITS
             or not isinstance(record["skipped"], list)
             or len(record["units"]) + len(record["skipped"]) > 64
-            or any(not isinstance(u, dict) or set(u) != set(whole_book.WorkUnit.__dataclass_fields__) for u in record["units"])
+            or any(
+                not isinstance(u, dict)
+                or set(u) != set(whole_book.WorkUnit.__dataclass_fields__)
+                for u in record["units"]
+            )
             or type(record["parent_total_units"]) is not int
             or type(record["excluded_units"]) is not int
             or type(record["book_fingerprint"]) is not str
@@ -422,7 +440,10 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
             ref, book, work, data["chapter_number"], path.stem,
             data["section_manifest_sha256"], tuple(linked),
         )
-    except (OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError):
+    except (
+        OSError, ValueError, TypeError, KeyError,
+        AttributeError, RecursionError, OverflowError,
+    ):
         raise SelectedSourceStop("selected chapter evidence cannot be verified") from None
 
 
@@ -434,7 +455,9 @@ def reading_blocks(book: BookText | SelectedSource) -> tuple[ReadingBlock, ...]:
 
 def main(argv: list[str] | None = None) -> int:
     """Exporter runs on retained-source owner machine only, never in Codespace."""
-    parser = argparse.ArgumentParser(description="Export original verified selected chapter privately")
+    parser = argparse.ArgumentParser(
+        description="Export original verified selected chapter privately"
+    )
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--candidate-ref", type=Path, required=True)
     parser.add_argument("--chapter-number", type=int, required=True)

@@ -19,8 +19,7 @@ from uuid import uuid4
 
 from clipper.stage_contracts import content_fingerprint
 
-from . import acquisition, constrained, narration, scripting, whole_book, selected_scope
-from .contracts import BookText
+from . import acquisition, constrained, narration, scripting, selected_scope, whole_book
 
 if TYPE_CHECKING:
     from .orchestrator import BookOrchestrator

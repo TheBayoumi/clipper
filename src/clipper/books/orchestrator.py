@@ -27,8 +27,8 @@ from . import (
     mining,
     narration,
     scripting,
-    selection,
     selected_scope,
+    selection,
     storyboards,
     whole_book,
 )

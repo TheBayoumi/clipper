@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
-from . import acquisition, chapter, evaluation, narration, scripting, whole_book, selected_scope
+from . import acquisition, chapter, evaluation, narration, scripting, selected_scope, whole_book
 from .orchestrator import BookOrchestrator
 
 BATCH_SCHEMA = "clipper-two-private-chapter-codespace-v2"
@@ -127,27 +127,37 @@ def _section_manifest(
     )
 
 
+Prepared = tuple[
+    int, dict[str, Any], Path, selected_scope.SelectedEvidence,
+    Path, str, dict[str, object],
+]
+
+
 def _prepare(
     runner: BookOrchestrator, inputs: dict[str, Any]
-) -> list[tuple[int, dict[str, Any], Path, selected_scope.SelectedEvidence, Path, str, dict[str, object]]]:
+) -> list[Prepared]:
     """Validate both bundles, independent chapter identities, and disjoint source BEFORE CPU."""
-    prepared: list[
-        tuple[int, dict[str, Any], Path, selected_scope.SelectedEvidence, Path, str, dict[str, object]]
-    ] = []
+    prepared: list[Prepared] = []
     sections: set[str] = set()
     parent: tuple[str, str, str] | None = None
     for number in (1, 7):
         block = inputs[f"chapter_{number}"]
         bundle = _private_path(block["bundle_path"], runner.root, must_exist=True)
         verified = selected_scope.import_chapter(runner.root, bundle)
-        identity = (verified.book.fingerprint, verified.ref.raw_sha256, verified.ref.ingest_stage_key)
+        identity = (
+            verified.book.fingerprint,
+            verified.ref.raw_sha256,
+            verified.ref.ingest_stage_key,
+        )
         if (
             verified.chapter_number != number
             or verified.bundle_sha256 != block["bundle_sha256"]
             or (parent is not None and parent != identity)
             or sections.intersection(verified.work.section_ids)
         ):
-            raise PrivateHostStop("selected chapter number, parent edition or independent scope mismatch")
+            raise PrivateHostStop(
+                "selected chapter number, parent edition or independent scope mismatch"
+            )
         parent = identity
         sections.update(verified.work.section_ids)
         section_path, scope_sha, counts = _section_manifest(runner, verified)
@@ -167,9 +177,7 @@ def _prepare(
 
 def _inspection(
     runner: BookOrchestrator,
-    prepared: list[
-        tuple[int, dict[str, Any], Path, selected_scope.SelectedEvidence, Path, str, dict[str, object]]
-    ],
+    prepared: list[Prepared],
 ) -> dict[str, object]:
     root = runner.root / "book-candidates"
     chapters: dict[str, dict[str, object]] = {}
