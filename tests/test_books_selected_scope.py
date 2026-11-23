@@ -934,9 +934,12 @@ def test_selected_legacy_mining_preserves_attempt_identity_across_cold_to_warm_l
     first_key = first_entry["generation_stage_key"]
     assert first_key
     assert first_progress["producer_fingerprint"] == whole_book.content_fingerprint(
-        {**frozen_producer, "execution_provenance": "INJECTED_TEST_PRODUCER",
-         "source_boundary": verified.book.source_boundary,
-         "selected_scope_bundle_sha256": verified.bundle_sha256}
+        {
+            **frozen_producer,
+            "execution_provenance": "INJECTED_TEST_PRODUCER",
+            "source_boundary": verified.book.source_boundary,
+            "selected_scope_bundle_sha256": verified.bundle_sha256,
+        }
     )
     assert first_entry["status"] == ("zero_candidate" if outcome == "success" else "failed")
     if outcome == "failure":
