@@ -675,9 +675,7 @@ def test_actual_codespace_wrapper_dispatches_all_modes_through_shared_preflight(
         "bootstrap_over_execution_reserve",
     ],
 )
-def test_external_supervisor_bootstrap_real_shell_consumer(
-    tmp_path: Path, scenario: str
-) -> None:
+def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scenario: str) -> None:
     """Execute real owner script, fake only external commands and REST responses."""
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -799,4 +797,20 @@ def test_external_supervisor_bootstrap_real_shell_consumer(
             assert actions.count("external-supervisor-public.pem") >= 3
     else:
         assert "external-supervisor-heartbeat-envelope.watchdog.pending" not in actions
-    assert "chapter_host" not in actions
+    # Cleanup is required to recover any scoped, independently verifiable
+    # private outputs. It must not be mistaken for execution authorization.
+    host_calls = [
+        call for call in actions.splitlines() if "clipper.books.chapter_host" in call
+    ]
+    allowed_recovery = "python3 -m clipper.books.chapter_host recover --artifact-root "
+    assert all(allowed_recovery in call for call in host_calls), host_calls
+    if scenario in ("provisioning_then_ready", "transient_ssh", "transient_cp"):
+        assert host_calls, "Successful bootstrap must preserve owner recovery on exit"
+    else:
+        assert not host_calls, "Unready or unverified bootstrap must not run a host command"
+    assert not any(
+        forbidden in actions
+        for forbidden in ("pip install", "chapter_host brief", "chapter_host resume",
+                          "chapter_host hybrid-brief", "chapter_host hybrid-resume",
+                          "chapter_host inspect", "model.generate")
+    )
