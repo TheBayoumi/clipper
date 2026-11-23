@@ -1849,8 +1849,15 @@ def test_interrupted_hybrid_host_has_no_review_and_cannot_duplicate_attempts(
 
 
 @pytest.mark.parametrize(
-    "case", ("invalid_plan", "source_overcap", "source_freeze_failure", "tampered_ledger",
-             "missing_test_tokenizer", "context_overflow")
+    "case",
+    (
+        "invalid_plan",
+        "source_overcap",
+        "source_freeze_failure",
+        "tampered_ledger",
+        "missing_test_tokenizer",
+        "context_overflow",
+    ),
 )
 def test_original_hybrid_source_and_context_fail_before_any_producer(
     tmp_path: Path,
@@ -1868,17 +1875,16 @@ def test_original_hybrid_source_and_context_fail_before_any_producer(
             chapter.evaluate_hybrid_chapter(runner, selected, section)
     elif case == "source_freeze_failure":
         monkeypatch.setattr(
-            hybrid, "freeze",
-            Mock(side_effect=hybrid.HybridStop("synthetic source schema rejected"))
+            hybrid,
+            "freeze",
+            Mock(side_effect=hybrid.HybridStop("synthetic source schema rejected")),
         )
         with pytest.raises(chapter.ChapterStop, match="preflight refused"):
             chapter.evaluate_hybrid_chapter(runner, selected, section)
     elif case == "tampered_ledger":
         chapter.evaluate_hybrid_chapter(runner, selected, section)
         ledger_file = next(
-            (runner.root / "book-candidates" / "chapter-evaluations").glob(
-                "*/source-ledger.json"
-            )
+            (runner.root / "book-candidates" / "chapter-evaluations").glob("*/source-ledger.json")
         )
         ledger_file.write_bytes(ledger_file.read_bytes() + b" ")
         with pytest.raises(chapter.ChapterStop, match="source ledger changed"):
@@ -1919,9 +1925,7 @@ def test_private_hybrid_review_packet_rejects_stale_source_and_brief(
     valid = chapter.evaluate_hybrid_chapter(runner, selected, section, **args)
     assert valid["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
     chapter_host._hybrid_review_packet(runner, 1, valid)
-    packet = (
-        runner.root / "book-candidates" / "private-host" / "chapter-1-review-packet.json"
-    )
+    packet = runner.root / "book-candidates" / "private-host" / "chapter-1-review-packet.json"
     assert packet.is_file()
     for field, invalid, expected in (
         ("chapter_scope_identity", "not-a-digest", "scope identity"),
@@ -1933,9 +1937,7 @@ def test_private_hybrid_review_packet_rejects_stale_source_and_brief(
             chapter_host._hybrid_review_packet(runner, 1, forged)
         assert packet.is_file()
     validated = next(
-        (runner.root / "book-candidates" / "hybrid_reconcile").glob(
-            "*/validated.json"
-        )
+        (runner.root / "book-candidates" / "hybrid_reconcile").glob("*/validated.json")
     )
     saved = validated.read_bytes()
     envelope = json.loads(saved)
@@ -2046,9 +2048,9 @@ def test_hybrid_resume_callback_requires_exact_brief_claim(
     ledger = json.loads(
         next((root / "chapter-evaluations").glob("*/source-ledger.json")).read_bytes()
     )
-    brief = json.loads(
-        next((root / "hybrid_reconcile").glob("*/validated.json")).read_bytes()
-    )["payload"]
+    brief = json.loads(next((root / "hybrid_reconcile").glob("*/validated.json")).read_bytes())[
+        "payload"
+    ]
     reviewed = {
         "schema": hybrid.REVIEW_SCHEMA,
         "brief_sha256": brief["brief_sha256"],
