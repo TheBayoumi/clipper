@@ -276,14 +276,14 @@ envelope = {
   "signature_b64": base64.b64encode(signature).decode("ascii"),
 }
 with open(sys.argv[3], "wb") as f:
-    f.write((json.dumps(envelope, sort_keys=True) + "\\n").encode())
+    f.write((json.dumps(envelope, sort_keys=True) + "\n").encode())
 ' "$session/heartbeat.json" "$session/heartbeat.sig" "$session/envelope.json"
   identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_CHANGED" >&2; exit 2; }
   bounded gh codespace cp -c "$CODESPACE_NAME" "$session/envelope.json" \
-    "remote:$remote/external-supervisor-heartbeat-envelope.$.pending" >/dev/null
+    "remote:$remote/external-supervisor-heartbeat-envelope.watchdog.pending" >/dev/null
   identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_CHANGED" >&2; exit 2; }
   bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
-    "mv -f -- '$remote/external-supervisor-heartbeat-envelope.$.pending' '$remote/external-supervisor-heartbeat-envelope.json'" >/dev/null
+    "mv -f -- '$remote/external-supervisor-heartbeat-envelope.watchdog.pending' '$remote/external-supervisor-heartbeat-envelope.json'" >/dev/null
   sleep "$(( remaining < 10 ? remaining : 10 ))"
 done
 # The EXIT trap always tries bounded STOP then bounded DELETE and REST checks.
