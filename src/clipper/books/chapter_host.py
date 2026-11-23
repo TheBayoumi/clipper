@@ -1212,9 +1212,17 @@ def private_recovery_archive(artifact_root: Path) -> dict[str, object]:
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
+    total = 0
+    digest = hashlib.sha256()
+    with target.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            total += len(block)
+            if total > 800_000_000:
+                raise PrivateHostStop("private recovery archive exceeds bounded size")
+            digest.update(block)
     return {
         "schema": "clipper-private-chapter-recovery-created-v1",
-        "archive_sha256": hashlib.sha256(evaluation._read(target, 800_000_000)).hexdigest(),
+        "archive_sha256": digest.hexdigest(),
         "manifest_sha256": hashlib.sha256(evaluation._json_bytes(listing)).hexdigest(),
         "file_count": len(files),
         "files_retrieved": False,
