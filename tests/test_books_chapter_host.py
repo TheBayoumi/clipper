@@ -1345,9 +1345,13 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         payload = {
             "brief": {"argument": "synthetic", "beats": [], "coverage": []},
             "adaptation": {
-                "throughline": "synthetic", "narrative_form": "CONCEPTUAL_SEQUENCE",
-                "choice_reason": "synthetic", "beats": [], "characters": [],
-                "locations": [], "props": [],
+                "throughline": "synthetic",
+                "narrative_form": "CONCEPTUAL_SEQUENCE",
+                "choice_reason": "synthetic",
+                "beats": [],
+                "characters": [],
+                "locations": [],
+                "props": [],
             },
             "chapter_script": {"title": "synthetic", "scenes": []},
             "chapter_direction": {"shots": []},
@@ -1500,42 +1504,57 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         evaluation._store(
             base,
             stage_directory / "started-1.json",
-            {"request_key": request_key, "attempt": 1, "owner": prior_owner,
-             "status": "STARTED_UNRESOLVED"},
+            {
+                "request_key": request_key,
+                "attempt": 1,
+                "owner": prior_owner,
+                "status": "STARTED_UNRESOLVED",
+            },
         )
         evaluation._store(
             base,
             stage_directory / "raw-1.json",
-            {"attempt": 1, "owner": prior_owner,
-             "raw": first_raw, "sha256": first_digest},
+            {"attempt": 1, "owner": prior_owner, "raw": first_raw, "sha256": first_digest},
         )
         if damage == "valid_prior_rejection_before_manifest":
             evaluation._store(
                 base,
                 stage_directory / "failed-1.json",
-                {"attempt": 1, "owner": prior_owner,
-                 "status": "SCHEMA_OR_SOURCE_REJECTED"},
+                {"attempt": 1, "owner": prior_owner, "status": "SCHEMA_OR_SOURCE_REJECTED"},
             )
         existing_raw = json.loads((stage_directory / "raw-1.json").read_bytes())
         assert existing_raw["owner"] == prior_owner
-        successful_raw = json.dumps({
-            "throughline": "synthetic",
-            "narrative_form": "CONCEPTUAL_SEQUENCE",
-            "choice_reason": "synthetic",
-            "beats": [],
-            "characters": [],
-            "locations": [],
-            "props": [],
-        }, sort_keys=True)
-        evaluation._store(
-            base, stage_directory / "raw-2.json",
-            {"attempt": 2, "owner": winning_owner, "raw": successful_raw,
-             "sha256": hashlib.sha256(successful_raw.encode()).hexdigest()},
+        successful_raw = json.dumps(
+            {
+                "throughline": "synthetic",
+                "narrative_form": "CONCEPTUAL_SEQUENCE",
+                "choice_reason": "synthetic",
+                "beats": [],
+                "characters": [],
+                "locations": [],
+                "props": [],
+            },
+            sort_keys=True,
         )
         evaluation._store(
-            base, stage_directory / "started-2.json",
-            {"request_key": request_key, "attempt": 2, "owner": winning_owner,
-             "status": "STARTED_UNRESOLVED"},
+            base,
+            stage_directory / "raw-2.json",
+            {
+                "attempt": 2,
+                "owner": winning_owner,
+                "raw": successful_raw,
+                "sha256": hashlib.sha256(successful_raw.encode()).hexdigest(),
+            },
+        )
+        evaluation._store(
+            base,
+            stage_directory / "started-2.json",
+            {
+                "request_key": request_key,
+                "attempt": 2,
+                "owner": winning_owner,
+                "status": "STARTED_UNRESOLVED",
+            },
         )
         validated = json.loads((stage_directory / "validated.json").read_bytes())
         validated.update({"attempt": 2, "owner": winning_owner})
@@ -1575,24 +1594,25 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
                 "NARRATION_VERIFIED",
                 {
                     "narration_report_identity": (
-                        report_identity
-                        if damage == "shared_wav_both_chapters"
-                        else "9" * 64
+                        report_identity if damage == "shared_wav_both_chapters" else "9" * 64
                     )
                 },
             ),
         ):
             chapter_host._phase(
-                runner, 7, second_bundle, second_scope, phase,
+                runner,
+                7,
+                second_bundle,
+                second_scope,
+                phase,
                 {"claim_owner": second_owner, **artifacts},
             )
         recovered = chapter_host.private_recovery_archive(root)
         with tarfile.open(base / "private-host/chapter-recovery.tar", "r:") as shared:
-            recovered_manifest = json.load(
-                shared.extractfile("private-recovery-manifest.json")
-            )
+            recovered_manifest = json.load(shared.extractfile("private-recovery-manifest.json"))
             audio_members = [
-                name for name in shared.getnames()
+                name
+                for name in shared.getnames()
                 if name == "book-candidates/chapter-audio-injected_test_wav/synthetic.wav"
             ]
             assert len(audio_members) == 1
@@ -1600,12 +1620,14 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
             if damage == "shared_wav_both_chapters":
                 assert wav_entry["chapters"] == [1, 7]
                 assert [row["inventory_status"] for row in recovered_manifest["chapters"]] == [
-                    "VERIFIED", "VERIFIED"
+                    "VERIFIED",
+                    "VERIFIED",
                 ]
             else:
                 assert wav_entry["chapters"] == [1]
                 assert [row["inventory_status"] for row in recovered_manifest["chapters"]] == [
-                    "VERIFIED", "INCOMPLETE"
+                    "VERIFIED",
+                    "INCOMPLETE",
                 ]
                 assert recovered_manifest["chapters"][1]["files"] == []
                 assert recovered["file_count"] > 0
