@@ -259,8 +259,12 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             manifests.append({"chapter": number, "inventory_status": "INCOMPLETE", "files": []})
             continue
         if scenario == "brief_only":
-            add(number, "text", "book-candidates/brief/synthetic/validated.json",
-                b'{"only":"fabricated fixture text"}')
+            add(
+                number,
+                "text",
+                "book-candidates/brief/synthetic/validated.json",
+                b'{"only":"fabricated fixture text"}',
+            )
             safe_chapters[str(number)] = {
                 "recovery_state": "AWAITING_REVIEW",
                 "last_subphase": "AWAITING_HUMAN_REVIEW",
@@ -277,8 +281,11 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         ids = {
             stage: hashlib.sha256(f"{number}-{stage}".encode()).hexdigest()
             for stage in (
-                "brief_identity", "adaptation_identity", "script_identity",
-                "direction_identity", "final_result_identity",
+                "brief_identity",
+                "adaptation_identity",
+                "script_identity",
+                "direction_identity",
+                "final_result_identity",
             )
         }
         audio_bytes = b"synthetic WAV samples only"
@@ -288,8 +295,10 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             "schema": "clipper-chapter-narration-v2",
             "provenance": "INJECTED_TEST_WAV",
             "records": [
-                {"wav_relative_path": wav_relative,
-                 "sha256": hashlib.sha256(audio_bytes).hexdigest()}
+                {
+                    "wav_relative_path": wav_relative,
+                    "sha256": hashlib.sha256(audio_bytes).hexdigest(),
+                }
             ],
         }
         ids["narration_report_identity"] = content_fingerprint(audio_report)
@@ -300,29 +309,34 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             ("direction_identity", "chapter_direction"),
         ):
             add(
-                number, "text",
+                number,
+                "text",
                 f"book-candidates/{stage}/{ids[identity]}/validated.json",
                 json.dumps({"stage": stage, "chapter": number}, sort_keys=True).encode(),
             )
         add(number, "wav", wav_path, audio_bytes)
         add(
-            number, "narration_report",
+            number,
+            "narration_report",
             f"book-candidates/narration-report-{ids['narration_report_identity']}.json",
             json.dumps(audio_report, sort_keys=True).encode(),
         )
         add(
-            number, "final_result",
+            number,
+            "final_result",
             f"book-candidates/chapter-evaluations/{number}/"
             f"chapter-result-{ids['final_result_identity']}.json",
             json.dumps({"chapter": number, "ready": True}, sort_keys=True).encode(),
         )
         add(
-            number, "source_ledger",
+            number,
+            "source_ledger",
             f"book-candidates/chapter-evaluations/{number}/source-ledger.json",
             json.dumps({"chapter": number, "source": "synthetic"}, sort_keys=True).encode(),
         )
         add(
-            number, "human_review",
+            number,
+            "human_review",
             f"book-candidates/chapter-evaluations/{number}/human-review.json",
             json.dumps({"chapter": number, "review": "synthetic"}, sort_keys=True).encode(),
         )
@@ -470,10 +484,12 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             "brief_only": ({"1": "PARTIAL_OUTPUTS", "7": "NOT_STARTED"}, "PARTIAL"),
             "inflight_empty": ({"1": "CHECKPOINT_ONLY", "7": "CHECKPOINT_ONLY"}, "NONE"),
             "one_complete_one_failed": (
-                {"1": "READY_OUTPUTS_VERIFIED", "7": "INCOMPLETE"}, "PARTIAL"
+                {"1": "READY_OUTPUTS_VERIFIED", "7": "INCOMPLETE"},
+                "PARTIAL",
             ),
             "all_ready": (
-                {"1": "READY_OUTPUTS_VERIFIED", "7": "READY_OUTPUTS_VERIFIED"}, "COMPLETE"
+                {"1": "READY_OUTPUTS_VERIFIED", "7": "READY_OUTPUTS_VERIFIED"},
+                "COMPLETE",
             ),
         }
         assert verification["archive_integrity_status"] == "VERIFIED"
@@ -490,8 +506,11 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             assert verification["recovered_file_count"] == 0
         if scenario == "all_ready":
             with tarfile.open(folder / "chapter-recovery.tar", "r:") as copied:
-                assert copied.getnames().count(
-                    "book-candidates/chapter-audio-injected_test_wav/shared.wav"
-                ) == 1
+                assert (
+                    copied.getnames().count(
+                        "book-candidates/chapter-audio-injected_test_wav/shared.wav"
+                    )
+                    == 1
+                )
     assert (folder / "chapter-recovery.tar").exists() is not tamper_archive
     assert "fabricated fixture text" not in result.stdout + result.stderr
