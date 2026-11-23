@@ -345,3 +345,56 @@ def test_chapter_incomplete_real_generation_retains_exact_raw(
     with pytest.raises(chapter.ChapterStop, match="prior unresolved"):
         chapter._stage(*args, lambda x: x, producer)
     producer.assert_called_once()
+
+
+
+def test_real_chapter_allows_full_large_request_only_after_exact_context_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # >25 KiB of synthetic source: conservative offline preflight rejects it;
+    # verified CPU mode may accept only with pinned-tokenizer exact counting.
+    payload = {"schema": chapter.BRIEF_SCHEMA, "source": {"units": [
+        {"source_id": "unit-synthetic", "text": "invented " * 4200}
+    ]}}
+    plan = chapter.ChapterPlan(max_new_tokens=8192)
+    with pytest.raises(chapter.ChapterStop, match="context"):
+        chapter._stage(
+            tmp_path / "conservative", "brief", payload, plan,
+            lambda value: value, Mock(side_effect=AssertionError("must not call")),
+        )
+    observed: list[dict[str, object]] = []
+
+    def fake_context(request: dict[str, object]) -> int:
+        observed.append(request)
+        assert "invented " * 4200 in request["messages"][1]["content"]
+        return 12_345
+
+    monkeypatch.setattr(scripting, "_chapter_context_tokens", fake_context)
+    real = Mock(return_value='{"value":"synthetic"}')
+    monkeypatch.setattr(scripting, "_local_chapter_completion", real)
+    result = chapter._stage(
+        tmp_path / "exact", "brief", payload, plan,
+        lambda value: value, real,
+    )
+    assert result[0] == {"value": "synthetic"}
+    assert result[2] == "ACTUAL_CPU_QWEN"
+    assert len(observed) == 1
+    real.assert_called_once()
+
+
+def test_actual_kokoro_provenance_requires_exact_real_adapter_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from test_books_chapter import _wav
+
+    real = Mock(side_effect=_wav)
+    monkeypatch.setattr(chapter.narration, "_kokoro_wav", real)
+    script = {"scenes": [{"scene_id": "scene-01", "narration": "Invented narration.",
+                          "dialogue": []}]}
+    records, origin, digest = chapter._narrate(
+        tmp_path / "private", script, chapter.ChapterPlan(), real
+    )
+    assert origin == "ACTUAL_CPU_KOKORO"
+    assert records[0]["provenance"] == origin
+    assert len(digest) == 64
+    real.assert_called_once()
