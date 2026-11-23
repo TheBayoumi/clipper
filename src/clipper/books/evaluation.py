@@ -366,7 +366,9 @@ def _mined_export(
                     request,
                 )
             except (ValueError, KeyError, TypeError):
-                raise EvaluationStop("recorded candidate quote pairing is not source-exact") from None
+                raise EvaluationStop(
+                    "recorded candidate quote pairing is not source-exact"
+                ) from None
             occurrence = {
                 "unit_start": declared["start"],
                 "unit_end": declared["end"],
