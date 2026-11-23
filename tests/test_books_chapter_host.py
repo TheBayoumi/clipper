@@ -1361,13 +1361,10 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         raw_sha = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         payload_sha = hashlib.sha256(evaluation._json_bytes(payload)).hexdigest()
         directory = base / stage / key
-        retry = (
-            stage == "adaptation"
-            and damage in {
-                "valid_prior_rejection_before_manifest",
-                "missing_prior_rejection_before_manifest",
-            }
-        )
+        retry = stage == "adaptation" and damage in {
+            "valid_prior_rejection_before_manifest",
+            "missing_prior_rejection_before_manifest",
+        }
         prior_digest = None
         winning_attempt, winning_owner = 1, first_owner
         if retry:
@@ -1411,12 +1408,14 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
                     ),
                 },
             )
-            prior_digest = hashlib.sha256(
-                (directory / "failed-1.json").read_bytes()
-            ).hexdigest()
+            prior_digest = hashlib.sha256((directory / "failed-1.json").read_bytes()).hexdigest()
             winning_attempt, winning_owner = 2, first_owner
         identity = chapter._text_artifact_identity(
-            stage, key, "INJECTED_TEST_PRODUCER", raw_sha, payload_sha,
+            stage,
+            key,
+            "INJECTED_TEST_PRODUCER",
+            raw_sha,
+            payload_sha,
             prior_rejection_sha256=prior_digest,
         )
         evaluation._store(
@@ -1454,11 +1453,7 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
                 "payload_sha256": payload_sha,
                 "token_receipt": None,
                 "artifact_identity": identity,
-                **(
-                    {"prior_rejection_sha256": prior_digest}
-                    if prior_digest is not None
-                    else {}
-                ),
+                **({"prior_rejection_sha256": prior_digest} if prior_digest is not None else {}),
             },
         )
         return identity
