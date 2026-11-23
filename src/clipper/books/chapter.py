@@ -29,7 +29,10 @@ DIRECTION_SCHEMA = "clipper-chapter-continuity-shots-v2"
 MAX_RAW_BYTES = 100_000
 MAX_CONTEXT_TOKENS = 40_960
 CHAT_TOKEN_RESERVE = 512
-MAX_SOURCE_BYTES = 25_000
+# Byte ceiling bounds retained private source metadata, not the model context.
+# Real Qwen requests receive an independent exact pinned-tokenizer preflight.
+MAX_SOURCE_BYTES = MAX_CONTEXT_TOKENS * 4
+MAX_SOURCE_UNITS = 64
 ENTITY_ID = re.compile(r"[a-z][a-z0-9-]{1,60}\Z")
 TEXT_STAGES = ("brief", "adaptation", "chapter_script", "chapter_direction")
 TEXT_ARTIFACT_CONTRACT = "clipper-chapter-validated-text-artifact-v3"
@@ -778,7 +781,9 @@ def _direction_validate(
     return obj
 
 
-def _request(stage: str, payload: dict[str, Any], plan: ChapterPlan) -> dict[str, object]:
+def _request(
+    stage: str, payload: dict[str, Any], plan: ChapterPlan, *, exact_context: bool = False
+) -> dict[str, object]:
     descriptions = {
         "brief": "Produce a source-bound argument with candidate coverage and grounded beats. "
         "Keep uncertainty; OMIT means explicit loss, not approval.",
@@ -904,7 +909,7 @@ def _request(stage: str, payload: dict[str, Any], plan: ChapterPlan) -> dict[str
     bound = (
         len(system_message.encode("utf-8")) + len(user_message.encode("utf-8")) + CHAT_TOKEN_RESERVE
     )
-    if bound + plan.max_new_tokens > MAX_CONTEXT_TOKENS:
+    if not exact_context and bound + plan.max_new_tokens > MAX_CONTEXT_TOKENS:
         raise ChapterStop(
             "complete chapter source+context+reserved output exceeds conservative "
             "pinned model context; freeze a narrower exact canonical section"
@@ -1185,8 +1190,15 @@ def _stage(
         raise ChapterHostBlocked(
             "actual chapter CPU route blocked pending a verified bounded private host"
         )
-    request = _request(stage, payload, plan)
-    provenance = "INJECTED_TEST_PRODUCER"
+    real_qwen = completion is scripting._local_chapter_completion
+    request = _request(stage, payload, plan, exact_context=real_qwen)
+    if real_qwen:
+        # Public tokenizer only, before the first irreversible owner reservation.
+        try:
+            scripting._chapter_context_tokens(request)
+        except scripting.NicheVideoError:
+            raise ChapterStop("full real chapter request does not fit pinned token context") from None
+    provenance = "ACTUAL_CPU_QWEN" if real_qwen else "INJECTED_TEST_PRODUCER"
     stage_key = content_fingerprint(
         {
             "contract": stage,
@@ -1244,6 +1256,25 @@ def _stage(
             response = evaluation._capture_private_generator(
                 root, directory, lambda: completion(request)
             )
+        except scripting.IncompleteConstrainedResponse as exc:
+            if isinstance(exc.raw, str) and len(exc.raw.encode("utf-8")) <= MAX_RAW_BYTES:
+                evaluation._store(
+                    root,
+                    directory / f"raw-{index}.json",
+                    {
+                        "attempt": index,
+                        "owner": owner,
+                        "raw": exc.raw,
+                        "sha256": hashlib.sha256(exc.raw.encode("utf-8")).hexdigest(),
+                    },
+                )
+            evaluation._store(
+                root,
+                directory / f"failed-{index}.json",
+                {"attempt": index, "owner": owner, "status": "MISSING_EOS"},
+            )
+            _verified_owner(root, marker, stage_key, index, owner)
+            raise ChapterStop("chapter generation ended without EOS; no retry") from None
         except Exception:
             evaluation._store(
                 root,
@@ -1335,6 +1366,13 @@ def _narrate(
         raise ChapterHostBlocked(
             "actual chapter Kokoro route blocked pending a verified bounded private host"
         )
+    real_kokoro = producer is narration._kokoro_wav
+    if real_kokoro:
+        # Script weights must be released before CPU TTS model initialization.
+        import gc
+
+        scripting._script_pipeline.cache_clear()
+        gc.collect()
     config = NicheConfig(
         niche="private_chapter_preproduction",
         audience="private",
@@ -1344,7 +1382,7 @@ def _narrate(
         topic="private chapter",
         format="general",
     )
-    provenance = "INJECTED_TEST_WAV"
+    provenance = "ACTUAL_CPU_KOKORO" if real_kokoro else "INJECTED_TEST_WAV"
     audio_root = root / f"chapter-audio-{provenance.lower()}"
     records: list[dict[str, Any]] = []
     position = 0
@@ -1483,10 +1521,10 @@ def evaluate_chapter(
         section_plan=scoped,
         section_manifest_sha256=manifest_sha,
     )
-    if len(scoped.units) + len(scoped.skipped) > limits.max_beats:
+    if len(scoped.units) + len(scoped.skipped) > MAX_SOURCE_UNITS:
         raise ChapterStop(
-            "full chapter scope has more original units/gaps than finite unit coverage "
-            "budget; freeze a narrower canonical section, do not omit source text"
+            "full chapter scope exceeds finite original source-unit review budget; "
+            "never omit source text to fit"
         )
     units, gaps, reading_order = _full_source_scope(book, scoped, ledger, candidates)
     root = runner.root / "book-candidates"
@@ -1598,7 +1636,11 @@ def evaluate_chapter(
             "brief_provenance": brief_origin,
             "brief_attempts": brief_attempts,
             "status": "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW",
-            "automation_claim": "INJECTED_TEST" if brief_completion else "ACTUAL_CPU",
+            "automation_claim": (
+                "ACTUAL_CPU"
+                if brief_origin == "ACTUAL_CPU_QWEN"
+                else "INJECTED_TEST"
+            ),
         }
     )
     if review_file is None:
