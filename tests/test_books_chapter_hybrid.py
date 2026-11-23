@@ -1445,9 +1445,9 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
                 row["sha256"] = hashlib.sha256(content).hexdigest()
                 row["bytes"] = len(content)
             manuscript = {k: v for k, v in scope.items() if k != "inventory_status"}
-            safe["chapters"][str(scope["chapter"])]["output_manifest_sha256"] = (
-                hashlib.sha256(evaluation._json_bytes(manuscript)).hexdigest()
-            )
+            safe["chapters"][str(scope["chapter"])]["output_manifest_sha256"] = hashlib.sha256(
+                evaluation._json_bytes(manuscript)
+            ).hexdigest()
         changed["safe-recovery-status.json"] = evaluation._json_bytes(safe)
         listing["runtime_status_sha256"] = hashlib.sha256(
             changed["safe-recovery-status.json"]
@@ -1458,8 +1458,14 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
     missing = dict(original_members)
     missing.pop("book-candidates/private-host/chapter-1-brief-record.json")
     assert owner_accepts(missing)[0] != 0
-    for attack in ("wrong_mode", "review_record", "source_ledger", "final_result",
-                   "human_review", "wav"):
+    for attack in (
+        "wrong_mode",
+        "review_record",
+        "source_ledger",
+        "final_result",
+        "human_review",
+        "wav",
+    ):
         forged = dict(original_members)
         listing = json.loads(forged["private-recovery-manifest.json"])
         if attack == "wrong_mode":
