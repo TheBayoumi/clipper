@@ -17,6 +17,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -502,6 +503,27 @@ def _append_phase_locked(
     return record
 
 
+def _claim_reviewed_resume(
+    runner: BookOrchestrator,
+    number: int,
+    digest: str,
+    scope_sha: str,
+    brief_identity: str | None,
+    progress_path: Path,
+) -> None:
+    """Bind the immutable review identity before any post-review CPU producer."""
+    if brief_identity is None:
+        raise PrivateHostStop("resume claim lacks verified journaled brief identity")
+    _phase(
+        runner,
+        number,
+        digest,
+        scope_sha,
+        "RESUME_IN_FLIGHT",
+        {"brief_identity": brief_identity, "progress_path": str(progress_path)},
+    )
+
+
 def _outcome_from_phase(record: dict[str, Any]) -> dict[str, object]:
     state = str(record["phase"])
     artifacts = record["artifacts"]
@@ -670,17 +692,6 @@ def execute(
                     "BRIEF_IN_FLIGHT",
                     {"progress_path": str(progress_path)},
                 )
-            def commit_resumption() -> None:
-                if mode != "resume" or journaled_brief_identity is None:
-                    raise PrivateHostStop("resume claim lacks verified journaled brief identity")
-                _phase(
-                    runner, number, digest, scope_sha, "RESUME_IN_FLIGHT",
-                    {
-                        "brief_identity": journaled_brief_identity,
-                        "progress_path": str(progress_path),
-                    },
-                )
-
             output = chapter.evaluate_chapter(
                 runner,
                 bundle,
@@ -695,7 +706,19 @@ def execute(
                 direction_completion=scripting._local_chapter_completion,
                 narration_producer=narration._kokoro_wav,
                 expected_brief_identity=journaled_brief_identity,
-                on_resume_verified=commit_resumption if mode == "resume" else None,
+                on_resume_verified=(
+                    partial(
+                        _claim_reviewed_resume,
+                        runner,
+                        number,
+                        digest,
+                        scope_sha,
+                        journaled_brief_identity,
+                        progress_path,
+                    )
+                    if mode == "resume"
+                    else None
+                ),
             )
             if mode == "brief":
                 if output["status"] != "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW":
