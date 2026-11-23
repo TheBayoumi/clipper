@@ -1713,9 +1713,7 @@ def test_hybrid_reconciliation_rejects_unjustified_global_rewrites(
     if case == "duplicate_amendment":
         response["amendments"] = [amendment, copy.deepcopy(amendment)]
     elif case == "gap_amendment":
-        response["amendments"] = [
-            {**amendment, "id": "s0026", "from": "omit", "to": "keep"}
-        ]
+        response["amendments"] = [{**amendment, "id": "s0026", "from": "omit", "to": "keep"}]
     elif case == "unknown_amendment":
         response["amendments"] = [{**amendment, "id": "s9999"}]
     elif case == "bad_amendment_reason":
