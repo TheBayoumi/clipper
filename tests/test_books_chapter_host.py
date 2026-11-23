@@ -1560,6 +1560,9 @@ def test_scoped_recovery_text_stage_rejects_unverifiable_artifacts(
         "malformed_wav_digest",
         "absent_wav",
         "changed_wav",
+        "invalid_report_json",
+        "oversized_report",
+        "symlink_report",
     ],
 )
 def test_scoped_recovery_narration_refuses_unverified_or_cross_scope_audio(
@@ -1599,5 +1602,68 @@ def test_scoped_recovery_narration_refuses_unverified_or_cross_scope_audio(
         audio.unlink()
     if fault == "changed_wav":
         audio.write_bytes(b"synthetic-wave-data-hash-mismatch")
-    with pytest.raises((chapter_host.PrivateHostStop, OSError)):
+    report_path = base / f"narration-report-{key}.json"
+    if fault == "invalid_report_json":
+        report_path.write_bytes(b"untrusted synthetic report text, not JSON")
+    if fault == "oversized_report":
+        report_path.write_bytes(b"x" * 300_001)
+    if fault == "symlink_report":
+        report_path.unlink()
+        report_path.symlink_to(audio)
+    with pytest.raises(chapter_host.PrivateHostStop):
         chapter_host._narration_output_entries(root, 1, key)
+
+
+@pytest.mark.parametrize("mode", ["status", "recover"])
+@pytest.mark.parametrize("damage", ["missing", "symlink", "invalid_json", "oversized"])
+def test_private_recovery_public_cli_normalizes_corrupt_journal_without_leaking_prose(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    mode: str,
+    damage: str,
+) -> None:
+    root = tmp_path / "synthetic-private-runtime"
+    folder = root / "book-candidates/private-host/chapter-1-phase-events"
+    folder.mkdir(parents=True)
+    head = root / "book-candidates/private-host/chapter-1-phase-head.json"
+    if damage == "symlink":
+        secret = tmp_path / "synthetic-private-raw-do-not-print"
+        secret.write_text("PRIVATE_SYNTHETIC_SHOULD_NOT_LEAK", encoding="utf-8")
+        head.symlink_to(secret)
+    elif damage == "invalid_json":
+        head.write_bytes(b"PRIVATE_SYNTHETIC_SHOULD_NOT_LEAK malformed JSON")
+    elif damage == "oversized":
+        head.write_bytes(b"X" * 16_385)
+    # Missing journal head is meaningful only with an existing phase folder.
+    with pytest.raises(chapter_host.PrivateHostStop):
+        chapter_host.recovery_report(root)
+    if mode == "recover":
+        with pytest.raises(chapter_host.PrivateHostStop):
+            chapter_host.private_recovery_archive(root)
+    assert chapter_host.main([mode, "--artifact-root", str(root)]) == 2
+    visible = capsys.readouterr()
+    assert visible.out == ""
+    assert "PRIVATE_CHAPTER_HOST_FAILED_CLOSED" in visible.err
+    assert "Traceback" not in visible.err
+    assert "PRIVATE_SYNTHETIC_SHOULD_NOT_LEAK" not in visible.err
+
+
+@pytest.mark.parametrize("damage", ["outside", "missing", "symlink", "oversized"])
+def test_private_recovery_member_read_is_bounded_and_never_trusts_retargeted_paths(
+    tmp_path: Path, damage: str
+) -> None:
+    root = tmp_path / "synthetic-private-root"
+    folder = root / "book-candidates/brief"
+    folder.mkdir(parents=True)
+    member = folder / "validated.json"
+    if damage == "outside":
+        member = tmp_path / "outside-book-candidates.json"
+        member.write_bytes(b"synthetic outside artifact")
+    elif damage == "symlink":
+        elsewhere = tmp_path / "foreign-artifact.json"
+        elsewhere.write_bytes(b"synthetic foreign artifact")
+        member.symlink_to(elsewhere)
+    elif damage == "oversized":
+        member.write_bytes(b"x" * 9)
+    with pytest.raises(chapter_host.PrivateHostStop):
+        chapter_host._private_output_entry(root, member, 1, "text", 8)
