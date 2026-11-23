@@ -474,7 +474,9 @@ def main(argv: list[str] | None = None) -> int:
             chapter_section_ids=tuple(args.chapter_sections),
             linked_section_ids=tuple(args.linked_sections),
         )
-        print(json.dumps({"status": "SELECTED_SCOPE_EXPORTED", "sha256": digest, "path": str(path)}))
+        print(
+            json.dumps({"status": "SELECTED_SCOPE_EXPORTED", "sha256": digest, "path": str(path)})
+        )
         return 0
     except Exception:
         print(json.dumps({"status": "SELECTED_SCOPE_EXPORT_FAILED_CLOSED"}))
