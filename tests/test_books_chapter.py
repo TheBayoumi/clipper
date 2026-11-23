@@ -2141,8 +2141,13 @@ def test_chapter_resume_replays_only_exact_cached_brief_without_producer(
     changed = chapter.ChapterPlan(max_words=plan.max_words + 1)
     with pytest.raises(chapter.ChapterStop, match="cache missing"):
         chapter._stage(
-            root, "brief", {"fixture": "strict resume"}, changed, lambda x: x,
-            Mock(side_effect=AssertionError("changed plan must not produce")), replay_only=True,
+            root,
+            "brief",
+            {"fixture": "strict resume"},
+            changed,
+            lambda x: x,
+            Mock(side_effect=AssertionError("changed plan must not produce")),
+            replay_only=True,
         )
     cached = next((root / "brief").glob("*/validated.json"))
     cached.unlink()
@@ -2165,8 +2170,12 @@ def test_actual_chapter_token_receipt_is_raw_bound_and_injected_receipts_refused
     injected = Mock(return_value=receipt)
     with pytest.raises(chapter.ChapterStop, match="invalid bounded raw"):
         chapter._stage(
-            tmp_path / "injected", "brief", {"fixture": "forgery"},
-            chapter.ChapterPlan(), lambda x: x, injected,
+            tmp_path / "injected",
+            "brief",
+            {"fixture": "forgery"},
+            chapter.ChapterPlan(),
+            lambda x: x,
+            injected,
         )
     injected.assert_called_once()
     real = Mock(return_value=receipt)
@@ -2175,8 +2184,12 @@ def test_actual_chapter_token_receipt_is_raw_bound_and_injected_receipts_refused
     monkeypatch.setattr(scripting, "_chapter_context_tokens", lambda _: 20)
     root = tmp_path / "actual"
     args = (
-        root, "brief", {"fixture": "real receipt"}, chapter.ChapterPlan(),
-        lambda x: x, real,
+        root,
+        "brief",
+        {"fixture": "real receipt"},
+        chapter.ChapterPlan(),
+        lambda x: x,
+        real,
     )
     result, identity, provenance, attempts = chapter._stage(*args)
     assert provenance == "ACTUAL_CPU_QWEN"
