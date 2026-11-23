@@ -1707,8 +1707,8 @@ def _hybrid_output_manifest(
         raise PrivateHostStop("hybrid recovered local source coverage incomplete")
     audits: list[dict[str, Any]] = []
     for window, identity in zip(windows, audit_ids, strict=True):
-        def validate_local(raw: object) -> dict[str, Any]:
-            return chapter_hybrid.validate_audit(raw, ledger_obj, window)
+        def validate_local(raw: object, scoped: dict[str, object] = window) -> dict[str, Any]:
+            return chapter_hybrid.validate_audit(raw, ledger_obj, scoped)
 
         audits.append(verified_stage("hybrid_audit", identity, validate_local))
 
