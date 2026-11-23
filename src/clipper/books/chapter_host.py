@@ -938,7 +938,6 @@ def _hybrid_producer_sha256(
     return chapter_hybrid.digest(identity)
 
 
-
 def _claim_hybrid_resume(
     runner: BookOrchestrator,
     number: int,
@@ -1127,14 +1126,11 @@ def _execute_hybrid(
                     / record["chapter_scope_identity"]
                     / "source-ledger.json"
                 )
-                ledger_bytes = evaluation._read(
-                    ledger_path, chapter_hybrid.MAX_SOURCE_BYTES + 1024
-                )
+                ledger_bytes = evaluation._read(ledger_path, chapter_hybrid.MAX_SOURCE_BYTES + 1024)
                 ledger_obj = whole_book.load_strict_reply(ledger_bytes)
                 if (
                     not isinstance(ledger_obj, dict)
-                    or hashlib.sha256(ledger_bytes).hexdigest()
-                    != record["source_ledger_sha256"]
+                    or hashlib.sha256(ledger_bytes).hexdigest() != record["source_ledger_sha256"]
                     or _hybrid_producer_sha256(ledger_obj, scope, bundle_sha, plan)
                     != record["producer_identity_sha256"]
                 ):
