@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier
 from unittest.mock import Mock
 
 import pytest
@@ -1129,3 +1130,158 @@ def test_recovery_status_cli_is_sanitized_and_rejects_invalid_journal_heads(
     folder.rmdir()
     with pytest.raises(chapter_host.PrivateHostStop, match="missing from committed head"):
         chapter_host._phase_records(runner.root, 1, digest, scope)
+
+
+def test_full_execute_losing_concurrent_mining_claim_cannot_stop_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Competing complete host calls, not merely the lower-level append helper."""
+    runner, path, config = _private_setup(tmp_path, monkeypatch)
+    _locked(runner, path, config)
+    first = config["chapter_1"]
+    second = config["chapter_7"]
+    chapter_host._phase(
+        runner, 1, first["bundle_sha256"], first["scope_sha256"], "NOT_STARTED"
+    )
+    chapter_host._phase(
+        runner, 7, second["bundle_sha256"], second["scope_sha256"], "NOT_STARTED"
+    )
+    chapter_host._phase(
+        runner, 7, second["bundle_sha256"], second["scope_sha256"], "MINING_IN_FLIGHT"
+    )
+    both_preflighted = Barrier(2)
+    original = chapter_host._phase
+    models = Mock(return_value={"status": "incomplete", "total_work_units": 1})
+
+    def competing_phase(
+        owner: BookOrchestrator,
+        chapter_number: int,
+        digest: str,
+        scope: str,
+        phase: str,
+        artifacts: dict[str, object] | None = None,
+    ) -> dict:
+        if chapter_number == 1 and phase == "MINING_IN_FLIGHT":
+            both_preflighted.wait(timeout=15)
+        return original(owner, chapter_number, digest, scope, phase, artifacts)
+
+    monkeypatch.setattr(chapter_host, "_phase", competing_phase)
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", models)
+    monkeypatch.setattr(chapter_host, "_release_models", lambda: None)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(_call, runner, path, "brief") for _ in range(2)]
+        both = [future.result(timeout=25) for future in futures]
+    models.assert_called_once()
+    assert not any(
+        outcome["chapters"]["1"]["status"]
+        == "PRIVATE_CHAPTER_PHASE_STOPPED_REVIEW_PRIVATE_EVIDENCE"
+        for outcome in both
+    )
+    records = chapter_host._phase_records(
+        runner.root, 1, first["bundle_sha256"], first["scope_sha256"]
+    )
+    assert [record["phase"] for record in records] == [
+        "NOT_STARTED",
+        "MINING_IN_FLIGHT",
+        "SCOPED_MINING_INCOMPLETE",
+    ]
+
+
+@pytest.mark.parametrize(
+    "stop_after",
+    [
+        "ADAPTATION_IN_FLIGHT",
+        "SCRIPT_IN_FLIGHT",
+        "NARRATION_IN_FLIGHT",
+        "DIRECTION_IN_FLIGHT",
+        "DIRECTION_VERIFIED",
+    ],
+)
+def test_resumed_host_interruption_reports_precise_last_subphase_and_verified_prior_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop_after: str
+) -> None:
+    runner, path, config = _private_setup(tmp_path, monkeypatch)
+    _locked(runner, path, config)
+    chosen = config["chapter_1"]
+    other = config["chapter_7"]
+    bundle, scope = chosen["bundle_sha256"], chosen["scope_sha256"]
+    owner = "a" * 32
+    _ = chapter_host._phase(runner, 1, bundle, scope, "NOT_STARTED")
+    chapter_host._phase(
+        runner, 1, bundle, scope, "MINING_IN_FLIGHT", {"claim_owner": owner}
+    )
+    chapter_host._phase(
+        runner, 1, bundle, scope, "BRIEF_IN_FLIGHT", {"claim_owner": owner}
+    )
+    progress = runner.root / "synthetic-progress.json"
+    progress.write_bytes(evaluation._json_bytes({"progress": "synthetic"}))
+    brief = "b" * 64
+    chapter_host._phase(
+        runner, 1, bundle, scope, "AWAITING_HUMAN_REVIEW",
+        {"claim_owner": owner, "brief_identity": brief},
+    )
+    saved = runner.root / "book-candidates/private-host/chapter-1-brief-record.json"
+    evaluation._store(
+        runner.root / "book-candidates",
+        saved,
+        {
+            "chapter": 1,
+            "phase": "AWAITING_HUMAN_REVIEW",
+            "scope_sha256": scope,
+            "bundle_sha256": bundle,
+            "progress_path": str(progress),
+            "progress_sha256": hashlib.sha256(progress.read_bytes()).hexdigest(),
+            "brief_identity": brief,
+            "plan_fingerprint": chapter.ChapterPlan.from_manifest(config["plan"]).fingerprint,
+        },
+    )
+    review = runner.root / "synthetic-reviewed.json"
+    review.write_bytes(evaluation._json_bytes({"synthetic": "review placeholder"}))
+    config["chapter_1"]["review_file"] = str(review)
+    path.write_bytes(evaluation._json_bytes(config))
+    chapter_host._phase(
+        runner, 7, other["bundle_sha256"], other["scope_sha256"], "NOT_STARTED"
+    )
+    chapter_host._phase(
+        runner, 7, other["bundle_sha256"], other["scope_sha256"], "MINING_IN_FLIGHT"
+    )
+    steps = (
+        ("ADAPTATION_IN_FLIGHT", None),
+        ("ADAPTATION_VERIFIED", "c" * 64),
+        ("SCRIPT_IN_FLIGHT", None),
+        ("SCRIPT_VERIFIED", "d" * 64),
+        ("NARRATION_IN_FLIGHT", None),
+        ("NARRATION_VERIFIED", "e" * 64),
+        ("DIRECTION_IN_FLIGHT", None),
+        ("DIRECTION_VERIFIED", "f" * 64),
+    )
+
+    def fake_evaluation(*_args: object, **kwargs: object) -> dict:
+        kwargs["on_resume_verified"]()
+        for step, identity in steps:
+            kwargs["on_stage_progress"](step, identity)
+            if step == stop_after:
+                raise RuntimeError("synthetic process interruption")
+        raise AssertionError("fixture must stop inside a subphase")
+
+    monkeypatch.setattr(chapter, "evaluate_chapter", fake_evaluation)
+    monkeypatch.setattr(chapter_host, "_release_models", lambda: None)
+    result = _call(runner, path, "resume")
+    assert result["chapters"]["1"]["status"] == (
+        "PRIVATE_CHAPTER_PHASE_STOPPED_REVIEW_PRIVATE_EVIDENCE"
+    )
+    status = chapter_host.recovery_report(runner.root)
+    entry = status["chapters"]["1"]
+    assert entry["runtime_journal_status"] == "STOPPED"
+    assert entry["last_subphase"] == stop_after
+    assert entry["retrieval_status"] == "NOT_ATTEMPTED"
+    verified = entry["last_verified_artifact_identities"]
+    assert verified["brief_identity"] == brief
+    if stop_after in {"SCRIPT_IN_FLIGHT", "NARRATION_IN_FLIGHT", "DIRECTION_IN_FLIGHT", "DIRECTION_VERIFIED"}:
+        assert verified["adaptation_identity"] == "c" * 64
+    if stop_after in {"NARRATION_IN_FLIGHT", "DIRECTION_IN_FLIGHT", "DIRECTION_VERIFIED"}:
+        assert verified["script_identity"] == "d" * 64
+    if stop_after in {"DIRECTION_IN_FLIGHT", "DIRECTION_VERIFIED"}:
+        assert verified["narration_report_identity"] == "e" * 64
+    if stop_after == "DIRECTION_VERIFIED":
+        assert verified["direction_identity"] == "f" * 64
