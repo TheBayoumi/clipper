@@ -619,6 +619,110 @@ def _run_pinned_qwen(
     return result
 
 
+def _chapter_tokenizer_material(tokenizer: Any) -> dict[str, str]:
+    """Bind the effective HF chat template AND pinned tokenizer config bytes.
+
+    Use the same exact-revision snapshot for public preflight and final CPU
+    generation. Do not trust a symbolic template name or token count alone.
+    """
+    from . import constrained
+
+    path = Path(str(getattr(tokenizer, "name_or_path", "")))
+    try:
+        snapshot = path.resolve(strict=True)
+        if (
+            snapshot.name != SCRIPT_REVISION
+            or snapshot.parent.name != "snapshots"
+            or snapshot.parent.parent.name != "models--" + SCRIPT_MODEL.replace("/", "--")
+        ):
+            raise PinnedQwenSnapshotError("chapter tokenizer snapshot identity mismatch")
+        raw = (snapshot / "tokenizer_config.json").read_bytes()
+        if not 0 < len(raw) <= 1_000_000:
+            raise PinnedQwenSnapshotError("chapter tokenizer config absent or oversized")
+        token_json = (snapshot / "tokenizer.json").read_bytes()
+        if hashlib.sha256(token_json).hexdigest() != constrained.PINNED_TOKENIZER_SHA256:
+            raise PinnedQwenSnapshotError("chapter tokenizer JSON identity changed")
+        template = getattr(tokenizer, "chat_template", None)
+        if not isinstance(template, (str, dict)) or not template:
+            raise PinnedQwenSnapshotError("effective chapter chat template absent")
+        template_raw = json.dumps(
+            template, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return {
+            "tokenizer_config_sha256": hashlib.sha256(raw).hexdigest(),
+            "chat_template_sha256": hashlib.sha256(template_raw).hexdigest(),
+            "tokenizer_json_sha256": constrained.PINNED_TOKENIZER_SHA256,
+        }
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        raise PinnedQwenSnapshotError("chapter effective tokenizer provenance unavailable") from exc
+
+
+def _chapter_prompt_encoding(
+    messages: list[dict[str, str]], *, tokenizer: Any | None = None
+) -> dict[str, object]:
+    """Exact rendered token IDs plus effective-template/config digests; no weights."""
+    if tokenizer is None:
+        tokenizer, _limit = _public_book_context()
+    ids = tokenizer.apply_chat_template(
+        messages, tokenize=True, add_generation_prompt=True, enable_thinking=False
+    )
+    if (
+        not isinstance(ids, list)
+        or not ids
+        or len(ids) > MAX_CHAPTER_CONTEXT
+        or any(type(value) is not int or value < 0 for value in ids)
+    ):
+        raise PinnedQwenSnapshotError("chapter rendered input token encoding invalid")
+    return {"token_ids": ids, **_chapter_tokenizer_material(tokenizer)}
+
+
+def _chapter_encoding_receipt(encoding: dict[str, object]) -> dict[str, str]:
+    """Canonical SHA-256 encoding shared by preflight, stage key and generation."""
+    ids = encoding["token_ids"]
+    assert isinstance(ids, list)
+    digest = hashlib.sha256(
+        (
+            json.dumps(ids, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "input_token_ids_sha256": digest,
+        "tokenizer_config_sha256": cast(str, encoding["tokenizer_config_sha256"]),
+        "chat_template_sha256": cast(str, encoding["chat_template_sha256"]),
+        "tokenizer_json_sha256": cast(str, encoding["tokenizer_json_sha256"]),
+    }
+
+
+def _cached_chapter_tokenizer_material() -> dict[str, str]:
+    """Model-free producer provenance, resolved from the pinned local HF cache."""
+    home = Path(os.environ.get("HF_HOME", str(Path.home() / ".cache/huggingface")))
+    snapshot = (
+        home / "hub" / ("models--" + SCRIPT_MODEL.replace("/", "--"))
+        / "snapshots" / SCRIPT_REVISION
+    )
+    config = snapshot / "tokenizer_config.json"
+    tokenizer_file = snapshot / "tokenizer.json"
+    if not config.is_file() or not tokenizer_file.is_file():
+        return {"status": "TOKENIZER_NOT_CACHED"}
+    try:
+        from . import constrained
+
+        raw = config.read_bytes()
+        if not 0 < len(raw) <= 1_000_000:
+            return {"status": "TOKENIZER_CONFIG_UNVERIFIED"}
+        if hashlib.sha256(tokenizer_file.read_bytes()).hexdigest() != (
+            constrained.PINNED_TOKENIZER_SHA256
+        ):
+            return {"status": "TOKENIZER_JSON_UNVERIFIED"}
+        return {
+            "status": "PINNED_PUBLIC_TOKENIZER",
+            "tokenizer_config_sha256": hashlib.sha256(raw).hexdigest(),
+            "tokenizer_json_sha256": constrained.PINNED_TOKENIZER_SHA256,
+        }
+    except (OSError, ValueError):
+        return {"status": "TOKENIZER_CONFIG_UNVERIFIED"}
+
+
 def _chapter_context_tokens(request: dict[str, object]) -> int:
     """Preflight the full real chapter chat with the pinned tokenizer, before weights."""
     if (
@@ -632,14 +736,23 @@ def _chapter_context_tokens(request: dict[str, object]) -> int:
         raise NicheVideoError("chapter pinned model request or output budget mismatch")
     tokenizer, limit = _public_book_context()
     try:
-        tokens = tokenizer.apply_chat_template(
-            request["messages"],
-            tokenize=True,
-            add_generation_prompt=True,
-            enable_thinking=False,
-        )
-        count = len(tokens)
-    except (ValueError, TypeError, KeyError, RuntimeError) as exc:
+        if "verified_input_encoding" in request:
+            encoded = _chapter_prompt_encoding(
+                cast(list[dict[str, str]], request["messages"]), tokenizer=tokenizer
+            )
+            receipt = _chapter_encoding_receipt(encoded)
+            if receipt != request["verified_input_encoding"]:
+                raise NicheVideoError("chapter rendered input tokens or template changed")
+            count = len(cast(list[int], encoded["token_ids"]))
+        else:
+            tokens = tokenizer.apply_chat_template(
+                request["messages"],
+                tokenize=True,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+            count = len(tokens)
+    except (ValueError, TypeError, KeyError, RuntimeError, PinnedQwenSnapshotError) as exc:
         raise NicheVideoError("chapter pinned tokenizer preflight failed") from exc
     if count <= 0 or count + cast(int, request["max_new_tokens"]) > limit:
         raise NicheVideoError(
@@ -672,6 +785,17 @@ def _local_chapter_completion(request: dict[str, object]) -> PinnedQwenRawReceip
         return_dict=True,
         return_tensors="pt",
     )
+    if "verified_input_encoding" in request:
+        # The very tensor passed to generate() must match the public-only
+        # preflight, including equal-length but different token sequences.
+        identity = _chapter_encoding_receipt(
+            {
+                "token_ids": inputs["input_ids"][0].tolist(),
+                **_chapter_tokenizer_material(tokenizer),
+            }
+        )
+        if identity != request["verified_input_encoding"]:
+            raise NicheVideoError("chapter generator rendered tokens differ from reserved input")
     if inputs["input_ids"].shape[-1] + cast(int, request["max_new_tokens"]) > MAX_CHAPTER_CONTEXT:
         raise NicheVideoError("chapter final token context differs from preflight")
     with torch.inference_mode():
