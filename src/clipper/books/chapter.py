@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from clipper.stage_contracts import content_fingerprint
 
-from . import acquisition, evaluation, narration, scripting, selected_scope, whole_book
+from . import acquisition, chapter_hybrid, evaluation, narration, scripting, selected_scope, whole_book
 
 if TYPE_CHECKING:
     from .orchestrator import BookOrchestrator
@@ -2113,4 +2113,504 @@ def evaluate_chapter(
         "shot_count": len(shots["shots"]),
         "automation_claim": "INJECTED_TEST" if synthetic else "ACTUAL_CPU",
         "visual_calls": 0,
+    }
+
+def evaluate_hybrid_chapter(
+    runner: BookOrchestrator,
+    selected_scope_path: Path,
+    section_manifest: Path,
+    *,
+    review_file: Path | None = None,
+    plan: ChapterPlan | None = None,
+    argument_completion: Callable[[dict[str, object]], str | scripting.PinnedQwenRawReceipt]
+    | None = None,
+    audit_completion: Callable[[dict[str, object]], str | scripting.PinnedQwenRawReceipt]
+    | None = None,
+    reconcile_completion: Callable[[dict[str, object]], str | scripting.PinnedQwenRawReceipt]
+    | None = None,
+    adaptation_completion: Callable[[dict[str, object]], str | scripting.PinnedQwenRawReceipt]
+    | None = None,
+    script_completion: Callable[[dict[str, object]], str | scripting.PinnedQwenRawReceipt]
+    | None = None,
+    direction_completion: Callable[[dict[str, object]], str | scripting.PinnedQwenRawReceipt]
+    | None = None,
+    narration_producer: Callable[[str, str], bytes] | None = None,
+    expected_brief_identity: str | None = None,
+    on_resume_verified: Callable[[], None] | None = None,
+    on_stage_progress: Callable[[str, str | None], None] | None = None,
+    token_counter: Callable[[list[dict[str, str]]], int] | None = None,
+) -> dict[str, object]:
+    """One exact-source chapter argument, disjoint audits, reconciliation and human gate.
+
+    No per-unit lesson mining is invoked. Every irreversible text attempt uses
+    the existing strict raw/EOS/owner/replay implementation. Calling with all
+    CPU flags disabled only freezes the selected-source ledger.
+    """
+    limits = plan if plan is not None else ChapterPlan()
+    if type(limits) is not ChapterPlan:
+        raise ChapterStop("hybrid run plan must be the exact validated ChapterPlan")
+    limits.validate()
+    verified = selected_scope.import_chapter(runner.root, selected_scope_path)
+    scoped, manifest_sha = evaluation._section_scope(
+        runner,
+        selected_scope_path,
+        section_manifest,
+        selected_scope_path=selected_scope_path,
+    )
+    if scoped.fingerprint != verified.work.fingerprint:
+        raise ChapterStop("hybrid selected work plan does not match verified import")
+    units, gaps, order = _full_source_scope(verified.book, scoped, None, [])
+    if len(order) > chapter_hybrid.MAX_ENTRIES:
+        raise ChapterStop("hybrid selected chapter exceeds finite original source cap")
+    root = runner.root / "book-candidates"
+    ledger_identity: dict[str, object] = {
+        "chapter": verified.chapter_number,
+        "parent_book_fingerprint": verified.book.fingerprint,
+        "parent_source_fingerprint": verified.book.source_fingerprint,
+        "parent_raw_sha256": verified.ref.raw_sha256,
+        "parent_ingest_stage_key": verified.ref.ingest_stage_key,
+        "work_plan_fingerprint": scoped.fingerprint,
+        "section_manifest_sha256": manifest_sha,
+        "selected_bundle_sha256": verified.bundle_sha256,
+        "source_boundary": verified.book.source_boundary,
+        "recovery_status": verified.book.recovery_status,
+        "linked_sections": list(verified.linked_section_ids),
+        "run_plan": limits.fingerprint,
+    }
+    try:
+        ledger = chapter_hybrid.freeze(units, gaps, order, ledger_identity)
+    except chapter_hybrid.HybridStop as exc:
+        raise ChapterStop("hybrid immutable source scope preflight refused") from exc
+    chapter_key = content_fingerprint(
+        {
+            "contract": chapter_hybrid.BRIEF_SCHEMA,
+            "source": ledger["ledger_sha256"],
+            "scope": scoped.fingerprint,
+            "plan": limits.fingerprint,
+        }
+    )
+    base = root / "chapter-evaluations" / chapter_key
+    stored = base / "source-ledger.json"
+    source_bytes = evaluation._json_bytes(ledger)
+    if stored.exists() or stored.is_symlink():
+        if evaluation._read(stored, chapter_hybrid.MAX_SOURCE_BYTES + 1024) != source_bytes:
+            raise ChapterStop("hybrid original source ledger changed on replay")
+    else:
+        evaluation._store(root, stored, ledger)
+    summary: dict[str, object] = {
+        "schema": "clipper-chapter-hybrid-preproduction-v1",
+        "status": "AWAITING_EXPLICIT_CPU_HYBRID_CHAPTER_ARGUMENT",
+        "chapter_scope_identity": chapter_key,
+        "section_scope_sha256": manifest_sha,
+        "included_units": len(units),
+        "skipped_units": len(gaps),
+        "parent_full_book_complete": False,
+        "source_review": "DIRECT_SOURCE_UNREVIEWED",
+        "mining_provenance": "DIRECT_SOURCE_NO_MINING",
+        "source_boundary": verified.book.source_boundary,
+        "selected_source_bundle_sha256": verified.bundle_sha256,
+        "parent_original_reverified_on_host": False,
+        "source_ledger_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "publish_eligible": False,
+        "visual_calls": 0,
+        "automation_claim": "NOT_YET_GENERATED",
+    }
+    if not limits.brief_cpu:
+        return summary
+
+    # A test callback never replaces pinned tokenizer proof for the actual CPU producer.
+    authentic = (
+        argument_completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
+        and scripting._local_chapter_completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
+    )
+    if authentic:
+
+        def tokens(messages: list[dict[str, str]]) -> int:
+            tokenizer, _limit = scripting._public_book_context()
+            return len(
+                tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
+                )
+            )
+
+    elif token_counter is not None:
+        tokens = token_counter
+    else:
+        raise ChapterStop("hybrid injected-test tokenizer counter is required")
+
+    producer = {
+        "source_ledger_sha256": ledger["ledger_sha256"],
+        "chapter_scope_sha256": manifest_sha,
+        "selected_source_bundle_sha256": verified.bundle_sha256,
+        "chapter_plan_fingerprint": limits.fingerprint,
+        "model_producer": whole_book.local_producer_material(),
+        "source_mode": "DIRECT_SOURCE_HYBRID",
+    }
+
+    def stage(
+        name: str,
+        request_stage: str,
+        payload: dict[str, object],
+        validate: Callable[[object], dict[str, Any]],
+        completion: Callable[
+            [dict[str, object]], str | scripting.PinnedQwenRawReceipt
+        ] | None,
+        *,
+        replay_only: bool = False,
+    ) -> tuple[dict[str, Any], str, str, int]:
+        try:
+            prepared, _request_key, _count = chapter_hybrid.request(
+                request_stage,
+                payload,
+                output_tokens=limits.max_new_tokens,
+                token_count=tokens,
+                producer_identity=producer,
+            )
+        except chapter_hybrid.HybridStop as error:
+            raise ChapterStop("hybrid pinned-token request preflight refused") from error
+        return _stage(
+            root,
+            name,
+            payload,
+            limits,
+            validate,
+            completion,
+            replay_only=replay_only,
+            prepared_request=prepared,
+            contract_version=f"clipper-hybrid-{request_stage}-v1",
+            safe_context_tokens=chapter_hybrid.SAFE_CONTEXT_TOKENS,
+        )
+
+    replay = expected_brief_identity is not None
+    projection = chapter_hybrid.projection(chapter_hybrid.validate_ledger(ledger))
+    argument, argument_key, argument_origin, argument_attempts = stage(
+        "hybrid_argument",
+        "argument",
+        {
+            "schema": chapter_hybrid.ARGUMENT_SCHEMA,
+            "ledger_sha256": ledger["ledger_sha256"],
+            "original_source": projection,
+            "response_contract": {
+                "hypothesis": "revisable chapter argument, not a factual conclusion",
+                "questions": ["disputed source-grounded arguments to investigate"],
+                "source_links": [
+                    {"id": "s0001", "start": 0, "end": 10, "role": "ASSERTION"}
+                ],
+            },
+        },
+        lambda raw: chapter_hybrid.validate_argument(raw, ledger),
+        argument_completion,
+        replay_only=replay,
+    )
+    audits: list[dict[str, Any]] = []
+    audit_keys: list[str] = []
+    audit_attempts = 0
+    for window in chapter_hybrid.audit_windows(ledger):
+        audit, identity, origin, attempts = stage(
+            "hybrid_audit",
+            "audit",
+            {
+                "schema": chapter_hybrid.AUDIT_SCHEMA,
+                "ledger_sha256": ledger["ledger_sha256"],
+                "initial_hypothesis": argument,
+                "window": window,
+                "response_contract": {
+                    "audit_id": window["audit_id"],
+                    "core_ids": window["core_ids"],
+                    "decisions": [
+                        {
+                            "id": "source core ID",
+                            "decision": "keep/compress/omit",
+                            "reason": "source-grounded reason even for a gap",
+                            "evidence": [
+                                {
+                                    "id": "source core ID",
+                                    "start": 0,
+                                    "end": 10,
+                                    "role": "ASSERTION/COUNTEREXAMPLE/QUALIFICATION/AUTHOR_EXAMPLE",
+                                }
+                            ],
+                        }
+                    ],
+                    "disagreements": [
+                        {
+                            "id": "audit-d01",
+                            "issue": "missing/contradictory arguments requiring revision",
+                            "evidence": [{"id": "core ID", "start": 0, "end": 10, "role": "ASSERTION"}],
+                        }
+                    ],
+                },
+            },
+            lambda raw, win=window: chapter_hybrid.validate_audit(raw, ledger, win),
+            audit_completion,
+            replay_only=replay,
+        )
+        audits.append(audit)
+        audit_keys.append(identity)
+        audit_attempts += attempts
+        if origin != argument_origin:
+            raise ChapterStop("hybrid argument/audit producer provenance changed")
+    def validated_brief(raw: object) -> dict[str, Any]:
+        result = chapter_hybrid.reconcile(raw, ledger, argument, audits)
+        if len(result["beats"]) > limits.max_beats:
+            raise ChapterStop("hybrid coherent argument exceeds bounded grouped-beat capacity")
+        return result
+
+    brief, brief_key, brief_origin, brief_attempts = stage(
+        "hybrid_reconcile",
+        "reconcile",
+        {
+            "schema": chapter_hybrid.BRIEF_SCHEMA,
+            "ledger_sha256": ledger["ledger_sha256"],
+            "complete_original_source": projection,
+            "initial_argument": argument,
+            "local_audits": audits,
+            "response_contract": {
+                "argument": "one reconciled connected argument covering original chapter",
+                "amendments": [
+                    {
+                        "id": "source ID",
+                        "from": "keep/compress/omit",
+                        "to": "keep/compress/omit",
+                        "reason": "explicit source-grounded change",
+                        "evidence": [{"id": "source ID", "start": 0, "end": 10, "role": "ASSERTION"}],
+                    }
+                ],
+                "resolutions": [
+                    {
+                        "id": "audit-d01",
+                        "resolution": "accepted/rejected/qualified",
+                        "reason": "source-grounded disagreement resolution",
+                        "evidence": [{"id": "source ID", "start": 0, "end": 10, "role": "ASSERTION"}],
+                    }
+                ],
+                "beats": [
+                    {
+                        "beat_id": "beat-001",
+                        "spans": [
+                            {"id": "source ID", "start": 0, "end": 10, "role": "ASSERTION"}
+                        ],
+                        "meaning": "source-grounded meaning",
+                        "qualification": "qualified paraphrase",
+                        "causal_link": "relation to neighboring argument",
+                        "essential": True,
+                    }
+                ],
+            },
+        },
+        validated_brief,
+        reconcile_completion,
+        replay_only=replay,
+    )
+    if brief_origin != argument_origin:
+        raise ChapterStop("hybrid final reconciliation producer provenance changed")
+    if expected_brief_identity is not None and brief_key != expected_brief_identity:
+        raise ChapterStop("journaled hybrid brief identity changed on replay")
+    summary.update(
+        {
+            "status": "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW",
+            "brief_identity": brief_key,
+            "brief_payload_sha256": brief["brief_sha256"],
+            "argument_identity": argument_key,
+            "audit_identities": audit_keys,
+            "argument_attempts": argument_attempts,
+            "audit_attempts": audit_attempts,
+            "brief_attempts": brief_attempts,
+            "brief_provenance": brief_origin,
+            "automation_claim": (
+                "ACTUAL_CPU" if brief_origin == "ACTUAL_CPU_QWEN" else "INJECTED_TEST"
+            ),
+        }
+    )
+    if review_file is None:
+        return summary
+    try:
+        review_bytes = evaluation._read(review_file, 250_000)
+        review: object = whole_book.load_strict_reply(review_bytes)
+        if (
+            not isinstance(review, dict)
+            or review.get("brief_artifact_identity") != brief_key
+        ):
+            raise ChapterStop("hybrid human review artifact identity differs from frozen brief")
+        human = chapter_hybrid.validate_human_review(
+            {key: value for key, value in review.items() if key != "brief_artifact_identity"},
+            brief,
+            ledger,
+        )
+    except (ValueError, OSError, KeyError, TypeError, RecursionError):
+        if replay:
+            raise ChapterReviewPending("hybrid human semantic review absent or invalid") from None
+        raise
+    review_sha = hashlib.sha256(review_bytes).hexdigest()
+    evaluation._store(
+        root,
+        base / f"human-review-{review_sha}.json",
+        {
+            "schema": chapter_hybrid.REVIEW_SCHEMA,
+            "review": review,
+            "semantic_intervention": "HUMAN_ATTESTED_NOT_INDEPENDENTLY_PROVEN",
+            "review_sha256": review_sha,
+            "publish_eligible": False,
+        },
+    )
+    summary["human_review_sha256"] = review_sha
+    summary["human_attested_beat_count"] = len(human["beat_decisions"])
+    if on_resume_verified is not None:
+        if not replay:
+            raise ChapterStop("hybrid resume claim requires exact journaled brief")
+        on_resume_verified()
+    if not limits.adaptation_cpu:
+        return {**summary, "status": "AWAITING_EXPLICIT_CPU_CHAPTER_ADAPTATION"}
+    if on_stage_progress is not None:
+        on_stage_progress("ADAPTATION_IN_FLIGHT", None)
+    treatment, adapt_key, adapt_origin, adapt_attempts = stage(
+        "adaptation",
+        "adaptation",
+        {
+            "schema": ADAPT_SCHEMA,
+            "brief": brief,
+            "human_semantic_review": human,
+            "response_contract": (
+                "Existing chapter adaptation JSON: throughline, narrative_form, "
+                "choice_reason, beats, characters, locations, props. "
+                "Each beat retained with reason, qualification paraphrase and fiction label."
+            ),
+        },
+        lambda raw: chapter_hybrid.validate_adaptation(raw, brief, limits),
+        adaptation_completion,
+    )
+    summary.update({"adaptation_identity": adapt_key, "adaptation_attempts": adapt_attempts})
+    if on_stage_progress is not None:
+        on_stage_progress("ADAPTATION_VERIFIED", adapt_key)
+    if not limits.script_cpu:
+        return {**summary, "status": "AWAITING_EXPLICIT_CPU_CHAPTER_SCRIPT"}
+    if on_stage_progress is not None:
+        on_stage_progress("SCRIPT_IN_FLIGHT", None)
+    script, script_key, script_origin, script_attempts = stage(
+        "chapter_script",
+        "chapter_script",
+        {
+            "schema": SCRIPT_SCHEMA,
+            "brief": brief,
+            "human_semantic_review": human,
+            "adaptation": treatment,
+            "response_contract": (
+                "Existing chapter connected multi-scene script JSON: title, scenes "
+                "with scene graph links, narration, actions, beat_ids, dialogue and "
+                "fiction labels. Preserve factual meaning; paraphrase is allowed."
+            ),
+        },
+        lambda raw: chapter_hybrid.validate_script(raw, treatment, brief, limits),
+        script_completion,
+    )
+    summary.update(
+        {
+            "script_identity": script_key,
+            "script_scene_count": len(script["scenes"]),
+            "script_attempts": script_attempts,
+        }
+    )
+    if on_stage_progress is not None:
+        on_stage_progress("SCRIPT_VERIFIED", script_key)
+    audio: list[dict[str, Any]] | None = None
+    audio_origin = "NO_AUDIO"
+    narration_report_key: str | None = None
+    if limits.kokoro_cpu:
+        if on_stage_progress is not None:
+            on_stage_progress("NARRATION_IN_FLIGHT", None)
+        audio, audio_origin, narration_report_key = _narrate(
+            root, script, limits, narration_producer
+        )
+        if on_stage_progress is not None:
+            on_stage_progress("NARRATION_VERIFIED", narration_report_key)
+    times = _timings(script, limits, audio)
+    if not limits.direction_cpu:
+        return {**summary, "status": "AWAITING_EXPLICIT_CPU_CHAPTER_DIRECTION"}
+    if on_stage_progress is not None:
+        on_stage_progress("DIRECTION_IN_FLIGHT", None)
+    shots, direction_key, direction_origin, direction_attempts = stage(
+        "chapter_direction",
+        "chapter_direction",
+        {
+            "schema": DIRECTION_SCHEMA,
+            "scenes": script["scenes"],
+            "adaptation": treatment,
+            "timings": times,
+            "source": {"ledger_sha256": ledger["ledger_sha256"], "brief": brief_key},
+            "response_contract": (
+                "Existing timed chapter shot schema with scene links, camera, "
+                "entity states, contiguous start/end times and concrete mechanisms."
+            ),
+        },
+        lambda raw: _direction_validate(raw, script, treatment, times, limits),
+        direction_completion,
+    )
+    if on_stage_progress is not None:
+        on_stage_progress("DIRECTION_VERIFIED", direction_key)
+    if any(
+        origin != argument_origin
+        for origin in (adapt_origin, script_origin, direction_origin)
+    ):
+        raise ChapterStop("hybrid chapter text stages have mismatched producer provenance")
+    synthetic = argument_origin != "ACTUAL_CPU_QWEN" or audio_origin == "INJECTED_TEST_WAV"
+    final_status = (
+        "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED"
+        if synthetic
+        else "CHAPTER_PREPRODUCTION_READY_UNREVIEWED"
+        if audio is not None
+        else "CHAPTER_TEXT_PLAN_READY_NO_AUDIO_UNREVIEWED"
+    )
+    record = {
+        "schema": "clipper-chapter-private-preproduction-result-v2",
+        "chapter_scope_identity": chapter_key,
+        "source_ledger_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "source_boundary": verified.book.source_boundary,
+        "selected_source_bundle_sha256": verified.bundle_sha256,
+        "parent_original_reverified_on_host": False,
+        "linked_section_completeness": "UNVERIFIED_REQUIRES_SOURCE_REVIEW",
+        "source_mining_provenance": "DIRECT_SOURCE_NO_MINING",
+        "source_mining_producer_fingerprint": None,
+        "progress_sha256": None,
+        "brief_key": brief_key,
+        "argument_key": argument_key,
+        "audit_keys": audit_keys,
+        "human_review_sha256": review_sha,
+        "adaptation_key": adapt_key,
+        "script_key": script_key,
+        "direction_key": direction_key,
+        "shot_count": len(shots["shots"]),
+        "scene_count": len(script["scenes"]),
+        "timings": times,
+        "narration_report_key": narration_report_key,
+        "narration_report_relative_path": (
+            f"narration-report-{narration_report_key}.json"
+            if narration_report_key is not None
+            else None
+        ),
+        "audio_records": audio,
+        "audio_provenance": audio_origin,
+        "text_provenances": [
+            argument_origin, brief_origin, adapt_origin, script_origin, direction_origin
+        ],
+        "story_review": "PENDING_INDEPENDENT_REVIEW",
+        "visual_identity_enforced": False,
+        "visual_calls": 0,
+        "source_authenticity": verified.book.source.authorization_status,
+        "source_recovery": verified.book.recovery_status,
+        "publish_eligible": False,
+    }
+    result_key = content_fingerprint(record)
+    evaluation._store(root, base / f"chapter-result-{result_key}.json", record)
+    return {
+        **summary,
+        "status": final_status,
+        "final_result_identity": result_key,
+        "direction_identity": direction_key,
+        "direction_attempts": direction_attempts,
+        "audio_provenance": audio_origin,
+        "narration_report_identity": narration_report_key,
+        "publish_eligible": False,
     }
