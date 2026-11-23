@@ -27,9 +27,7 @@ MAX_SPANS_PER_BEAT = 24
 MAX_AUDIT_RAW_BYTES = 100_000
 SAFE_CONTEXT_TOKENS = 32_768
 MAX_REQUEST_BYTES = 280_000
-SPAN_ROLES = frozenset(
-    {"ASSERTION", "AUTHOR_EXAMPLE", "COUNTEREXAMPLE", "QUALIFICATION"}
-)
+SPAN_ROLES = frozenset({"ASSERTION", "AUTHOR_EXAMPLE", "COUNTEREXAMPLE", "QUALIFICATION"})
 DECISIONS = frozenset({"keep", "compress", "omit"})
 
 
@@ -38,8 +36,9 @@ class HybridStop(ValueError):
 
 
 def _canonical(value: object) -> bytes:
-    return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            + "\n").encode("utf-8")
+    return (
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
 
 
 def digest(value: object) -> str:
@@ -82,15 +81,9 @@ def freeze(
         if not isinstance(item.get("text"), str):
             raise HybridStop("selected chapter original text is malformed")
         if item.get("kind") == "CANONICAL_WORK_UNIT":
-            if (
-                hashlib.sha256(item["text"].encode("utf-8")).hexdigest()
-                != item.get("text_sha256")
-            ):
+            if hashlib.sha256(item["text"].encode("utf-8")).hexdigest() != item.get("text_sha256"):
                 raise HybridStop("selected chapter original source text digest changed")
-        elif (
-            item.get("kind") != "UNRECOVERED_OR_EMPTY_SOURCE_MARKER"
-            or item["text"]
-        ):
+        elif item.get("kind") != "UNRECOVERED_OR_EMPTY_SOURCE_MARKER" or item["text"]:
             raise HybridStop("selected chapter gap has unsupported source content")
         by_id[sid] = item
     if set(reading_order) != set(by_id) or len(set(reading_order)) != len(reading_order):
@@ -139,9 +132,10 @@ def validate_ledger(ledger: dict[str, Any]) -> list[dict[str, Any]]:
         raise HybridStop("hybrid source identity malformed")
     if len(_canonical(checked)) > MAX_SOURCE_BYTES + 256:
         raise HybridStop("hybrid source ledger replay exceeds finite byte cap")
-    if digest({k: v for k, v in checked.items() if k != "ledger_sha256"}) != checked[
-        "ledger_sha256"
-    ]:
+    if (
+        digest({k: v for k, v in checked.items() if k != "ledger_sha256"})
+        != checked["ledger_sha256"]
+    ):
         raise HybridStop("hybrid source ledger digest changed")
     seen: set[str] = set()
     for index, entry in enumerate(entries, 1):
@@ -152,8 +146,7 @@ def validate_ledger(ledger: dict[str, Any]) -> list[dict[str, Any]]:
             or entry["source_id"] in seen
             or entry.get("order") != index
             or not isinstance(entry.get("text"), str)
-            or hashlib.sha256(entry["text"].encode("utf-8")).hexdigest()
-            != entry.get("text_sha256")
+            or hashlib.sha256(entry["text"].encode("utf-8")).hexdigest() != entry.get("text_sha256")
         ):
             raise HybridStop("hybrid source map, order, or text has changed")
         seen.add(entry["source_id"])
@@ -211,11 +204,7 @@ def request(
         count = token_count(messages)
     except Exception as exc:
         raise HybridStop("exact pinned tokenizer preflight unavailable") from exc
-    if (
-        type(count) is not int
-        or count < 1
-        or count + output_tokens > SAFE_CONTEXT_TOKENS
-    ):
+    if type(count) is not int or count < 1 or count + output_tokens > SAFE_CONTEXT_TOKENS:
         raise HybridStop("hybrid exact prompt and reserved output exceed safe context")
     result: dict[str, object] = {
         "model": scripting.SCRIPT_MODEL,
@@ -244,9 +233,10 @@ def audit_windows(ledger: dict[str, Any]) -> list[dict[str, object]]:
     windows: list[dict[str, object]] = []
     for offset in range(0, len(entries), MAX_CORE_UNITS):
         core = entries[offset : offset + MAX_CORE_UNITS]
-        halo = entries[max(0, offset - 1) : offset] + entries[
-            offset + len(core) : offset + len(core) + 1
-        ]
+        halo = (
+            entries[max(0, offset - 1) : offset]
+            + entries[offset + len(core) : offset + len(core) + 1]
+        )
         windows.append(
             {
                 "audit_id": f"a{len(windows) + 1:03d}",
@@ -371,9 +361,7 @@ def reconcile(
     decisions = {sid: dict(value) for sid, value in original.items()}
     edited: set[str] = set()
     for value in _list(data["amendments"], MAX_ENTRIES):
-        amendment = _object(
-            value, {"id", "from", "to", "reason", "evidence"}
-        )
+        amendment = _object(value, {"id", "from", "to", "reason", "evidence"})
         sid = amendment["id"]
         if (
             sid not in decisions
@@ -466,11 +454,9 @@ def reconcile(
 def human_review_packet(brief: dict[str, Any], ledger: dict[str, Any]) -> dict[str, Any]:
     """Full original text and immediate neighbors, not a lexical fidelity certificate."""
     entries = validate_ledger(ledger)
-    if (
-        brief.get("ledger_sha256") != ledger["ledger_sha256"]
-        or digest({k: v for k, v in brief.items() if k != "brief_sha256"})
-        != brief.get("brief_sha256")
-    ):
+    if brief.get("ledger_sha256") != ledger["ledger_sha256"] or digest(
+        {k: v for k, v in brief.items() if k != "brief_sha256"}
+    ) != brief.get("brief_sha256"):
         raise HybridStop("hybrid brief is not bound to the immutable source ledger")
     return {
         "schema": REVIEW_SCHEMA,
@@ -484,9 +470,7 @@ def human_review_packet(brief: dict[str, Any], ledger: dict[str, Any]) -> dict[s
                 "original_source_id": entry["source_id"],
                 "original_text": entry["text"],
                 "previous_text": entries[index - 1]["text"] if index else "",
-                "next_text": entries[index + 1]["text"]
-                if index + 1 < len(entries)
-                else "",
+                "next_text": entries[index + 1]["text"] if index + 1 < len(entries) else "",
                 "decision": brief["coverage"][index],
             }
             for index, entry in enumerate(entries)
@@ -503,9 +487,7 @@ def validate_human_review(
     """Mandatory explicit per-beat AND per-source semantic approval."""
     human_review_packet(brief, ledger)
     entries = validate_ledger(ledger)
-    doc = _object(
-        raw, {"schema", "brief_sha256", "reviewer", "unit_decisions", "beat_decisions"}
-    )
+    doc = _object(raw, {"schema", "brief_sha256", "reviewer", "unit_decisions", "beat_decisions"})
     if doc["schema"] != REVIEW_SCHEMA or doc["brief_sha256"] != brief["brief_sha256"]:
         raise HybridStop("hybrid human approval was not for the exact coherent brief")
     _text(doc["reviewer"], 100)
