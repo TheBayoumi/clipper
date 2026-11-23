@@ -1971,3 +1971,37 @@ def test_injected_source_mining_has_distinct_identity_from_cpu_material() -> Non
     }
     assert content_fingerprint(real) != content_fingerprint(injected)
     assert real["generation"] == injected["generation"]
+
+
+def test_actual_provider_truncated_mining_keeps_original_raw_before_receipt_failure(
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    from clipper.books import scripting, whole_book
+
+    runner = BookOrchestrator(tmp_path)
+    raw = '{"synthetic":"truncated before terminal EOS"}'
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def missing_eos(_request: dict[str, object]) -> str:
+        raise scripting.IncompleteConstrainedResponse(raw)
+
+    with pytest.raises(whole_book.LocalReplyFailure) as failure:
+        runner._produce_local_unit(
+            ref=SimpleNamespace(book_id="synthetic-only"),
+            identity=SimpleNamespace(cache_key="synthetic-stage"),
+            request={"max_new_tokens": 4096},
+            request_sha256="a" * 64,
+            unit=Mock(),
+            producer_fingerprint="b" * 64,
+            completion=missing_eos,
+            actual_provider=True,
+        )
+    assert failure.value.category == "incomplete_constrained_generation"
+    assert failure.value.raw_sha256 == digest
+    stored = (
+        runner.root / "book-candidates/analysis/completions/synthetic-only"
+        / "synthetic-stage" / f"{digest}.txt"
+    )
+    assert stored.read_bytes() == raw.encode("utf-8")
