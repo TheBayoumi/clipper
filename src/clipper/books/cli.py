@@ -462,6 +462,7 @@ def dispatch_books(args: argparse.Namespace) -> int:
         # (unexpected JSON key names included) must not reach public Actions logs.
         evaluation_result: dict[str, object] | None = None
         success = False
+        bounded_host_blocked = False
         private_root = args.artifact_root / "book-candidates"
         with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as sink:
             try:
@@ -494,6 +495,9 @@ def dispatch_books(args: argparse.Namespace) -> int:
                         )
                         evaluation_result = _run_legacy_private_evaluation(args, permissions)
                     success = True
+            except chapter.ChapterHostBlocked:
+                bounded_host_blocked = args.books_action == "chapter-evaluate"
+                success = False
             except Exception:
                 # Never expose provider exceptions, private input or generated keys.
                 success = False
@@ -513,6 +517,17 @@ def dispatch_books(args: argparse.Namespace) -> int:
                         )
                     except Exception:
                         success = False
+        if bounded_host_blocked and not success:
+            print(
+                json.dumps(
+                    {
+                        "status": "PRIVATE_CHAPTER_BOUNDED_HOST_UNVERIFIED",
+                        "publish_eligible": False,
+                    }
+                ),
+                file=sys.stderr,
+            )
+            return 2
         if not success or evaluation_result is None:
             print(
                 json.dumps(
