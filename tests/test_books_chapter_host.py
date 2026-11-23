@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import json
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -893,3 +894,149 @@ def test_private_host_rejects_rest_creation_clock_disagreement_before_any_provid
     with pytest.raises(chapter_host.PrivateHostStop, match="creation time mismatch"):
         _call(runner, path, "brief")
     producer.assert_not_called()
+
+
+def test_committed_private_journal_head_detects_missing_last_valid_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, path, config = _private_setup(tmp_path, monkeypatch)
+    _locked(runner, path, config)
+    digest = config["chapter_1"]["bundle_sha256"]
+    scope = config["chapter_1"]["scope_sha256"]
+    chapter_host._phase(runner, 1, digest, scope, "NOT_STARTED")
+    chapter_host._phase(runner, 1, digest, scope, "MINING_IN_FLIGHT")
+    folder = runner.root / "book-candidates/private-host/chapter-1-phase-events"
+    last = sorted(folder.glob("*.json"))[-1]
+    last.unlink()
+    with pytest.raises(chapter_host.PrivateHostStop, match="committed head"):
+        chapter_host._phase_records(runner.root, 1, digest, scope)
+    blocked = Mock(side_effect=AssertionError("deleted tail must not reopen mining"))
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", blocked)
+    with pytest.raises(chapter_host.PrivateHostStop):
+        _call(runner, path, "brief")
+    blocked.assert_not_called()
+
+
+def test_concurrent_private_phase_claims_allow_only_one_mining_transition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, path, config = _private_setup(tmp_path, monkeypatch)
+    _locked(runner, path, config)
+    digest = config["chapter_1"]["bundle_sha256"]
+    scope = config["chapter_1"]["scope_sha256"]
+    chapter_host._phase(runner, 1, digest, scope, "NOT_STARTED")
+
+    def claim(_: int) -> object:
+        try:
+            return chapter_host._phase(runner, 1, digest, scope, "MINING_IN_FLIGHT")
+        except chapter_host.PrivateHostStop:
+            return "REJECTED_DUPLICATE"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(claim, range(2)))
+    assert results.count("REJECTED_DUPLICATE") == 1
+    assert sum(isinstance(item, dict) for item in results) == 1
+    assert [
+        item["phase"] for item in chapter_host._phase_records(runner.root, 1, digest, scope)
+    ] == ["NOT_STARTED", "MINING_IN_FLIGHT"]
+
+
+def test_model_free_recovery_report_has_precise_phase_and_only_safe_identities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, path, config = _private_setup(tmp_path, monkeypatch)
+    _locked(runner, path, config)
+    baseline = chapter_host.recovery_report(runner.root)
+    assert baseline["chapters"]["1"]["recovery_state"] == "NEVER_STARTED"
+    digest = config["chapter_1"]["bundle_sha256"]
+    scope = config["chapter_1"]["scope_sha256"]
+    chapter_host._phase(runner, 1, digest, scope, "NOT_STARTED")
+    chapter_host._phase(runner, 1, digest, scope, "MINING_IN_FLIGHT")
+    report = chapter_host.recovery_report(runner.root)
+    assert report["chapters"]["1"]["last_subphase"] == "MINING_IN_FLIGHT"
+    assert report["chapters"]["1"]["recovery_state"] == "IN_FLIGHT"
+    chapter_host._phase(runner, 1, digest, scope, "BRIEF_IN_FLIGHT")
+    chapter_host._phase(
+        runner, 1, digest, scope, "AWAITING_HUMAN_REVIEW",
+        {"brief_identity": "a" * 64, "progress_path": "/private/never-print-this.json"},
+    )
+    report = chapter_host.recovery_report(runner.root)
+    assert report["chapters"]["1"]["recovery_state"] == "AWAITING_REVIEW"
+    assert report["chapters"]["1"]["last_verified_artifact_identities"] == {
+        "brief_identity": "a" * 64
+    }
+    assert "never-print-this" not in json.dumps(report)
+    chapter_host._phase(
+        runner, 1, digest, scope, "RESUME_IN_FLIGHT",
+        {"brief_identity": "a" * 64},
+    )
+    chapter_host._phase(
+        runner, 1, digest, scope, "PREPRODUCTION_READY",
+        {"final_result_identity": "b" * 64, "audio_provenance": "ACTUAL_CPU_KOKORO"},
+    )
+    report = chapter_host.recovery_report(runner.root)
+    assert report["chapters"]["1"]["recovery_state"] == "READY"
+    assert report["chapters"]["1"]["last_verified_artifact_identities"] == {
+        "final_result_identity": "b" * 64,
+        "brief_identity": "a" * 64,
+    }
+
+
+def test_resume_missing_review_or_changed_plan_keeps_same_review_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, path, config = _private_setup(tmp_path, monkeypatch)
+    _locked(runner, path, config)
+    counter = Mock()
+    progress = runner.root / "synthetic-progress.json"
+    progress.write_bytes(evaluation._json_bytes({"synthetic": True}))
+
+    def mining(_self: BookOrchestrator, _bundle: Path, **_kwargs: object) -> dict:
+        return {"status": "complete", "progress_path": str(progress), "total_work_units": 1}
+
+    def evaluate(
+        _runner: BookOrchestrator, _ref: Path, _progress: Path, _scope: Path,
+        **kwargs: object
+    ) -> dict[str, object]:
+        counter()
+        if kwargs["review_file"] is None:
+            return {
+                "status": "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW",
+                "brief_identity": "b" * 64,
+                "section_scope_sha256": "c" * 64,
+            }
+        raise chapter.ChapterReviewPending("synthetic review intentionally invalid")
+
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", mining)
+    monkeypatch.setattr(chapter, "evaluate_chapter", evaluate)
+    monkeypatch.setattr(chapter_host, "_review_packet", lambda *_: None)
+    monkeypatch.setattr(chapter_host, "_release_models", lambda: None)
+    first = _call(runner, path, "brief")
+    assert first["chapters"]["1"]["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
+    assert counter.call_count == 2
+    missing = _call(runner, path, "resume")
+    assert all(c["review_status"] == "REVIEW_REQUIRED" for c in missing["chapters"].values())
+    assert counter.call_count == 2
+    review = runner.root / "synthetic-invalid-human-review.json"
+    review.write_text("not valid human review", encoding="utf-8")
+    for n in (1, 7):
+        config[f"chapter_{n}"]["review_file"] = str(review)
+    path.write_bytes(evaluation._json_bytes(config))
+    invalid = _call(runner, path, "resume")
+    assert all(c["review_status"] == "REVIEW_REQUIRED" for c in invalid["chapters"].values())
+    assert counter.call_count == 4
+    for n in (1, 7):
+        records = chapter_host._phase_records(
+            runner.root, n,
+            config[f"chapter_{n}"]["bundle_sha256"],
+            config[f"chapter_{n}"]["scope_sha256"],
+        )
+        assert records[-1]["phase"] == "AWAITING_HUMAN_REVIEW"
+    config["plan"]["max_words"] += 1
+    path.write_bytes(evaluation._json_bytes(config))
+    blocked = _call(runner, path, "resume")
+    assert all(
+        c["review_status"] == "RESUME_PREFLIGHT_BLOCKED"
+        for c in blocked["chapters"].values()
+    )
+    assert counter.call_count == 4
