@@ -1070,6 +1070,7 @@ def _execute_hybrid(
                         "argument_identity",
                         "audit_identities",
                         "plan_fingerprint",
+                        "plan",
                     }
                     or record["chapter_mode"] != "DIRECT_SOURCE_HYBRID"
                     or record["chapter"] != number
@@ -1077,6 +1078,8 @@ def _execute_hybrid(
                     or record["scope_sha256"] != scope
                     or record["bundle_sha256"] != bundle_sha
                     or record["plan_fingerprint"] != plan.fingerprint
+                    or chapter.ChapterPlan.from_manifest(record["plan"]).fingerprint
+                    != plan.fingerprint
                     or record["brief_identity"] != prior["artifacts"].get("brief_identity")
                     or record["source_ledger_sha256"]
                     != prior["artifacts"].get("source_ledger_sha256")
@@ -1155,6 +1158,13 @@ def _execute_hybrid(
                     "argument_identity": output["argument_identity"],
                     "audit_identities": output["audit_identities"],
                     "plan_fingerprint": plan.fingerprint,
+                    "plan": {
+                        "schema": chapter.PLAN_SCHEMA,
+                        **{
+                            key: getattr(plan, key)
+                            for key in plan.__dataclass_fields__
+                        },
+                    },
                 }
                 evaluation._store(private, saved, evidence)
                 _hybrid_review_packet(runner, number, output)
@@ -1181,7 +1191,7 @@ def _execute_hybrid(
             else:
                 if output["status"] != "CHAPTER_PREPRODUCTION_READY_UNREVIEWED":
                     raise PrivateHostStop("hybrid reviewed chapter did not finish CPU audio")
-                manifest = _save_final_manifest(
+                manifest = _save_hybrid_manifest(
                     root, number, bundle_sha, scope, str(output["final_result_identity"])
                 )
                 final = _phase(
@@ -1821,7 +1831,12 @@ def recovery_report(artifact_root: Path, *, tolerate_corrupt: bool = False) -> d
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Private two-chapter Codespace checkpoint")
-    parser.add_argument("mode", choices=("inspect", "brief", "resume", "status", "recover"))
+    parser.add_argument(
+        "mode",
+        choices=(
+            "inspect", "brief", "resume", "hybrid-brief", "hybrid-resume", "status", "recover"
+        ),
+    )
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--codespace-created-at")
