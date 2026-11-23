@@ -1314,6 +1314,11 @@ def test_resumed_host_interruption_reports_precise_last_subphase_and_verified_pr
         "valid_brief_checkpoint",
         "too_many_text_files",
         "changed_between_inventory_and_archive",
+        "missing_winning_claim_before_manifest",
+        "missing_prior_rejection_before_manifest",
+        "valid_prior_rejection_before_manifest",
+        "shared_wav_both_chapters",
+        "second_chapter_invalid_inventory",
     ],
 )
 def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
@@ -1337,8 +1342,17 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
 
     def stage_file(stage: str) -> str:
         key = hashlib.sha256(stage.encode("ascii")).hexdigest()
-        raw = json.dumps({"synthetic": stage}, sort_keys=True)
-        payload = json.loads(raw)
+        payload = {
+            "brief": {"argument": "synthetic", "beats": [], "coverage": []},
+            "adaptation": {
+                "throughline": "synthetic", "narrative_form": "CONCEPTUAL_SEQUENCE",
+                "choice_reason": "synthetic", "beats": [], "characters": [],
+                "locations": [], "props": [],
+            },
+            "chapter_script": {"title": "synthetic", "scenes": []},
+            "chapter_direction": {"shots": []},
+        }[stage]
+        raw = json.dumps(payload, sort_keys=True)
         raw_sha = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         payload_sha = hashlib.sha256(evaluation._json_bytes(payload)).hexdigest()
         identity = chapter._text_artifact_identity(
@@ -1468,6 +1482,68 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
     }
     final_key = content_fingerprint(result)
     evaluation._store(base, base_dir / f"chapter-result-{final_key}.json", result)
+    stage_directory = base / "adaptation" / hashlib.sha256(b"adaptation").hexdigest()
+    if damage == "missing_winning_claim_before_manifest":
+        (stage_directory / "started-1.json").unlink()
+        with pytest.raises(chapter_host.PrivateHostStop, match="replay history"):
+            chapter_host._save_final_manifest(root, 1, bundle, scope, final_key)
+        return
+    if damage in {
+        "missing_prior_rejection_before_manifest",
+        "valid_prior_rejection_before_manifest",
+    }:
+        first_raw = json.dumps({"not": "valid-adaptation"}, sort_keys=True)
+        first_digest = hashlib.sha256(first_raw.encode()).hexdigest()
+        prior_owner = "8" * 32
+        winning_owner = "3" * 32
+        request_key = stage_directory.name
+        evaluation._store(
+            base,
+            stage_directory / "started-1.json",
+            {"request_key": request_key, "attempt": 1, "owner": prior_owner,
+             "status": "STARTED_UNRESOLVED"},
+        )
+        evaluation._store(
+            base,
+            stage_directory / "raw-1.json",
+            {"attempt": 1, "owner": prior_owner,
+             "raw": first_raw, "sha256": first_digest},
+        )
+        if damage == "valid_prior_rejection_before_manifest":
+            evaluation._store(
+                base,
+                stage_directory / "failed-1.json",
+                {"attempt": 1, "owner": prior_owner,
+                 "status": "SCHEMA_OR_SOURCE_REJECTED"},
+            )
+        existing_raw = json.loads((stage_directory / "raw-1.json").read_bytes())
+        assert existing_raw["owner"] == prior_owner
+        successful_raw = json.dumps({
+            "throughline": "synthetic",
+            "narrative_form": "CONCEPTUAL_SEQUENCE",
+            "choice_reason": "synthetic",
+            "beats": [],
+            "characters": [],
+            "locations": [],
+            "props": [],
+        }, sort_keys=True)
+        evaluation._store(
+            base, stage_directory / "raw-2.json",
+            {"attempt": 2, "owner": winning_owner, "raw": successful_raw,
+             "sha256": hashlib.sha256(successful_raw.encode()).hexdigest()},
+        )
+        evaluation._store(
+            base, stage_directory / "started-2.json",
+            {"request_key": request_key, "attempt": 2, "owner": winning_owner,
+             "status": "STARTED_UNRESOLVED"},
+        )
+        validated = json.loads((stage_directory / "validated.json").read_bytes())
+        validated.update({"attempt": 2, "owner": winning_owner})
+        evaluation._store(base, stage_directory / "validated.json", validated)
+        if damage == "missing_prior_rejection_before_manifest":
+            with pytest.raises(chapter_host.PrivateHostStop, match="replay history"):
+                chapter_host._save_final_manifest(root, 1, bundle, scope, final_key)
+            return
     manifest_sha = chapter_host._save_final_manifest(root, 1, bundle, scope, final_key)
     chapter_host._phase(
         runner,
@@ -1481,6 +1557,59 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
             "output_manifest_sha256": manifest_sha,
         },
     )
+    if damage in {"shared_wav_both_chapters", "second_chapter_invalid_inventory"}:
+        second_bundle, second_scope = "7" * 64, "8" * 64
+        second_owner = "a" * 32
+        chapter_host._phase(runner, 7, second_bundle, second_scope, "NOT_STARTED")
+        for phase, artifacts in (
+            ("MINING_IN_FLIGHT", {}),
+            ("BRIEF_IN_FLIGHT", {}),
+            ("AWAITING_HUMAN_REVIEW", {"brief_identity": identities["brief"]}),
+            ("RESUME_IN_FLIGHT", {"brief_identity": identities["brief"]}),
+            ("ADAPTATION_IN_FLIGHT", {}),
+            ("ADAPTATION_VERIFIED", {"adaptation_identity": identities["adaptation"]}),
+            ("SCRIPT_IN_FLIGHT", {}),
+            ("SCRIPT_VERIFIED", {"script_identity": identities["chapter_script"]}),
+            ("NARRATION_IN_FLIGHT", {}),
+            (
+                "NARRATION_VERIFIED",
+                {
+                    "narration_report_identity": (
+                        report_identity
+                        if damage == "shared_wav_both_chapters"
+                        else "9" * 64
+                    )
+                },
+            ),
+        ):
+            chapter_host._phase(
+                runner, 7, second_bundle, second_scope, phase,
+                {"claim_owner": second_owner, **artifacts},
+            )
+        recovered = chapter_host.private_recovery_archive(root)
+        with tarfile.open(base / "private-host/chapter-recovery.tar", "r:") as shared:
+            recovered_manifest = json.load(
+                shared.extractfile("private-recovery-manifest.json")
+            )
+            audio_members = [
+                name for name in shared.getnames()
+                if name == "book-candidates/chapter-audio-injected_test_wav/synthetic.wav"
+            ]
+            assert len(audio_members) == 1
+            wav_entry = next(row for row in recovered_manifest["files"] if row["kind"] == "wav")
+            if damage == "shared_wav_both_chapters":
+                assert wav_entry["chapters"] == [1, 7]
+                assert [row["inventory_status"] for row in recovered_manifest["chapters"]] == [
+                    "VERIFIED", "VERIFIED"
+                ]
+            else:
+                assert wav_entry["chapters"] == [1]
+                assert [row["inventory_status"] for row in recovered_manifest["chapters"]] == [
+                    "VERIFIED", "INCOMPLETE"
+                ]
+                assert recovered_manifest["chapters"][1]["files"] == []
+                assert recovered["file_count"] > 0
+        return
     status = chapter_host.recovery_report(root)
     assert status["chapters"]["1"]["recovery_state"] == "READY"
     assert status["chapters"]["1"]["last_subphase"] == "PREPRODUCTION_READY"
