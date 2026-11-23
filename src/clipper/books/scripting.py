@@ -648,8 +648,8 @@ def _chapter_context_tokens(request: dict[str, object]) -> int:
     return count
 
 
-def _local_chapter_completion(request: dict[str, object]) -> str:
-    """Real CPU-only chapter response; exact raw tokens, no short Episode repair."""
+def _local_chapter_completion(request: dict[str, object]) -> PinnedQwenRawReceipt:
+    """Real CPU chapter response with raw-bound generated token/EOS evidence."""
     _chapter_context_tokens(request)
     # Kokoro may have been used just before the direction stage. Never retain
     # both large inference graphs when switching between generation phases.
@@ -693,7 +693,18 @@ def _local_chapter_completion(request: dict[str, object]) -> str:
     )
     if len(ids) == 0 or int(ids[-1]) not in eos:
         raise IncompleteConstrainedResponse(raw)
-    return raw
+    return PinnedQwenRawReceipt(
+        raw=raw,
+        raw_sha256=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        generated_token_count=len(ids),
+        terminal_token_id=int(ids[-1]),
+        eos_decision="EOS_VERIFIED",
+    )
+
+
+# Pin the actual implementation's identity; an injected callable must never
+# acquire production token/EOS provenance just by replacing a module attribute.
+_ORIGINAL_LOCAL_CHAPTER_COMPLETION = _local_chapter_completion
 
 
 MAX_CHAPTER_CONTEXT = 40_960
