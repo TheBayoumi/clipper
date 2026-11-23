@@ -290,7 +290,9 @@ are not part of this output archive.
 
 On success the owner receives
 `$PRIVATE_CHAPTER_RECOVERY_DIR/$CODESPACE_NAME/chapter-recovery.tar`,
-`safe-recovery-status.json`, and `retrieval-verification.json`. The
+`safe-recovery-status.json`, and `retrieval-verification.json`. A separate
+`host-cleanup-verification.json` records REST-confirmed host stop and deletion
+without inferring anything about file recovery. The
 owner independently hashes the TAR and every allowlisted member against the
 private output manifest **before** marking retrieval verified. If the
 download/hash check fails, the archive must **not** be treated as recovered;
