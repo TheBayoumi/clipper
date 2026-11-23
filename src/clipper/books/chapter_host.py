@@ -933,7 +933,7 @@ def _hybrid_producer_sha256(
         chapter_scope_sha256=scope,
         selected_bundle_sha256=bundle,
         plan_fingerprint=plan.fingerprint,
-        model_producer=whole_book.local_producer_material(),
+        model_producer=whole_book.hybrid_chapter_producer_material(),
     )
     return chapter_hybrid.digest(identity)
 
