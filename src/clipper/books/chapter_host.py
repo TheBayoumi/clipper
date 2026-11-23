@@ -664,6 +664,17 @@ def execute(
                     "BRIEF_IN_FLIGHT",
                     {"progress_path": str(progress_path)},
                 )
+            def commit_resumption() -> None:
+                if mode != "resume":
+                    raise PrivateHostStop("resume claim cannot occur in brief phase")
+                _phase(
+                    runner, number, digest, scope_sha, "RESUME_IN_FLIGHT",
+                    {
+                        "brief_identity": record["brief_identity"],
+                        "progress_path": str(progress_path),
+                    },
+                )
+
             output = chapter.evaluate_chapter(
                 runner,
                 bundle,
@@ -680,17 +691,7 @@ def execute(
                 expected_brief_identity=(
                     cast(str, record["brief_identity"]) if mode == "resume" else None
                 ),
-                on_resume_verified=(
-                    (lambda: _phase(
-                        runner, number, digest, scope_sha, "RESUME_IN_FLIGHT",
-                        {
-                            "brief_identity": record["brief_identity"],
-                            "progress_path": str(progress_path),
-                        },
-                    ))
-                    if mode == "resume"
-                    else None
-                ),
+                on_resume_verified=commit_resumption if mode == "resume" else None,
             )
             if mode == "brief":
                 if output["status"] != "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW":
