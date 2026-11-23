@@ -248,6 +248,23 @@ pathlib.Path(sys.argv[2]).write_bytes(raw)
   return 2
 )
 
+write_owner_cleanup_status() {
+  if (( owner_recovery_safe != 1 )); then return 0; fi
+  local destination="$PRIVATE_CHAPTER_RECOVERY_DIR/$CODESPACE_NAME"
+  bounded mkdir -p -m 700 -- "$destination" || return 0
+  bounded python3 -c '
+import json,sys
+stop,deleted=sys.argv[2:]
+data={"schema":"clipper-private-owner-cleanup-verification-v1",
+      "host_stop_verified":stop == "1",
+      "host_deletion_verified":deleted == "1",
+      "retrieval_status_source":"SEPARATE_OWNER_RECOVERY_VERIFICATION"}
+with open(sys.argv[1],"w",encoding="utf-8") as out:
+    json.dump(data,out,sort_keys=True)
+' "$destination/host-cleanup-verification.json" "$stop_verified" "$deletion_verified" || true
+  bounded chmod 600 "$destination/host-cleanup-verification.json" || true
+}
+
 terminate_host() {
   original_status=$?
   trap - EXIT INT TERM HUP
@@ -298,6 +315,9 @@ terminate_host() {
     fi
     bounded sleep 1 || break
   done
+  # Owner cleanup status and recovered file status are separate artifacts.
+  # This tiny local write runs AFTER destructive REST operations, never before.
+  write_owner_cleanup_status
   rm -rf -- "$session"
   if [[ "$stop_verified" == 1 && "$deletion_verified" == 1 ]]; then
     cleanup_verified=1
