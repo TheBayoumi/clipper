@@ -1848,9 +1848,7 @@ def test_same_shape_semantically_invalid_source_retries_and_recovers_with_origin
     receipt = first_failure["validation_evidence"]
     assert receipt["contract"] == chapter.REJECTION_EVIDENCE_CONTRACT
     assert receipt["request_key"] == stage_dir.name
-    assert receipt["raw_sha256"] == json.loads(
-        (stage_dir / "raw-1.json").read_bytes()
-    )["sha256"]
+    assert receipt["raw_sha256"] == json.loads((stage_dir / "raw-1.json").read_bytes())["sha256"]
 
     runner = BookOrchestrator(root)
     bundle, scope, owner = "1" * 64, "2" * 64, "3" * 32
@@ -1861,7 +1859,11 @@ def test_same_shape_semantically_invalid_source_retries_and_recovers_with_origin
         ("AWAITING_HUMAN_REVIEW", {"brief_identity": identity}),
     ):
         chapter_host._phase(
-            runner, 1, bundle, scope, phase,
+            runner,
+            1,
+            bundle,
+            scope,
+            phase,
             {"claim_owner": owner, **evidence} if phase != "NOT_STARTED" else {},
         )
     if tamper == "missing_winning_claim":
