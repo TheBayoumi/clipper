@@ -263,6 +263,8 @@ def request(
     encoding: dict[str, object] | None = None
     if isinstance(counted, dict):
         ids = counted.get("token_ids")
+        if not isinstance(ids, list):
+            raise HybridStop("hybrid effective token encoding provenance invalid")
         if (
             set(counted)
             != {
@@ -271,7 +273,6 @@ def request(
                 "chat_template_sha256",
                 "tokenizer_json_sha256",
             }
-            or not isinstance(ids, list)
             or not ids
             or len(ids) > SAFE_CONTEXT_TOKENS
             or any(type(value) is not int or value < 0 for value in ids)
