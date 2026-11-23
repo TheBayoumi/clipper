@@ -933,7 +933,11 @@ def test_selected_legacy_mining_preserves_attempt_identity_across_cold_to_warm_l
     first_entry = first_progress["progress"][0]
     first_key = first_entry["generation_stage_key"]
     assert first_key
-    assert first_progress["producer_fingerprint"] == first["producer_fingerprint"]
+    assert first_progress["producer_fingerprint"] == whole_book.content_fingerprint(
+        {**frozen_producer, "execution_provenance": "INJECTED_TEST_PRODUCER",
+         "source_boundary": verified.book.source_boundary,
+         "selected_scope_bundle_sha256": verified.bundle_sha256}
+    )
     assert first_entry["status"] == (
         "zero_candidate" if outcome == "success" else "failed"
     )
@@ -949,7 +953,7 @@ def test_selected_legacy_mining_preserves_attempt_identity_across_cold_to_warm_l
         assert observations == ["TOKENIZER_NOT_CACHED"]
         rerun_progress = json.loads(Path(rerun["progress_path"]).read_bytes())
         rerun_first = rerun_progress["progress"][0]
-        assert rerun["producer_fingerprint"] == first["producer_fingerprint"]
+        assert rerun_progress["producer_fingerprint"] == first_progress["producer_fingerprint"]
         assert rerun_first["generation_stage_key"] == first_key
         if outcome == "success":
             assert rerun_first["status"] == "zero_candidate"
