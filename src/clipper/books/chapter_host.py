@@ -580,7 +580,7 @@ def _record_verified_stage(
         raise PrivateHostStop("unsupported private chapter subphase")
     if key is not None and (identity is None or DIGEST.fullmatch(identity) is None):
         raise PrivateHostStop("private chapter stage has no verified artifact identity")
-    artifacts = {"claim_owner": claim_owner}
+    artifacts: dict[str, object] = {"claim_owner": claim_owner}
     if key is not None:
         artifacts[key] = identity
     _phase(runner, number, bundle, scope, stage, artifacts)
@@ -1156,8 +1156,9 @@ def private_recovery_archive(artifact_root: Path) -> dict[str, object]:
     root = artifact_root.resolve()
     manifests: list[dict[str, object]] = []
     files: dict[str, dict[str, object]] = {}
+    chapters = cast(dict[str, dict[str, object]], status["chapters"])
     for number in (1, 7):
-        info = status["chapters"][str(number)]
+        info = chapters[str(number)]
         if info["recovery_state"] == "NEVER_STARTED":
             continue
         manifest = _chapter_output_manifest(
@@ -1175,7 +1176,7 @@ def private_recovery_archive(artifact_root: Path) -> dict[str, object]:
             if hashlib.sha256(raw).hexdigest() != info["output_manifest_sha256"]:
                 raise PrivateHostStop("chapter output inventory digest changed")
         manifests.append(manifest)
-        for entry in manifest["files"]:
+        for entry in cast(list[dict[str, object]], manifest["files"]):
             key = str(entry["relative_path"])
             if key in files and files[key] != entry:
                 raise PrivateHostStop("private chapter recovery entries conflict")
@@ -1193,7 +1194,7 @@ def private_recovery_archive(artifact_root: Path) -> dict[str, object]:
         temporary = Path(output.name)
     try:
         with tarfile.open(temporary, mode="w", format=tarfile.PAX_FORMAT) as archive:
-            for entry in listing["files"]:
+            for entry in cast(list[dict[str, object]], listing["files"]):
                 path = root / str(entry["relative_path"])
                 raw = evaluation._read(path, narration.MAX_WAV_BYTES)
                 if hashlib.sha256(raw).hexdigest() != entry["sha256"]:
