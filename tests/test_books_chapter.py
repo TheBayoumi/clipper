@@ -18,7 +18,9 @@ from clipper.books import chapter, cli, evaluation, narration, scripting, select
 from clipper.books.orchestrator import BookOrchestrator
 
 
-def _source(tmp_path: Path) -> tuple[BookOrchestrator, Path, Path, Path, list[dict]]:
+def _source(
+    tmp_path: Path, *, zero_candidate_unit: bool = False
+) -> tuple[BookOrchestrator, Path, Path, Path, list[dict]]:
     runner, acquired, _ = ingested(tmp_path, paragraphs=12, with_image=False)
     parent = whole_book.plan_for(acquired.book)
     grouped: dict[str, int] = {}
@@ -41,7 +43,14 @@ def _source(tmp_path: Path) -> tuple[BookOrchestrator, Path, Path, Path, list[di
     section_path = tmp_path / "private-test-section.json"
     section_path.write_text(json.dumps(manifest), encoding="utf-8")
 
+    zero_target = scoped.units[1] if zero_candidate_unit else None
+
     def fake_miner(req: dict[str, object]) -> str:
+        source = json.loads(req["messages"][1]["content"])  # type: ignore[index]
+        if zero_target is not None and (
+            source["anchor"], source["word_offset"]
+        ) == (zero_target.anchor, zero_target.word_offset):
+            return json.dumps({"lessons": []})
         span = req["constraints"]["spans"][0]  # type: ignore[index]
         return json.dumps(
             {
@@ -83,33 +92,27 @@ def _input(request: dict[str, object]) -> dict:
 
 def _brief(request: dict[str, object]) -> str:
     source = _input(request)["source"]
-    evidence = source["evidence"]
+    units = source["units"]
+    gaps = source["gaps"]
     assert source["scope"]["included_units"] == 5
-    return json.dumps(
-        {
-            "argument": "An invented workshop learns through repeated observation and action.",
-            "beats": [
-                {
-                    "beat_id": f"beat-{i:02d}",
-                    "candidate_id": item["candidate_id"],
-                    "meaning": "A bounded invented observation about a workshop procedure.",
-                    "qualification": "",
-                    "essential": True,
-                    "source_role": "AUTHOR_EXAMPLE",
-                }
-                for i, item in enumerate(evidence, 1)
-            ],
-            "coverage": [
-                {
-                    "candidate_id": item["candidate_id"],
-                    "decision": "include",
-                    "reason": "Retained as part of a connected evidence-grounded chapter story.",
-                }
-                for item in evidence
-            ],
-        }
-    )
-
+    assert len(source["reading_order"]) == len(units) + len(gaps)
+    return json.dumps({
+        "argument": "An invented workshop learns through repeated observation and action.",
+        "beats": [{
+            "beat_id": f"beat-{i:02d}",
+            "unit_id": item["source_id"], "span_start": 0,
+            "span_end": min(170, len(item["text"])),
+            "quote": item["text"][:170],
+            "candidate_id": item["candidate_ids"][0] if item["candidate_ids"] else None,
+            "meaning": "An original bounded synthetic example or contrast from this source unit.",
+            "qualification": "", "essential": True, "source_role": "AUTHOR_EXAMPLE",
+        } for i, item in enumerate(units, 1)],
+        "coverage": [{
+            "source_id": item["source_id"],
+            "decision": "keep" if item["kind"] == "CANONICAL_WORK_UNIT" else "omit",
+            "reason": "Preserve this original unit in reading order or flag its source gap.",
+        } for item in [*units, *gaps]],
+    })
 
 def _adapt(request: dict[str, object]) -> str:
     context = _input(request)
@@ -268,6 +271,16 @@ def _review(tmp_path: Path, brief_id: str, brief: dict, *, reject_all: bool = Fa
                     }
                     for item in brief["beats"]
                 ],
+                "unit_decisions": [
+                    {
+                        "source_id": item["source_id"],
+                        "decision": item["decision"],
+                        "review": "accept_coverage",
+                        "reason": "Reviewer assessed original unit or gap and its declared treatment.",
+                        "qualifier_quote": "",
+                    }
+                    for item in brief["coverage"]
+                ],
             }
         ),
         encoding="utf-8",
@@ -387,11 +400,21 @@ def test_injected_real_wav_geometry_and_immutable_audio_replay(
     assert first_run["audio_provenance"] == "INJECTED_TEST_WAV"
     assert first_run["timing_basis"] == "MEASURED_WAV"
     assert first_run["duration_seconds"] == 32
-    assert audio.call_count == 4
+    assert audio.call_count == 2  # Four utterances share two text/voice cache keys.
     reports = list((runner.root / "book-candidates").rglob("narration-report-*.json"))
     assert len(reports) == 1
     report = json.loads(reports[0].read_bytes())
     assert len(report["records"]) == 4
+    assert [(x["scene_id"], x["utterance"], x["kind"], x["speaker_id"])
+            for x in report["records"]] == [
+        ("scene-01", 0, "narration", "narrator"),
+        ("scene-02", 0, "narration", "narrator"),
+        ("scene-02", 1, "invented_dialogue", "worker"),
+        ("scene-03", 0, "narration", "narrator"),
+    ]
+    assert len({x["tts_request_sha256"] for x in report["records"]}) == 2
+    assert all(x["duration_seconds"] == 8.0 for x in report["records"])
+    assert all(x["sample_rate"] == 24000 for x in report["records"])
     assert report["resolved_model_commit"] is None
     assert report["resolved_commit_verified"] is False
     never = Mock(side_effect=AssertionError("must not regenerate"))
@@ -417,7 +440,7 @@ def test_injected_real_wav_geometry_and_immutable_audio_replay(
     assert estimated["timing_basis"] == "NO_AUDIO_ESTIMATE"
     assert estimated["direction_identity"] != first_run["direction_identity"]
     assert estimated["script_identity"] == first_run["script_identity"]
-    assert audio.call_count == 4
+    assert audio.call_count == 2
 
 
 def test_human_review_abstains_before_adaptation_and_no_provider_called(tmp_path: Path) -> None:
@@ -517,38 +540,42 @@ def test_failed_brief_attempts_are_recorded_and_not_repeated(
         "wrong-beat-id",
         "empty-argument",
         "single-beat",
+        "changed-quote",
     ],
 )
 def test_brief_rejects_source_and_coverage_forgery(mutation: str) -> None:
-    source = [{"candidate_id": f"candidate-{i}"} for i in range(3)]
+    units = [{
+        "source_id": f"unit-{i}",
+        "text": (
+            f"Invented example unit {i} describes an observable contrast "
+            "between two synthetic checklist actions."
+        ),
+        "candidate_ids": [f"candidate-{i}"],
+    } for i in range(3)]
     fake = {
         "argument": "A narrow example",
-        "beats": [
-            {
-                "beat_id": f"beat-{i + 1:02d}",
-                "candidate_id": f"candidate-{i}",
-                "meaning": "One grounded observation",
-                "qualification": "",
-                "essential": True,
-                "source_role": "AUTHOR_EXAMPLE",
-            }
-            for i in range(3)
-        ],
-        "coverage": [
-            {
-                "candidate_id": f"candidate-{i}",
-                "decision": "include",
-                "reason": "This individual beat is substantive",
-            }
-            for i in range(3)
-        ],
+        "beats": [{
+            "beat_id": f"beat-{i + 1:02d}",
+            "unit_id": unit["source_id"], "span_start": 0,
+            "span_end": len(unit["text"]), "quote": unit["text"],
+            "candidate_id": unit["candidate_ids"][0],
+            "meaning": "A narrow original example", "qualification": "",
+            "essential": True, "source_role": "AUTHOR_EXAMPLE",
+        } for i, unit in enumerate(units)],
+        "coverage": [{
+            "source_id": unit["source_id"], "decision": "keep",
+            "reason": "Retain the original contrast explicitly.",
+        } for unit in units],
     }
     if mutation == "unknown-candidate":
         fake["beats"][0]["candidate_id"] = "not-pinned"
     elif mutation == "missing-coverage":
         fake["coverage"].pop()
     elif mutation == "duplicate-beat":
-        fake["beats"][1]["candidate_id"] = "candidate-0"
+        fake["beats"][1]["unit_id"] = fake["beats"][0]["unit_id"]
+        fake["beats"][1]["quote"] = fake["beats"][0]["quote"]
+        fake["beats"][1]["span_end"] = fake["beats"][0]["span_end"]
+        fake["beats"][1]["candidate_id"] = fake["beats"][0]["candidate_id"]
     elif mutation == "wrong-essential":
         fake["beats"][0]["essential"] = "yes"
     elif mutation == "wrong-beat-id":
@@ -557,8 +584,10 @@ def test_brief_rejects_source_and_coverage_forgery(mutation: str) -> None:
         fake["argument"] = " "
     elif mutation == "single-beat":
         fake["beats"] = fake["beats"][:1]
+    elif mutation == "changed-quote":
+        fake["beats"][0]["quote"] = "Invented unsupported assertion"
     with pytest.raises(chapter.ChapterStop):
-        chapter._brief_validate(fake, source, _plan())
+        chapter._brief_validate(fake, units, [], _plan())
 
 
 @pytest.mark.parametrize(
@@ -745,6 +774,7 @@ def test_chapter_script_graph_fiction_and_qualification_fail_closed(mutation: st
         "orphan-scene",
         "missing-scene",
         "no-state-change",
+        "reordered-array",
     ],
 )
 def test_continuity_and_timing_are_enforced_without_visual_generation(mutation: str) -> None:
@@ -822,6 +852,8 @@ def test_continuity_and_timing_are_enforced_without_visual_generation(mutation: 
     elif mutation == "no-state-change":
         shots["shots"][0]["state_after"] = {"card": "blank"}
         shots["shots"][1]["state_before"] = {"card": "blank"}
+    elif mutation == "reordered-array":
+        shots["shots"][0], shots["shots"][1] = shots["shots"][1], shots["shots"][0]
     with pytest.raises(chapter.ChapterStop):
         chapter._direction_validate(shots, script, adaptation, timings, _plan())
 
@@ -870,3 +902,78 @@ def test_cli_chapter_mode_does_not_leak_private_model_keys_or_source_ids(
     raw = list((runner.root / "book-candidates/brief").rglob("raw-*.json"))
     assert len(raw) == 2
     assert marker in raw[0].read_text(encoding="utf-8")
+
+
+
+def test_zero_candidate_source_example_remains_in_brief_and_human_unit_review(
+    tmp_path: Path
+) -> None:
+    runner, ref, progress, section, candidates = _source(
+        tmp_path, zero_candidate_unit=True
+    )
+    assert len(candidates) == 4  # One original work unit mined no lesson.
+    plan = _plan(adaptation_cpu=False, script_cpu=False, direction_cpu=False)
+    first, brief = _first_brief(runner, ref, progress, section, plan)
+    source_path = next(
+        (runner.root / "book-candidates/chapter-evaluations").rglob("source-ledger.json")
+    )
+    source = json.loads(source_path.read_bytes())
+    assert len(source["units"]) == 5
+    assert source["zero_candidate_units"] == 1
+    assert len(source["reading_order"]) == 5
+    zero = next(unit for unit in source["units"] if unit["mined_candidate_count"] == 0)
+    assert zero["candidate_ids"] == []
+    assert "synthetic learning example" in zero["text"]
+    assert zero["unit_fingerprint"] in zero["source_id"]
+    assert zero["text_sha256"] == hashlib.sha256(zero["text"].encode()).hexdigest()
+    assert zero["original_parent_ordinal"] >= 0
+    beat = next(item for item in brief["beats"] if item["unit_id"] == zero["source_id"])
+    assert beat["candidate_id"] is None
+    assert beat["quote"] == zero["text"][beat["span_start"]:beat["span_end"]]
+    assert {entry["source_id"] for entry in brief["coverage"]} == {
+        entry["source_id"] for entry in source["units"]
+    }
+    review = _review(tmp_path, first["brief_identity"], brief)
+    data = json.loads(review.read_text())
+    incomplete = dict(data)
+    incomplete["unit_decisions"] = data["unit_decisions"][:-1]
+    review.write_text(json.dumps(incomplete), encoding="utf-8")
+    with pytest.raises(chapter.ChapterStop, match="did not assess"):
+        chapter.evaluate_chapter(
+            runner, ref, progress, section, review_file=review, plan=plan,
+            brief_completion=_brief,
+        )
+    data["unit_decisions"][1]["review"] = "reject_coverage"
+    review.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(chapter.ChapterStop, match="rejected chapter unit coverage"):
+        chapter.evaluate_chapter(
+            runner, ref, progress, section, review_file=review, plan=plan,
+            brief_completion=_brief,
+        )
+    data["unit_decisions"][1]["review"] = "accept_coverage"
+    review.write_text(json.dumps(data), encoding="utf-8")
+    accepted = chapter.evaluate_chapter(
+        runner, ref, progress, section, review_file=review, plan=plan,
+        brief_completion=_brief,
+    )
+    assert accepted["status"] == "AWAITING_EXPLICIT_CPU_CHAPTER_ADAPTATION"
+    assert accepted["human_attested_beat_count"] == 5
+
+
+def test_entire_chapter_request_and_output_preflight_abstains_before_provider(
+    tmp_path: Path
+) -> None:
+    provider = Mock(side_effect=AssertionError("must not reach weights"))
+    with pytest.raises(chapter.ChapterStop, match="context"):
+        chapter._stage(
+            tmp_path / "private-test",
+            "brief",
+            {"schema": chapter.BRIEF_SCHEMA,
+             "source": {"units": [{"source_id": "unit-original",
+                                   "text": "synthetic" * 6_000}]}},
+            _plan(max_new_tokens=8192),
+            lambda _: {"should": "never validate"},
+            provider,
+        )
+    provider.assert_not_called()
+    assert not list(tmp_path.rglob("started-*.json"))

@@ -16,16 +16,24 @@ catalog/Atomic Habits pilot, short `Episode` validator or sentence compactor.
    recovery status and `authorization_status=unverified` are preserved.
    A complete section does **not** authenticate a book or cover the whole book.
    No new text, edition or mini-book is forged.
-2. **ChapterBrief**: a **Qwen-generated** chapter argument, original example/
-   assertion beats, essential flags, candid qualifications and an explicit
-   include/omit reason for **every** mined candidate. Raw drafts are privately
-   retained; deterministic source IDs/coverage are checked. Review state:
-   `MINED_UNREVIEWED`, **semantic entailment not proved**.
-3. **Human beat review checkpoint**: a private human reviews each generated
-   beat and records support/rejection, reason and exact source qualifier
-   (if applicable). All source beats need decisions; fewer than two supported
-   beats = valid abstention. This is **assisted**, not automated semantic proof
-   or publication approval. No adaptation is run before this checkpoint.
+2. **ChapterBrief**: a **Qwen-generated** chapter argument from **every original
+   canonical work unit in the exact scoped source order** (including units
+   that mined *zero* candidates), plus source-gap markers for skipped/empty/
+   unrecovered images and candidate annotations. Each beat cites an exact
+   original `unit_id + character span + verbatim quote`; mined candidate IDs
+   are optional annotations, never the source boundary. Unit-level
+   `keep/compress/omit + reason` covers **every** unit and gap; omission
+   cannot be implicit. The source ledger retains parent ordinal, section,
+   anchor, original source path, evidence origin, canonical text/hash,
+   recovery and source-permission warnings. `MINED_UNREVIEWED` remains
+   explicit; an exact quote is **not semantic proof**.
+3. **Human source-unit and beat review checkpoint**: a private human must
+   explicitly review every unit's **and skipped marker's** proposed coverage
+   decision, including omissions, then attest or reject each generated beat,
+   its exact span and source qualifications. Rejecting any unit coverage
+   blocks adaptation and requires a revised brief; fewer than two supported
+   beats is valid abstention. This is **assisted**, not semantic proof or
+   publishing approval.
 4. **AdaptationPlan**: generated causal through-line, explicit narrative form
    and its reason, and per-beat `keep/compress/omit` with qualification and
    reason. Essential supported beats cannot be silently omitted. Invented
@@ -95,7 +103,7 @@ explicit stages for the **later** privately authorized real run; they are
 
 ```json
 {
-  "schema": "clipper-chapter-preproduction-run-v1",
+  "schema": "clipper-chapter-preproduction-run-v2",
   "brief_cpu": true,
   "adaptation_cpu": true,
   "script_cpu": true,
@@ -118,22 +126,36 @@ human beat review. The review file is:
 
 ```json
 {
-  "schema": "clipper-chapter-human-beat-review-v1",
+  "schema": "clipper-chapter-human-beat-review-v2",
   "brief_sha256": "<exact generated brief identity returned by the CLI>",
   "reviewer": "<private human identifier>",
   "decisions": [
     {
       "beat_id": "<every brief beat ID, once>",
       "decision": "support_attested",
-      "reason": "<specific source-support rationale>",
-      "qualifier_quote": "<exact original context quote or empty>"
+      "reason": "<specific original unit/span support rationale>",
+      "qualifier_quote": "<exact original source-unit text quote or empty>"
+    }
+  ],
+  "unit_decisions": [
+    {
+      "source_id": "<every original source unit or gap, once>",
+      "decision": "keep",
+      "review": "accept_coverage",
+      "reason": "<why this treatment or explicit omission is acceptable>",
+      "qualifier_quote": "<exact original unit text quote or empty>"
     }
   ]
 }
 ```
 
-At least two source-supported beats must be retained, each explicit.
-A `reject` decision prevents use as an adapted sourced fact. The real
+Every work unit and unrecovered source marker requires its own matching
+`unit_decisions` entry and must use the brief's exact decision
+(`keep/compress/omit`); skipped/unrecovered gaps must be `omit` with a
+reason. A reviewer can mark `reject_coverage` to fail closed rather than
+silently approve an omission. All beats must preserve original text span
+offsets and exact quotes. At least two source-attested beats must be
+retained; a rejected beat cannot become an adapted sourced fact. The real
 chapter preproduction run (after review and private route verification) is:
 
 ```sh
@@ -152,9 +174,17 @@ The text adapter is the existing exact
 seed 42 with unchanged sampling settings. The chapter's per-stage
 `max_new_tokens` is separate from the existing miner's 960-token limit.
 Configuration enforces **2–20 scenes**, **130–2400 total words**, **2–24
-candidate beats**, **1–4 shots per scene**, **1024–8192 output tokens per
-call**, **1–2 attempts per each of four text stages**, and **60–900 seconds
-chapter runtime**. With example plan: max **8 Qwen generation calls** +
+source beats and original source-unit/gap coverage entries**, **1–4 shots
+per scene**, **1024–8192 output tokens per call**, **1–2 attempts per
+each of four text stages**, and **60–900 seconds chapter runtime**.
+No source unit is truncated: if the complete original source ledger
+exceeds **25,000 bytes**, or if the full serialized prompt (conservatively
+bounded by UTF-8 bytes, with a **512-token chat-template reserve**) plus
+output reservation exceeds the pinned **40,960-token** context, the stage
+fails *before* any model call; narrow the original canonical section.
+The byte-based upper bound avoids model/tokenizer initialization during
+coding but is deliberately conservative rather than a tokenizer-exact
+runtime benchmark. With example plan: max **8 Qwen generation calls** +
 **24 Kokoro utterance calls** (8 scenes × narration plus up to 2 dialogue).
 These are upper bounds, not guarantees of adequate context or timely finish.
 An external private host must enforce CPU, offline snapshot cache, memory,
@@ -166,7 +196,10 @@ and blocks silent restart after interrupted/failed attempts. Validated
 stage outputs are independently rechecked on cache replay. Script and
 direction cache identities are input+model+stage+limit+provenance bound;
 fake test-producer output is isolated from actual model caches. Fake and
-actual WAVs also have separate caches. All private traces and source
+actual WAVs also have separate caches. Repeated narration/dialogue text
+is synthesized once per identical voice/text request and reused; every
+utterance separately records scene ID, sequence, narrator/character ID,
+fiction/narration kind, request hash, WAV hash and measured duration. All private traces and source
 quotations remain under `book-candidates/` (private artifact root).
 CLI stdout emits only allowed statuses, counts, hashes, source-auth
 labels and runtime metrics. Never expose source text, book titles,
