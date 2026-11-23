@@ -6,7 +6,9 @@ import copy
 import hashlib
 import io
 import json
+import subprocess
 import sys
+import tarfile
 import wave
 from pathlib import Path
 from unittest.mock import Mock
@@ -1209,6 +1211,143 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
     assert archive["file_count"] >= 20
     assert archive["files_retrieved"] is False
     assert archive["host_cleanup_verified"] is False
+
+    # ACTUAL OWNER CONSUMER: feed both fully host-produced hybrid chapter
+    # archives (including synthetic WAV) through the unchanged Python verifier
+    # embedded in the owner watchdog, not a surrogate manifest-only validator.
+    owner_script = (
+        Path(__file__).resolve().parents[1] / "scripts/private_chapter_external_supervisor.sh"
+    )
+    owner_shell = owner_script.read_text(encoding="utf-8")
+    owner_verifier = owner_shell.split("if bounded python3 -c '\\n", 1)[1].split(
+        '\\n\\' "$session/recovery-created.json"', 1
+    )[0]
+    archive_path = private / "private-host/chapter-recovery.tar"
+    with tarfile.open(archive_path, "r:") as recovered_tar:
+        original_members = {
+            member.name: recovered_tar.extractfile(member).read()
+            for member in recovered_tar.getmembers()
+        }
+
+    def owner_accepts(payloads: dict[str, bytes]) -> tuple[int, dict[str, object] | None]:
+        test_archive = tmp_path / "actual-hybrid-owner-verifier.tar"
+        with tarfile.open(test_archive, "w") as output_tar:
+            for name, payload in payloads.items():
+                member = tarfile.TarInfo(name)
+                member.size = len(payload)
+                member.mode = 0o600
+                output_tar.addfile(member, io.BytesIO(payload))
+        receipt = {
+            "schema": "clipper-private-chapter-recovery-created-v1",
+            "archive_sha256": hashlib.sha256(test_archive.read_bytes()).hexdigest(),
+            "manifest_sha256": hashlib.sha256(
+                payloads["private-recovery-manifest.json"]
+            ).hexdigest(),
+        }
+        receipt_path = tmp_path / "actual-hybrid-owner-receipt.json"
+        report_path = tmp_path / "actual-hybrid-owner-result.json"
+        status_path = tmp_path / "actual-hybrid-owner-safe.json"
+        receipt_path.write_bytes(evaluation._json_bytes(receipt))
+        report_path.unlink(missing_ok=True)
+        process = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                owner_verifier,
+                str(receipt_path),
+                str(test_archive),
+                str(report_path),
+                str(status_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        return (
+            process.returncode,
+            json.loads(report_path.read_bytes()) if report_path.exists() else None,
+        )
+
+    status, verified_owner = owner_accepts(original_members)
+    assert status == 0, "owner must accept ACTUAL two-chapter hybrid host archive"
+    assert verified_owner is not None
+    assert verified_owner["chapters"] == {
+        "1": "READY_OUTPUTS_VERIFIED",
+        "7": "READY_OUTPUTS_VERIFIED",
+    }
+    assert verified_owner["output_scope"] == "COMPLETE"
+    assert verified_owner["recovered_file_count"] == archive["file_count"]
+    original_listing = json.loads(original_members["private-recovery-manifest.json"])
+    for chapter_number in (1, 7):
+        inventory = original_listing["chapters"][chapter_number == 7]
+        assert inventory["chapter"] == chapter_number
+        assert inventory["source_mode"] == "DIRECT_SOURCE_HYBRID"
+        assert {"review_record", "human_review", "final_result", "wav", "source_ledger"} <= {
+            item["kind"] for item in inventory["files"]
+        }
+        reports = [item for item in inventory["files"] if item["kind"] == "narration_report"]
+        assert len(reports) == 1
+        narration = json.loads(original_members[reports[0]["relative_path"]])
+        assert narration["records"]
+        for record in narration["records"]:
+            wav_path = "book-candidates/" + record["wav_relative_path"]
+            assert hashlib.sha256(original_members[wav_path]).hexdigest() == record["sha256"]
+
+    def fully_rebind_metadata(changed: dict[str, bytes]) -> dict[str, bytes]:
+        """Rehash hostile TAR/manifest/status/receipt, leaving semantic links untrusted."""
+        listing = json.loads(changed["private-recovery-manifest.json"])
+        safe = json.loads(changed["safe-recovery-status.json"])
+        for row in listing["files"]:
+            content = changed[row["relative_path"]]
+            row["sha256"] = hashlib.sha256(content).hexdigest()
+            row["bytes"] = len(content)
+        for scope in listing["chapters"]:
+            for row in scope["files"]:
+                content = changed[row["relative_path"]]
+                row["sha256"] = hashlib.sha256(content).hexdigest()
+                row["bytes"] = len(content)
+            manuscript = {k: v for k, v in scope.items() if k != "inventory_status"}
+            safe["chapters"][str(scope["chapter"])]["output_manifest_sha256"] = (
+                hashlib.sha256(evaluation._json_bytes(manuscript)).hexdigest()
+            )
+        changed["safe-recovery-status.json"] = evaluation._json_bytes(safe)
+        listing["runtime_status_sha256"] = hashlib.sha256(
+            changed["safe-recovery-status.json"]
+        ).hexdigest()
+        changed["private-recovery-manifest.json"] = evaluation._json_bytes(listing)
+        return changed
+
+    missing = dict(original_members)
+    missing.pop("book-candidates/private-host/chapter-1-brief-record.json")
+    assert owner_accepts(missing)[0] != 0
+    for attack in ("wrong_mode", "review_record", "source_ledger", "final_result",
+                   "human_review", "wav"):
+        forged = dict(original_members)
+        listing = json.loads(forged["private-recovery-manifest.json"])
+        if attack == "wrong_mode":
+            listing["chapters"][0]["source_mode"] = "LEGACY_MINED_CHAPTER"
+            forged["private-recovery-manifest.json"] = evaluation._json_bytes(listing)
+        else:
+            kind = "review_record" if attack == "review_record" else attack
+            item = next(row for row in listing["chapters"][0]["files"] if row["kind"] == kind)
+            path = item["relative_path"]
+            if attack == "wav":
+                forged[path] += b"tampered-real-narration-reference"
+            else:
+                evidence = json.loads(forged[path])
+                if attack == "human_review":
+                    evidence["review"]["reviewer"] = "Unauthorized archive-side editor"
+                elif attack == "source_ledger":
+                    evidence["identity"]["selected_bundle_sha256"] = "0" * 64
+                else:
+                    evidence["producer_identity_sha256"] = "0" * 64
+                forged[path] = evaluation._json_bytes(evidence)
+        fully_rebind_metadata(forged)
+        assert owner_accepts(forged)[0] != 0, (
+            attack,
+            "even a fully rehashed hybrid archive must fail the source/review/final binding",
+        )
 
     # Corrupted plan records must not become recoverable post-review phases,
     # even if a caller presents the historical valid stage identifiers.
