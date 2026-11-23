@@ -1119,6 +1119,8 @@ def _verified_rejected_attempt(
                     "ValueError",
                     "JSONDecodeError",
                     "UnicodeDecodeError",
+                    # load_strict_reply raises this ValueError subclass for duplicate keys.
+                    "BookMiningError",
                     "TypeError",
                     "KeyError",
                     "RecursionError",
