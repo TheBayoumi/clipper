@@ -920,6 +920,25 @@ def execute(
     }
 
 
+def _hybrid_producer_sha256(
+    ledger: dict[str, Any],
+    scope: str,
+    bundle: str,
+    plan: chapter.ChapterPlan,
+) -> str:
+    """Recompute the same producer/runtime binding as the CPU stage consumer."""
+    chapter_hybrid.validate_ledger(ledger)
+    identity = chapter_hybrid.producer_identity(
+        ledger_sha256=ledger["ledger_sha256"],
+        chapter_scope_sha256=scope,
+        selected_bundle_sha256=bundle,
+        plan_fingerprint=plan.fingerprint,
+        model_producer=whole_book.local_producer_material(),
+    )
+    return chapter_hybrid.digest(identity)
+
+
+
 def _claim_hybrid_resume(
     runner: BookOrchestrator,
     number: int,
@@ -985,6 +1004,7 @@ def _hybrid_review_packet(
             "chapter": number,
             "brief_identity": summary["brief_identity"],
             "source_ledger_sha256": summary["source_ledger_sha256"],
+            "producer_identity_sha256": summary["producer_identity_sha256"],
             "review_template": {
                 "schema": chapter_hybrid.REVIEW_SCHEMA,
                 "brief_sha256": brief["brief_sha256"],
@@ -1070,6 +1090,7 @@ def _execute_hybrid(
                         "plan_fingerprint",
                         "plan",
                         "chapter_scope_identity",
+                        "producer_identity_sha256",
                     }
                     or record["chapter_mode"] != "DIRECT_SOURCE_HYBRID"
                     or record["chapter"] != number
@@ -1086,6 +1107,10 @@ def _execute_hybrid(
                     != prior["artifacts"].get("source_ledger_sha256")
                     or record["argument_identity"] != prior["artifacts"].get("argument_identity")
                     or record["audit_identities"] != prior["artifacts"].get("audit_identities")
+                    or record["producer_identity_sha256"]
+                    != prior["artifacts"].get("producer_identity_sha256")
+                    or not isinstance(record["producer_identity_sha256"], str)
+                    or DIGEST.fullmatch(record["producer_identity_sha256"]) is None
                     or not isinstance(record["brief_identity"], str)
                     or DIGEST.fullmatch(record["brief_identity"]) is None
                     or not isinstance(record["audit_identities"], list)
@@ -1096,6 +1121,24 @@ def _execute_hybrid(
                     )
                 ):
                     raise PrivateHostStop("hybrid resume requires exact immutable brief journal")
+                ledger_path = (
+                    private
+                    / "chapter-evaluations"
+                    / record["chapter_scope_identity"]
+                    / "source-ledger.json"
+                )
+                ledger_bytes = evaluation._read(
+                    ledger_path, chapter_hybrid.MAX_SOURCE_BYTES + 1024
+                )
+                ledger_obj = whole_book.load_strict_reply(ledger_bytes)
+                if (
+                    not isinstance(ledger_obj, dict)
+                    or hashlib.sha256(ledger_bytes).hexdigest()
+                    != record["source_ledger_sha256"]
+                    or _hybrid_producer_sha256(ledger_obj, scope, bundle_sha, plan)
+                    != record["producer_identity_sha256"]
+                ):
+                    raise PrivateHostStop("hybrid resume producer/runtime identity changed")
                 identity = record["brief_identity"]
                 if block["review_file"] is None:
                     outcomes[str(number)] = {
@@ -1158,6 +1201,7 @@ def _execute_hybrid(
                     "source_ledger_sha256": output["source_ledger_sha256"],
                     "argument_identity": output["argument_identity"],
                     "audit_identities": output["audit_identities"],
+                    "producer_identity_sha256": output["producer_identity_sha256"],
                     "plan_fingerprint": plan.fingerprint,
                     "plan": {
                         "schema": chapter.PLAN_SCHEMA,
@@ -1180,6 +1224,7 @@ def _execute_hybrid(
                                 "source_ledger_sha256",
                                 "argument_identity",
                                 "audit_identities",
+                                "producer_identity_sha256",
                                 "chapter_mode",
                                 "chapter_scope_identity",
                             )
@@ -1627,10 +1672,11 @@ def _hybrid_output_manifest(
     audit_ids = reference.get("audit_identities")
     key = reference.get("chapter_scope_identity")
     source_sha = reference.get("source_ledger_sha256")
+    producer_sha = reference.get("producer_identity_sha256")
     if (
         not all(
             isinstance(v, str) and DIGEST.fullmatch(v)
-            for v in (brief_id, argument_id, key, source_sha)
+            for v in (brief_id, argument_id, key, source_sha, producer_sha)
         )
         or not isinstance(audit_ids, list)
         or not 1 <= len(audit_ids) <= chapter_hybrid.MAX_AUDITS
@@ -1647,6 +1693,7 @@ def _hybrid_output_manifest(
         or saved.get("argument_identity") != argument_id
         or saved.get("audit_identities") != audit_ids
         or saved.get("source_ledger_sha256") != source_sha
+        or saved.get("producer_identity_sha256") != producer_sha
         or saved.get("bundle_sha256") != bundle
         or saved.get("scope_sha256") != scope
         or saved.get("chapter") != number
@@ -1669,7 +1716,8 @@ def _hybrid_output_manifest(
         or ledger_obj.get("identity", {}).get("selected_bundle_sha256") != bundle
     ):
         raise PrivateHostStop("hybrid recoverable source differs from selected original")
-    chapter_hybrid.validate_ledger(ledger_obj)
+    if _hybrid_producer_sha256(ledger_obj, scope, bundle, plan) != producer_sha:
+        raise PrivateHostStop("hybrid recovered producer/runtime identity changed")
     files: list[dict[str, object]] = [
         _private_output_entry(
             root, ledger_path, number, "source_ledger", chapter_hybrid.MAX_SOURCE_BYTES + 1024
@@ -1727,6 +1775,7 @@ def _hybrid_output_manifest(
         or packet.get("brief_identity") != brief_id
         or packet.get("brief_sha256") != brief["brief_sha256"]
         or packet.get("source_ledger_sha256") != source_sha
+        or packet.get("producer_identity_sha256") != producer_sha
     ):
         raise PrivateHostStop("hybrid source review packet changed after human gate")
     files.append(_private_output_entry(root, packet_path, number, "review", 1_000_000))
@@ -1734,6 +1783,7 @@ def _hybrid_output_manifest(
         "brief_identity": brief_id,
         "argument_identity": argument_id,
         "audit_identities": audit_ids,
+        "producer_identity_sha256": producer_sha,
     }
     derived: dict[str, str] = {}
     for row in records:
@@ -1792,6 +1842,7 @@ def _hybrid_output_manifest(
             or record.get("source_mining_provenance") != "DIRECT_SOURCE_NO_MINING"
             or record.get("chapter_scope_identity") != key
             or record.get("source_ledger_sha256") != source_sha
+            or record.get("producer_identity_sha256") != producer_sha
             or record.get("selected_source_bundle_sha256") != bundle
             or record.get("parent_original_reverified_on_host") is not False
             or record.get("publish_eligible") is not False
