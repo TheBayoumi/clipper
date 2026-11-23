@@ -1302,7 +1302,8 @@ def test_resumed_host_interruption_reports_precise_last_subphase_and_verified_pr
     ],
 )
 def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
-    tmp_path: Path, damage: str,
+    tmp_path: Path,
+    damage: str,
 ) -> None:
     """Synthetic outputs only; all archive members are independently content-bound."""
     import io
