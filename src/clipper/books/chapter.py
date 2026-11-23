@@ -162,7 +162,7 @@ def _brief_validate(
 
 def _review_validate(
     raw: object, brief: dict[str, Any], brief_identity: str, evidence: list[dict[str, Any]]
-) -> tuple[dict[str, Any], dict[str, dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     doc = _shape(raw, {"schema", "brief_sha256", "reviewer", "decisions"}, "chapter review schema")
     if doc["schema"] != REVIEW_SCHEMA or doc["brief_sha256"] != brief_identity:
         raise ChapterStop("chapter human review does not match generated brief")
