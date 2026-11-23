@@ -951,7 +951,14 @@ for stage in ssh cp; do
     exit 2
   fi
 done
-bootstrap_identity || exit 2
+state="$(bootstrap_state)" || {
+  echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_FINAL_REST_UNAVAILABLE" >&2
+  exit 2
+}
+if [[ "$state" != "Available" ]]; then
+  echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_READY_STATE_LOST" >&2
+  exit 2
+fi
 bootstrap_epoch=0
 recovery_allowed=1
 
