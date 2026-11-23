@@ -2279,7 +2279,7 @@ def evaluate_hybrid_chapter(
         chapter_scope_sha256=manifest_sha,
         selected_bundle_sha256=verified.bundle_sha256,
         plan_fingerprint=limits.fingerprint,
-        model_producer=whole_book.local_producer_material(),
+        model_producer=whole_book.hybrid_chapter_producer_material(),
     )
     producer_sha256 = chapter_hybrid.digest(producer)
     summary["producer_identity_sha256"] = producer_sha256
