@@ -177,7 +177,12 @@ def _work_from_blocks(blocks: tuple[ReadingBlock, ...], expected: whole_book.Wor
                 research_link_status=block.research_link_status,
                 text=" ".join(words[offset : offset + mining.CHUNK_WORDS]),
             )
-            if derived != original or type(original.ordinal) is not int:
+            if (
+                type(original.ordinal) is not int
+                or type(original.word_offset) is not int
+                or original.word_offset < 0
+                or derived != original
+            ):
                 raise SelectedSourceStop(
                     "selected original source unit does not match reading block"
                 )

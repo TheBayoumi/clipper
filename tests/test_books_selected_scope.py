@@ -88,6 +88,7 @@ def test_selected_chapter_is_private_full_source_order_and_host_requires_no_pare
         "missing_unit",
         "reordered_units",
         "bool_ordinal",
+        "bool_word_offset",
         "parent_unit_count",
         "changed_gap",
         "scope_digest",
@@ -143,6 +144,21 @@ def test_selected_scope_rejects_canonical_and_rehashed_tampering(
         )
     elif mutation == "bool_ordinal":
         data["work_plan"]["units"][0]["ordinal"] = True
+    elif mutation == "bool_word_offset":
+        # Python considers False == 0: confirm a self-consistent rehashed
+        # work plan cannot exploit the dataclass equality comparison.
+        data["work_plan"]["units"][0]["word_offset"] = False
+        unit_record = data["work_plan"]
+        rebuilt = whole_book.WorkPlan(
+            book_fingerprint=unit_record["book_fingerprint"],
+            units=tuple(whole_book.WorkUnit(**item) for item in unit_record["units"]),
+            skipped=tuple(unit_record["skipped"]),
+            section_ids=tuple(unit_record["section_ids"]),
+            parent_plan_fingerprint=unit_record["parent_plan_fingerprint"],
+            parent_total_units=unit_record["parent_total_units"],
+            excluded_units=unit_record["excluded_units"],
+        )
+        unit_record["fingerprint"] = rebuilt.fingerprint
     elif mutation == "parent_unit_count":
         data["work_plan"]["parent_total_units"] = 1
     elif mutation == "changed_gap":
