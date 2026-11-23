@@ -47,9 +47,10 @@ def _source(
 
     def fake_miner(req: dict[str, object]) -> str:
         source = json.loads(req["messages"][1]["content"])  # type: ignore[index]
-        if zero_target is not None and (
-            source["anchor"], source["word_offset"]
-        ) == (zero_target.anchor, zero_target.word_offset):
+        if zero_target is not None and (source["anchor"], source["word_offset"]) == (
+            zero_target.anchor,
+            zero_target.word_offset,
+        ):
             return json.dumps({"lessons": []})
         span = req["constraints"]["spans"][0]  # type: ignore[index]
         return json.dumps(
@@ -96,23 +97,35 @@ def _brief(request: dict[str, object]) -> str:
     gaps = source["gaps"]
     assert source["scope"]["included_units"] == 5
     assert len(source["reading_order"]) == len(units) + len(gaps)
-    return json.dumps({
-        "argument": "An invented workshop learns through repeated observation and action.",
-        "beats": [{
-            "beat_id": f"beat-{i:02d}",
-            "unit_id": item["source_id"], "span_start": 0,
-            "span_end": min(170, len(item["text"])),
-            "quote": item["text"][:170],
-            "candidate_id": item["candidate_ids"][0] if item["candidate_ids"] else None,
-            "meaning": "An original bounded synthetic example or contrast from this source unit.",
-            "qualification": "", "essential": True, "source_role": "AUTHOR_EXAMPLE",
-        } for i, item in enumerate(units, 1)],
-        "coverage": [{
-            "source_id": item["source_id"],
-            "decision": "keep" if item["kind"] == "CANONICAL_WORK_UNIT" else "omit",
-            "reason": "Preserve this original unit in reading order or flag its source gap.",
-        } for item in [*units, *gaps]],
-    })
+    return json.dumps(
+        {
+            "argument": "An invented workshop learns through repeated observation and action.",
+            "beats": [
+                {
+                    "beat_id": f"beat-{i:02d}",
+                    "unit_id": item["source_id"],
+                    "span_start": 0,
+                    "span_end": min(170, len(item["text"])),
+                    "quote": item["text"][:170],
+                    "candidate_id": item["candidate_ids"][0] if item["candidate_ids"] else None,
+                    "meaning": "An original bounded synthetic example or contrast from this source unit.",
+                    "qualification": "",
+                    "essential": True,
+                    "source_role": "AUTHOR_EXAMPLE",
+                }
+                for i, item in enumerate(units, 1)
+            ],
+            "coverage": [
+                {
+                    "source_id": item["source_id"],
+                    "decision": "keep" if item["kind"] == "CANONICAL_WORK_UNIT" else "omit",
+                    "reason": "Preserve this original unit in reading order or flag its source gap.",
+                }
+                for item in [*units, *gaps]
+            ],
+        }
+    )
+
 
 def _adapt(request: dict[str, object]) -> str:
     context = _input(request)
@@ -405,8 +418,9 @@ def test_injected_real_wav_geometry_and_immutable_audio_replay(
     assert len(reports) == 1
     report = json.loads(reports[0].read_bytes())
     assert len(report["records"]) == 4
-    assert [(x["scene_id"], x["utterance"], x["kind"], x["speaker_id"])
-            for x in report["records"]] == [
+    assert [
+        (x["scene_id"], x["utterance"], x["kind"], x["speaker_id"]) for x in report["records"]
+    ] == [
         ("scene-01", 0, "narration", "narrator"),
         ("scene-02", 0, "narration", "narrator"),
         ("scene-02", 1, "invented_dialogue", "worker"),
@@ -544,28 +558,42 @@ def test_failed_brief_attempts_are_recorded_and_not_repeated(
     ],
 )
 def test_brief_rejects_source_and_coverage_forgery(mutation: str) -> None:
-    units = [{
-        "source_id": f"unit-{i}",
-        "text": (
-            f"Invented example unit {i} describes an observable contrast "
-            "between two synthetic checklist actions."
-        ),
-        "candidate_ids": [f"candidate-{i}"],
-    } for i in range(3)]
+    units = [
+        {
+            "source_id": f"unit-{i}",
+            "text": (
+                f"Invented example unit {i} describes an observable contrast "
+                "between two synthetic checklist actions."
+            ),
+            "candidate_ids": [f"candidate-{i}"],
+        }
+        for i in range(3)
+    ]
     fake = {
         "argument": "A narrow example",
-        "beats": [{
-            "beat_id": f"beat-{i + 1:02d}",
-            "unit_id": unit["source_id"], "span_start": 0,
-            "span_end": len(unit["text"]), "quote": unit["text"],
-            "candidate_id": unit["candidate_ids"][0],
-            "meaning": "A narrow original example", "qualification": "",
-            "essential": True, "source_role": "AUTHOR_EXAMPLE",
-        } for i, unit in enumerate(units)],
-        "coverage": [{
-            "source_id": unit["source_id"], "decision": "keep",
-            "reason": "Retain the original contrast explicitly.",
-        } for unit in units],
+        "beats": [
+            {
+                "beat_id": f"beat-{i + 1:02d}",
+                "unit_id": unit["source_id"],
+                "span_start": 0,
+                "span_end": len(unit["text"]),
+                "quote": unit["text"],
+                "candidate_id": unit["candidate_ids"][0],
+                "meaning": "A narrow original example",
+                "qualification": "",
+                "essential": True,
+                "source_role": "AUTHOR_EXAMPLE",
+            }
+            for i, unit in enumerate(units)
+        ],
+        "coverage": [
+            {
+                "source_id": unit["source_id"],
+                "decision": "keep",
+                "reason": "Retain the original contrast explicitly.",
+            }
+            for unit in units
+        ],
     }
     if mutation == "unknown-candidate":
         fake["beats"][0]["candidate_id"] = "not-pinned"
@@ -904,13 +932,10 @@ def test_cli_chapter_mode_does_not_leak_private_model_keys_or_source_ids(
     assert marker in raw[0].read_text(encoding="utf-8")
 
 
-
 def test_zero_candidate_source_example_remains_in_brief_and_human_unit_review(
-    tmp_path: Path
+    tmp_path: Path,
 ) -> None:
-    runner, ref, progress, section, candidates = _source(
-        tmp_path, zero_candidate_unit=True
-    )
+    runner, ref, progress, section, candidates = _source(tmp_path, zero_candidate_unit=True)
     assert len(candidates) == 4  # One original work unit mined no lesson.
     plan = _plan(adaptation_cpu=False, script_cpu=False, direction_cpu=False)
     first, brief = _first_brief(runner, ref, progress, section, plan)
@@ -929,7 +954,7 @@ def test_zero_candidate_source_example_remains_in_brief_and_human_unit_review(
     assert zero["original_parent_ordinal"] >= 0
     beat = next(item for item in brief["beats"] if item["unit_id"] == zero["source_id"])
     assert beat["candidate_id"] is None
-    assert beat["quote"] == zero["text"][beat["span_start"]:beat["span_end"]]
+    assert beat["quote"] == zero["text"][beat["span_start"] : beat["span_end"]]
     assert {entry["source_id"] for entry in brief["coverage"]} == {
         entry["source_id"] for entry in source["units"]
     }
@@ -940,20 +965,35 @@ def test_zero_candidate_source_example_remains_in_brief_and_human_unit_review(
     review.write_text(json.dumps(incomplete), encoding="utf-8")
     with pytest.raises(chapter.ChapterStop, match="did not assess"):
         chapter.evaluate_chapter(
-            runner, ref, progress, section, review_file=review, plan=plan,
+            runner,
+            ref,
+            progress,
+            section,
+            review_file=review,
+            plan=plan,
             brief_completion=_brief,
         )
     data["unit_decisions"][1]["review"] = "reject_coverage"
     review.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(chapter.ChapterStop, match="rejected chapter unit coverage"):
         chapter.evaluate_chapter(
-            runner, ref, progress, section, review_file=review, plan=plan,
+            runner,
+            ref,
+            progress,
+            section,
+            review_file=review,
+            plan=plan,
             brief_completion=_brief,
         )
     data["unit_decisions"][1]["review"] = "accept_coverage"
     review.write_text(json.dumps(data), encoding="utf-8")
     accepted = chapter.evaluate_chapter(
-        runner, ref, progress, section, review_file=review, plan=plan,
+        runner,
+        ref,
+        progress,
+        section,
+        review_file=review,
+        plan=plan,
         brief_completion=_brief,
     )
     assert accepted["status"] == "AWAITING_EXPLICIT_CPU_CHAPTER_ADAPTATION"
@@ -961,16 +1001,17 @@ def test_zero_candidate_source_example_remains_in_brief_and_human_unit_review(
 
 
 def test_entire_chapter_request_and_output_preflight_abstains_before_provider(
-    tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     provider = Mock(side_effect=AssertionError("must not reach weights"))
     with pytest.raises(chapter.ChapterStop, match="context"):
         chapter._stage(
             tmp_path / "private-test",
             "brief",
-            {"schema": chapter.BRIEF_SCHEMA,
-             "source": {"units": [{"source_id": "unit-original",
-                                   "text": "synthetic" * 6_000}]}},
+            {
+                "schema": chapter.BRIEF_SCHEMA,
+                "source": {"units": [{"source_id": "unit-original", "text": "synthetic" * 6_000}]},
+            },
             _plan(max_new_tokens=8192),
             lambda _: {"should": "never validate"},
             provider,

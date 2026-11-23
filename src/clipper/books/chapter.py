@@ -139,33 +139,49 @@ def _full_source_scope(
     for work, record in zip(scoped.units, ledger["progress"], strict=True):
         source_id = f"unit-{work.fingerprint}"
         ids = by_unit.pop((work.anchor, work.word_offset, work.text_sha256), [])
-        units.append({
-            "source_id": source_id, "kind": "CANONICAL_WORK_UNIT",
-            "original_parent_ordinal": work.ordinal,
-            "unit_fingerprint": work.fingerprint, "anchor": work.anchor,
-            "section_id": work.section_id, "source_path": work.source_path,
-            "unit_word_offset": work.word_offset,
-            "evidence_field": work.evidence_field,
-            "origin": work.origin, "review_status": work.review_status,
-            "research_link_status": work.research_link_status,
-            "asset_sha256": work.asset_sha256,
-            "text_sha256": work.text_sha256,
-            "text": work.text, "candidate_ids": ids,
-            "mining_status": record["status"],
-            "mined_candidate_count": record["candidate_count"],
-        })
+        units.append(
+            {
+                "source_id": source_id,
+                "kind": "CANONICAL_WORK_UNIT",
+                "original_parent_ordinal": work.ordinal,
+                "unit_fingerprint": work.fingerprint,
+                "anchor": work.anchor,
+                "section_id": work.section_id,
+                "source_path": work.source_path,
+                "unit_word_offset": work.word_offset,
+                "evidence_field": work.evidence_field,
+                "origin": work.origin,
+                "review_status": work.review_status,
+                "research_link_status": work.research_link_status,
+                "asset_sha256": work.asset_sha256,
+                "text_sha256": work.text_sha256,
+                "text": work.text,
+                "candidate_ids": ids,
+                "mining_status": record["status"],
+                "mined_candidate_count": record["candidate_count"],
+            }
+        )
     if by_unit:
         raise ChapterStop("candidate annotation is not bound to an included source unit")
     gaps: list[dict[str, Any]] = []
     for offset, skipped in enumerate(scoped.skipped):
-        gaps.append({
-            "source_id": "gap-" + content_fingerprint({
-                "parent_plan": scoped.parent_plan_fingerprint,
-                "skip_position": offset, "metadata": skipped,
-            }), "kind": "UNRECOVERED_OR_EMPTY_SOURCE_MARKER",
-            **skipped, "text": "", "candidate_ids": [],
-            "mining_status": "SKIPPED_UNRESOLVED",
-        })
+        gaps.append(
+            {
+                "source_id": "gap-"
+                + content_fingerprint(
+                    {
+                        "parent_plan": scoped.parent_plan_fingerprint,
+                        "skip_position": offset,
+                        "metadata": skipped,
+                    }
+                ),
+                "kind": "UNRECOVERED_OR_EMPTY_SOURCE_MARKER",
+                **skipped,
+                "text": "",
+                "candidate_ids": [],
+                "mining_status": "SKIPPED_UNRESOLVED",
+            }
+        )
     # Use the actual faithful block traversal, not a guessed ordinal for gaps.
     grouped: dict[tuple[str, str, str], list[str]] = {}
     for unit in units:
@@ -231,10 +247,22 @@ def _brief_validate(
     included: set[str] = set()
     seen_spans: set[tuple[str, int, int]] = set()
     for index, entry in enumerate(beats, 1):
-        beat = _shape(entry, {
-            "beat_id", "unit_id", "span_start", "span_end", "quote",
-            "candidate_id", "meaning", "qualification", "essential", "source_role",
-        }, "chapter source-span beat schema")
+        beat = _shape(
+            entry,
+            {
+                "beat_id",
+                "unit_id",
+                "span_start",
+                "span_end",
+                "quote",
+                "candidate_id",
+                "meaning",
+                "qualification",
+                "essential",
+                "source_role",
+            },
+            "chapter source-span beat schema",
+        )
         unit_id = beat["unit_id"]
         unit = unit_index.get(unit_id)
         if (
@@ -245,7 +273,8 @@ def _brief_validate(
             raise ChapterStop("chapter beat does not refer to a retained original source unit")
         start, stop = beat["span_start"], beat["span_end"]
         if (
-            type(start) is not int or type(stop) is not int
+            type(start) is not int
+            or type(stop) is not int
             or not 0 <= start < stop <= len(unit["text"])
             or not 20 <= stop - start <= 700
             or beat["quote"] != unit["text"][start:stop]
@@ -256,7 +285,8 @@ def _brief_validate(
         if candidate_id is not None and candidate_id not in unit["candidate_ids"]:
             raise ChapterStop("chapter beat candidate annotation not bound to original unit")
         if type(beat["essential"]) is not bool or beat["source_role"] not in {
-            "BOOK_ASSERTION", "AUTHOR_EXAMPLE",
+            "BOOK_ASSERTION",
+            "AUTHOR_EXAMPLE",
         }:
             raise ChapterStop("chapter beat source role or essential flag invalid")
         _words(beat["meaning"], "chapter beat meaning missing", 500)
@@ -277,7 +307,8 @@ def _review_validate(
     gaps: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     doc = _shape(
-        raw, {"schema", "brief_sha256", "reviewer", "decisions", "unit_decisions"},
+        raw,
+        {"schema", "brief_sha256", "reviewer", "decisions", "unit_decisions"},
         "chapter human review schema",
     )
     if doc["schema"] != REVIEW_SCHEMA or doc["brief_sha256"] != brief_identity:
@@ -288,20 +319,24 @@ def _review_validate(
     checked: set[str] = set()
     for entry in _items(doc["unit_decisions"], len(covered), "human source coverage limit"):
         decision = _shape(
-            entry, {"source_id", "review", "decision", "reason", "qualifier_quote"},
+            entry,
+            {"source_id", "review", "decision", "reason", "qualifier_quote"},
             "human original-source unit review schema",
         )
         sid = decision["source_id"]
         if (
-            sid not in covered or sid in checked
+            sid not in covered
+            or sid in checked
             or decision["decision"] != covered[sid]
             or decision["review"] not in {"accept_coverage", "reject_coverage"}
         ):
             raise ChapterStop("human source coverage decision identity mismatch")
         _words(decision["reason"], "human source coverage explanation required", 600)
         quote = decision["qualifier_quote"]
-        if not isinstance(quote, str) or len(quote) > 400 or (
-            quote and quote not in sources[sid]["text"]
+        if (
+            not isinstance(quote, str)
+            or len(quote) > 400
+            or (quote and quote not in sources[sid]["text"])
         ):
             raise ChapterStop("human source coverage qualifier is not original text")
         if decision["review"] != "accept_coverage":
@@ -313,12 +348,14 @@ def _review_validate(
     decisions: dict[str, dict[str, Any]] = {}
     for item in _items(doc["decisions"], len(beats), "chapter beat review size mismatch"):
         choice = _shape(
-            item, {"beat_id", "decision", "reason", "qualifier_quote"},
+            item,
+            {"beat_id", "decision", "reason", "qualifier_quote"},
             "chapter human beat review schema",
         )
         bid = choice["beat_id"]
         if (
-            bid not in beats or bid in decisions
+            bid not in beats
+            or bid in decisions
             or choice["decision"] not in {"support_attested", "reject"}
         ):
             raise ChapterStop("chapter human review has duplicate or unknown beat decisions")
@@ -326,7 +363,8 @@ def _review_validate(
         qualifier = choice["qualifier_quote"]
         context = sources[beats[bid]["unit_id"]]["text"]
         if (
-            not isinstance(qualifier, str) or len(qualifier) > 400
+            not isinstance(qualifier, str)
+            or len(qualifier) > 400
             or (qualifier and qualifier not in context)
         ):
             raise ChapterStop("human beat qualifier must quote original source unit")
@@ -617,8 +655,10 @@ def _direction_validate(
     if index != len(shots) or abs(previous_end - timings[-1]["end_seconds"]) > 0.02:
         raise ChapterStop("chapter direction includes orphan shots or incomplete timeline")
     canonical = [
-        shot for scene in script["scenes"]
-        for shot in shots if shot["scene_id"] == scene["scene_id"]
+        shot
+        for scene in script["scenes"]
+        for shot in shots
+        if shot["scene_id"] == scene["scene_id"]
     ]
     if any(a is not b for a, b in zip(shots, canonical, strict=True)):
         raise ChapterStop("chapter shot output is not in canonical source scene order")
@@ -643,7 +683,8 @@ def _request(stage: str, payload: dict[str, Any], plan: ChapterPlan) -> dict[str
                 {
                     "beat_id": "beat-01",
                     "unit_id": "<exact canonical unit-... source_id>",
-                    "span_start": 0, "span_end": 70,
+                    "span_start": 0,
+                    "span_end": 70,
                     "quote": "<exact original unit text substring>",
                     "candidate_id": "<optional mined candidate ID or null>",
                     "meaning": "<narrow source-grounded argument/example/contrast>",
@@ -736,19 +777,19 @@ def _request(stage: str, payload: dict[str, Any], plan: ChapterPlan) -> dict[str
         + (
             "Cover every original source unit and gap with explicit reasons; "
             "tie each sourced beat to exact original unit offsets and quote bytes. "
-            if stage == "brief" else ""
+            if stage == "brief"
+            else ""
         )
         + "Never convert invented illustrations into author history. "
         "Human semantic review and permission checks remain mandatory."
     )
     user_message = json.dumps(
         {"input": payload, "response_contract": contract_shapes[stage]},
-        ensure_ascii=False, sort_keys=True,
+        ensure_ascii=False,
+        sort_keys=True,
     )
     bound = (
-        len(system_message.encode("utf-8"))
-        + len(user_message.encode("utf-8"))
-        + CHAT_TOKEN_RESERVE
+        len(system_message.encode("utf-8")) + len(user_message.encode("utf-8")) + CHAT_TOKEN_RESERVE
     )
     if bound + plan.max_new_tokens > MAX_CONTEXT_TOKENS:
         raise ChapterStop(
@@ -758,7 +799,8 @@ def _request(stage: str, payload: dict[str, Any], plan: ChapterPlan) -> dict[str
     return {
         "model": scripting.SCRIPT_MODEL,
         "revision": scripting.SCRIPT_REVISION,
-        "seed": 42, "max_new_tokens": plan.max_new_tokens,
+        "seed": 42,
+        "max_new_tokens": plan.max_new_tokens,
         "messages": [
             {"role": "system", "content": system_message},
             {"role": "user", "content": user_message},
@@ -913,8 +955,7 @@ def _narrate(
     for scene in script["scenes"]:
         utterances = [("narration", scene["narration"], "narrator")]
         utterances += [
-            ("invented_dialogue", line["text"], line["speaker_id"])
-            for line in scene["dialogue"]
+            ("invented_dialogue", line["text"], line["speaker_id"]) for line in scene["dialogue"]
         ]
         for index, (kind, text, speaker_id) in enumerate(utterances):
             item = Scene(headline=scene["scene_id"], narration=text)
@@ -1017,16 +1058,18 @@ def evaluate_chapter(
         )
     units, gaps, reading_order = _full_source_scope(book, scoped, ledger, candidates)
     root = runner.root / "book-candidates"
-    chapter_key = content_fingerprint({
-        "contract": PLAN_SCHEMA, "plan_fingerprint": scoped.fingerprint,
-        "progress_sha256": evaluation._sha(evaluation._read(progress_path, 20_000_000)),
-        "section_manifest_sha256": manifest_sha,
-        "run_plan": limits.fingerprint,
-    })
+    chapter_key = content_fingerprint(
+        {
+            "contract": PLAN_SCHEMA,
+            "plan_fingerprint": scoped.fingerprint,
+            "progress_sha256": evaluation._sha(evaluation._read(progress_path, 20_000_000)),
+            "section_manifest_sha256": manifest_sha,
+            "run_plan": limits.fingerprint,
+        }
+    )
     base = root / "chapter-evaluations" / chapter_key
     candidate_to_unit = {
-        candidate_id: unit["source_id"]
-        for unit in units for candidate_id in unit["candidate_ids"]
+        candidate_id: unit["source_id"] for unit in units for candidate_id in unit["candidate_ids"]
     }
     evidence = [
         {
@@ -1042,7 +1085,8 @@ def evaluate_chapter(
             "source_context": item["_evaluation_context"]["source_context"],
             "evidence_field": item["_evaluation_context"]["evidence_field"],
             "review_status": item["review_status"],
-        } for item in candidates
+        }
+        for item in candidates
     ]
     source = {
         "schema": "clipper-chapter-source-ledger-v2",
@@ -1062,8 +1106,11 @@ def evaluate_chapter(
         "zero_candidate_units": ledger["counts"]["zero_candidate"],
         "progress_sha256": evaluation._sha(evaluation._read(progress_path, 20_000_000)),
         "source_review": "MINED_UNREVIEWED",
-        "parent_full_book_complete": False, "publish_eligible": False,
-        "units": units, "gaps": gaps, "reading_order": reading_order,
+        "parent_full_book_complete": False,
+        "publish_eligible": False,
+        "units": units,
+        "gaps": gaps,
+        "reading_order": reading_order,
         "evidence": evidence,
     }
     if len(evaluation._json_bytes(source)) > MAX_SOURCE_BYTES:
