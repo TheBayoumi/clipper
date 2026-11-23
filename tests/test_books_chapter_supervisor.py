@@ -794,9 +794,10 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
     if scenario == "identity_swap":
         assert "api -X DELETE" not in actions
         assert "api -X POST" not in actions
-    if scenario in ("never_ready_original_clock", "bootstrap_over_execution_reserve") or scenario.startswith(
-        "foreign_available_"
-    ):
+    if scenario in (
+        "never_ready_original_clock",
+        "bootstrap_over_execution_reserve",
+    ) or scenario.startswith("foreign_available_"):
         assert "codespace ssh" not in actions
         assert "codespace cp" not in actions
         assert "external-supervisor-heartbeat-envelope" not in actions
