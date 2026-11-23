@@ -1638,7 +1638,10 @@ def _hybrid_output_manifest(
     key = reference.get("chapter_scope_identity")
     source_sha = reference.get("source_ledger_sha256")
     if (
-        not all(isinstance(v, str) and DIGEST.fullmatch(v) for v in (brief_id, argument_id, key, source_sha))
+        not all(
+            isinstance(v, str) and DIGEST.fullmatch(v)
+            for v in (brief_id, argument_id, key, source_sha)
+        )
         or not isinstance(audit_ids, list)
         or not 1 <= len(audit_ids) <= chapter_hybrid.MAX_AUDITS
         or any(not isinstance(v, str) or DIGEST.fullmatch(v) is None for v in audit_ids)
