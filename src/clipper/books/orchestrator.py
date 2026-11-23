@@ -21,6 +21,7 @@ from clipper.stage_contracts import (
 from . import (
     acquisition,
     constrained,
+    evaluation,
     faithful,
     ingest,
     mining,
@@ -1518,6 +1519,35 @@ class BookOrchestrator:
                     raise BookRunError("cached narration WAV hash mismatch on DAG resume")
                 narration.validated_wav(audio, cached=True)
         return tracks
+
+    def evaluate_candidate(
+        self,
+        ref_path: Path,
+        *,
+        progress_path: Path | None = None,
+        review_file: Path | None = None,
+        options: evaluation.EvaluationOptions = evaluation.EvaluationOptions(),
+        recorded_responses: dict[str, object] | None = None,
+        response_file_sha256: str | None = None,
+        mine_completion: Callable[[dict[str, object]], str] | None = None,
+        script_completion: Callable[[dict[str, object]], str] | None = None,
+        direction_completion: Callable[[dict[str, object]], str] | None = None,
+        narration_producer: Callable[[str, str], bytes] | None = None,
+    ) -> dict[str, object]:
+        """Private source-bound assisted previsual evaluation; never catalog or video."""
+        return evaluation.evaluate_candidate(
+            self,
+            ref_path,
+            progress_path=progress_path,
+            review_file=review_file,
+            options=options,
+            recorded_responses=recorded_responses,
+            response_file_sha256=response_file_sha256,
+            mine_completion=mine_completion,
+            script_completion=script_completion,
+            direction_completion=direction_completion,
+            narration_producer=narration_producer,
+        )
 
     def require_unported(
         self, stage: str, *, source_hash: str, dependency_hashes: tuple[str, ...]

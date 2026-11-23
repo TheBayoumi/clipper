@@ -24,7 +24,7 @@ WINDOW_UNITS = 32
 MAX_PLAN_UNITS = 20_000
 MAX_RECORDED_REPLY_BYTES = 16_384
 LOCAL_COMPLETION_SCHEMA = "clipper-book-local-completion-v1"
-LOCAL_PRODUCER_CONTRACT = "clipper-book-cpu-qwen-blank-safe-public-callback-v7"
+LOCAL_PRODUCER_CONTRACT = "clipper-book-cpu-qwen-evidence-support-public-callback-v8"
 LOCAL_GENERATION = {
     "model": scripting.SCRIPT_MODEL,
     "revision": scripting.SCRIPT_REVISION,
@@ -269,10 +269,17 @@ def _request_for_identity(
                     "field, even when multiple occurrences quote the same text. "
                     "IDs are safe lowercase slugs matching "
                     "^[a-z0-9]+(?:-[a-z0-9]+)*$ and must not repeat in one reply. "
-                    "The full source text remains available for context; the "
-                    "bounded choice menu identifies the only eligible evidence "
-                    "occurrences. If no supported claim fits, return empty lessons. "
-                    'Write a specific claim supported by the supplied "text", '
+                    "The full source text remains available for context and uncertainty, "
+                    "but the exact selected evidence entry ALONE must directly "
+                    "support the proposed claim. Do not use unrelated nearby "
+                    "sentences to justify a stronger claim. Preserve limiting "
+                    "words, exceptions, doubts, and counterexamples from surrounding "
+                    "context; never generalize beyond the observed example. "
+                    "Prefer a narrow useful mechanism or testable action over "
+                    "trivia or a generic topic. Abstain with empty lessons rather "
+                    "than invent facts, smooth over contradictions, or force three. "
+                    "The bounded choice menu identifies eligible occurrences. "
+                    'Write a specific claim directly supported by its "evidence", '
                     "not a generic topic or invented fact. Keep the topic, "
                     "hook angle, and visual action grounded in that claim. "
                     'The "evidence" must reproduce the selected entry exactly '

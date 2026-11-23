@@ -236,8 +236,10 @@ def _write_atomic(path: Path, data: bytes) -> None:
     temp.replace(path)
 
 
-def _script_request(config: NicheConfig) -> dict[str, object]:
-    return {
+def _script_request(
+    config: NicheConfig, *, evaluation_context: dict[str, object] | None = None
+) -> dict[str, object]:
+    request = {
         "model": SCRIPT_MODEL,
         "revision": SCRIPT_REVISION,
         "seed": 42,
@@ -294,6 +296,22 @@ def _script_request(config: NicheConfig) -> dict[str, object]:
             },
         ],
     }
+    if evaluation_context is not None:
+        # Evaluation evidence is NOT an approved-facts catalog. Keep it separate
+        # and content-addressed in the canonical Qwen script request/cache key.
+        messages = cast(list[dict[str, str]], request["messages"])
+        messages[0]["content"] += (
+            " This is a private assisted evaluation, NOT an approved book fact. "
+            "Use only the reviewer-attested narrow claim and exact evidence/source "
+            "context; preserve all uncertainty and counterexamples. Do not convert "
+            "the source into a stronger generalization or invent narrative facts. "
+            "Do not imply editorial approval or permission to publish."
+        )
+        user = json.loads(messages[1]["content"])
+        user["approved_facts"] = []
+        user["evaluation_source_context"] = evaluation_context
+        messages[1]["content"] = json.dumps(user, ensure_ascii=False, sort_keys=True)
+    return request
 
 
 class IncompleteConstrainedResponse(NicheVideoError):
@@ -706,11 +724,13 @@ def _compact_book_sentences(candidate: object) -> tuple[object, bool]:
     return result, result != candidate
 
 
-def _script_fingerprint(config: NicheConfig) -> str:
+def _script_fingerprint(
+    config: NicheConfig, *, evaluation_context: dict[str, object] | None = None
+) -> str:
     return _fingerprint(
         {
             "contract": BOOK_EDIT_CONTRACT if config.format == "book_lesson" else SCRIPT_CONTRACT,
-            "request": _script_request(config),
+            "request": _script_request(config, evaluation_context=evaluation_context),
         }
     )
 
@@ -767,9 +787,10 @@ def generate_episode(
     cache_root: Path,
     *,
     completion: Callable[[dict[str, object]], str] | None = None,
+    evaluation_context: dict[str, object] | None = None,
 ) -> tuple[Episode, str]:
-    original = _script_request(config)
-    digest = _script_fingerprint(config)
+    original = _script_request(config, evaluation_context=evaluation_context)
+    digest = _script_fingerprint(config, evaluation_context=evaluation_context)
     path = cache_root / "scripts" / f"{digest}.json"
     if path.is_file():
         return Episode.from_json(json.loads(path.read_text(encoding="utf-8"))), digest
