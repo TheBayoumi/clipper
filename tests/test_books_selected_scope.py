@@ -95,6 +95,7 @@ def test_selected_chapter_is_private_full_source_order_and_host_requires_no_pare
         "fake_approval",
         "invalid_chapter_number",
         "different_parent_fingerprint",
+        "duplicate_declared_section",
     ],
 )
 def test_selected_scope_rejects_canonical_and_rehashed_tampering(
@@ -116,7 +117,9 @@ def test_selected_scope_rejects_canonical_and_rehashed_tampering(
         with pytest.raises(selected_scope.SelectedSourceStop):
             selected_scope.import_chapter(runner.root, path)
         return
-    if mutation == "raw_parent":
+    if mutation == "duplicate_declared_section":
+        data["linked_section_ids"] = [data["chapter_section_ids"][0]]
+    elif mutation == "raw_parent":
         data["parent_ref"]["raw_sha256"] = "f" * 64
     elif mutation == "source_text":
         data["reading_blocks"][0]["text"] = "Invented changed source"

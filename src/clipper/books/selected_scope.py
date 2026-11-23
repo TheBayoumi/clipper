@@ -219,8 +219,12 @@ def export_chapter(
         for sid in dict.fromkeys(block.section_id for block in faithful.reading_blocks(book))
         if sid in set((*chapter_section_ids, *linked_section_ids))
     )
-    if set(order) != set((*chapter_section_ids, *linked_section_ids)):
-        raise SelectedSourceStop("original linked/chapter section selection is incomplete")
+    if (
+        set(order) != set((*chapter_section_ids, *linked_section_ids))
+        or tuple(sid for sid in order if sid in chapter_section_ids) != chapter_section_ids
+        or tuple(sid for sid in order if sid in linked_section_ids) != linked_section_ids
+    ):
+        raise SelectedSourceStop("original linked/chapter section order is incomplete or changed")
     work = whole_book.plan_for(book, section_ids=order)
     if not work.section_ids or len(work.units) + len(work.skipped) > 64:
         raise SelectedSourceStop("selected chapter exceeds finite original-unit budget")
@@ -438,6 +442,8 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
             or any(not isinstance(x, str) or not x for x in [*ids, *linked])
             or len(set([*ids, *linked])) != len(ids) + len(linked)
             or set([*ids, *linked]) != set(work.section_ids)
+            or tuple(sid for sid in work.section_ids if sid in ids) != tuple(ids)
+            or tuple(sid for sid in work.section_ids if sid in linked) != tuple(linked)
             or work.fingerprint != record["fingerprint"]
             or work.book_fingerprint != identity["parent_book_fingerprint"]
             or type(work.parent_total_units) is not int
