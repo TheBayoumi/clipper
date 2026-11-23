@@ -36,6 +36,7 @@ MAX_SOURCE_UNITS = 64
 ENTITY_ID = re.compile(r"[a-z][a-z0-9-]{1,60}\Z")
 TEXT_STAGES = ("brief", "adaptation", "chapter_script", "chapter_direction")
 TEXT_ARTIFACT_CONTRACT = "clipper-chapter-validated-text-artifact-v4"
+REJECTION_EVIDENCE_CONTRACT = "clipper-chapter-original-validator-rejection-v1"
 
 
 class ChapterStop(ValueError):
@@ -982,6 +983,40 @@ def _verified_owner(root: Path, marker: Path, key: str, attempt: int, owner: str
         raise ChapterStop("chapter cached attempt owner mismatch")
 
 
+def _validator_rejection_digest(error: BaseException) -> str:
+    """Commit only a digest of the original source-bound validation failure."""
+    return hashlib.sha256(
+        (
+            f"{type(error).__module__}.{type(error).__qualname__}:"
+            + str(error)[:4096]
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _rejection_evidence(
+    directory: Path,
+    request_key: str,
+    attempt: int,
+    owner: str,
+    raw_sha256: str,
+    error: BaseException,
+) -> dict[str, object]:
+    """Bind the real rejection to the exact claim, request and private raw bytes."""
+    claim_digest = hashlib.sha256(
+        evaluation._read(directory / f"started-{attempt}.json", 2048)
+    ).hexdigest()
+    return {
+        "contract": REJECTION_EVIDENCE_CONTRACT,
+        "request_key": request_key,
+        "attempt": attempt,
+        "owner": owner,
+        "raw_sha256": raw_sha256,
+        "claim_sha256": claim_digest,
+        "failure_type": type(error).__name__,
+        "failure_sha256": _validator_rejection_digest(error),
+    }
+
+
 def _verified_rejected_attempt(
     root: Path,
     directory: Path,
@@ -990,8 +1025,10 @@ def _verified_rejected_attempt(
     max_attempts: int,
     validate: Callable[[object], dict[str, Any]],
     expected_owner: str | None = None,
+    *,
+    recovery_evidence_only: bool = False,
 ) -> None:
-    """Verify the whole recorded rejection before a retry or later cache replay."""
+    """Verify original rejection, or its immutable source-bound runtime receipt."""
     try:
         if (
             type(attempt) is not int
@@ -1042,28 +1079,68 @@ def _verified_rejected_attempt(
             raise ChapterStop("chapter prior raw attempt identity mismatch")
 
         failed_bytes = evaluation._read(directory / f"failed-{attempt}.json", 2048)
-        failed = _shape(
-            whole_book.load_strict_reply(failed_bytes),
-            {"attempt", "owner", "status"},
-            "chapter prior rejection schema",
-        )
+        failed: dict[str, Any] = whole_book.load_strict_reply(failed_bytes)
+        fields = {"attempt", "owner", "status"}
+        has_evidence = isinstance(failed, dict) and set(failed) == fields | {
+            "validation_evidence"
+        }
         if (
-            failed_bytes != evaluation._json_bytes(failed)
+            not isinstance(failed, dict)
+            or (set(failed) != fields and not has_evidence)
+            or failed_bytes != evaluation._json_bytes(failed)
             or type(failed["attempt"]) is not int
             or failed["attempt"] != attempt
             or failed["owner"] != owner
             or failed["status"] != "SCHEMA_OR_SOURCE_REJECTED"
         ):
             raise ChapterStop("chapter prior attempt was not a retry-eligible rejection")
+        if has_evidence:
+            evidence = _shape(
+                failed["validation_evidence"],
+                {
+                    "contract",
+                    "request_key",
+                    "attempt",
+                    "owner",
+                    "raw_sha256",
+                    "claim_sha256",
+                    "failure_type",
+                    "failure_sha256",
+                },
+                "chapter original-validator rejection receipt invalid",
+            )
+            if (
+                evidence["contract"] != REJECTION_EVIDENCE_CONTRACT
+                or evidence["request_key"] != key
+                or type(evidence["attempt"]) is not int
+                or evidence["attempt"] != attempt
+                or evidence["owner"] != owner
+                or evidence["raw_sha256"] != raw_digest
+                or evidence["claim_sha256"] != hashlib.sha256(claim_bytes).hexdigest()
+                or evidence["failure_type"]
+                not in {"ValueError", "TypeError", "KeyError", "RecursionError", "ChapterStop"}
+                or not isinstance(evidence["failure_sha256"], str)
+                or re.fullmatch(r"[0-9a-f]{64}", evidence["failure_sha256"]) is None
+            ):
+                raise ChapterStop("chapter prior original rejection evidence changed")
+        elif recovery_evidence_only:
+            # Old status-only failures remain replayable by the real validator,
+            # but cannot be independently attested by offline recovery.
+            raise ChapterStop("chapter original rejection proof unavailable for recovery")
 
-        # A rejected response cannot be retrospectively relabeled as rejected
-        # when it passes the same deterministic source/schema validator.
-        try:
-            validate(whole_book.load_strict_reply(response))
-        except (ValueError, TypeError, KeyError, RecursionError):
-            pass
-        else:
-            raise ChapterStop("chapter prior recorded rejection is not reproducible")
+        if not recovery_evidence_only:
+            # Production replay must still independently rerun the ORIGINAL
+            # source-bound validator; a receipt never replaces this check.
+            try:
+                validate(whole_book.load_strict_reply(response))
+            except (ValueError, TypeError, KeyError, RecursionError) as error:
+                if has_evidence and (
+                    evidence["failure_type"] != type(error).__name__
+                    or evidence["failure_sha256"] != _validator_rejection_digest(error)
+                ):
+                    raise ChapterStop("chapter rejection differs from original validator")
+            else:
+                raise ChapterStop("chapter prior recorded rejection is not reproducible")
     except (ValueError, TypeError, KeyError, OSError, RecursionError, OverflowError):
         raise ChapterStop("chapter prior attempt history cannot be verified") from None
 
@@ -1098,6 +1175,8 @@ def _verified_text_artifact(
     validate: Callable[[object], dict[str, Any]],
     max_attempts: int,
     max_new_tokens: int,
+    *,
+    recovery_evidence_only: bool = False,
 ) -> tuple[dict[str, Any], str]:
     """Require exact raw, validated bytes, schema and exclusive owner on replay."""
     try:
@@ -1138,7 +1217,15 @@ def _verified_text_artifact(
         ):
             raise ChapterStop("chapter cached text artifact identity mismatch")
         for prior in range(1, attempt):
-            _verified_rejected_attempt(root, directory, request_key, prior, max_attempts, validate)
+            _verified_rejected_attempt(
+                root,
+                directory,
+                request_key,
+                prior,
+                max_attempts,
+                validate,
+                recovery_evidence_only=recovery_evidence_only,
+            )
         _verified_owner(
             root,
             directory / f"started-{attempt}.json",
@@ -1369,11 +1456,23 @@ def _stage(
             raise ChapterStop("actual chapter generation token/EOS receipt unavailable")
         try:
             result = validate(whole_book.load_strict_reply(response))
-        except (ValueError, TypeError, KeyError, RecursionError):
+        except (ValueError, TypeError, KeyError, RecursionError) as error:
             evaluation._store(
                 root,
                 directory / f"failed-{index}.json",
-                {"attempt": index, "owner": owner, "status": "SCHEMA_OR_SOURCE_REJECTED"},
+                {
+                    "attempt": index,
+                    "owner": owner,
+                    "status": "SCHEMA_OR_SOURCE_REJECTED",
+                    "validation_evidence": _rejection_evidence(
+                        directory,
+                        stage_key,
+                        index,
+                        owner,
+                        hashlib.sha256(response.encode("utf-8")).hexdigest(),
+                        error,
+                    ),
+                },
             )
             _verified_owner(root, marker, stage_key, index, owner)
             if index == plan.max_attempts_per_stage:
