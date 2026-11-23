@@ -2002,7 +2002,9 @@ def test_actual_provider_truncated_mining_keeps_original_raw_before_receipt_fail
     assert failure.value.category == "incomplete_constrained_generation"
     assert failure.value.raw_sha256 == digest
     stored = (
-        runner.root / "book-candidates/analysis/completions/synthetic-only"
-        / "synthetic-stage" / f"{digest}.txt"
+        runner.root
+        / "book-candidates/analysis/completions/synthetic-only"
+        / "synthetic-stage"
+        / f"{digest}.txt"
     )
     assert stored.read_bytes() == raw.encode("utf-8")
