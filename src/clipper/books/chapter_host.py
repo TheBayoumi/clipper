@@ -23,7 +23,7 @@ from .orchestrator import BookOrchestrator
 BATCH_SCHEMA = "clipper-two-private-chapter-codespace-v1"
 DEADLINE_SECONDS = 7200
 CLEANUP_RESERVE_SECONDS = 300
-DIGEST = re.compile(r"[0-9a-f]{64}\\Z")
+DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class PrivateHostStop(ValueError):
