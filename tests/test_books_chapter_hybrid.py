@@ -544,6 +544,7 @@ def test_model_free_hybrid_argument_audits_reconciliation_review_gate_and_replay
     assert call_counts == frozen
     miner.assert_not_called()
 
+
 def _hybrid_creative_output(kind: str, request: dict[str, object]) -> str:
     data = json.loads(request["messages"][1]["content"])
     if kind == "adaptation":
@@ -672,6 +673,7 @@ def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(
             if kind in {"argument", "audit", "reconcile"}:
                 return _injected_hybrid_response(kind, req)
             return _hybrid_creative_output(kind, req)
+
         return run
 
     args = {
@@ -688,7 +690,9 @@ def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(
     waiting = chapter.evaluate_hybrid_chapter(runner, selected, section, **args)
     assert waiting["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
     base = runner.root / "book-candidates"
-    ledger = json.loads(next((base / "chapter-evaluations").glob("*/source-ledger.json")).read_bytes())
+    ledger = json.loads(
+        next((base / "chapter-evaluations").glob("*/source-ledger.json")).read_bytes()
+    )
     brief = json.loads(next((base / "hybrid_reconcile").glob("*/validated.json")).read_bytes())[
         "payload"
     ]
@@ -753,7 +757,7 @@ def test_hybrid_reconciliation_raw_tampering_refuses_fresh_replay(
     root = runner.root / "book-candidates" / "hybrid_reconcile"
     record_path = next(root.glob("*/raw-1.json"))
     raw_record = json.loads(record_path.read_bytes())
-    raw_record["raw"] = raw_record["raw"].replace("editable", "uncertain")
+    raw_record["raw"] = raw_record["raw"].replace("revisable", "altered")
     record_path.write_text(json.dumps(raw_record), encoding="utf-8")
     with pytest.raises(chapter.ChapterStop, match="cannot be verified"):
         chapter.evaluate_hybrid_chapter(
