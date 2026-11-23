@@ -1011,9 +1011,7 @@ def _verified_rejected_attempt(
             raise ChapterStop("chapter prior attempt claim identity mismatch")
         _verified_owner(root, claim_path, key, attempt, owner)
 
-        raw_bytes = evaluation._read(
-            directory / f"raw-{attempt}.json", MAX_RAW_BYTES * 6 + 2048
-        )
+        raw_bytes = evaluation._read(directory / f"raw-{attempt}.json", MAX_RAW_BYTES * 6 + 2048)
         raw_record = _shape(
             whole_book.load_strict_reply(raw_bytes),
             {"attempt", "owner", "raw", "sha256"},
@@ -1127,9 +1125,7 @@ def _verified_text_artifact(
         ):
             raise ChapterStop("chapter cached text artifact identity mismatch")
         for prior in range(1, attempt):
-            _verified_rejected_attempt(
-                root, directory, request_key, prior, max_attempts, validate
-            )
+            _verified_rejected_attempt(root, directory, request_key, prior, max_attempts, validate)
         _verified_owner(
             root,
             directory / f"started-{attempt}.json",
@@ -1234,8 +1230,13 @@ def _stage(
         # Reverify the exact rejected claim, raw and failure before the next call.
         if previous_owner is not None:
             _verified_rejected_attempt(
-                root, directory, stage_key, index - 1,
-                plan.max_attempts_per_stage, validate, previous_owner,
+                root,
+                directory,
+                stage_key,
+                index - 1,
+                plan.max_attempts_per_stage,
+                validate,
+                previous_owner,
             )
         marker = directory / f"started-{index}.json"
         owner = _claim(root, marker, stage_key, index)
