@@ -1285,3 +1285,183 @@ def test_resumed_host_interruption_reports_precise_last_subphase_and_verified_pr
         assert verified["narration_report_identity"] == "e" * 64
     if stop_after == "DIRECTION_VERIFIED":
         assert verified["direction_identity"] == "f" * 64
+
+
+def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
+    tmp_path: Path,
+) -> None:
+    """Synthetic outputs only; all archive members are independently content-bound."""
+    import io
+    import tarfile
+    import wave
+
+    from clipper.books import whole_book
+    from clipper.stage_contracts import content_fingerprint
+
+    root = tmp_path / "synthetic-private-host"
+    root.mkdir()
+    runner = BookOrchestrator(root)
+    bundle, scope = "1" * 64, "2" * 64
+    first_owner, resumed_owner = "3" * 32, "4" * 32
+    base = root / "book-candidates"
+
+    def stage_file(stage: str) -> str:
+        key = hashlib.sha256(stage.encode("ascii")).hexdigest()
+        raw = json.dumps({"synthetic": stage}, sort_keys=True)
+        payload = json.loads(raw)
+        raw_sha = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        payload_sha = hashlib.sha256(evaluation._json_bytes(payload)).hexdigest()
+        identity = chapter._text_artifact_identity(
+            stage, key, "INJECTED_TEST_PRODUCER", raw_sha, payload_sha
+        )
+        directory = base / stage / key
+        evaluation._store(
+            base,
+            directory / "raw-1.json",
+            {"attempt": 1, "owner": first_owner, "raw": raw, "sha256": raw_sha},
+        )
+        evaluation._store(
+            base,
+            directory / "started-1.json",
+            {
+                "request_key": key,
+                "attempt": 1,
+                "owner": first_owner,
+                "status": "STARTED_UNRESOLVED",
+            },
+        )
+        evaluation._store(
+            base,
+            directory / "validated.json",
+            {
+                "request_key": key,
+                "provenance": "INJECTED_TEST_PRODUCER",
+                "contract": stage,
+                "validator_contract": chapter.TEXT_ARTIFACT_CONTRACT,
+                "payload": payload,
+                "owner": first_owner,
+                "attempt": 1,
+                "raw_sha256": raw_sha,
+                "payload_sha256": payload_sha,
+                "token_receipt": None,
+                "artifact_identity": identity,
+            },
+        )
+        return identity
+
+    identities = {
+        stage: stage_file(stage)
+        for stage in ("brief", "adaptation", "chapter_script", "chapter_direction")
+    }
+    wav_stream = io.BytesIO()
+    with wave.open(wav_stream, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(24000)
+        wav.writeframes(b"\x00\x00" * 400)
+    wav_bytes = wav_stream.getvalue()
+    wav_path = base / "chapter-audio-injected_test_wav/synthetic.wav"
+    wav_path.parent.mkdir(parents=True)
+    wav_path.write_bytes(wav_bytes)
+    report = {
+        "schema": "clipper-chapter-narration-v2",
+        "provenance": "INJECTED_TEST_WAV",
+        "records": [{
+            "wav_relative_path": "chapter-audio-injected_test_wav/synthetic.wav",
+            "sha256": hashlib.sha256(wav_bytes).hexdigest(),
+        }],
+    }
+    report_identity = content_fingerprint(report)
+    evaluation._store(base, base / f"narration-report-{report_identity}.json", report)
+
+    chapter_host._phase(runner, 1, bundle, scope, "NOT_STARTED")
+    chapter_host._phase(
+        runner, 1, bundle, scope, "MINING_IN_FLIGHT", {"claim_owner": first_owner}
+    )
+    chapter_host._phase(
+        runner, 1, bundle, scope, "BRIEF_IN_FLIGHT", {"claim_owner": first_owner}
+    )
+    chapter_host._phase(
+        runner, 1, bundle, scope, "AWAITING_HUMAN_REVIEW",
+        {"claim_owner": first_owner, "brief_identity": identities["brief"]},
+    )
+    chapter_host._phase(
+        runner, 1, bundle, scope, "RESUME_IN_FLIGHT", {"claim_owner": resumed_owner}
+    )
+    for start, verified, identity in (
+        ("ADAPTATION_IN_FLIGHT", "ADAPTATION_VERIFIED", identities["adaptation"]),
+        ("SCRIPT_IN_FLIGHT", "SCRIPT_VERIFIED", identities["chapter_script"]),
+        ("NARRATION_IN_FLIGHT", "NARRATION_VERIFIED", report_identity),
+        ("DIRECTION_IN_FLIGHT", "DIRECTION_VERIFIED", identities["chapter_direction"]),
+    ):
+        chapter_host._phase(
+            runner, 1, bundle, scope, start, {"claim_owner": resumed_owner}
+        )
+        stage_key = {
+            "ADAPTATION_VERIFIED": "adaptation_identity",
+            "SCRIPT_VERIFIED": "script_identity",
+            "NARRATION_VERIFIED": "narration_report_identity",
+            "DIRECTION_VERIFIED": "direction_identity",
+        }[verified]
+        chapter_host._phase(
+            runner, 1, bundle, scope, verified,
+            {"claim_owner": resumed_owner, stage_key: identity},
+        )
+
+    base_dir = base / "chapter-evaluations" / ("5" * 64)
+    source_bytes = evaluation._json_bytes({"synthetic": "selected scope source, private"})
+    source_sha = hashlib.sha256(source_bytes).hexdigest()
+    (base_dir).mkdir(parents=True)
+    (base_dir / "source-ledger.json").write_bytes(source_bytes)
+    review_id = "6" * 64
+    evaluation._store(
+        base, base_dir / f"human-review-{review_id}.json",
+        {"synthetic": "private human review artifact"},
+    )
+    result = {
+        "selected_source_bundle_sha256": bundle,
+        "source_boundary": "HOST_VERIFIED_SELECTED_BUNDLE_EXPORTER_ATTESTED_PARENT",
+        "parent_original_reverified_on_host": False,
+        "publish_eligible": False,
+        "brief_key": identities["brief"],
+        "adaptation_key": identities["adaptation"],
+        "script_key": identities["chapter_script"],
+        "direction_key": identities["chapter_direction"],
+        "narration_report_key": report_identity,
+        "source_ledger_sha256": source_sha,
+        "human_review_sha256": review_id,
+    }
+    final_key = content_fingerprint(result)
+    evaluation._store(
+        base, base_dir / f"chapter-result-{final_key}.json", result
+    )
+    manifest_sha = chapter_host._save_final_manifest(root, 1, bundle, scope, final_key)
+    chapter_host._phase(
+        runner, 1, bundle, scope, "PREPRODUCTION_READY",
+        {
+            "claim_owner": resumed_owner,
+            "final_result_identity": final_key,
+            "output_manifest_sha256": manifest_sha,
+        },
+    )
+    status = chapter_host.recovery_report(root)
+    assert status["chapters"]["1"]["recovery_state"] == "READY"
+    assert status["chapters"]["1"]["last_subphase"] == "PREPRODUCTION_READY"
+    assert status["chapters"]["1"]["retrieval_status"] == "NOT_ATTEMPTED"
+    assert status["chapters"]["1"]["output_manifest_sha256"] == manifest_sha
+    archive_report = chapter_host.private_recovery_archive(root)
+    assert archive_report["files_retrieved"] is False
+    assert archive_report["host_cleanup_verified"] is False
+    with tarfile.open(base / "private-host/chapter-recovery.tar", "r:") as archive:
+        names = archive.getnames()
+        assert "book-candidates/chapter-audio-injected_test_wav/synthetic.wav" in names
+        assert f"book-candidates/narration-report-{report_identity}.json" in names
+        assert f"book-candidates/chapter-evaluations/{'5' * 64}/source-ledger.json" in names
+        for stage in identities:
+            assert any(name.endswith("/validated.json") and f"/{stage}/" in name for name in names)
+        saved_manifest = json.load(archive.extractfile("private-recovery-manifest.json"))
+        assert saved_manifest["schema"] == "clipper-chapter-private-recovery-archive-manifest-v1"
+        assert any(entry["kind"] == "wav" for entry in saved_manifest["files"])
+    wav_path.write_bytes(b"tampered-and-missing-signed-audio")
+    with pytest.raises(chapter_host.PrivateHostStop, match="WAV hash"):
+        chapter_host.private_recovery_archive(root)
