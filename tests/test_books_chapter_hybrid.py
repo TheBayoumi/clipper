@@ -4,8 +4,15 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
+from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
+from test_books_selected_scope import _bundle
+
+from clipper.books import chapter, evaluation, selected_scope
+from clipper.books.orchestrator import BookOrchestrator
 
 from clipper.books import chapter_hybrid as hybrid
 
@@ -358,3 +365,181 @@ def test_human_review_requires_exact_brief_and_each_unit_and_beat() -> None:
     approval["brief_sha256"] = "f" * 64
     with pytest.raises(hybrid.HybridStop, match="exact coherent brief"):
         hybrid.validate_human_review(approval, brief, ledger)
+
+def _selected_hybrid_source(tmp_path: Path) -> tuple[BookOrchestrator, Path, Path]:
+    runner, selected, _data = _bundle(tmp_path, with_image=True)
+    verified = selected_scope.import_chapter(runner.root, selected)
+    section = selected_scope._section_manifest(verified.ref, verified.book, verified.work)
+    path = runner.root / "book-candidates" / "section-scopes" / "chapter.json"
+    evaluation._store(runner.root / "book-candidates", path, section)
+    return runner, selected, path
+
+
+def _injected_hybrid_response(kind: str, request: dict[str, object]) -> str:
+    context = json.loads(request["messages"][1]["content"])
+    if kind == "argument":
+        source = next(item for item in context["original_source"] if item[1] == "text")
+        return json.dumps(
+            {
+                "hypothesis": "The entire chapter remains an editable hypothesis.",
+                "questions": ["Does the local evidence narrow the claim?"],
+                "source_links": [
+                    {"id": source[0], "start": 0, "end": 10, "role": "ASSERTION"}
+                ],
+            }
+        )
+    if kind == "audit":
+        window = context["window"]
+        return json.dumps(
+            {
+                "audit_id": window["audit_id"],
+                "core_ids": window["core_ids"],
+                "decisions": [
+                    {
+                        "id": item[0],
+                        "decision": "keep" if item[1] == "text" else "omit",
+                        "reason": "Explicit model-free original source or gap decision.",
+                        "evidence": [
+                            {"id": item[0], "start": 0, "end": 10, "role": "ASSERTION"}
+                        ]
+                        if item[1] == "text"
+                        else [],
+                    }
+                    for item in window["core"]
+                ],
+                "disagreements": [],
+            }
+        )
+    if kind == "reconcile":
+        entries = [item for item in context["complete_original_source"] if item[1] == "text"]
+        halfway = max(1, len(entries) // 2)
+        groups = [entries[:halfway], entries[halfway:]]
+        if not groups[1]:
+            groups = [[entries[0]], [entries[0]]]
+        return json.dumps(
+            {
+                "argument": "The whole source is preserved as one revisable causal argument.",
+                "amendments": [],
+                "resolutions": [],
+                "beats": [
+                    {
+                        "beat_id": f"beat-{index:03d}",
+                        "spans": [
+                            {"id": entry[0], "start": 0, "end": 10, "role": "ASSERTION"}
+                            for entry in group
+                        ],
+                        "meaning": "A source-grounded, still unreviewed argument.",
+                        "qualification": "A limitation expressed as a faithful paraphrase.",
+                        "causal_link": "Connect this source with the next original passage.",
+                        "essential": True,
+                    }
+                    for index, group in enumerate(groups, 1)
+                ],
+            }
+        )
+    raise AssertionError("unexpected synthetic stage")
+
+
+def test_direct_hybrid_mode_freezes_source_without_mining_or_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, selected, section = _selected_hybrid_source(tmp_path)
+    miner = Mock(side_effect=AssertionError("source-driven chapter never mines lessons"))
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", miner)
+    result = chapter.evaluate_hybrid_chapter(runner, selected, section)
+    assert result["status"] == "AWAITING_EXPLICIT_CPU_HYBRID_CHAPTER_ARGUMENT"
+    assert result["mining_provenance"] == "DIRECT_SOURCE_NO_MINING"
+    assert result["parent_original_reverified_on_host"] is False
+    miner.assert_not_called()
+    base = runner.root / "book-candidates" / "chapter-evaluations"
+    stored = list(base.glob("*/source-ledger.json"))
+    assert len(stored) == 1
+    ledger = json.loads(stored[0].read_bytes())
+    assert len(hybrid.validate_ledger(ledger)) == (
+        result["included_units"] + result["skipped_units"]
+    )
+    assert all(item["source_id"].startswith(("unit-", "gap-")) for item in ledger["entries"])
+
+
+def test_model_free_hybrid_argument_audits_reconciliation_review_gate_and_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, selected, section = _selected_hybrid_source(tmp_path)
+    miner = Mock(side_effect=AssertionError("never mine in direct chapter mode"))
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", miner)
+    call_counts = {"argument": 0, "audit": 0, "reconcile": 0}
+
+    def completion(kind: str):
+        def run(request: dict[str, object]) -> str:
+            call_counts[kind] += 1
+            return _injected_hybrid_response(kind, request)
+        return run
+
+    plan = chapter.ChapterPlan(brief_cpu=True)
+    args = {
+        "plan": plan,
+        "argument_completion": completion("argument"),
+        "audit_completion": completion("audit"),
+        "reconcile_completion": completion("reconcile"),
+        "token_counter": lambda _messages: 1000,
+    }
+    pending = chapter.evaluate_hybrid_chapter(runner, selected, section, **args)
+    assert pending["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
+    assert pending["argument_attempts"] == 1
+    assert pending["brief_attempts"] == 1
+    assert pending["audit_attempts"] >= 1
+    miner.assert_not_called()
+    assert pending["automation_claim"] == "INJECTED_TEST"
+    assert not pending["publish_eligible"]
+    root = runner.root / "book-candidates"
+    ledger_path = next((root / "chapter-evaluations").glob("*/source-ledger.json"))
+    ledger = json.loads(ledger_path.read_bytes())
+    brief_path = next((root / "hybrid_reconcile").glob("*/validated.json"))
+    brief = json.loads(brief_path.read_bytes())["payload"]
+    assert len(brief["coverage"]) == len(ledger["entries"])
+    assert len(brief["beats"]) == 2
+    packet = hybrid.human_review_packet(brief, ledger)
+    assert packet["review_status"] == "PENDING_ACTUAL_HUMAN_ATTESTATION"
+
+    frozen = dict(call_counts)
+    replayed = chapter.evaluate_hybrid_chapter(
+        runner,
+        selected,
+        section,
+        expected_brief_identity=pending["brief_identity"],
+        **args,
+    )
+    assert replayed["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
+    assert call_counts == frozen
+    review = {
+        "schema": hybrid.REVIEW_SCHEMA,
+        "brief_sha256": brief["brief_sha256"],
+        "brief_artifact_identity": pending["brief_identity"],
+        "reviewer": "Synthetic test human (not production approval)",
+        "unit_decisions": [
+            {"id": item["id"], "review": "accept", "reason": "Compared source and gap"}
+            for item in ledger["entries"]
+        ],
+        "beat_decisions": [
+            {
+                "beat_id": item["beat_id"],
+                "review": "support_attested",
+                "reason": "Synthetic test meaning and qualifier check",
+            }
+            for item in brief["beats"]
+        ],
+    }
+    review_path = tmp_path / "synthetic-review.json"
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+    after_review = chapter.evaluate_hybrid_chapter(
+        runner,
+        selected,
+        section,
+        review_file=review_path,
+        expected_brief_identity=pending["brief_identity"],
+        **args,
+    )
+    assert after_review["status"] == "AWAITING_EXPLICIT_CPU_CHAPTER_ADAPTATION"
+    assert after_review["human_attested_beat_count"] == 2
+    assert call_counts == frozen
+    miner.assert_not_called()
