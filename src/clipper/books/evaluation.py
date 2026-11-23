@@ -325,12 +325,12 @@ def _mined_export(
         if not isinstance(item, dict) or not isinstance(item.get("evidence_anchor"), dict):
             raise EvaluationStop("mined candidate evidence is malformed")
         evidence = item["evidence_anchor"]
-        unit = by_anchor.get(
+        candidate_unit = by_anchor.get(
             (evidence.get("anchor"), evidence.get("word_offset"), evidence.get("text_sha256"))
         )
         occurrence = evidence.get("selected_occurrence")
         if (
-            unit is None
+            candidate_unit is None
             or not isinstance(occurrence, dict)
             or item.get("review_status") != "MINED_UNREVIEWED"
             or item.get("publish_eligible") is not False
@@ -339,12 +339,12 @@ def _mined_export(
             or any(
                 evidence.get(k) != v
                 for k, v in {
-                    "section_id": unit.section_id,
-                    "source_path": unit.source_path,
-                    "field": unit.evidence_field,
-                    "origin": unit.origin,
-                    "review_status": unit.review_status,
-                    "research_link_status": unit.research_link_status,
+                    "section_id": candidate_unit.section_id,
+                    "source_path": candidate_unit.source_path,
+                    "field": candidate_unit.evidence_field,
+                    "origin": candidate_unit.origin,
+                    "review_status": candidate_unit.review_status,
+                    "research_link_status": candidate_unit.research_link_status,
                     "source_sha256": book.content_sha256,
                 }.items()
             )
@@ -354,23 +354,23 @@ def _mined_export(
         if (
             type(start) is not int
             or type(end) is not int
-            or not 0 <= start < end <= len(unit.text)
-            or unit.text[start:end] != evidence.get("quote")
+            or not 0 <= start < end <= len(candidate_unit.text)
+            or candidate_unit.text[start:end] != evidence.get("quote")
             or occurrence.get("id") != item.get("proposed_id")
-            or occurrence.get("quote_sha256") != _sha(unit.text[start:end].encode("utf-8"))
+            or occurrence.get("quote_sha256") != _sha(candidate_unit.text[start:end].encode("utf-8"))
         ):
             raise EvaluationStop("mined source occurrence is inconsistent")
         item["_evaluation_context"] = {
-            "anchor": unit.anchor,
-            "section_id": unit.section_id,
-            "source_path": unit.source_path,
-            "unit_word_offset": unit.word_offset,
-            "evidence_field": unit.evidence_field,
-            "origin": unit.origin,
-            "source_review_status": unit.review_status,
-            "research_link_status": unit.research_link_status,
+            "anchor": candidate_unit.anchor,
+            "section_id": candidate_unit.section_id,
+            "source_path": candidate_unit.source_path,
+            "unit_word_offset": candidate_unit.word_offset,
+            "evidence_field": candidate_unit.evidence_field,
+            "origin": candidate_unit.origin,
+            "source_review_status": candidate_unit.review_status,
+            "research_link_status": candidate_unit.research_link_status,
             "evidence_quote": evidence["quote"],
-            "source_context": unit.text[max(0, start - 250) : min(len(unit.text), end + 250)],
+            "source_context": candidate_unit.text[max(0, start - 250) : min(len(candidate_unit.text), end + 250)],
             "recovery_status": book.recovery_status,
             "authorization_status": book.source.authorization_status,
         }

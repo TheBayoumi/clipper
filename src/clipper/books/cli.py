@@ -413,7 +413,7 @@ def dispatch_books(args: argparse.Namespace) -> int:
     if args.books_action == "evaluate":
         # This branch is a private evaluation. Even legacy/script/model diagnostics
         # (unexpected JSON key names included) must not reach public Actions logs.
-        result: dict[str, object] | None = None
+        evaluation_result: dict[str, object] | None = None
         success = False
         private_root = args.artifact_root / "book-candidates"
         with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as sink:
@@ -426,7 +426,7 @@ def dispatch_books(args: argparse.Namespace) -> int:
                         if args.run_manifest is not None
                         else evaluation.EvaluationOptions()
                     )
-                    replies: dict[str, object] | None = None
+                    evaluation_replies: dict[str, object] | None = None
                     response_sha: str | None = None
                     if args.responses is not None:
                         response_bytes = evaluation._read(args.responses, 64_000_000)
@@ -438,15 +438,15 @@ def dispatch_books(args: argparse.Namespace) -> int:
                             raise evaluation.EvaluationStop(
                                 "recorded responses require SHA-256 keys"
                             )
-                        replies = parsed
+                        evaluation_replies = parsed
                         response_sha = hashlib.sha256(response_bytes).hexdigest()
-                    result = BookOrchestrator(args.artifact_root).evaluate_candidate(
+                    evaluation_result = BookOrchestrator(args.artifact_root).evaluate_candidate(
                         args.candidate_ref,
                         progress_path=args.progress,
                         section_manifest=args.section_manifest,
                         review_file=args.review_file,
                         options=permissions,
-                        recorded_responses=replies,
+                        recorded_responses=evaluation_replies,
                         response_file_sha256=response_sha,
                     )
                     success = True
@@ -469,7 +469,7 @@ def dispatch_books(args: argparse.Namespace) -> int:
                         )
                     except Exception:
                         success = False
-        if not success or result is None:
+        if not success or evaluation_result is None:
             print(
                 json.dumps(
                     {"status": "PRIVATE_EVALUATION_FAILED_CLOSED", "publish_eligible": False}
@@ -501,9 +501,9 @@ def dispatch_books(args: argparse.Namespace) -> int:
             "section_scope",
             "parent_full_book_complete",
         )
-        safe = {key: result[key] for key in keys if key in result}
+        safe = {key: evaluation_result[key] for key in keys if key in evaluation_result}
         print(json.dumps(safe, sort_keys=True))
-        return 0 if result["status"] == "PREVISUAL_TEXT_READY_UNREVIEWED" else 2
+        return 0 if evaluation_result["status"] == "PREVISUAL_TEXT_READY_UNREVIEWED" else 2
     catalog = _json(args.catalog)
     if not isinstance(catalog, dict):
         raise selection.BookSelectionError("unknown editorial book catalog schema")
