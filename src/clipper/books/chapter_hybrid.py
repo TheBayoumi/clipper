@@ -168,6 +168,43 @@ def projection(entries: list[dict[str, Any]]) -> list[list[object]]:
     ]
 
 
+
+def producer_identity(
+    *,
+    ledger_sha256: str,
+    chapter_scope_sha256: str,
+    selected_bundle_sha256: str,
+    plan_fingerprint: str,
+    model_producer: dict[str, object],
+) -> dict[str, object]:
+    """Bind each private chapter attempt to exact producer/runtime material."""
+    identifiers = (
+        ledger_sha256,
+        chapter_scope_sha256,
+        selected_bundle_sha256,
+        plan_fingerprint,
+    )
+    if (
+        any(
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(char not in "0123456789abcdef" for char in value)
+            for value in identifiers
+        )
+        or not isinstance(model_producer, dict)
+        or not model_producer
+    ):
+        raise HybridStop("hybrid source/producer identity is malformed")
+    return {
+        "source_ledger_sha256": ledger_sha256,
+        "chapter_scope_sha256": chapter_scope_sha256,
+        "selected_source_bundle_sha256": selected_bundle_sha256,
+        "chapter_plan_fingerprint": plan_fingerprint,
+        "model_producer": model_producer,
+        "source_mode": "DIRECT_SOURCE_HYBRID",
+    }
+
+
 def request(
     stage: str,
     payload: dict[str, object],
