@@ -741,11 +741,11 @@ def test_external_supervisor_bootstrap_real_shell_consumer(
         encoding="utf-8",
     )
     fake_openssl.chmod(0o700)
-    age = (
-        599 if scenario == "never_ready_original_clock"
-        else 6890 if scenario == "bootstrap_over_execution_reserve"
-        else 1
-    )
+    age = 1
+    if scenario == "never_ready_original_clock":
+        age = 599
+    elif scenario == "bootstrap_over_execution_reserve":
+        age = 6890
     env = os.environ.copy()
     env.update(
         {
