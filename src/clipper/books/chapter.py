@@ -15,7 +15,15 @@ from uuid import uuid4
 
 from clipper.stage_contracts import content_fingerprint
 
-from . import acquisition, chapter_hybrid, evaluation, narration, scripting, selected_scope, whole_book
+from . import (
+    acquisition,
+    chapter_hybrid,
+    evaluation,
+    narration,
+    scripting,
+    selected_scope,
+    whole_book,
+)
 
 if TYPE_CHECKING:
     from .orchestrator import BookOrchestrator
@@ -2339,7 +2347,9 @@ def evaluate_hybrid_chapter(
                         {
                             "id": "audit-d01",
                             "issue": "missing/contradictory arguments requiring revision",
-                            "evidence": [{"id": "core ID", "start": 0, "end": 10, "role": "ASSERTION"}],
+                            "evidence": [
+                                {"id": "core ID", "start": 0, "end": 10, "role": "ASSERTION"}
+                            ],
                         }
                     ],
                 },
@@ -2376,7 +2386,9 @@ def evaluate_hybrid_chapter(
                         "from": "keep/compress/omit",
                         "to": "keep/compress/omit",
                         "reason": "explicit source-grounded change",
-                        "evidence": [{"id": "source ID", "start": 0, "end": 10, "role": "ASSERTION"}],
+                        "evidence": [
+                            {"id": "source ID", "start": 0, "end": 10, "role": "ASSERTION"}
+                        ],
                     }
                 ],
                 "resolutions": [
@@ -2384,7 +2396,9 @@ def evaluate_hybrid_chapter(
                         "id": "audit-d01",
                         "resolution": "accepted/rejected/qualified",
                         "reason": "source-grounded disagreement resolution",
-                        "evidence": [{"id": "source ID", "start": 0, "end": 10, "role": "ASSERTION"}],
+                        "evidence": [
+                            {"id": "source ID", "start": 0, "end": 10, "role": "ASSERTION"}
+                        ],
                     }
                 ],
                 "beats": [
