@@ -236,23 +236,96 @@ with tarfile.open(archive_path, mode="r:") as source:
         if any(not isinstance(value, str) or dig.fullmatch(value) is None
                for value in chapter["last_verified_artifact_identities"].values()):
             sys.exit(2)
-    chapter_results = {
-        str(number): (
-            "VERIFIED_PRIVATE_ARCHIVE"
-            if row["inventory_status"] == "VERIFIED"
-            else "INCOMPLETE"
-            if row["inventory_status"] == "INCOMPLETE"
-            else "NOT_STARTED"
-        )
-        for number,row in by_chapter.items()
+    # Archive integrity does not establish chapter completion. Independently
+    # attest each READY terminal journal and its complete text+audio inventory.
+    required_ids = {
+        "brief_identity":"brief",
+        "adaptation_identity":"adaptation",
+        "script_identity":"chapter_script",
+        "direction_identity":"chapter_direction",
+        "narration_report_identity":None,
+        "final_result_identity":None,
     }
-    complete = all(value == "VERIFIED_PRIVATE_ARCHIVE" for value in chapter_results.values())
+    chapter_results = {}
+    for number, manifest_row in by_chapter.items():
+        label = str(number)
+        state = safe["chapters"][label]["recovery_state"]
+        contents = manifest_row["files"]
+        if manifest_row["inventory_status"] == "NOT_STARTED":
+            chapter_results[label] = "NOT_STARTED"
+            continue
+        if manifest_row["inventory_status"] != "VERIFIED":
+            chapter_results[label] = "INCOMPLETE"
+            continue
+        if state != "READY":
+            chapter_results[label] = "PARTIAL_OUTPUTS" if contents else "CHECKPOINT_ONLY"
+            continue
+        ids = safe["chapters"][label]["last_verified_artifact_identities"]
+        verified_ids = manifest_row.get("verified_artifact_identities")
+        if (safe["chapters"][label].get("runtime_journal_status") != "PREPRODUCTION_READY"
+            or manifest_row.get("schema") != "clipper-chapter-private-output-manifest-v1"
+            or manifest_row.get("publish_eligible") is not False
+            or manifest_row.get("bundle_sha256") != safe["chapters"][label].get("bundle_sha256")
+            or manifest_row.get("scope_sha256") != safe["chapters"][label].get("scope_sha256")
+            or not isinstance(verified_ids,dict)
+            or not all(k in verified_ids and verified_ids[k] == ids.get(k)
+                       and isinstance(verified_ids[k],str) and dig.fullmatch(verified_ids[k])
+                       for k in required_ids)
+            or not isinstance(safe["chapters"][label].get("output_manifest_sha256"),str)):
+            chapter_results[label] = "INCOMPLETE"
+            continue
+        original_manifest = {k:v for k,v in manifest_row.items() if k != "inventory_status"}
+        original_bytes = (json.dumps(original_manifest,sort_keys=True,ensure_ascii=False)+"\\n").encode("utf-8")
+        if digest(original_bytes) != safe["chapters"][label]["output_manifest_sha256"]:
+            chapter_results[label] = "INCOMPLETE"
+            continue
+        paths = {r["relative_path"]:r for r in contents}
+        expected_text = all(
+            any(r["kind"] == "text"
+                and r["relative_path"].startswith("book-candidates/"+stage+"/")
+                and r["relative_path"].endswith("/validated.json")
+                for r in contents)
+            for stage in ("brief","adaptation","chapter_script","chapter_direction")
+        )
+        expected_kinds = {"text","narration_report","wav","final_result","source_ledger","human_review"}
+        report_path = "book-candidates/narration-report-"+verified_ids["narration_report_identity"]+".json"
+        final_path_suffix = "/chapter-result-"+verified_ids["final_result_identity"]+".json"
+        report_row = paths.get(report_path)
+        if (not expected_text
+            or not expected_kinds.issubset({r["kind"] for r in contents})
+            or report_row is None or report_row["kind"] != "narration_report"
+            or not any(r["kind"]=="final_result" and r["relative_path"].endswith(final_path_suffix)
+                       for r in contents)):
+            chapter_results[label] = "INCOMPLETE"
+            continue
+        report_member = source.extractfile(report_path)
+        if report_member is None or report_member.size > 300_000:
+            chapter_results[label] = "INCOMPLETE"
+            continue
+        try:
+            report = json.loads(report_member.read(300_001))
+            record_list = report["records"]
+            if (report.get("schema") != "clipper-chapter-narration-v2"
+                or not isinstance(record_list,list) or not 1 <= len(record_list) <= 80):
+                raise ValueError("invalid narration record count")
+            for audio in record_list:
+                path = "book-candidates/"+audio["wav_relative_path"]
+                wav = paths.get(path)
+                if (wav is None or wav["kind"] != "wav" or wav["sha256"] != audio["sha256"]
+                    or not path.endswith(".wav")):
+                    raise ValueError("narration WAV reference not recovered")
+        except (ValueError,TypeError,KeyError,AttributeError):
+            chapter_results[label] = "INCOMPLETE"
+            continue
+        chapter_results[label] = "READY_OUTPUTS_VERIFIED"
+    complete = all(value == "READY_OUTPUTS_VERIFIED" for value in chapter_results.values())
     summary = {
         "schema": "clipper-private-owner-recovery-verification-v1",
+        "archive_integrity_status": "VERIFIED",
         "retrieval_status": "VERIFIED_PRIVATE_ARCHIVE" if complete else "VERIFIED_PRIVATE_ARCHIVE_PARTIAL",
         "chapters": chapter_results,
         "recovered_file_count": len(rows),
-        "output_scope": "COMPLETE" if complete else "PARTIAL",
+        "output_scope": "COMPLETE" if complete else "PARTIAL" if rows else "NONE",
         "host_cleanup_status": "NOT_YET_REST_VERIFIED",
     }
     report_path.write_text(json.dumps(summary, sort_keys=True) + "\n", encoding="utf-8")
