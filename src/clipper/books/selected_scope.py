@@ -43,6 +43,7 @@ BUNDLE_KEYS = frozenset(
     }
 )
 MAX_BUNDLE_BYTES = 1_500_000
+MAX_CHAPTER_ENTRIES = 128
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -231,7 +232,7 @@ def export_chapter(
     ):
         raise SelectedSourceStop("original linked/chapter section order is incomplete or changed")
     work = whole_book.plan_for(book, section_ids=order)
-    if not work.section_ids or len(work.units) + len(work.skipped) > 64:
+    if not work.section_ids or len(work.units) + len(work.skipped) > MAX_CHAPTER_ENTRIES:
         raise SelectedSourceStop("selected chapter exceeds finite original-unit budget")
     blocks = tuple(
         block for block in faithful.reading_blocks(book) if block.section_id in set(order)
