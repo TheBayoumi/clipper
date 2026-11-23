@@ -34,10 +34,16 @@ done
 OP_LIMIT=8
 KILL_GRACE=2
 deadline_epoch=0
+recovery_epoch=0
 bounded() {
   local limit="$OP_LIMIT" remaining
   if (( deadline_epoch > 0 )); then
     remaining="$(( deadline_epoch - $(date -u +%s) ))"
+    if (( remaining <= 0 )); then return 124; fi
+    if (( remaining < limit )); then limit="$remaining"; fi
+  fi
+  if (( recovery_epoch > 0 )); then
+    remaining="$(( recovery_epoch - $(date -u +%s) ))"
     if (( remaining <= 0 )); then return 124; fi
     if (( remaining < limit )); then limit="$remaining"; fi
   fi
@@ -77,7 +83,10 @@ sys.exit(0 if valid else 2)
 ' 2>/dev/null
 }
 
-recover_private() {
+recover_private() (
+  # Recovery has its own strict 16-second ceiling *inside* the already reserved
+  # external cleanup window. Subshell prevents the cap contaminating STOP/DELETE.
+  recovery_epoch="$(( $(date -u +%s) + 16 ))"
   # Owner-side only. Neither status nor private artifacts enter git, logs or
   # ChatGPT; failure here must NEVER postpone STOP/DELETE.
   if ! identity_matches; then return 2; fi
@@ -113,7 +122,7 @@ for item in x["chapters"].values():
       "remote:$PRIVATE_CHAPTER_ROOT/book-candidates/$section" \
       "$destination/" >/dev/null 2>&1 || true
   done
-}
+)
 
 terminate_host() {
   original_status=$?
