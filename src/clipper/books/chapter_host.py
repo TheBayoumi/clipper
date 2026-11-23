@@ -900,6 +900,22 @@ def execute(
     }
 
 
+def _read_recovery_artifact(path: Path, budget: int) -> bytes:
+    """Preserve bounded reads, normalize absent/unsafe artifacts at the host boundary."""
+    try:
+        return evaluation._read(path, budget)
+    except (evaluation.EvaluationStop, OSError):
+        raise PrivateHostStop("private recovery artifact absent, unsafe, or oversized") from None
+
+
+def _parse_recovery_artifact(raw: bytes) -> Any:
+    """Never leak a lower-layer parser failure or private text in recovery errors."""
+    try:
+        return whole_book.load_strict_reply(raw)
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        raise PrivateHostStop("private recovery artifact invalid") from None
+
+
 def _private_output_entry(
     root: Path, path: Path, number: int, kind: str, limit: int
 ) -> dict[str, object]:
@@ -916,7 +932,7 @@ def _private_output_entry(
         or not path.is_file()
     ):
         raise PrivateHostStop("recovery artifact is missing or redirected")
-    raw = evaluation._read(path, limit)
+    raw = _read_recovery_artifact(path, limit)
     return {
         "chapter": number,
         "kind": kind,
@@ -943,7 +959,7 @@ def _stage_output_entries(
         candidate = directory / "validated.json"
         if not candidate.exists():
             continue
-        record = whole_book.load_strict_reply(evaluation._read(candidate, 250_000))
+        record = _parse_recovery_artifact(_read_recovery_artifact(candidate, 250_000))
         if isinstance(record, dict) and record.get("artifact_identity") == identity:
             if (
                 not {"payload", "provenance", "token_receipt", "attempt", "owner"}.issubset(record)
@@ -972,7 +988,7 @@ def _stage_output_entries(
             ):
                 raise PrivateHostStop("reviewed chapter stage identity changed")
             raw_path = directory / f"raw-{record['attempt']}.json"
-            raw_record = whole_book.load_strict_reply(evaluation._read(raw_path, 110_000))
+            raw_record = _parse_recovery_artifact(_read_recovery_artifact(raw_path, 110_000))
             if (
                 not isinstance(raw_record, dict)
                 or not isinstance(raw_record.get("raw"), str)
@@ -1004,7 +1020,7 @@ def _stage_output_entries(
 
 def _narration_output_entries(root: Path, number: int, key: str) -> list[dict[str, object]]:
     path = root / "book-candidates" / f"narration-report-{key}.json"
-    report = whole_book.load_strict_reply(evaluation._read(path, 300_000))
+    report = _parse_recovery_artifact(_read_recovery_artifact(path, 300_000))
     if (
         not isinstance(report, dict)
         or content_fingerprint(report) != key
@@ -1091,7 +1107,7 @@ def _chapter_output_manifest(
         for name in (f"chapter-{number}-brief-record.json", f"chapter-{number}-review-packet.json"):
             path = folder / name
             if path.is_file():
-                obj = whole_book.load_strict_reply(evaluation._read(path, 250_000))
+                obj = _parse_recovery_artifact(_read_recovery_artifact(path, 250_000))
                 if (
                     not isinstance(obj, dict)
                     or obj.get("brief_identity") != identities["brief_identity"]
@@ -1105,7 +1121,7 @@ def _chapter_output_manifest(
         if len(matches) != 1:
             raise PrivateHostStop("chapter final result missing or ambiguous")
         result_file = matches[0]
-        result = whole_book.load_strict_reply(evaluation._read(result_file, 500_000))
+        result = _parse_recovery_artifact(_read_recovery_artifact(result_file, 500_000))
         if (
             not isinstance(result, dict)
             or content_fingerprint(result) != result_id
@@ -1192,7 +1208,7 @@ def private_recovery_archive(artifact_root: Path) -> dict[str, object]:
             saved_path = (
                 root / "book-candidates/private-host" / f"chapter-{number}-output-manifest.json"
             )
-            raw = evaluation._read(saved_path, 150_000)
+            raw = _read_recovery_artifact(saved_path, 150_000)
             if raw != evaluation._json_bytes(manifest):
                 raise PrivateHostStop(
                     "chapter output inventory differs from final committed manifest"
@@ -1220,7 +1236,7 @@ def private_recovery_archive(artifact_root: Path) -> dict[str, object]:
         with tarfile.open(temporary, mode="w", format=tarfile.PAX_FORMAT) as archive:
             for entry in cast(list[dict[str, object]], listing["files"]):
                 path = root / str(entry["relative_path"])
-                raw = evaluation._read(path, narration.MAX_WAV_BYTES)
+                raw = _read_recovery_artifact(path, narration.MAX_WAV_BYTES)
                 if hashlib.sha256(raw).hexdigest() != entry["sha256"]:
                     raise PrivateHostStop("private chapter output changed during archive creation")
                 member = tarfile.TarInfo(name=str(entry["relative_path"]))
@@ -1287,8 +1303,8 @@ def recovery_report(artifact_root: Path) -> dict[str, object]:
                 "last_verified_artifact_identities": {},
             }
             continue
-        head_raw = evaluation._read(head_path, 16384)
-        head = whole_book.load_strict_reply(head_raw)
+        head_raw = _read_recovery_artifact(head_path, 16384)
+        head = _parse_recovery_artifact(head_raw)
         if (
             not isinstance(head, dict)
             or head.get("chapter") != number
