@@ -378,7 +378,7 @@ with tarfile.open(archive_path, mode="r:") as source:
                     argument_id, producer_id
                 )):
                     raise ValueError("hybrid argument/producer identity invalid")
-                if (not isinstance(audit_ids, list) or not 1 <= len(audit_ids) <= 128
+                if (not isinstance(audit_ids, list) or not 1 <= len(audit_ids) <= 16
                     or len(set(audit_ids)) != len(audit_ids)
                     or not all(isinstance(x, str) and dig.fullmatch(x) for x in audit_ids)):
                     raise ValueError("hybrid local audit identities invalid")
@@ -415,6 +415,14 @@ with tarfile.open(archive_path, mode="r:") as source:
                 scope_key = saved["chapter_scope_identity"]
                 ledger_path = "book-candidates/chapter-evaluations/"+scope_key+"/source-ledger.json"
                 ledger_row = paths.get(ledger_path)
+                ledger = member_json(ledger_path, 600_000)
+                ledger_id = ledger.get("ledger_sha256")
+                canonical_ledger = hashlib.sha256(
+                    (json.dumps(
+                        {k:v for k,v in ledger.items() if k != "ledger_sha256"},
+                        ensure_ascii=False,sort_keys=True,separators=(",", ":")
+                    )+"\n").encode("utf-8")
+                ).hexdigest()
                 if (not isinstance(scope_key, str) or dig.fullmatch(scope_key) is None
                     or ledger_row is None or ledger_row["kind"] != "source_ledger"
                     or ledger_row["sha256"] != saved.get("source_ledger_sha256")
@@ -427,7 +435,9 @@ with tarfile.open(archive_path, mode="r:") as source:
                     or saved.get("audit_identities") != audit_ids
                     or saved.get("producer_identity_sha256") != producer_id
                     or saved.get("phase") != "AWAITING_HUMAN_REVIEW"
-                    or reconcile.get("payload",{}).get("ledger_sha256") is None):
+                    or ledger.get("schema") != "clipper-chapter-hybrid-source-ledger-v1"
+                    or ledger_id != canonical_ledger
+                    or reconcile.get("payload",{}).get("ledger_sha256") != ledger_id):
                     raise ValueError("hybrid original-source reviewer identity differs")
                 packet_path = "book-candidates/private-host/chapter-"+label+"-review-packet.json"
                 if paths.get(packet_path,{}).get("kind") != "review":
