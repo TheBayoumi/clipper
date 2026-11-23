@@ -1539,7 +1539,6 @@ def test_chapter_timing_rejects_noncontiguous_pcm_sample_offsets() -> None:
         chapter._timings(script, plan, [frame_record])
 
 
-
 @pytest.mark.parametrize("stage", ["brief", "chapter_direction"])
 @pytest.mark.parametrize(
     "tamper", ["payload", "raw", "missing_raw", "raw_digest", "artifact_digest"]
@@ -1809,7 +1808,6 @@ def test_cli_unexpected_chapter_failure_stays_generic_and_private(
     assert marker not in stdout + stderr
     assert "PRIVATE_EVALUATION_FAILED_CLOSED" in stderr
     assert "PRIVATE_CHAPTER_BOUNDED_HOST_UNVERIFIED" not in stderr
-
 
 
 def test_text_artifact_envelope_rejects_trailing_unbound_bytes(tmp_path: Path) -> None:
