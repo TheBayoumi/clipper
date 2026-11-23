@@ -104,9 +104,12 @@ there. The host will reject bundles whose name or bytes disagree.
   readiness retries and public-key transfer before issuing its first signed
   heartbeat. Startup and retries also reserve at least 60 seconds before
   creation +115 minutes; provisioning never resets the original clock.
-  Unexpected/terminal REST state, lost REST access, replacement numeric ID,
-  exhausted startup budget, or hung CLI fails closed into identity-checked
-  cleanup. No dependencies, private book transfer, model execution or setup
+  Every readiness response must itself contain the pinned numeric ID, name,
+  repository, 4-core/16-GiB/32-GiB machine shape and original creation stamp.
+  Separate successful identity probes do not validate another response's
+  Available state. Unexpected/terminal REST state, lost REST access, replaced
+  identity, exhausted startup budget, or hung CLI fails closed into
+  identity-checked cleanup. No dependencies, private book transfer, model execution or setup
   are permitted before the authenticated signed heartbeat is available.
   After bootstrap it continuously signs and privately transfers
   45-second-verifiable heartbeats (owner signing private key stays outside
