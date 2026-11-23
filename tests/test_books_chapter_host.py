@@ -245,6 +245,18 @@ def test_two_chapters_brief_stops_for_independent_review_and_resume(
         assert kwargs["expected_brief_identity"] is not None
         assert callable(kwargs["on_resume_verified"])
         kwargs["on_resume_verified"]()
+        stages = (
+            ("ADAPTATION_IN_FLIGHT", None),
+            ("ADAPTATION_VERIFIED", "a" * 64),
+            ("SCRIPT_IN_FLIGHT", None),
+            ("SCRIPT_VERIFIED", "b" * 64),
+            ("NARRATION_IN_FLIGHT", None),
+            ("NARRATION_VERIFIED", "c" * 64),
+            ("DIRECTION_IN_FLIGHT", None),
+            ("DIRECTION_VERIFIED", "d" * 64),
+        )
+        for stage, identity in stages:
+            kwargs["on_stage_progress"](stage, identity)
         return {
             "status": "CHAPTER_PREPRODUCTION_READY_UNREVIEWED",
             "brief_identity": "a" * 64,
@@ -257,6 +269,9 @@ def test_two_chapters_brief_stops_for_independent_review_and_resume(
     monkeypatch.setattr(chapter, "evaluate_chapter", fake_evaluate)
     monkeypatch.setattr(chapter_host, "_review_packet", lambda _r, n, _s: packets.append(n))
     monkeypatch.setattr(chapter_host, "_release_models", lambda: None)
+    monkeypatch.setattr(
+        chapter_host, "_save_final_manifest", lambda *_args: "e" * 64
+    )
     phase = _call(runner, path, "brief")
     assert phase["status"] == "PRIVATE_TWO_CHAPTER_CHECKPOINT"
     assert [phase["chapters"][str(n)]["status"] for n in (1, 7)] == [
