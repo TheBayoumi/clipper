@@ -578,3 +578,43 @@ def test_private_host_cli_status_codes_do_not_expose_private_failure(
     assert not stdout
     assert "PRIVATE_CHAPTER_HOST_FAILED_CLOSED" in stderr
     assert "SYNTHETIC_PRIVATE_CONTENT" not in stderr
+
+
+def test_host_deadline_paths_and_strict_manifest_permissions_do_not_start_models(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import copy
+
+    runner, path, config = _private_setup(tmp_path, monkeypatch)
+    with pytest.raises(chapter_host.PrivateHostStop, match="deadline"):
+        chapter_host._check_deadline(datetime.now(UTC) - timedelta(hours=2))
+    with pytest.raises(chapter_host.PrivateHostStop, match="absolute"):
+        chapter_host._private_path("relative-private-file.json", runner.root)
+    with pytest.raises(chapter_host.PrivateHostStop, match="does not exist"):
+        chapter_host._private_path(str(runner.root / "missing.json"), runner.root, must_exist=True)
+    for change in ("candidate_ref", "section_ids", "review_file", "bad_schema"):
+        corrupt = copy.deepcopy(config)
+        if change == "candidate_ref":
+            corrupt["candidate_ref"] = 23
+        elif change == "section_ids":
+            corrupt["chapter_1"]["section_ids"] = []
+        elif change == "review_file":
+            corrupt["chapter_7"]["review_file"] = 123
+        else:
+            corrupt["schema"] = "unrecognized"
+        with pytest.raises(chapter_host.PrivateHostStop):
+            chapter_host._config(corrupt)
+    with pytest.raises(chapter_host.PrivateHostStop, match="unsupported"):
+        _call(runner, path, "unknown_phase")
+    config["plan"]["brief_cpu"] = False
+    path.write_bytes(evaluation._json_bytes(config))
+    with pytest.raises(chapter_host.PrivateHostStop, match="permissions"):
+        _call(runner, path, "brief")
+    # The repository checkout is never an authorized private artifact root.
+    with pytest.raises(chapter_host.PrivateHostStop, match="outside"):
+        chapter_host.execute(
+            mode="inspect",
+            artifact_root=Path(chapter_host.__file__).resolve().parents[3],
+            manifest_path=path,
+            created_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        )
