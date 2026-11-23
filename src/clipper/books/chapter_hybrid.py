@@ -201,6 +201,9 @@ def producer_identity(
         "selected_source_bundle_sha256": selected_bundle_sha256,
         "chapter_plan_fingerprint": plan_fingerprint,
         "model_producer": model_producer,
+        # A tokenizer cache observation is only valid for the chapter producer:
+        # it must NOT alter legacy mining DAG identity after its provider loads.
+        "effective_tokenizer_cache": scripting._cached_chapter_tokenizer_material(),
         "source_mode": "DIRECT_SOURCE_HYBRID",
         "model": scripting.SCRIPT_MODEL,
         "revision": scripting.SCRIPT_REVISION,
