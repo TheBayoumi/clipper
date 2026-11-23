@@ -673,6 +673,11 @@ def test_actual_codespace_wrapper_dispatches_all_modes_through_shared_preflight(
         "terminal_state",
         "transient_cp",
         "bootstrap_over_execution_reserve",
+        "foreign_available_id",
+        "foreign_available_name",
+        "foreign_available_repo",
+        "foreign_available_shape",
+        "foreign_available_created",
     ],
 )
 def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scenario: str) -> None:
@@ -709,10 +714,22 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         "  if mode=='never_ready_original_clock': state='Created'\n"
         "  if mode=='terminal_state': state='Shutdown'\n"
         "  host_id=999 if mode=='identity_swap' and n>=4 else 12\n"
-        "  print(json.dumps({'id':host_id,'name':os.environ['CODESPACE_NAME'],"
-        "'created_at':os.environ['MOCK_CREATED'],'state':state,"
-        "'repository':{'full_name':'TheBayoumi/clipper'},"
-        "'machine':{'cpus':4,'memory_in_bytes':17179869184,"
+        "  name=os.environ['CODESPACE_NAME']\n"
+        "  repo='TheBayoumi/clipper'\n"
+        "  created=os.environ['MOCK_CREATED']\n"
+        "  cpus=4\n"
+        "  if mode.startswith('foreign_available_'):\n"
+        "    state='Available' if n==3 else 'Created'\n"
+        "    if n==3:\n"
+        "      if mode=='foreign_available_id': host_id=999\n"
+        "      if mode=='foreign_available_name': name='foreign-host'\n"
+        "      if mode=='foreign_available_repo': repo='foreign/repo'\n"
+        "      if mode=='foreign_available_shape': cpus=8\n"
+        "      if mode=='foreign_available_created': created='2020-01-01T00:00:00Z'\n"
+        "  print(json.dumps({'id':host_id,'name':name,"
+        "'created_at':created,'state':state,"
+        "'repository':{'full_name':repo},"
+        "'machine':{'cpus':cpus,'memory_in_bytes':17179869184,"
         "'storage_in_bytes':34359738368}})); sys.exit(0)\n"
         "if a[:2]==['codespace','ssh']:\n"
         "  c=pathlib.Path(os.environ['MOCK_SSH_COUNTER'])\n"
@@ -777,9 +794,12 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
     if scenario == "identity_swap":
         assert "api -X DELETE" not in actions
         assert "api -X POST" not in actions
-    if scenario in ("never_ready_original_clock", "bootstrap_over_execution_reserve"):
+    if scenario in ("never_ready_original_clock", "bootstrap_over_execution_reserve") or scenario.startswith(
+        "foreign_available_"
+    ):
         assert "codespace ssh" not in actions
         assert "codespace cp" not in actions
+        assert "external-supervisor-heartbeat-envelope" not in actions
     if scenario in ("lost_rest", "hung_rest", "identity_swap", "terminal_state"):
         assert "codespace cp" not in actions
     if scenario == "hung_ssh":
