@@ -1695,7 +1695,7 @@ def _hybrid_output_manifest(
             or not isinstance(envelope.get("payload"), dict)
         ):
             raise PrivateHostStop("hybrid stage payload changed after raw replay")
-        return envelope["payload"]
+        return cast(dict[str, Any], envelope["payload"])
 
     argument = verified_stage(
         "hybrid_argument",
@@ -1705,14 +1705,12 @@ def _hybrid_output_manifest(
     windows = chapter_hybrid.audit_windows(ledger_obj)
     if len(windows) != len(audit_ids):
         raise PrivateHostStop("hybrid recovered local source coverage incomplete")
-    audits = [
-        verified_stage(
-            "hybrid_audit",
-            identity,
-            lambda raw, window=window: chapter_hybrid.validate_audit(raw, ledger_obj, window),
-        )
-        for window, identity in zip(windows, audit_ids, strict=True)
-    ]
+    audits: list[dict[str, Any]] = []
+    for window, identity in zip(windows, audit_ids, strict=True):
+        def validate_local(raw: object) -> dict[str, Any]:
+            return chapter_hybrid.validate_audit(raw, ledger_obj, window)
+
+        audits.append(verified_stage("hybrid_audit", identity, validate_local))
 
     def validate_reconcile(raw: object) -> dict[str, Any]:
         result = chapter_hybrid.reconcile(raw, ledger_obj, argument, audits)
