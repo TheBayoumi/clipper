@@ -191,59 +191,194 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
     assert "PRIVATE_CHAPTER" not in actions
 
 
-@pytest.mark.parametrize("tamper_archive", [False, True])
+@pytest.mark.parametrize(
+    ("scenario", "tamper_archive"),
+    [
+        ("brief_only", False),
+        ("brief_only", True),
+        ("inflight_empty", False),
+        ("one_complete_one_failed", False),
+        ("all_ready", False),
+    ],
+)
 def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
-    tmp_path: Path, tamper_archive: bool
+    tmp_path: Path, scenario: str, tamper_archive: bool
 ) -> None:
-    """No Codespace: fake CLI transfers one synthetic TAR or a corrupted copy."""
+    """No host: transfer TARs with incomplete and genuinely READY chapter checkpoints."""
+    from clipper.stage_contracts import content_fingerprint
+
     source = tmp_path / "synthetic-private-outputs.tar"
-    relative = "book-candidates/brief/synthetic/validated.json"
-    text_bytes = b'{"only":"fabricated fixture text"}'
-    chapter_file = {
-        "chapter": 1,
-        "kind": "text",
-        "relative_path": relative,
-        "sha256": hashlib.sha256(text_bytes).hexdigest(),
-        "bytes": len(text_bytes),
-    }
-    file_entry = {key: value for key, value in chapter_file.items() if key != "chapter"}
-    file_entry["chapters"] = [1]
-    safe = {
-        "schema": "clipper-private-chapter-safe-recovery-v1",
-        "status": "PRIVATE_CHAPTER_RECOVERY_CHECKPOINT_ONLY",
-        "chapters": {
-            "1": {
+    payloads: dict[str, bytes] = {}
+    scoped: dict[int, list[dict[str, object]]] = {1: [], 7: []}
+    safe_chapters: dict[str, dict[str, object]] = {}
+    manifests: list[dict[str, object]] = []
+
+    def add(number: int, kind: str, path: str, payload: bytes) -> None:
+        if path in payloads:
+            assert payloads[path] == payload
+        payloads[path] = payload
+        scoped[number].append(
+            {
+                "chapter": number,
+                "kind": kind,
+                "relative_path": path,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "bytes": len(payload),
+            }
+        )
+
+    for number in (1, 7):
+        if scenario == "inflight_empty":
+            safe_chapters[str(number)] = {
                 "recovery_state": "IN_FLIGHT",
-                "last_subphase": "NARRATION_IN_FLIGHT",
-                "runtime_journal_status": "NARRATION_IN_FLIGHT",
+                "last_subphase": "MINING_IN_FLIGHT",
+                "runtime_journal_status": "MINING_IN_FLIGHT",
                 "retrieval_status": "INVENTORY_VERIFIED_NOT_RETRIEVED",
-                "last_verified_artifact_identities": {"brief_identity": "a" * 64},
-            },
-            "7": {
+                "last_verified_artifact_identities": {},
+            }
+            manifests.append({"chapter": number, "inventory_status": "VERIFIED", "files": []})
+            continue
+        if scenario == "brief_only" and number == 7:
+            safe_chapters[str(number)] = {
                 "recovery_state": "NEVER_STARTED",
                 "last_subphase": "NOT_STARTED",
                 "runtime_journal_status": "NOT_STARTED",
                 "retrieval_status": "NOT_ATTEMPTED",
                 "last_verified_artifact_identities": {},
-            },
-        },
+            }
+            manifests.append({"chapter": number, "inventory_status": "NOT_STARTED", "files": []})
+            continue
+        if scenario == "one_complete_one_failed" and number == 7:
+            safe_chapters[str(number)] = {
+                "recovery_state": "INCOMPLETE",
+                "last_subphase": "UNVERIFIED",
+                "runtime_journal_status": "UNVERIFIED",
+                "retrieval_status": "INCOMPLETE",
+                "last_verified_artifact_identities": {},
+            }
+            manifests.append({"chapter": number, "inventory_status": "INCOMPLETE", "files": []})
+            continue
+        if scenario == "brief_only":
+            add(number, "text", "book-candidates/brief/synthetic/validated.json",
+                b'{"only":"fabricated fixture text"}')
+            safe_chapters[str(number)] = {
+                "recovery_state": "AWAITING_REVIEW",
+                "last_subphase": "AWAITING_HUMAN_REVIEW",
+                "runtime_journal_status": "AWAITING_HUMAN_REVIEW",
+                "retrieval_status": "INVENTORY_VERIFIED_NOT_RETRIEVED",
+                "last_verified_artifact_identities": {"brief_identity": "a" * 64},
+            }
+            manifests.append(
+                {"chapter": number, "inventory_status": "VERIFIED", "files": scoped[number]}
+            )
+            continue
+
+        assert scenario in {"one_complete_one_failed", "all_ready"}
+        ids = {
+            stage: hashlib.sha256(f"{number}-{stage}".encode()).hexdigest()
+            for stage in (
+                "brief_identity", "adaptation_identity", "script_identity",
+                "direction_identity", "final_result_identity",
+            )
+        }
+        audio_bytes = b"synthetic WAV samples only"
+        wav_relative = "chapter-audio-injected_test_wav/shared.wav"
+        wav_path = "book-candidates/" + wav_relative
+        audio_report = {
+            "schema": "clipper-chapter-narration-v2",
+            "provenance": "INJECTED_TEST_WAV",
+            "records": [
+                {"wav_relative_path": wav_relative,
+                 "sha256": hashlib.sha256(audio_bytes).hexdigest()}
+            ],
+        }
+        ids["narration_report_identity"] = content_fingerprint(audio_report)
+        for identity, stage in (
+            ("brief_identity", "brief"),
+            ("adaptation_identity", "adaptation"),
+            ("script_identity", "chapter_script"),
+            ("direction_identity", "chapter_direction"),
+        ):
+            add(
+                number, "text",
+                f"book-candidates/{stage}/{ids[identity]}/validated.json",
+                json.dumps({"stage": stage, "chapter": number}, sort_keys=True).encode(),
+            )
+        add(number, "wav", wav_path, audio_bytes)
+        add(
+            number, "narration_report",
+            f"book-candidates/narration-report-{ids['narration_report_identity']}.json",
+            json.dumps(audio_report, sort_keys=True).encode(),
+        )
+        add(
+            number, "final_result",
+            f"book-candidates/chapter-evaluations/{number}/"
+            f"chapter-result-{ids['final_result_identity']}.json",
+            json.dumps({"chapter": number, "ready": True}, sort_keys=True).encode(),
+        )
+        add(
+            number, "source_ledger",
+            f"book-candidates/chapter-evaluations/{number}/source-ledger.json",
+            json.dumps({"chapter": number, "source": "synthetic"}, sort_keys=True).encode(),
+        )
+        add(
+            number, "human_review",
+            f"book-candidates/chapter-evaluations/{number}/human-review.json",
+            json.dumps({"chapter": number, "review": "synthetic"}, sort_keys=True).encode(),
+        )
+        manifest = {
+            "schema": "clipper-chapter-private-output-manifest-v1",
+            "chapter": number,
+            "bundle_sha256": hashlib.sha256(f"bundle-{number}".encode()).hexdigest(),
+            "scope_sha256": hashlib.sha256(f"scope-{number}".encode()).hexdigest(),
+            "verified_artifact_identities": ids,
+            "files": scoped[number],
+            "publish_eligible": False,
+        }
+        raw_manifest = (json.dumps(manifest, ensure_ascii=False, sort_keys=True) + "\n").encode()
+        safe_chapters[str(number)] = {
+            "recovery_state": "READY",
+            "last_subphase": "PREPRODUCTION_READY",
+            "runtime_journal_status": "PREPRODUCTION_READY",
+            "retrieval_status": "INVENTORY_VERIFIED_NOT_RETRIEVED",
+            "bundle_sha256": manifest["bundle_sha256"],
+            "scope_sha256": manifest["scope_sha256"],
+            "output_manifest_sha256": hashlib.sha256(raw_manifest).hexdigest(),
+            "last_verified_artifact_identities": ids,
+        }
+        manifests.append({**manifest, "inventory_status": "VERIFIED"})
+
+    aggregate: dict[str, dict[str, object]] = {}
+    for number in (1, 7):
+        for scoped_file in scoped[number]:
+            path = str(scoped_file["relative_path"])
+            if path not in aggregate:
+                aggregate[path] = {
+                    **{key: value for key, value in scoped_file.items() if key != "chapter"},
+                    "chapters": [number],
+                }
+            else:
+                assert aggregate[path]["sha256"] == scoped_file["sha256"]
+                aggregate[path]["chapters"].append(number)
+
+    safe = {
+        "schema": "clipper-private-chapter-safe-recovery-v1",
+        "status": "PRIVATE_CHAPTER_RECOVERY_CHECKPOINT_ONLY",
+        "chapters": safe_chapters,
         "files_retrieved": False,
         "publish_eligible": False,
     }
-    safe_bytes = json.dumps(safe, sort_keys=True).encode("utf-8")
+    safe_bytes = json.dumps(safe, sort_keys=True).encode()
     listing = {
         "schema": "clipper-chapter-private-recovery-archive-manifest-v1",
-        "chapters": [
-            {"chapter": 1, "inventory_status": "VERIFIED", "files": [chapter_file]},
-            {"chapter": 7, "inventory_status": "NOT_STARTED", "files": []},
-        ],
-        "files": [file_entry],
+        "chapters": manifests,
+        "files": list(aggregate.values()),
         "runtime_status_sha256": hashlib.sha256(safe_bytes).hexdigest(),
     }
-    listing_bytes = json.dumps(listing, sort_keys=True).encode("utf-8")
+    listing_bytes = json.dumps(listing, sort_keys=True).encode()
     with tarfile.open(source, "w") as archive:
         for name, data in (
-            (relative, text_bytes),
+            *payloads.items(),
             ("private-recovery-manifest.json", listing_bytes),
             ("safe-recovery-status.json", safe_bytes),
         ):
@@ -331,9 +466,32 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         "INCOMPLETE" if tamper_archive else "VERIFIED_PRIVATE_ARCHIVE_PARTIAL"
     )
     if not tamper_archive:
-        assert verification["chapters"] == {
-            "1": "VERIFIED_PRIVATE_ARCHIVE",
-            "7": "NOT_STARTED",
+        expected = {
+            "brief_only": ({"1": "PARTIAL_OUTPUTS", "7": "NOT_STARTED"}, "PARTIAL"),
+            "inflight_empty": ({"1": "CHECKPOINT_ONLY", "7": "CHECKPOINT_ONLY"}, "NONE"),
+            "one_complete_one_failed": (
+                {"1": "READY_OUTPUTS_VERIFIED", "7": "INCOMPLETE"}, "PARTIAL"
+            ),
+            "all_ready": (
+                {"1": "READY_OUTPUTS_VERIFIED", "7": "READY_OUTPUTS_VERIFIED"}, "COMPLETE"
+            ),
         }
+        assert verification["archive_integrity_status"] == "VERIFIED"
+        assert verification["chapters"] == expected[scenario][0]
+        assert verification["output_scope"] == expected[scenario][1]
+        assert verification["host_cleanup_status"] == "NOT_YET_REST_VERIFIED"
+        assert verification["recovered_file_count"] == len(aggregate)
+        assert verification["retrieval_status"] == (
+            "VERIFIED_PRIVATE_ARCHIVE"
+            if scenario == "all_ready"
+            else "VERIFIED_PRIVATE_ARCHIVE_PARTIAL"
+        )
+        if scenario == "inflight_empty":
+            assert verification["recovered_file_count"] == 0
+        if scenario == "all_ready":
+            with tarfile.open(folder / "chapter-recovery.tar", "r:") as copied:
+                assert copied.getnames().count(
+                    "book-candidates/chapter-audio-injected_test_wav/shared.wav"
+                ) == 1
     assert (folder / "chapter-recovery.tar").exists() is not tamper_archive
     assert "fabricated fixture text" not in result.stdout + result.stderr
