@@ -100,7 +100,9 @@ def configure_books_parser(subparsers: Any) -> None:
         "evaluate", help="private source-bound mined-to-text-shots evaluation; no video"
     )
     evaluate.add_argument("--candidate-ref", type=Path, required=True)
-    evaluate.add_argument("--progress", type=Path, help="immutable private whole-book mining progress")
+    evaluate.add_argument(
+        "--progress", type=Path, help="immutable private whole-book mining progress"
+    )
     evaluate.add_argument("--review-file", type=Path, help="private human source-support verdicts")
     evaluate.add_argument(
         "--run-manifest", type=Path,

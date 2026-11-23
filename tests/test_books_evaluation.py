@@ -9,11 +9,10 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from test_books_whole_book import ingested
 
 from clipper.books import evaluation, narration, scripting, selection, whole_book
 from clipper.books.orchestrator import BookOrchestrator
-from clipper.stage_contracts import content_fingerprint
-from test_books_whole_book import ingested
 
 
 def _mined(tmp_path: Path) -> tuple[BookOrchestrator, Path, Path, list[dict]]:

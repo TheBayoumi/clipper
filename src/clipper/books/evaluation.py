@@ -166,7 +166,8 @@ def _mined_export(
             or any(evidence.get(k) != v for k, v in {
                 "section_id": unit.section_id, "source_path": unit.source_path,
                 "field": unit.evidence_field, "origin": unit.origin,
-                "review_status": unit.review_status, "research_link_status": unit.research_link_status,
+                "review_status": unit.review_status,
+                "research_link_status": unit.research_link_status,
                 "source_sha256": book.content_sha256,
             }.items())
         ):
@@ -217,7 +218,10 @@ def _review(lessons: list[dict[str, Any]], raw: object, progress_sha: str) -> di
             raise EvaluationStop("missing, duplicate or unsupported source-review decision")
         qualifier = record["qualifier_quote"]
         if (len(qualifier) > 400 or
-            (qualifier and qualifier not in candidates[cid]["_evaluation_context"]["source_context"])):
+            (
+                qualifier
+                and qualifier not in candidates[cid]["_evaluation_context"]["source_context"]
+            )):
             raise EvaluationStop("review qualifier must quote the exact source context")
         decisions[cid] = cast(dict[str, str], record)
     if set(decisions) != set(candidates):
@@ -286,7 +290,11 @@ def _shots(raw: str, script: scripting.Episode, evidence_id: str,
         result: object = whole_book.load_strict_reply(raw)
     except (ValueError, UnicodeError, RecursionError) as exc:
         raise EvaluationStop("direction output is not strict JSON") from exc
-    if not isinstance(result, dict) or set(result) != {"shots"} or not isinstance(result["shots"], list):
+    if (
+        not isinstance(result, dict)
+        or set(result) != {"shots"}
+        or not isinstance(result["shots"], list)
+    ):
         raise EvaluationStop("direction output schema mismatch")
     shots = result["shots"]
     if len(shots) != len(script.scenes):
@@ -336,8 +344,9 @@ def evaluate_candidate(
         progress_path = Path(mined["progress_path"])
     else:
         raise EvaluationStop("evaluation requires pinned progress or explicit mining inputs")
-    assert progress_path is not None
-    progress, lessons, book = _mined_export(runner, ref_path, progress_path)
+    if progress_path is None:
+        raise EvaluationStop("mining progress was not recorded")
+    _progress, lessons, book = _mined_export(runner, ref_path, progress_path)
     progress_sha = _sha(_read(progress_path, 20_000_000))
     private_root = runner.root / "book-candidates"
     evaluation_key = content_fingerprint({
@@ -408,7 +417,9 @@ def evaluate_candidate(
         (script_root / "script_diagnostics" / f"{expected_script_key}.json").exists()
         and not (script_root / "scripts" / f"{expected_script_key}.json").is_file()
     ):
-        raise EvaluationStop("previous unsuccessful script attempts cannot be automatically repeated")
+        raise EvaluationStop(
+            "previous unsuccessful script attempts cannot be automatically repeated"
+        )
     script_attempts = 0
 
     def script_produce(request: dict[str, object]) -> str:
@@ -423,7 +434,9 @@ def evaluate_candidate(
                 "attempt": script_attempts, "status": "PRODUCER_FAILED",
                 "category": type(exc).__name__,
             })
-            raise EvaluationStop("script producer failed; inspect private attempt history") from None
+            raise EvaluationStop(
+                "script producer failed; inspect private attempt history"
+            ) from None
         if not isinstance(raw, str):
             raise EvaluationStop("script producer returned nontext output")
         _store(private_root, script_root / f"raw-{script_attempts}.json", {
@@ -438,7 +451,7 @@ def evaluate_candidate(
         )
     except (scripting.NicheVideoError, EvaluationStop):
         raise EvaluationStop("script generation failed; private attempts retained") from None
-    # Include original draft hashes in the evidence; edits are recorded by canonical script diagnostics.
+    # Original drafts are private; canonical script diagnostics record edits.
     script_audit = script_root / "script_diagnostics" / f"{script_key}.json"
     attempts = json.loads(_read(script_audit))
     scene_text = [s.narration for s in episode.scenes]
