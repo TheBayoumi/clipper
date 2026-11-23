@@ -364,7 +364,7 @@ def test_actual_pinned_public_tokenizer_template_and_same_count_tokens_bind_requ
         chapter_scope_sha256="b" * 64,
         selected_bundle_sha256="c" * 64,
         plan_fingerprint="d" * 64,
-        model_producer=legacy_a,
+        model_producer=whole_book.hybrid_chapter_producer_material(),
     )
     material_a = scripting._cached_chapter_tokenizer_material()
     assert material_a["status"] == "PINNED_PUBLIC_TOKENIZER"
@@ -420,7 +420,7 @@ def test_actual_pinned_public_tokenizer_template_and_same_count_tokens_bind_requ
                 chapter_scope_sha256="b" * 64,
                 selected_bundle_sha256="c" * 64,
                 plan_fingerprint="d" * 64,
-                model_producer=legacy_a,
+                model_producer=whole_book.hybrid_chapter_producer_material(),
             )
             assert producer_b != producer_a
             assert material_a != scripting._cached_chapter_tokenizer_material()
