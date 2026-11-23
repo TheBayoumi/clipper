@@ -389,7 +389,7 @@ def _direction_validate(
     script: dict[str, Any],
     adaptation: dict[str, Any],
     timings: list[dict[str, Any]],
-    plan: ChapterPlan
+    plan: ChapterPlan,
 ) -> dict[str, Any]:
     obj = _shape(raw, {"shots"}, "chapter shot schema")
     shots = _items(
@@ -777,14 +777,13 @@ def _narrate(
                     root, marker, {"status": "STARTED_UNRESOLVED", "request_sha256": marker_key}
                 )
             try:
+
                 def make_utterance(utterance: Scene = item) -> Path:
                     return narration.synthesize_scene(
                         utterance, config, audio_root, producer=producer
                     )
 
-                wave_path = evaluation._capture_private_generator(
-                    root, audio_root, make_utterance
-                )
+                wave_path = evaluation._capture_private_generator(root, audio_root, make_utterance)
                 data = evaluation._read(wave_path, 40_000_000)
                 channels, sample_rate, frames = narration.validated_wav(data, cached=True)
             except Exception:
