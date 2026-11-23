@@ -190,7 +190,7 @@ def _prepare(runner: BookOrchestrator, inputs: dict[str, Any]) -> list[Prepared]
             raise PrivateHostStop("selected chapter scope identity mismatch")
         if (
             cast(int, counts["work_units"]) + cast(int, counts["skipped_units"])
-            > chapter.MAX_SOURCE_UNITS
+            > selected_scope.MAX_CHAPTER_ENTRIES
         ):
             raise PrivateHostStop("selected full chapter exceeds original unit/gap budget")
         prepared.append((number, block, bundle, verified, section_path, scope_sha, counts))
@@ -336,7 +336,8 @@ def _release_models() -> None:
 
 PHASE_TRANSITIONS: dict[str | None, set[str]] = {
     None: {"NOT_STARTED"},
-    "NOT_STARTED": {"MINING_IN_FLIGHT", "STOPPED"},
+    "NOT_STARTED": {"MINING_IN_FLIGHT", "HYBRID_BRIEF_IN_FLIGHT", "STOPPED"},
+    "HYBRID_BRIEF_IN_FLIGHT": {"AWAITING_HUMAN_REVIEW", "STOPPED"},
     "MINING_IN_FLIGHT": {"SCOPED_MINING_INCOMPLETE", "BRIEF_IN_FLIGHT", "STOPPED"},
     "BRIEF_IN_FLIGHT": {"AWAITING_HUMAN_REVIEW", "STOPPED"},
     "AWAITING_HUMAN_REVIEW": {"RESUME_IN_FLIGHT", "STOPPED"},
@@ -501,12 +502,12 @@ def _append_phase_locked(
         raise PhaseClaimContended("duplicate or superseded chapter phase claim")
     # Terminal/follow-on transitions are reserved for the caller which won
     # MINING_IN_FLIGHT or RESUME_IN_FLIGHT. No losing caller may STOP a winner.
-    if state not in {"NOT_STARTED", "MINING_IN_FLIGHT", "RESUME_IN_FLIGHT"}:
+    if state not in {"NOT_STARTED", "MINING_IN_FLIGHT", "HYBRID_BRIEF_IN_FLIGHT", "RESUME_IN_FLIGHT"}:
         active = next(
             (
                 row["artifacts"].get("claim_owner")
                 for row in reversed(records)
-                if row["phase"] in {"MINING_IN_FLIGHT", "RESUME_IN_FLIGHT"}
+                if row["phase"] in {"MINING_IN_FLIGHT", "HYBRID_BRIEF_IN_FLIGHT", "RESUME_IN_FLIGHT"}
             ),
             None,
         )
@@ -592,6 +593,7 @@ def _outcome_from_phase(record: dict[str, Any]) -> dict[str, object]:
     status = {
         "NOT_STARTED": "NOT_STARTED",
         "MINING_IN_FLIGHT": "INTERRUPTED_DURING_MINING",
+        "HYBRID_BRIEF_IN_FLIGHT": "INTERRUPTED_DURING_HYBRID_RECONCILIATION",
         "SCOPED_MINING_INCOMPLETE": "SCOPED_MINING_INCOMPLETE",
         "BRIEF_IN_FLIGHT": "INTERRUPTED_DURING_CHAPTER_BRIEF",
         "AWAITING_HUMAN_REVIEW": "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW",
@@ -652,12 +654,19 @@ def execute(
     prepared = _prepare(runner, inputs)
     if mode == "inspect":
         return _inspection(runner, prepared)
+    if mode in {"hybrid-brief", "hybrid-resume"}:
+        return _execute_hybrid(runner, prepared, plan, mode, root, created_at)
     if mode not in {"brief", "resume"}:
         raise PrivateHostStop("unsupported private chapter host phase")
     if not all(
         (plan.brief_cpu, plan.adaptation_cpu, plan.script_cpu, plan.direction_cpu, plan.kokoro_cpu)
     ):
         raise PrivateHostStop("real chapter phases require explicit full CPU permissions")
+    if any(
+        len(verified.work.units) + len(verified.work.skipped) > chapter.MAX_SOURCE_UNITS
+        for _, _, _, verified, _, _, _ in prepared
+    ):
+        raise PrivateHostStop("legacy mined-chapter route exceeds original 64-unit safety cap")
     if any(block["scope_sha256"] != scope_sha for _, block, _, _, _, scope_sha, _ in prepared):
         raise PrivateHostStop("both original selected scopes must be explicitly operator-locked")
 
