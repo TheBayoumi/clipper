@@ -179,6 +179,7 @@ def test_middle_qualifier_and_contrary_example_are_not_auto_reconciled() -> None
         {
             "id": "a001-d01",
             "issue": "Counterexample changes the opening claim.",
+            "proposed_change": "Qualify the initial chapter argument.",
             "evidence": [{"id": "s0004", "start": 0, "end": 20, "role": "COUNTEREXAMPLE"}],
         }
     ]
