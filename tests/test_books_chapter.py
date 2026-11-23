@@ -948,8 +948,7 @@ def test_cli_chapter_mode_does_not_leak_private_model_keys_or_source_ids(
     assert evidence[0]["id"] not in stdout + stderr
     assert "PRIVATE_EVALUATION_FAILED_CLOSED" in stderr
     raw = list((runner.root / "book-candidates/brief").rglob("raw-*.json"))
-    assert len(raw) == 2
-    assert marker in raw[0].read_text(encoding="utf-8")
+    assert raw == []  # The real host is unverified, so no producer starts or raw appears.
 
 
 def test_zero_candidate_source_example_remains_in_brief_and_human_unit_review(
@@ -1349,7 +1348,7 @@ def test_qualified_invented_beats_cannot_be_relabeled_or_silently_denarrated() -
     )
 
 
-@pytest.mark.parametrize("delta", [0.01, -0.01, float("nan"), float("inf")])
+@pytest.mark.parametrize("delta", [0.01, -0.01, 0.0000002, float("nan"), float("inf")])
 def test_chapter_shot_timing_is_gap_free_and_finite(delta: float) -> None:
     dummy = {
         "messages": [
@@ -1434,7 +1433,7 @@ def test_final_result_identity_binds_full_provenance_and_same_length_wav_bytes(
         assert payload["audio_records"][0]["start_sample"] == 0
         assert payload["audio_records"][-1]["end_sample"] == 24000 * 32
         identities.append((result["direction_identity"], result["final_result_identity"], payload))
-    assert identities[0][0] == identities[1][0]  # Same content/timing: direction can reuse.
+    assert identities[0][2]["timings"] == identities[1][2]["timings"]
     assert identities[0][1] != identities[1][1]  # Different WAV bytes: result cannot alias.
     assert (
         identities[0][2]["audio_records"][0]["sha256"]
@@ -1465,3 +1464,77 @@ def test_omitted_qualified_unit_needs_human_disposition(tmp_path: Path) -> None:
         chapter._review_validate(review, brief, first["brief_identity"], source["units"], [])[0]
         == review
     )
+
+
+
+def test_cached_chapter_stage_owner_tamper_is_not_silently_replayed(tmp_path: Path) -> None:
+    root = tmp_path / "private"
+    plan = _plan(max_attempts_per_stage=1)
+    producer = Mock(return_value=json.dumps({"story": "synthetic"}))
+    args = (root, "brief", {"source": "synthetic"}, plan)
+    first = chapter._stage(*args, lambda item: item, producer)
+    assert first[3] == 1
+    started = next((root / "brief").rglob("started-1.json"))
+    marker = json.loads(started.read_bytes())
+    marker["owner"] = "synthetic-other-owner"
+    started.write_text(json.dumps(marker), encoding="utf-8")
+    with pytest.raises(chapter.ChapterStop, match="owner mismatch"):
+        chapter._stage(*args, lambda item: item, producer)
+    producer.assert_called_once()
+
+
+def test_chapter_wav_cache_rejects_changed_bytes_and_bad_completion(tmp_path: Path) -> None:
+    root = tmp_path / "private"
+    plan = _plan()
+    producer = Mock(side_effect=_wav)
+    script = {"scenes": [{"scene_id": "scene-01", "narration": "synthetic", "dialogue": []}]}
+    records, provenance, _key = chapter._narrate(root, script, plan, producer)
+    assert provenance == "INJECTED_TEST_WAV"
+    assert records[0]["start_sample"] == 0
+    wav_path = root / records[0]["wav_relative_path"]
+    original = wav_path.read_bytes()
+    changed = bytearray(original)
+    changed[44] ^= 1
+    wav_path.write_bytes(changed)
+    with pytest.raises(chapter.ChapterStop, match="cache changed"):
+        chapter._narrate(root, script, plan, producer)
+    wav_path.write_bytes(original)
+    completion = next(root.rglob("completed-*.json"))
+    saved = json.loads(completion.read_bytes())
+    completion.write_text('{"broken":', encoding="utf-8")
+    with pytest.raises(chapter.ChapterStop, match="completion record invalid"):
+        chapter._narrate(root, script, plan, producer)
+    completion.write_text(json.dumps({**saved, "status": "UNRESOLVED"}), encoding="utf-8")
+    with pytest.raises(chapter.ChapterStop, match="conflicting publication"):
+        chapter._narrate(root, script, plan, producer)
+    producer.assert_called_once()
+
+
+def test_chapter_audio_failure_and_unverified_host_are_fail_closed(tmp_path: Path) -> None:
+    root = tmp_path / "private"
+    plan = _plan(max_attempts_per_stage=1)
+    script = {"scenes": [{"scene_id": "scene-01", "narration": "synthetic", "dialogue": []}]}
+    with pytest.raises(chapter.ChapterStop, match="verified bounded private host"):
+        chapter._narrate(root, script, plan, None)
+    with pytest.raises(chapter.ChapterStop, match="verified bounded private host"):
+        chapter._stage(root, "brief", {"source": "synthetic"}, plan, lambda item: item, None)
+    failed = Mock(side_effect=RuntimeError("synthetic producer failure"))
+    with pytest.raises(chapter.ChapterStop, match="failed"):
+        chapter._narrate(root, script, plan, failed)
+    with pytest.raises(chapter.ChapterStop, match="unresolved"):
+        chapter._narrate(root, script, plan, failed)
+    failed.assert_called_once()
+
+
+def test_chapter_timing_rejects_noncontiguous_pcm_sample_offsets() -> None:
+    plan = _plan()
+    script = {"scenes": [{"scene_id": "scene-01", "narration": "synthetic", "dialogue": []}]}
+    frame_record = {
+        "scene_id": "scene-01",
+        "samples": 8000,
+        "sample_rate": 24000,
+        "start_sample": 1,
+        "end_sample": 8001,
+    }
+    with pytest.raises(chapter.ChapterStop, match="offsets are discontinuous"):
+        chapter._timings(script, plan, [frame_record])

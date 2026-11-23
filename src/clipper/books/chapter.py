@@ -702,16 +702,18 @@ def _direction_validate(
                 or type(end) not in (int, float)
                 or not math.isfinite(start)
                 or not math.isfinite(end)
-                or abs(start - previous_end) > 0.0000005
+                or round(start, 6) != start
+                or round(end, 6) != end
+                or start != previous_end
                 or not start < end
-                or end > scene_timing["end_seconds"] + 0.0000005
-                or start < scene_timing["start_seconds"] - 0.0000005
+                or end > scene_timing["end_seconds"]
+                or start < scene_timing["start_seconds"]
             ):
                 raise ChapterStop("chapter shot timing gap, overlap or scene boundary error")
             previous_end = end
-        if not changed or abs(previous_end - scene_timing["end_seconds"]) > 0.0000005:
+        if not changed or previous_end != scene_timing["end_seconds"]:
             raise ChapterStop("chapter scene has no state-changing action or incomplete timing")
-    if index != len(shots) or abs(previous_end - timings[-1]["end_seconds"]) > 0.0000005:
+    if index != len(shots) or previous_end != timings[-1]["end_seconds"]:
         raise ChapterStop("chapter direction includes orphan shots or incomplete timeline")
     canonical = [
         shot
