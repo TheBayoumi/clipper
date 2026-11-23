@@ -946,7 +946,7 @@ def test_cli_chapter_mode_does_not_leak_private_model_keys_or_source_ids(
     stdout, stderr = capsys.readouterr()
     assert marker not in stdout + stderr
     assert evidence[0]["id"] not in stdout + stderr
-    assert "PRIVATE_EVALUATION_FAILED_CLOSED" in stderr
+    assert "PRIVATE_CHAPTER_BOUNDED_HOST_UNVERIFIED" in stderr
     raw = list((runner.root / "book-candidates/brief").rglob("raw-*.json"))
     assert raw == []  # The real host is unverified, so no producer starts or raw appears.
 
@@ -1537,3 +1537,272 @@ def test_chapter_timing_rejects_noncontiguous_pcm_sample_offsets() -> None:
     }
     with pytest.raises(chapter.ChapterStop, match="offsets are discontinuous"):
         chapter._timings(script, plan, [frame_record])
+
+
+
+@pytest.mark.parametrize("stage", ["brief", "chapter_direction"])
+@pytest.mark.parametrize("tamper", ["payload", "raw", "missing_raw", "raw_digest", "artifact_digest"])
+def test_text_artifact_replay_verifies_exact_raw_and_validated_output(
+    tmp_path: Path, stage: str, tamper: str
+) -> None:
+    root = tmp_path / "private"
+    plan = _plan()
+    callback = Mock(return_value='{"value":"original synthetic response"}')
+    args = (root, stage, {"fixture": "synthetic"}, plan)
+    first = chapter._stage(*args, lambda x: x, callback)
+    assert first[3] == 1
+    directory = next((root / stage).iterdir())
+    complete = directory / "validated.json"
+    saved = json.loads(complete.read_bytes())
+    raw_path = directory / "raw-1.json"
+    raw = json.loads(raw_path.read_bytes())
+    if tamper == "payload":
+        saved["payload"]["value"] = "changed synthetic response"
+    elif tamper == "raw":
+        raw["raw"] = '{"value":"changed synthetic response"}'
+        raw_path.write_text(json.dumps(raw), encoding="utf-8")
+    elif tamper == "missing_raw":
+        raw_path.unlink()
+    elif tamper == "raw_digest":
+        raw["sha256"] = "f" * 64
+        raw_path.write_text(json.dumps(raw), encoding="utf-8")
+    else:
+        saved["artifact_identity"] = "f" * 64
+    if tamper in {"payload", "artifact_digest"}:
+        complete.write_text(json.dumps(saved), encoding="utf-8")
+    with pytest.raises(chapter.ChapterStop, match="artifact cannot be verified"):
+        chapter._stage(*args, lambda x: x, callback)
+    callback.assert_called_once()
+
+
+def test_text_artifact_identity_separates_changed_output_not_equivalent_content(
+    tmp_path: Path,
+) -> None:
+    ids: list[str] = []
+    requests: list[str] = []
+    for index, content in enumerate(["same", "same", "changed"]):
+        root = tmp_path / f"run-{index}"
+        output = '{"value":"' + content + '"}'
+        _, key, _, attempts = chapter._stage(
+            root,
+            "brief",
+            {"fixture": "same-source-request"},
+            _plan(),
+            lambda x: x,
+            lambda _request, answer=output: answer,
+        )
+        assert attempts == 1
+        ids.append(key)
+        requests.append(next((root / "brief").iterdir()).name)
+    assert requests[0] == requests[1] == requests[2]
+    assert ids[0] == ids[1]
+    assert ids[0] != ids[2]
+
+
+@pytest.mark.parametrize("tamper", ["delete", "replace", "partial"])
+def test_text_reservation_loss_before_publish_never_commits_success(
+    tmp_path: Path, tamper: str
+) -> None:
+    root = tmp_path / "private"
+    calls = Mock(return_value='{"value":"valid synthetic output"}')
+
+    def hostile(request: dict[str, object]) -> str:
+        marker = next((root / "brief").rglob("started-1.json"))
+        if tamper == "delete":
+            marker.unlink()
+        elif tamper == "partial":
+            marker.write_bytes(b"{")
+        else:
+            record = json.loads(marker.read_bytes())
+            record["owner"] = "0" * 32
+            marker.write_text(json.dumps(record), encoding="utf-8")
+        return calls(request)
+
+    args = (root, "brief", {"fixture": "claim-loss"}, _plan(max_attempts_per_stage=1))
+    with pytest.raises(chapter.ChapterStop):
+        chapter._stage(*args, lambda x: x, hostile)
+    assert list((root / "brief").rglob("validated.json")) == []
+    # A missing claim may be present only as a raw orphan; no successful replay.
+    replay = Mock(side_effect=AssertionError("must not call provider twice"))
+    if tamper != "delete":
+        with pytest.raises(chapter.ChapterStop):
+            chapter._stage(*args, lambda x: x, replay)
+        replay.assert_not_called()
+    calls.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("max_attempts_per_stage", 3),
+        ("max_attempts_per_stage", 0),
+        ("max_attempts_per_stage", True),
+        ("max_runtime_seconds", float("nan")),
+        ("max_runtime_seconds", float("inf")),
+        ("max_runtime_seconds", 901),
+        ("max_new_tokens", 100000),
+        ("max_beats", -1),
+        ("brief_cpu", 1),
+        ("kokoro_cpu", "true"),
+        ("voice", []),
+    ],
+)
+def test_direct_chapter_plan_rejects_invalid_type_or_limit(name: str, value: object) -> None:
+    with pytest.raises(chapter.ChapterStop):
+        chapter.ChapterPlan(**{name: value})
+
+
+def test_internal_chapter_stage_revalidates_mutated_direct_plan(tmp_path: Path) -> None:
+    plan = _plan()
+    object.__setattr__(plan, "max_attempts_per_stage", 3)
+    callback = Mock(return_value="invalid JSON")
+    with pytest.raises(chapter.ChapterStop, match="finite limits"):
+        chapter._stage(
+            tmp_path / "private",
+            "brief",
+            {"fixture": "synthetic"},
+            plan,
+            lambda x: x,
+            callback,
+        )
+    callback.assert_not_called()
+    assert not list(tmp_path.rglob("started-*.json"))
+
+
+def test_existing_human_review_rejects_changed_verified_brief_artifact(tmp_path: Path) -> None:
+    runner, ref, progress, section, _ = _source(tmp_path)
+    first, brief = _first_brief(runner, ref, progress, section, _plan())
+    review_path = _review(tmp_path, first["brief_identity"], brief)
+    saved_path = next((runner.root / "book-candidates/brief").rglob("validated.json"))
+    directory = saved_path.parent
+    saved = json.loads(saved_path.read_bytes())
+    raw_path = directory / "raw-1.json"
+    original_raw = json.loads(raw_path.read_bytes())
+    changed_brief = dict(brief, argument=brief["argument"] + " A distinct synthetic qualifier.")
+    changed_raw = json.dumps(changed_brief)
+    raw_digest = hashlib.sha256(changed_raw.encode()).hexdigest()
+    raw_path.write_text(
+        json.dumps(
+            {
+                **original_raw,
+                "raw": changed_raw,
+                "sha256": raw_digest,
+            }
+        ),
+        encoding="utf-8",
+    )
+    payload_digest = hashlib.sha256(evaluation._json_bytes(changed_brief)).hexdigest()
+    saved.update(
+        {
+            "payload": changed_brief,
+            "raw_sha256": raw_digest,
+            "payload_sha256": payload_digest,
+            "artifact_identity": chapter._text_artifact_identity(
+                "brief",
+                saved["request_key"],
+                saved["provenance"],
+                raw_digest,
+                payload_digest,
+            ),
+        }
+    )
+    saved_path.write_text(json.dumps(saved), encoding="utf-8")
+    callback = Mock(side_effect=AssertionError("must reuse verified altered cache"))
+    with pytest.raises(chapter.ChapterStop, match="review does not match generated brief"):
+        chapter.evaluate_chapter(
+            runner,
+            ref,
+            progress,
+            section,
+            review_file=review_path,
+            plan=_plan(),
+            brief_completion=callback,
+        )
+    callback.assert_not_called()
+    assert first["brief_identity"] != saved["artifact_identity"]
+
+
+def test_reviewed_qualified_retained_unit_cannot_lose_last_adapted_beat(
+    tmp_path: Path,
+) -> None:
+    runner, ref, progress, section, _ = _source(tmp_path, with_image=True)
+
+    def nonessential(request: dict[str, object]) -> str:
+        response = json.loads(_brief(request))
+        response["beats"][0]["essential"] = False
+        return json.dumps(response)
+
+    first = chapter.evaluate_chapter(
+        runner,
+        ref,
+        progress,
+        section,
+        plan=_plan(),
+        brief_completion=nonessential,
+    )
+    brief_path = next((runner.root / "book-candidates/brief").rglob("validated.json"))
+    brief = json.loads(brief_path.read_bytes())["payload"]
+    review_path = _review(tmp_path, first["brief_identity"], brief)
+    source_path = next((runner.root / "book-candidates/chapter-evaluations").rglob(
+        "source-ledger.json"
+    ))
+    source = json.loads(source_path.read_bytes())
+    first_unit = brief["beats"][0]["unit_id"]
+    unit = next(x for x in source["units"] if x["source_id"] == first_unit)
+    review_data = json.loads(review_path.read_bytes())
+    review_row = next(
+        x for x in review_data["unit_decisions"] if x["source_id"] == first_unit
+    )
+    review_row["qualifier_quote"] = unit["text"][:40]
+    review_path.write_text(json.dumps(review_data), encoding="utf-8")
+
+    def omitted_last_beat(request: dict[str, object]) -> str:
+        adaptation = json.loads(_adapt(request))
+        adaptation["beats"][0]["decision"] = "omit"
+        return json.dumps(adaptation)
+
+    script = Mock(side_effect=AssertionError("omitted source must block script"))
+    with pytest.raises(chapter.ChapterStop, match="exhausted"):
+        chapter.evaluate_chapter(
+            runner,
+            ref,
+            progress,
+            section,
+            review_file=review_path,
+            plan=_plan(),
+            brief_completion=nonessential,
+            adaptation_completion=omitted_last_beat,
+            script_completion=script,
+        )
+    script.assert_not_called()
+    # The generated raw remains private and records the disallowed omission.
+    failed = list((runner.root / "book-candidates/adaptation").rglob("failed-*.json"))
+    assert failed
+
+
+def test_cli_unexpected_chapter_failure_stays_generic_and_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner, ref, progress, section, _ = _source(tmp_path)
+    marker = "PRIVATE_UNEXPECTED_HOST_ERROR_7FCB"
+
+    def unexpected(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError(marker)
+
+    monkeypatch.setattr(chapter, "evaluate_chapter", unexpected)
+    parser = argparse.ArgumentParser()
+    cli.configure_books_parser(parser.add_subparsers(dest="command", required=True))
+    args = parser.parse_args(
+        [
+            "books", "chapter-evaluate",
+            "--artifact-root", str(runner.root),
+            "--candidate-ref", str(ref),
+            "--section-manifest", str(section),
+            "--progress", str(progress),
+        ]
+    )
+    assert cli.dispatch_books(args) == 2
+    stdout, stderr = capsys.readouterr()
+    assert marker not in stdout + stderr
+    assert "PRIVATE_EVALUATION_FAILED_CLOSED" in stderr
+    assert "PRIVATE_CHAPTER_BOUNDED_HOST_UNVERIFIED" not in stderr
