@@ -35,7 +35,7 @@ MAX_SOURCE_BYTES = MAX_CONTEXT_TOKENS * 4
 MAX_SOURCE_UNITS = 64
 ENTITY_ID = re.compile(r"[a-z][a-z0-9-]{1,60}\Z")
 TEXT_STAGES = ("brief", "adaptation", "chapter_script", "chapter_direction")
-TEXT_ARTIFACT_CONTRACT = "clipper-chapter-validated-text-artifact-v3"
+TEXT_ARTIFACT_CONTRACT = "clipper-chapter-validated-text-artifact-v4"
 
 
 class ChapterStop(ValueError):
@@ -1074,6 +1074,7 @@ def _text_artifact_identity(
     provenance: str,
     raw_sha256: str,
     payload_sha256: str,
+    token_receipt: dict[str, object] | None = None,
 ) -> str:
     return content_fingerprint(
         {
@@ -1083,6 +1084,7 @@ def _text_artifact_identity(
             "provenance": provenance,
             "raw_sha256": raw_sha256,
             "payload_sha256": payload_sha256,
+            "token_receipt": token_receipt,
         }
     )
 
@@ -1111,6 +1113,7 @@ def _verified_text_artifact(
                 "attempt",
                 "raw_sha256",
                 "payload_sha256",
+                "token_receipt",
                 "artifact_identity",
             },
             "chapter cached text artifact schema mismatch",
@@ -1168,8 +1171,25 @@ def _verified_text_artifact(
             or hashlib.sha256(payload_bytes).hexdigest() != saved["payload_sha256"]
         ):
             raise ChapterStop("chapter validated payload differs from exact raw response")
+        receipt = saved["token_receipt"]
+        if provenance == "ACTUAL_CPU_QWEN":
+            if (
+                not isinstance(receipt, dict)
+                or set(receipt)
+                != {"raw_sha256", "generated_token_count", "terminal_token_id", "eos_decision"}
+                or receipt["raw_sha256"] != saved["raw_sha256"]
+                or type(receipt["generated_token_count"]) is not int
+                or not 1 <= receipt["generated_token_count"] <= 8192
+                or type(receipt["terminal_token_id"]) is not int
+                or receipt["terminal_token_id"] < 0
+                or receipt["eos_decision"] != "EOS_VERIFIED"
+            ):
+                raise ChapterStop("real chapter model token/EOS receipt invalid")
+        elif receipt is not None:
+            raise ChapterStop("injected chapter producer cannot attest real token IDs")
         identity = _text_artifact_identity(
-            stage, request_key, provenance, saved["raw_sha256"], saved["payload_sha256"]
+            stage, request_key, provenance, saved["raw_sha256"],
+            saved["payload_sha256"], receipt,
         )
         if saved["artifact_identity"] != identity:
             raise ChapterStop("chapter cached text artifact digest mismatch")
@@ -1186,7 +1206,9 @@ def _stage(
     payload: dict[str, Any],
     plan: ChapterPlan,
     validate: Callable[[object], dict[str, Any]],
-    completion: Callable[[dict[str, object]], str] | None,
+    completion: Callable[
+        [dict[str, object]], str | scripting.PinnedQwenRawReceipt
+    ] | None,
     *,
     replay_only: bool = False,
 ) -> tuple[dict[str, Any], str, str, int]:
@@ -1196,7 +1218,10 @@ def _stage(
         raise ChapterHostBlocked(
             "actual chapter CPU route blocked pending a verified bounded private host"
         )
-    real_qwen = completion is scripting._local_chapter_completion
+    real_qwen = (
+        completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
+        and scripting._local_chapter_completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
+    )
     request = _request(stage, payload, plan, exact_context=real_qwen)
     if real_qwen:
         # Public tokenizer only, before the first irreversible owner reservation.
@@ -1293,6 +1318,15 @@ def _stage(
             )
             _verified_owner(root, marker, stage_key, index, owner)
             raise ChapterStop("private chapter producer failed; no automatic retry") from None
+        token_receipt: dict[str, object] | None = None
+        if real_qwen and isinstance(response, scripting.PinnedQwenRawReceipt):
+            token_receipt = {
+                "raw_sha256": response.raw_sha256,
+                "generated_token_count": response.generated_token_count,
+                "terminal_token_id": response.terminal_token_id,
+                "eos_decision": response.eos_decision,
+            }
+            response = response.raw
         if not isinstance(response, str) or len(response.encode("utf-8")) > MAX_RAW_BYTES:
             evaluation._store(
                 root,
@@ -1314,6 +1348,20 @@ def _stage(
         # Rejected raw evidence is already durable; a missing, replaced or
         # partial claim must not authorize any additional provider invocation.
         _verified_owner(root, marker, stage_key, index, owner)
+        if real_qwen and (
+            not isinstance(token_receipt, dict)
+            or token_receipt["raw_sha256"] != hashlib.sha256(response.encode("utf-8")).hexdigest()
+            or type(token_receipt["generated_token_count"]) is not int
+            or not 1 <= token_receipt["generated_token_count"] <= plan.max_new_tokens
+            or type(token_receipt["terminal_token_id"]) is not int
+            or token_receipt["terminal_token_id"] < 0
+            or token_receipt["eos_decision"] != "EOS_VERIFIED"
+        ):
+            evaluation._store(
+                root, directory / f"failed-{index}.json",
+                {"attempt": index, "owner": owner, "status": "INVALID_ACTUAL_TOKEN_RECEIPT"},
+            )
+            raise ChapterStop("actual chapter generation token/EOS receipt unavailable")
         try:
             result = validate(whole_book.load_strict_reply(response))
         except (ValueError, TypeError, KeyError, RecursionError):
@@ -1331,7 +1379,7 @@ def _stage(
         raw_sha256 = hashlib.sha256(response.encode("utf-8")).hexdigest()
         payload_sha256 = hashlib.sha256(evaluation._json_bytes(result)).hexdigest()
         artifact_key = _text_artifact_identity(
-            stage, stage_key, provenance, raw_sha256, payload_sha256
+            stage, stage_key, provenance, raw_sha256, payload_sha256, token_receipt
         )
         evaluation._store(
             root,
@@ -1345,6 +1393,7 @@ def _stage(
                 "attempt": index,
                 "raw_sha256": raw_sha256,
                 "payload_sha256": payload_sha256,
+                "token_receipt": token_receipt,
                 "artifact_identity": artifact_key,
                 "payload": result,
             },
@@ -1512,10 +1561,18 @@ def evaluate_chapter(
     *,
     review_file: Path | None = None,
     plan: ChapterPlan | None = None,
-    brief_completion: Callable[[dict[str, object]], str] | None = None,
-    adaptation_completion: Callable[[dict[str, object]], str] | None = None,
-    script_completion: Callable[[dict[str, object]], str] | None = None,
-    direction_completion: Callable[[dict[str, object]], str] | None = None,
+    brief_completion: Callable[
+        [dict[str, object]], str | scripting.PinnedQwenRawReceipt
+    ] | None = None,
+    adaptation_completion: Callable[
+        [dict[str, object]], str | scripting.PinnedQwenRawReceipt
+    ] | None = None,
+    script_completion: Callable[
+        [dict[str, object]], str | scripting.PinnedQwenRawReceipt
+    ] | None = None,
+    direction_completion: Callable[
+        [dict[str, object]], str | scripting.PinnedQwenRawReceipt
+    ] | None = None,
     narration_producer: Callable[[str, str], bytes] | None = None,
     selected_scope_path: Path | None = None,
     expected_brief_identity: str | None = None,
