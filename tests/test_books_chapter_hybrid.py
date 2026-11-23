@@ -16,7 +16,7 @@ from test_books_chapter_host import _call, _locked, _private_setup
 from test_books_selected_scope import _bundle
 from test_books_whole_book import ingested
 
-from clipper.books import chapter, chapter_host, evaluation, selected_scope, whole_book
+from clipper.books import chapter, chapter_host, evaluation, scripting, selected_scope, whole_book
 from clipper.books import chapter_hybrid as hybrid
 from clipper.books.orchestrator import BookOrchestrator
 
@@ -2266,7 +2266,7 @@ def test_hybrid_reserved_stage_rejects_invalid_output_before_any_attempt(
         )
     with pytest.raises(
         chapter.ChapterStop,
-        match="reservation differs from plan|reserved output exceed safe context",
+        match=r"reservation differs from plan|reserved output exceed safe context",
     ):
         chapter._stage(
             tmp_path / "book-candidates",
