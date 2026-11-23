@@ -547,8 +547,14 @@ def test_effective_tokenizer_cache_status_and_cpu_context_fail_closed(
         scripting._chapter_context_tokens({**request, "max_new_tokens": 8193})
     request["verified_input_encoding"] = {"incorrect": "reserved digest"}
     # An absent actual tokenizer identity fails before CPU invocation or raw claim.
-    with pytest.raises(scripting.NicheVideoError, match="tokenizer preflight"):
+    with pytest.raises(scripting.NicheVideoError, match="snapshot identity"):
         scripting._chapter_context_tokens(request)
+    request.pop("verified_input_encoding")
+    fake_encoder = Mock(side_effect=ValueError("model-free synthetic tokenizer malfunction"))
+    monkeypatch.setattr(public, "apply_chat_template", fake_encoder)
+    with pytest.raises(scripting.NicheVideoError, match="pinned tokenizer preflight failed"):
+        scripting._chapter_context_tokens(request)
+    fake_encoder.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -1661,7 +1667,9 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
         assert exit_code == 0 and rejected is not None, attack
         assert rejected["chapters"] == {
             "1": "INCOMPLETE",
-            "7": "READY_OUTPUTS_VERIFIED",
+            # Synthetic WAV assets can be deduplicated between chapters.
+            # Tampering a shared RIFF asset must invalidate BOTH consumers.
+            "7": "INCOMPLETE" if attack == "wav" else "READY_OUTPUTS_VERIFIED",
         }, attack
         assert rejected["output_scope"] == "PARTIAL", attack
         assert rejected["retrieval_status"] == "VERIFIED_PRIVATE_ARCHIVE_PARTIAL"
@@ -2702,7 +2710,10 @@ def test_hybrid_private_host_finite_scope_preflight_precedes_any_attempt(
     assert not list((runner.root / "book-candidates" / "private-host").glob("*phase-events"))
 
 
-@pytest.mark.parametrize("failure", ("mismatched_output_budget", "real_context_overflow"))
+@pytest.mark.parametrize(
+    "failure",
+    ("mismatched_output_budget", "real_context_overflow", "missing_effective_identity"),
+)
 def test_hybrid_reserved_stage_rejects_invalid_output_before_any_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
@@ -2712,12 +2723,13 @@ def test_hybrid_reserved_stage_rejects_invalid_output_before_any_attempt(
     if failure == "mismatched_output_budget":
         request["max_new_tokens"] += 1
     else:
-        request["verified_input_encoding"] = {
-            "input_token_ids_sha256": "c" * 64,
-            "tokenizer_config_sha256": "d" * 64,
-            "chat_template_sha256": "e" * 64,
-            "tokenizer_json_sha256": "f" * 64,
-        }
+        if failure == "real_context_overflow":
+            request["verified_input_encoding"] = {
+                "input_token_ids_sha256": "c" * 64,
+                "tokenizer_config_sha256": "d" * 64,
+                "chat_template_sha256": "e" * 64,
+                "tokenizer_json_sha256": "f" * 64,
+            }
         monkeypatch.setattr(scripting, "_ORIGINAL_LOCAL_CHAPTER_COMPLETION", callback)
         monkeypatch.setattr(scripting, "_local_chapter_completion", callback)
         monkeypatch.setattr(
@@ -2725,7 +2737,7 @@ def test_hybrid_reserved_stage_rejects_invalid_output_before_any_attempt(
         )
     with pytest.raises(
         chapter.ChapterStop,
-        match=r"reservation differs from plan|reserved output exceed safe context",
+        match=r"reservation differs from plan|reserved output exceed safe context|requires a complete rendered-token identity",
     ):
         chapter._stage(
             tmp_path / "book-candidates",
