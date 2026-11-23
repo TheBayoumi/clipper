@@ -6,6 +6,7 @@ import copy
 import hashlib
 import io
 import json
+import sys
 import wave
 from pathlib import Path
 from unittest.mock import Mock
@@ -813,7 +814,7 @@ def test_export_import_101_plus_unresolved_gap_preserves_original_scoped_source(
 
 
 def test_selected_chapter_rejects_overcap_export_and_rehashed_reading_blocks(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     owner = tmp_path / "overcap-source"
     owner.mkdir()
@@ -829,21 +830,50 @@ def test_selected_chapter_rejects_overcap_export_and_rehashed_reading_blocks(
             chapter_section_ids=(section_id,),
         )
 
-    host, _valid_path, data = _bundle(tmp_path)
+    host, valid_path, data = _bundle(tmp_path)
+    baseline = selected_scope.import_chapter(host.root, valid_path)
+    assert baseline.book.selected_reading_blocks
     base = data["reading_blocks"]
     assert 0 < len(base) < selected_scope.MAX_CHAPTER_ENTRIES
-    forged = {
-        **data,
-        "reading_blocks": (base * (selected_scope.MAX_CHAPTER_ENTRIES + 1))[
-            : selected_scope.MAX_CHAPTER_ENTRIES + 1
-        ],
-    }
+    count = selected_scope.MAX_CHAPTER_ENTRIES + 1
+    forged = {**data, "reading_blocks": (base * count)[:count]}
+    assert len(forged["reading_blocks"]) == 129
     encoded = selected_scope._json(forged)
     digest = hashlib.sha256(encoded).hexdigest()
     path = host.root / "book-candidates" / "selected-scopes" / f"{digest}.json"
     path.write_bytes(encoded)
-    with pytest.raises(selected_scope.SelectedSourceStop, match="evidence cannot be verified"):
-        selected_scope.import_chapter(host.root, path)
+
+    # The public exception must stay sanitized. Inspect the exception event in
+    # the original importer frame to prove WHICH guard refused the validly
+    # rehashed 129-block bundle, before any reading-block consumer constructs it.
+    raised_inside: list[str] = []
+
+    def guard_trace(frame: object, event: str, arg: object) -> object:
+        if (
+            event == "exception"
+            and getattr(frame, "f_code", None) is selected_scope.import_chapter.__code__
+            and isinstance(arg, tuple)
+            and arg[0] is selected_scope.SelectedSourceStop
+        ):
+            raised_inside.append(str(arg[1]))
+        return guard_trace
+
+    constructor = Mock(side_effect=AssertionError("never construct over-cap original blocks"))
+    previous = sys.gettrace()
+    try:
+        with monkeypatch.context() as patched:
+            patched.setattr(selected_scope, "ReadingBlock", constructor)
+            sys.settrace(guard_trace)
+            with pytest.raises(
+                selected_scope.SelectedSourceStop,
+                match="^selected chapter evidence cannot be verified$",
+            ):
+                selected_scope.import_chapter(host.root, path)
+    finally:
+        sys.settrace(previous)
+    assert raised_inside[0] == "selected original reading blocks absent/oversized"
+    assert raised_inside[-1] == "selected chapter evidence cannot be verified"
+    constructor.assert_not_called()
 
 
 def test_45_units_plus_gap_shards_have_single_core_owner() -> None:
@@ -1111,6 +1141,12 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
         assert "text" in kinds
         assert "review" in kinds
     frozen = dict(calls)
+    awaiting_review = _call(runner, manifest, "hybrid-resume")
+    assert all(
+        outcome["review_status"] == "REVIEW_REQUIRED"
+        for outcome in awaiting_review["chapters"].values()
+    )
+    assert calls == frozen, "resume without a semantic review must not call any producer"
     runtime["probe"] = "B"
     for number in (1, 7):
         block = inputs[f"chapter_{number}"]
@@ -2082,3 +2118,63 @@ def test_hybrid_resume_callback_requires_exact_brief_claim(
             **args,
         )
     callback.assert_not_called()
+
+
+def test_hybrid_host_rejects_partial_brief_and_never_retries_claimed_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, manifest, inputs = _private_setup(tmp_path, monkeypatch)
+    _locked(runner, manifest, inputs)
+    fake = Mock(return_value={"status": "UNREVIEWED_INCOMPLETE_SYNTHETIC_BRIEF"})
+    miner = Mock(side_effect=AssertionError("direct source path never mines"))
+    monkeypatch.setattr(chapter, "evaluate_hybrid_chapter", fake)
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", miner)
+    monkeypatch.setattr(chapter_host, "_release_models", lambda: None)
+
+    stopped = _call(runner, manifest, "hybrid-brief")
+    assert set(stopped["chapters"]) == {"1", "7"}
+    assert all(
+        result["status"] == "PRIVATE_CHAPTER_PHASE_STOPPED_REVIEW_PRIVATE_EVIDENCE"
+        for result in stopped["chapters"].values()
+    )
+    assert fake.call_count == 2
+    assert not list((runner.root / "book-candidates" / "private-host").glob("*brief-record.json"))
+    for number in (1, 7):
+        block = inputs[f"chapter_{number}"]
+        phases = chapter_host._phase_records(
+            runner.root, number, block["bundle_sha256"], block["scope_sha256"]
+        )
+        assert [item["phase"] for item in phases] == [
+            "NOT_STARTED", "HYBRID_BRIEF_IN_FLIGHT", "STOPPED"
+        ]
+    replay = _call(runner, manifest, "hybrid-brief")
+    assert replay["chapters"] == stopped["chapters"]
+    assert fake.call_count == 2, "stopped irreversible attempts must never replay"
+    miner.assert_not_called()
+
+
+@pytest.mark.parametrize("case", ("disabled_plan", "invalid_mode", "scope_drift"))
+def test_hybrid_private_host_finite_scope_preflight_precedes_any_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    runner, manifest, settings = _private_setup(tmp_path, monkeypatch)
+    _locked(runner, manifest, settings)
+    prepared = chapter_host._prepare(runner, settings)
+    plan = chapter.ChapterPlan.from_manifest(settings["plan"])
+    mode = "hybrid-brief"
+    if case == "disabled_plan":
+        plan = chapter.ChapterPlan()
+    elif case == "invalid_mode":
+        mode = "invalid-synthetic-hybrid-mode"
+    else:
+        prepared[0][1]["scope_sha256"] = "0" * 64
+    no_producer = Mock(side_effect=AssertionError("preflight refuses before CPU"))
+    monkeypatch.setattr(chapter, "evaluate_hybrid_chapter", no_producer)
+    with pytest.raises(chapter_host.PrivateHostStop, match="plan|scope"):
+        chapter_host._execute_hybrid(
+            runner, prepared, plan, mode, runner.root, "unused-before-guard"
+        )
+    no_producer.assert_not_called()
+    assert not list((runner.root / "book-candidates" / "private-host").glob(
+        "*phase-events"
+    ))
