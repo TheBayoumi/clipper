@@ -80,6 +80,7 @@ class SelectedSource:
     selected_plan: whole_book.WorkPlan
     parent_excluded_page_count: int = 0
     excluded_pages: tuple[()] = ()
+    warnings: tuple[str, ...] = ()
     parent_original_reverified_on_host: bool = False
     source_boundary: str = "HOST_VERIFIED_SELECTED_BUNDLE_EXPORTER_ATTESTED_PARENT"
 

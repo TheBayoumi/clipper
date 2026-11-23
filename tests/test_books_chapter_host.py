@@ -595,7 +595,7 @@ def test_host_deadline_paths_and_strict_manifest_permissions_do_not_start_models
     import copy
 
     runner, path, config = _private_setup(tmp_path, monkeypatch)
-    with pytest.raises(chapter_host.PrivateHostStop, match="deadline"):
+    with pytest.raises(chapter_host.PrivateHostStop, match="budget exhausted"):
         chapter_host._check_deadline(datetime.now(UTC) - timedelta(hours=2))
     with pytest.raises(chapter_host.PrivateHostStop, match="absolute"):
         chapter_host._private_path("relative-private-file.json", runner.root)

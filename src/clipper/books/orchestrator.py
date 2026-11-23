@@ -1242,8 +1242,8 @@ class BookOrchestrator:
                         "selected_scope_bundle_sha256": chosen.bundle_sha256,
                         "parent_original_reverified_here": False,
                         "parent_excluded_page_count": cast(
-                        selected_scope.SelectedSource, book
-                    ).parent_excluded_page_count,
+                            selected_scope.SelectedSource, book
+                        ).parent_excluded_page_count,
                     }
                     if selected_scope_path is not None
                     else {}
