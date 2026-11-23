@@ -1541,7 +1541,9 @@ def test_chapter_timing_rejects_noncontiguous_pcm_sample_offsets() -> None:
 
 
 @pytest.mark.parametrize("stage", ["brief", "chapter_direction"])
-@pytest.mark.parametrize("tamper", ["payload", "raw", "missing_raw", "raw_digest", "artifact_digest"])
+@pytest.mark.parametrize(
+    "tamper", ["payload", "raw", "missing_raw", "raw_digest", "artifact_digest"]
+)
 def test_text_artifact_replay_verifies_exact_raw_and_validated_output(
     tmp_path: Path, stage: str, tamper: str
 ) -> None:
