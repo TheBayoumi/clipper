@@ -1166,9 +1166,9 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
         kinds = {file["kind"] for file in inventory["files"]}
         assert {"human_review", "final_result", "wav", "source_ledger", "text"} <= kinds
     recovery = chapter_host.recovery_report(runner.root)
-    assert {chapter_result["recovery_state"] for chapter_result in recovery["chapters"].values()} == {
-        "READY"
-    }
+    assert {
+        chapter_result["recovery_state"] for chapter_result in recovery["chapters"].values()
+    } == {"READY"}
     archive = chapter_host.private_recovery_archive(runner.root)
     assert archive["file_count"] >= 20
     assert archive["files_retrieved"] is False
