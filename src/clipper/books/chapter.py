@@ -1231,13 +1231,13 @@ def _verified_text_artifact(
             raise ChapterStop("chapter cached text artifact identity mismatch")
         prior_digest = saved.get("prior_rejection_sha256")
         if (
-            (prior_digest is not None and (
+            prior_digest is not None
+            and (
                 attempt != 2
                 or not isinstance(prior_digest, str)
                 or re.fullmatch(r"[0-9a-f]{64}", prior_digest) is None
-            ))
-            or (recovery_evidence_only and attempt > 1 and prior_digest is None)
-        ):
+            )
+        ) or (recovery_evidence_only and attempt > 1 and prior_digest is None):
             raise ChapterStop("chapter winning attempt missing bound original rejection")
         for prior in range(1, attempt):
             _verified_rejected_attempt(
@@ -1249,9 +1249,13 @@ def _verified_text_artifact(
                 validate,
                 recovery_evidence_only=recovery_evidence_only,
             )
-            if prior_digest is not None and hashlib.sha256(
-                evaluation._read(directory / f"failed-{prior}.json", 2048)
-            ).hexdigest() != prior_digest:
+            if (
+                prior_digest is not None
+                and hashlib.sha256(
+                    evaluation._read(directory / f"failed-{prior}.json", 2048)
+                ).hexdigest()
+                != prior_digest
+            ):
                 raise ChapterStop("chapter prior rejection differs from winning identity")
         _verified_owner(
             root,
