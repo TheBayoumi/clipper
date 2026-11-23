@@ -15,7 +15,12 @@ _SCRIPT = Path(__file__).resolve().parents[1] / "scripts/private_chapter_externa
 
 
 @pytest.mark.parametrize(
-    "hang", ["ssh", "copy", "stop", "wrong_identity", "swap_before_stop", "swap_after_stop"]
+    "hang",
+    [
+        "ssh", "copy", "stop", "wrong_identity",
+        "swap_before_stop", "swap_after_stop",
+        "cleanup_116", "expired_121", "unsafe_remote", "shell_metacharacters",
+    ],
 )
 def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
     tmp_path: Path, hang: str
@@ -34,6 +39,8 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         "  if args[2]=='POST' and hang=='stop': time.sleep(120)\n"
         "  if args[2]=='POST' and hang=='swap_after_stop':\n"
         "    open(os.environ['MOCK_SWAPPED'],'w').write('replaced')\n"
+        "  if args[2]=='POST' and hang!='stop':\n"
+        "    open(os.environ['MOCK_STOPPED'],'w').write('stopped')\n"
         "  if args[2]=='DELETE': sys.exit(0)\n"
         "  sys.exit(0)\n"
         "if args[:2]==['api','-i']:\n"
@@ -78,9 +85,20 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
             "PRIVATE_CHAPTER_APPROVED_SHA": "a" * 40,
             "PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY": str(key),
             "PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY": str(public),
-            "PRIVATE_CHAPTER_ROOT": str(tmp_path / "synthetic-host"),
+            "PRIVATE_CHAPTER_ROOT": (
+                str(tmp_path / "synthetic host")
+                if hang == "unsafe_remote"
+                else str(tmp_path / "host'; touch DO_NOT_EXECUTE; echo '")
+                if hang == "shell_metacharacters"
+                else str(tmp_path / "synthetic-host")
+            ),
             "PRIVATE_CHAPTER_RECOVERY_DIR": str(tmp_path / "owner-private-recovery"),
-            "MOCK_CREATED": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
+            "MOCK_CREATED": (
+                datetime.now(UTC)
+                - timedelta(
+                    minutes=116 if hang == "cleanup_116" else 121 if hang == "expired_121" else 5
+                )
+            ).isoformat(),
             "MOCK_SWAPPED": str(tmp_path / "synthetic-swapped.txt"),
             "MOCK_HANG": hang,
             "MOCK_REPO": (
@@ -101,10 +119,10 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         timeout=35,
     )
     elapsed = time.monotonic() - started
-    assert result.returncode != 0
+    assert result.returncode == (0 if hang == "cleanup_116" else 2)
     assert elapsed < 30
     actions = log.read_text(encoding="utf-8")
-    if hang in {"wrong_identity", "swap_before_stop"}:
+    if hang in {"wrong_identity", "swap_before_stop", "expired_121"}:
         assert "api -X POST" not in actions
         assert "api -X DELETE" not in actions
     elif hang == "swap_after_stop":
@@ -114,5 +132,11 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         assert "api -X POST" in actions
         assert "api -X DELETE" in actions
         assert "api -i" in actions
+    if hang in {"cleanup_116", "unsafe_remote", "shell_metacharacters", "expired_121"}:
+        assert "codespace ssh" not in actions
+        assert "codespace cp" not in actions
+    if hang in {"unsafe_remote", "shell_metacharacters"}:
+        assert "DO_NOT_EXECUTE" not in result.stdout
+        assert not (tmp_path / "DO_NOT_EXECUTE").exists()
     # Stop returning or stalling never licenses running another host.
     assert "PRIVATE_CHAPTER" not in actions
