@@ -1896,7 +1896,11 @@ def test_same_shape_semantically_invalid_source_retries_and_recovers_with_origin
     if tamper == "none":
         with pytest.raises(chapter.ChapterStop, match="outside active retry budget"):
             chapter._verified_rejected_attempt(
-                base, stage_dir, stage_dir.name, 0, plan.max_attempts_per_stage,
+                base,
+                stage_dir,
+                stage_dir.name,
+                0,
+                plan.max_attempts_per_stage,
                 real_source_bound_validator,
             )
         entries = chapter_host._stage_output_entries(root, 1, "brief", identity)
