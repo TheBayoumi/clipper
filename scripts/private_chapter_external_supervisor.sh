@@ -899,7 +899,7 @@ except (ValueError, TypeError, KeyError):
     sys.exit(2)
 ')" || return 2
   bootstrap_identity || return 2
-  printf '%s\\n' "$state"
+  printf '%s\n' "$state"
 }
 remote="$PRIVATE_CHAPTER_ROOT/book-candidates/private-host"
 while true; do
@@ -927,11 +927,11 @@ for stage in ssh cp; do
     fi
     rc=0
     if [[ "$stage" == "ssh" ]]; then
-      bounded gh codespace ssh -c "$CODESPACE_NAME" -- \\
+      bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
         "mkdir -p '$remote' && chmod 700 '$remote'" >/dev/null || rc=$?
     else
-      bounded gh codespace cp -c "$CODESPACE_NAME" \\
-        "$PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY" \\
+      bounded gh codespace cp -c "$CODESPACE_NAME" \
+        "$PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY" \
         "remote:$remote/external-supervisor-public.pem" >/dev/null || rc=$?
     fi
     if (( rc == 0 )); then
