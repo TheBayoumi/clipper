@@ -1078,7 +1078,7 @@ def _verified_rejected_attempt(
             raise ChapterStop("chapter prior raw attempt identity mismatch")
 
         failed_bytes = evaluation._read(directory / f"failed-{attempt}.json", 2048)
-        failed: dict[str, Any] = whole_book.load_strict_reply(failed_bytes)
+        failed = whole_book.load_strict_reply(failed_bytes)
         fields = {"attempt", "owner", "status"}
         has_evidence = isinstance(failed, dict) and set(failed) == fields | {"validation_evidence"}
         if (
