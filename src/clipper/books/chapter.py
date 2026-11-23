@@ -954,12 +954,18 @@ def _verified_owner(root: Path, marker: Path, key: str, attempt: int, owner: str
         started = whole_book.load_strict_reply(evaluation._read(marker, 2048))
     except (ValueError, TypeError, OSError):
         raise ChapterStop("chapter cached attempt has ambiguous reservation") from None
-    if started != {
-        "request_key": key,
-        "attempt": attempt,
-        "owner": owner,
-        "status": "STARTED_UNRESOLVED",
-    }:
+    if (
+        type(attempt) is not int
+        or attempt < 1
+        or not isinstance(started, dict)
+        or type(started.get("attempt")) is not int
+        or started != {
+            "request_key": key,
+            "attempt": attempt,
+            "owner": owner,
+            "status": "STARTED_UNRESOLVED",
+        }
+    ):
         raise ChapterStop("chapter cached attempt owner mismatch")
 
 
@@ -989,6 +995,7 @@ def _verified_text_artifact(
     request_key: str,
     provenance: str,
     validate: Callable[[object], dict[str, Any]],
+    max_attempts: int,
 ) -> tuple[dict[str, Any], str]:
     """Require exact raw, validated bytes, schema and exclusive owner on replay."""
     try:
@@ -1018,7 +1025,7 @@ def _verified_text_artifact(
             or saved["validator_contract"] != TEXT_ARTIFACT_CONTRACT
             or saved["provenance"] != provenance
             or type(attempt) is not int
-            or attempt not in (1, 2)
+            or not 1 <= attempt <= max_attempts
             or not isinstance(saved["owner"], str)
             or re.fullmatch(r"[0-9a-f]{32}", saved["owner"]) is None
             or not isinstance(saved["raw_sha256"], str)
@@ -1044,7 +1051,8 @@ def _verified_text_artifact(
             raise ChapterStop("chapter raw attempt has noncanonical envelope bytes")
         response = raw_record["raw"]
         if (
-            raw_record["attempt"] != attempt
+            type(raw_record["attempt"]) is not int
+            or raw_record["attempt"] != attempt
             or raw_record["owner"] != saved["owner"]
             or not isinstance(response, str)
             or len(response.encode("utf-8")) > MAX_RAW_BYTES
@@ -1114,12 +1122,20 @@ def _stage(
     complete = directory / "validated.json"
     if complete.is_file():
         validated, artifact_key = _verified_text_artifact(
-            root, directory, stage, stage_key, provenance, validate
+            root, directory, stage, stage_key, provenance, validate,
+            plan.max_attempts_per_stage,
         )
         return validated, artifact_key, provenance, 0
     if directory.is_dir() and any(directory.iterdir()):
         raise ChapterStop("chapter stage has prior unresolved/failed attempts")
+    previous_owner: str | None = None
     for index in range(1, plan.max_attempts_per_stage + 1):
+        # Revalidate the rejected attempt immediately before authorizing a retry.
+        if previous_owner is not None:
+            _verified_owner(
+                root, directory / f"started-{index - 1}.json",
+                stage_key, index - 1, previous_owner,
+            )
         marker = directory / f"started-{index}.json"
         owner = _claim(root, marker, stage_key, index)
         try:
@@ -1132,6 +1148,7 @@ def _stage(
                 directory / f"failed-{index}.json",
                 {"attempt": index, "owner": owner, "status": "PRODUCER_FAILURE"},
             )
+            _verified_owner(root, marker, stage_key, index, owner)
             raise ChapterStop("private chapter producer failed; no automatic retry") from None
         if not isinstance(response, str) or len(response.encode("utf-8")) > MAX_RAW_BYTES:
             evaluation._store(
@@ -1139,6 +1156,7 @@ def _stage(
                 directory / f"failed-{index}.json",
                 {"attempt": index, "owner": owner, "status": "NON_TEXT_OR_OVERSIZE"},
             )
+            _verified_owner(root, marker, stage_key, index, owner)
             raise ChapterStop("chapter producer returned invalid bounded raw output")
         evaluation._store(
             root,
@@ -1150,6 +1168,9 @@ def _stage(
                 "sha256": hashlib.sha256(response.encode("utf-8")).hexdigest(),
             },
         )
+        # Rejected raw evidence is already durable; a missing, replaced or
+        # partial claim must not authorize any additional provider invocation.
+        _verified_owner(root, marker, stage_key, index, owner)
         try:
             result = validate(whole_book.load_strict_reply(response))
         except (ValueError, TypeError, KeyError, RecursionError):
@@ -1158,8 +1179,10 @@ def _stage(
                 directory / f"failed-{index}.json",
                 {"attempt": index, "owner": owner, "status": "SCHEMA_OR_SOURCE_REJECTED"},
             )
+            _verified_owner(root, marker, stage_key, index, owner)
             if index == plan.max_attempts_per_stage:
                 raise ChapterStop("chapter stage exhausted all recorded attempts") from None
+            previous_owner = owner
             continue
         _verified_owner(root, marker, stage_key, index, owner)
         raw_sha256 = hashlib.sha256(response.encode("utf-8")).hexdigest()
@@ -1184,7 +1207,8 @@ def _stage(
             },
         )
         verified, verified_key = _verified_text_artifact(
-            root, directory, stage, stage_key, provenance, validate
+            root, directory, stage, stage_key, provenance, validate,
+            plan.max_attempts_per_stage,
         )
         return verified, verified_key, provenance, index
     raise ChapterStop("chapter stage exhausted bounded attempts")
