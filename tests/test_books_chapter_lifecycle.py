@@ -220,3 +220,99 @@ def test_cli_without_external_watchdog_never_launches_model(
     assert result == 2
     assert "PRIVATE_CHAPTER_EXTERNAL_SUPERVISOR_UNVERIFIED" in capsys.readouterr().out
     called.assert_called_once()
+
+
+@pytest.mark.parametrize("value", [None, 123, "2026-01-01T10:00:00", "invalid-date"])
+def test_host_clock_requires_exact_offset_aware_iso_timestamp(value: object) -> None:
+    with pytest.raises(chapter_lifecycle.LifecycleStop):
+        chapter_lifecycle._utc(value)
+
+
+def test_rest_and_supervisor_evidence_are_finite_and_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    with pytest.raises(chapter_lifecycle.LifecycleStop, match="bounded evidence"):
+        chapter_lifecycle._command(
+            [sys.executable, "-c", "print('x' * 40000)"]
+        )
+    root, record, heartbeat, _signature = _fixture(tmp_path, monkeypatch)
+    with pytest.raises(chapter_lifecycle.LifecycleStop, match="finite limit"):
+        chapter_lifecycle._trusted_file(root, heartbeat.name, 1)
+    valid_command = chapter_lifecycle._command
+    for payload in (b"not-json", b"[]"):
+        def poisoned(argv: list[str], *, input_bytes: bytes | None = None) -> bytes:
+            if argv[:2] == ["gh", "api"]:
+                return payload
+            return valid_command(argv, input_bytes=input_bytes)
+
+        monkeypatch.setattr(chapter_lifecycle, "_command", poisoned)
+        with pytest.raises(chapter_lifecycle.LifecycleStop, match="REST identity"):
+            _check(root, record)
+    monkeypatch.setattr(chapter_lifecycle, "_command", valid_command)
+    record["created_at"] = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+    with pytest.raises(chapter_lifecycle.LifecycleStop, match="deadline"):
+        _check(root, record)
+
+
+@pytest.mark.parametrize("damage", ["non_json", "stale", "future"])
+def test_signed_malformed_or_expired_external_heartbeat_still_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    root, record, heartbeat, signature = _fixture(tmp_path, monkeypatch)
+    payload = json.loads(heartbeat.read_bytes())
+    if damage == "non_json":
+        raw = b"not-a-json-document"
+    else:
+        offset = timedelta(minutes=3) if damage == "future" else -timedelta(minutes=3)
+        payload["observed_at"] = (datetime.now(UTC) + offset).isoformat()
+        raw = (json.dumps(payload, sort_keys=True) + "\n").encode()
+    heartbeat.write_bytes(raw)
+    secret = tmp_path / "owner-private-key-only.pem"
+    subprocess.run(
+        [
+            "openssl",
+            "dgst",
+            "-sha256",
+            "-sign",
+            str(secret),
+            "-out",
+            str(signature),
+            str(heartbeat),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    with pytest.raises(chapter_lifecycle.LifecycleStop):
+        _check(root, record)
+
+
+def test_lifecycle_cli_success_and_invalid_root_never_approves_host_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    verified = Mock(return_value=None)
+    monkeypatch.setattr(chapter_lifecycle, "verify_lifecycle", verified)
+    monkeypatch.setenv("CODESPACE_NAME", "synthetic")
+    timestamp = datetime.now(UTC).isoformat()
+    assert chapter_lifecycle.main(
+        [
+            "--artifact-root",
+            str(tmp_path),
+            "--codespace-created-at",
+            timestamp,
+        ]
+    ) == 0
+    assert "VERIFIED_CHECKPOINT_ONLY" in capsys.readouterr().out
+    verified.assert_called_once()
+    assert chapter_lifecycle.main(
+        [
+            "--artifact-root",
+            "relative-only",
+            "--codespace-created-at",
+            timestamp,
+        ]
+    ) == 2
+    assert "UNVERIFIED" in capsys.readouterr().out
+    verified.assert_called_once()
