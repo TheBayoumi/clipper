@@ -458,13 +458,9 @@ def test_private_review_packet_contains_full_source_and_invalid_human_template(
     assert {row["review"] for row in template["unit_decisions"]} == {"REVIEW_REQUIRED"}
     assert packet["publish_eligible"] is False
     with pytest.raises(chapter_host.PrivateHostStop, match="source ledger"):
-        chapter_host._review_packet(
-            runner, 7, {**summary, "section_scope_sha256": "f" * 64}
-        )
+        chapter_host._review_packet(runner, 7, {**summary, "section_scope_sha256": "f" * 64})
     with pytest.raises(chapter_host.PrivateHostStop, match="verified brief"):
-        chapter_host._review_packet(
-            runner, 7, {**summary, "brief_identity": "f" * 64}
-        )
+        chapter_host._review_packet(runner, 7, {**summary, "brief_identity": "f" * 64})
 
 
 def test_pinned_chapter_cpu_adapter_generate_eos_and_memory_error_paths_are_model_free(
@@ -569,9 +565,7 @@ def test_private_host_cli_status_codes_do_not_expose_private_failure(
     stdout, stderr = capsys.readouterr()
     assert "PRIVATE_TWO_CHAPTER_CHECKPOINT" in stdout
     assert not stderr
-    monkeypatch.setattr(
-        chapter_host, "execute", lambda **_: output("SCOPED_MINING_INCOMPLETE")
-    )
+    monkeypatch.setattr(chapter_host, "execute", lambda **_: output("SCOPED_MINING_INCOMPLETE"))
     assert chapter_host.main(args) == 2
     capsys.readouterr()
 
