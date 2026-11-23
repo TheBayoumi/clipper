@@ -46,8 +46,8 @@ jobs:
           timeout --signal=TERM --kill-after=15s 6m \
             python -m pytest -q -s -o addopts="" tests/test_books_qwen_tokenizer_only.py
       - run: pytest
-      - name: Enforce measured package coverage floor
-        run: coverage report --fail-under=95
+      - name: Enforce measured package coverage floor (unrounded to 2 decimals)
+        run: coverage report --precision=2 --fail-under=95
       - name: Measure GPU-driving script coverage (baseline)
         run: |
           coverage run --rcfile=.coveragerc.scripts -m pytest -q -o addopts="" \
