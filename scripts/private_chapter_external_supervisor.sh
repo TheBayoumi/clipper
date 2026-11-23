@@ -172,7 +172,7 @@ with tarfile.open(archive_path, mode="r:") as source:
         owners = row["chapters"]
         if (not isinstance(owners, list) or not owners
             or owners != sorted(set(owners)) or any(n not in (1,7) for n in owners)
-            or row["kind"] not in {"text","wav","narration_report","review","final_result","source_ledger","human_review"}
+            or row["kind"] not in {"text","wav","narration_report","review","review_record","final_result","source_ledger","human_review"}
             or not isinstance(path, str) or not path.startswith("book-candidates/")
             or any(x in ("", ".", "..") for x in pathlib.PurePosixPath(path).parts)
             or not isinstance(row["sha256"], str) or dig.fullmatch(row["sha256"]) is None
@@ -280,14 +280,31 @@ with tarfile.open(archive_path, mode="r:") as source:
             chapter_results[label] = "INCOMPLETE"
             continue
         paths = {r["relative_path"]:r for r in contents}
+        source_mode = manifest_row.get("source_mode")
+        if source_mode is None:
+            # Legacy mode is explicitly the ABSENCE of a source_mode property.
+            # Hybrid-only files cannot be relabeled to bypass its source gate.
+            expected_stages = ("brief","adaptation","chapter_script","chapter_direction")
+            expected_kinds = {"text","narration_report","wav","final_result","source_ledger","human_review"}
+            if any(r["kind"] == "review_record" or
+                   "/hybrid_" in r["relative_path"] for r in contents):
+                chapter_results[label] = "INCOMPLETE"
+                continue
+        elif source_mode == "DIRECT_SOURCE_HYBRID":
+            expected_stages = ("hybrid_argument","hybrid_audit","hybrid_reconcile",
+                               "adaptation","chapter_script","chapter_direction")
+            expected_kinds = {"text","narration_report","wav","final_result",
+                              "source_ledger","human_review","review_record","review"}
+        else:
+            chapter_results[label] = "INCOMPLETE"
+            continue
         expected_text = all(
             any(r["kind"] == "text"
                 and r["relative_path"].startswith("book-candidates/"+stage+"/")
                 and r["relative_path"].endswith("/validated.json")
                 for r in contents)
-            for stage in ("brief","adaptation","chapter_script","chapter_direction")
+            for stage in expected_stages
         )
-        expected_kinds = {"text","narration_report","wav","final_result","source_ledger","human_review"}
         narration_member_path = (
             "book-candidates/narration-report-"
             + verified_ids["narration_report_identity"]
@@ -331,6 +348,125 @@ with tarfile.open(archive_path, mode="r:") as source:
         except (ValueError,TypeError,KeyError,AttributeError):
             chapter_results[label] = "INCOMPLETE"
             continue
+        if source_mode == "DIRECT_SOURCE_HYBRID":
+            # Independently verify the exact host-produced source/reviewer/final
+            # identity chain, not just member hashes or any convenient text file.
+            try:
+                def member_json(path, limit):
+                    row = paths.get(path)
+                    if row is None or row["bytes"] > limit:
+                        raise ValueError("required hybrid member missing or oversized")
+                    member = source.extractfile(path)
+                    if member is None:
+                        raise ValueError("required hybrid member unreadable")
+                    raw = member.read(limit + 1)
+                    if len(raw) != row["bytes"] or len(raw) > limit:
+                        raise ValueError("hybrid member changed")
+                    return json.loads(raw)
+
+                assert set(verified_ids) == {
+                    "brief_identity","argument_identity","audit_identities",
+                    "producer_identity_sha256","adaptation_identity",
+                    "script_identity","direction_identity",
+                    "narration_report_identity","final_result_identity",
+                }
+                argument_id = verified_ids["argument_identity"]
+                audit_ids = verified_ids["audit_identities"]
+                producer_id = verified_ids["producer_identity_sha256"]
+                assert all(isinstance(x, str) and dig.fullmatch(x) for x in
+                           (argument_id, producer_id))
+                assert (isinstance(audit_ids, list) and 1 <= len(audit_ids) <= 128
+                        and len(set(audit_ids)) == len(audit_ids)
+                        and all(isinstance(x, str) and dig.fullmatch(x) for x in audit_ids))
+
+                def stage_artifact(stage, identity):
+                    candidates = [r["relative_path"] for r in contents
+                                  if r["kind"] == "text"
+                                  and r["relative_path"].startswith("book-candidates/"+stage+"/")
+                                  and r["relative_path"].endswith("/validated.json")]
+                    matching = [path for path in candidates
+                                if member_json(path, 250_000).get("artifact_identity") == identity]
+                    if len(matching) != 1:
+                        raise ValueError("hybrid stage identity absent or ambiguous")
+                    return member_json(matching[0], 250_000)
+
+                stage_artifact("hybrid_argument", argument_id)
+                audit_paths = [r["relative_path"] for r in contents
+                               if r["kind"] == "text" and
+                               r["relative_path"].startswith("book-candidates/hybrid_audit/")
+                               and r["relative_path"].endswith("/validated.json")]
+                if len(audit_paths) != len(audit_ids):
+                    raise ValueError("hybrid local-audit stage inventory differs")
+                for audit_id in audit_ids:
+                    stage_artifact("hybrid_audit", audit_id)
+                reconcile = stage_artifact("hybrid_reconcile", verified_ids["brief_identity"])
+                for stage, field in (("adaptation","adaptation_identity"),
+                                     ("chapter_script","script_identity"),
+                                     ("chapter_direction","direction_identity")):
+                    stage_artifact(stage, verified_ids[field])
+                review_path = "book-candidates/private-host/chapter-"+label+"-brief-record.json"
+                if paths.get(review_path, {}).get("kind") != "review_record":
+                    raise ValueError("hybrid review journal not recovered")
+                saved = member_json(review_path, 16_384)
+                scope_key = saved["chapter_scope_identity"]
+                ledger_path = "book-candidates/chapter-evaluations/"+scope_key+"/source-ledger.json"
+                ledger_row = paths.get(ledger_path)
+                if (not isinstance(scope_key, str) or dig.fullmatch(scope_key) is None
+                    or ledger_row is None or ledger_row["kind"] != "source_ledger"
+                    or ledger_row["sha256"] != saved.get("source_ledger_sha256")
+                    or saved.get("chapter_mode") != "DIRECT_SOURCE_HYBRID"
+                    or saved.get("chapter") != number
+                    or saved.get("bundle_sha256") != manifest_row["bundle_sha256"]
+                    or saved.get("scope_sha256") != manifest_row["scope_sha256"]
+                    or saved.get("brief_identity") != verified_ids["brief_identity"]
+                    or saved.get("argument_identity") != argument_id
+                    or saved.get("audit_identities") != audit_ids
+                    or saved.get("producer_identity_sha256") != producer_id
+                    or saved.get("phase") != "AWAITING_HUMAN_REVIEW"
+                    or reconcile.get("payload",{}).get("ledger_sha256") is None):
+                    raise ValueError("hybrid original-source reviewer identity differs")
+                packet_path = "book-candidates/private-host/chapter-"+label+"-review-packet.json"
+                if paths.get(packet_path,{}).get("kind") != "review":
+                    raise ValueError("hybrid review packet not recovered")
+                packet = member_json(packet_path, 1_000_000)
+                if (packet.get("chapter") != number
+                    or packet.get("brief_identity") != verified_ids["brief_identity"]
+                    or packet.get("source_ledger_sha256") != ledger_row["sha256"]
+                    or packet.get("producer_identity_sha256") != producer_id
+                    or packet.get("brief_sha256") != reconcile["payload"].get("brief_sha256")):
+                    raise ValueError("hybrid source/review packet detached")
+                final_path = ("book-candidates/chapter-evaluations/"+scope_key+
+                              "/chapter-result-"+verified_ids["final_result_identity"]+".json")
+                if paths.get(final_path,{}).get("kind") != "final_result":
+                    raise ValueError("hybrid final result path differs")
+                final = member_json(final_path, 500_000)
+                review_id = final["human_review_sha256"]
+                human_path = ("book-candidates/chapter-evaluations/"+scope_key+
+                              "/human-review-"+review_id+".json")
+                if (not isinstance(review_id, str) or dig.fullmatch(review_id) is None
+                    or paths.get(human_path,{}).get("kind") != "human_review"
+                    or final.get("chapter_scope_identity") != scope_key
+                    or final.get("source_mining_provenance") != "DIRECT_SOURCE_NO_MINING"
+                    or final.get("source_ledger_sha256") != ledger_row["sha256"]
+                    or final.get("producer_identity_sha256") != producer_id
+                    or final.get("selected_source_bundle_sha256") != manifest_row["bundle_sha256"]
+                    or final.get("argument_key") != argument_id
+                    or final.get("audit_keys") != audit_ids
+                    or final.get("brief_key") != verified_ids["brief_identity"]
+                    or any(final.get(stage_key) != verified_ids[field] for stage_key, field in
+                           (("adaptation_key","adaptation_identity"),
+                            ("script_key","script_identity"),
+                            ("direction_key","direction_identity"),
+                            ("narration_report_key","narration_report_identity")))):
+                    raise ValueError("hybrid final source or creative identity differs")
+                human = member_json(human_path, 250_000)
+                if (human.get("review_sha256") != review_id
+                    or human.get("review",{}).get("brief_artifact_identity")
+                       != verified_ids["brief_identity"]):
+                    raise ValueError("hybrid human approval not recovered")
+            except (ValueError, TypeError, KeyError, AssertionError, AttributeError):
+                chapter_results[label] = "INCOMPLETE"
+                continue
         chapter_results[label] = "READY_OUTPUTS_VERIFIED"
     complete = all(value == "READY_OUTPUTS_VERIFIED" for value in chapter_results.values())
     summary = {
