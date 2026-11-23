@@ -429,8 +429,20 @@ def test_real_chapter_allows_full_large_request_only_after_exact_context_preflig
         return 12_345
 
     monkeypatch.setattr(scripting, "_chapter_context_tokens", fake_context)
-    real = Mock(return_value='{"value":"synthetic"}')
+    raw = '{"value":"synthetic"}'
+    real = Mock(
+        return_value=scripting.PinnedQwenRawReceipt(
+            raw=raw,
+            raw_sha256=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+            generated_token_count=17,
+            terminal_token_id=151645,
+            eos_decision="EOS_VERIFIED",
+        )
+    )
+    # This fixture deliberately stands in for the original trusted provider.
+    # Generic injected callbacks must never receive real-model provenance.
     monkeypatch.setattr(scripting, "_local_chapter_completion", real)
+    monkeypatch.setattr(scripting, "_ORIGINAL_LOCAL_CHAPTER_COMPLETION", real)
     result = chapter._stage(
         tmp_path / "exact",
         "brief",
@@ -561,14 +573,20 @@ def test_pinned_chapter_cpu_adapter_generate_eos_and_memory_error_paths_are_mode
         "messages": [{"role": "user", "content": "synthetic"}],
     }
     result = scripting._local_chapter_completion(request)
-    assert result == '{"value":"synthetic CPU generation with no weights"}'
+    expected_raw = '{"value":"synthetic CPU generation with no weights"}'
+    assert isinstance(result, scripting.PinnedQwenRawReceipt)
+    assert result.raw == expected_raw
+    assert result.raw_sha256 == hashlib.sha256(expected_raw.encode("utf-8")).hexdigest()
+    assert result.generated_token_count == 1
+    assert result.terminal_token_id == 99
+    assert result.eos_decision == "EOS_VERIFIED"
     assert seeds == [42]
     assert generated.call_count == 1
     assert generated.call_args.kwargs["max_new_tokens"] == 1024
     generated.return_value = [[10, 20, 55]]
     with pytest.raises(scripting.IncompleteConstrainedResponse) as incomplete:
         scripting._local_chapter_completion(request)
-    assert incomplete.value.raw == result
+    assert incomplete.value.raw == expected_raw
     model.device = "cuda"
     with pytest.raises(scripting.NicheVideoError, match="CPU"):
         scripting._local_chapter_completion(request)
