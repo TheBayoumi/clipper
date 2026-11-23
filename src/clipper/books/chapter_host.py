@@ -628,6 +628,8 @@ def execute(
                     or record.get("bundle_sha256") != digest
                     or record.get("chapter") != number
                     or record.get("phase") != "AWAITING_HUMAN_REVIEW"
+                    or record.get("plan_fingerprint") != plan.fingerprint
+                    or record.get("brief_identity") != last["artifacts"].get("brief_identity")
                     or not isinstance(record.get("progress_path"), str)
                 ):
                     raise PrivateHostStop("chapter has no immutable prior private brief phase")
@@ -639,16 +641,19 @@ def execute(
             review_path = None
             if mode == "resume":
                 if block["review_file"] is None:
-                    raise PrivateHostStop("independent human review file required per chapter")
-                review_path = _private_path(block["review_file"], root, must_exist=True)
-                _phase(
-                    runner,
-                    number,
-                    digest,
-                    scope_sha,
-                    "RESUME_IN_FLIGHT",
-                    {"progress_path": str(progress_path)},
-                )
+                    outcomes[str(number)] = {
+                        **_outcome_from_phase(last),
+                        "review_status": "REVIEW_REQUIRED",
+                    }
+                    continue
+                try:
+                    review_path = _private_path(block["review_file"], root, must_exist=True)
+                except (PrivateHostStop, OSError):
+                    outcomes[str(number)] = {
+                        **_outcome_from_phase(last),
+                        "review_status": "REVIEW_REQUIRED",
+                    }
+                    continue
             else:
                 _phase(
                     runner,
@@ -671,6 +676,17 @@ def execute(
                 script_completion=scripting._local_chapter_completion,
                 direction_completion=scripting._local_chapter_completion,
                 narration_producer=narration._kokoro_wav,
+                expected_brief_identity=(
+                    cast(str, record["brief_identity"]) if mode == "resume" else None
+                ),
+                on_resume_verified=(
+                    lambda: _phase(
+                        runner, number, digest, scope_sha, "RESUME_IN_FLIGHT",
+                        {"brief_identity": record["brief_identity"], "progress_path": str(progress_path)},
+                    )
+                    if mode == "resume"
+                    else None
+                ),
             )
             if mode == "brief":
                 if output["status"] != "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW":
@@ -685,6 +701,7 @@ def execute(
                         evaluation._read(progress_path, 20_000_000)
                     ).hexdigest(),
                     "brief_identity": output["brief_identity"],
+                    "plan_fingerprint": plan.fingerprint,
                 }
                 evaluation._store(private_root, saved, evidence)
                 _review_packet(runner, number, output)
@@ -714,9 +731,25 @@ def execute(
                     },
                 )
             outcomes[str(number)] = _outcome_from_phase(last)
+        except chapter.ChapterReviewPending:
+            # No RESUME_IN_FLIGHT claim was written; a corrected human decision
+            # file can be submitted on the same immutable brief checkpoint.
+            outcomes[str(number)] = {
+                **_outcome_from_phase(last),
+                "review_status": "REVIEW_REQUIRED",
+            }
         except (ValueError, OSError, TypeError, RuntimeError):
-            last = _phase(runner, number, digest, scope_sha, "STOPPED")
-            outcomes[str(number)] = _outcome_from_phase(last)
+            # An integrity/preflight refusal before the resume claim must not
+            # consume a previously reviewable chapter.
+            current = _phase_records(root, number, digest, scope_sha)[-1]
+            if mode == "resume" and current["phase"] == "AWAITING_HUMAN_REVIEW":
+                outcomes[str(number)] = {
+                    **_outcome_from_phase(current),
+                    "review_status": "RESUME_PREFLIGHT_BLOCKED",
+                }
+            else:
+                stopped = _phase(runner, number, digest, scope_sha, "STOPPED")
+                outcomes[str(number)] = _outcome_from_phase(stopped)
         finally:
             _release_models()
     return {
