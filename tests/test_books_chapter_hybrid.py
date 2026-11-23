@@ -1929,7 +1929,7 @@ def test_private_hybrid_review_packet_rejects_stale_source_and_brief(
         ("brief_identity", "0" * 64, "brief absent or ambiguous"),
     ):
         forged = {**valid, field: invalid}
-        with pytest.raises(chapter_host.PrivateHostStop):
+        with pytest.raises(chapter_host.PrivateHostStop, match=expected):
             chapter_host._hybrid_review_packet(runner, 1, forged)
         assert packet.is_file()
     validated = next(
