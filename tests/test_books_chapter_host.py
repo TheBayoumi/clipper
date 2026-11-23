@@ -12,7 +12,7 @@ from unittest.mock import Mock
 import pytest
 from test_books_whole_book import ingested
 
-from clipper.books import chapter, chapter_host, evaluation, scripting, selected_scope
+from clipper.books import chapter, chapter_host, chapter_lifecycle, evaluation, scripting, selected_scope
 from clipper.books.orchestrator import BookOrchestrator
 
 
@@ -25,6 +25,18 @@ def _private_setup(
     owner.mkdir()
     exporter, acquired, _ = ingested(owner, paragraphs=12, with_image=True)
     monkeypatch.setenv("CODESPACE_NAME", "synthetic-private-host")
+    monkeypatch.setattr(
+        chapter_lifecycle,
+        "verify_lifecycle",
+        lambda _root, *, caller_created_at, codespace_name: chapter_lifecycle.VerifiedLifecycle(
+            42,
+            codespace_name,
+            datetime.fromisoformat(caller_created_at).astimezone(UTC),
+            "a" * 40,
+            datetime.fromisoformat(caller_created_at).astimezone(UTC)
+            + timedelta(seconds=7200),
+        ),
+    )
     sections = [item.chapter_id for item in acquired.book.sections]
     host = tmp_path / "host-only"
     bundle_dir = host / "book-candidates" / "selected-scopes"
@@ -283,7 +295,7 @@ def test_missing_review_or_incomplete_mining_never_auto_resumes(
     evaluation_called = Mock(side_effect=AssertionError("no model without brief and review"))
     monkeypatch.setattr(chapter, "evaluate_chapter", evaluation_called)
     assert all(
-        item["status"] == "PRIVATE_CHAPTER_PHASE_STOPPED_REVIEW_PRIVATE_EVIDENCE"
+        item["status"] == "SCOPED_MINING_INCOMPLETE"
         for item in _call(runner, path, "resume")["chapters"].values()
     )
     evaluation_called.assert_not_called()
@@ -627,3 +639,101 @@ def test_host_deadline_paths_and_strict_manifest_permissions_do_not_start_models
             manifest_path=path,
             created_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
         )
+
+
+def test_direct_host_api_rejects_missing_external_supervisor_before_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, path, _ = _private_setup(tmp_path, monkeypatch)
+    called = Mock(side_effect=AssertionError("no provider without signed supervisor"))
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", called)
+    monkeypatch.setattr(
+        chapter_lifecycle,
+        "verify_lifecycle",
+        Mock(side_effect=chapter_lifecycle.LifecycleStop("external proof absent")),
+    )
+    with pytest.raises(chapter_lifecycle.LifecycleStop, match="external proof"):
+        _call(runner, path, "brief")
+    called.assert_not_called()
+
+
+def test_interrupted_chapter_7_retains_chapter_1_verified_phase_and_no_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, path, config = _private_setup(tmp_path, monkeypatch)
+    _locked(runner, path, config)
+    seen: list[str] = []
+
+    def mining(_self: BookOrchestrator, bundle: Path, **_options: object) -> dict:
+        seen.append(bundle.stem)
+        progress = runner.root / "progress-synthetic.json"
+        progress.write_bytes(evaluation._json_bytes({"synthetic": True}))
+        return {
+            "status": "complete",
+            "progress_path": str(progress),
+            "total_work_units": 1,
+        }
+
+    def chapter_brief(
+        _runner: BookOrchestrator,
+        _bundle: Path,
+        _progress: Path,
+        _section: Path,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        return {
+            "status": "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW",
+            "brief_identity": "b" * 64,
+            "section_scope_sha256": "c" * 64,
+        }
+
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", mining)
+    monkeypatch.setattr(chapter, "evaluate_chapter", chapter_brief)
+    monkeypatch.setattr(chapter_host, "_review_packet", lambda *_: None)
+    monkeypatch.setattr(chapter_host, "_release_models", lambda: None)
+    original_check = chapter_host._check_deadline
+    checks = 0
+
+    def deadline(created: datetime) -> None:
+        nonlocal checks
+        checks += 1
+        if checks == 3:
+            raise chapter_host.PrivateHostStop("one-host shared execution budget exhausted")
+        original_check(created)
+
+    monkeypatch.setattr(chapter_host, "_check_deadline", deadline)
+    summary = _call(runner, path, "brief")
+    assert summary["chapters"]["1"]["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
+    assert summary["chapters"]["7"]["status"] == (
+        "PRIVATE_CHAPTER_PHASE_STOPPED_REVIEW_PRIVATE_EVIDENCE"
+    )
+    assert len(seen) == 1
+    persisted = list(
+        (runner.root / "book-candidates/private-host/chapter-1-phase-events").glob("*.json")
+    )
+    assert persisted
+    assert json.loads(sorted(persisted)[-1].read_bytes())["phase"] == "AWAITING_HUMAN_REVIEW"
+    replay = _call(runner, path, "brief")
+    assert replay["chapters"]["1"]["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
+    assert replay["chapters"]["7"]["status"] == (
+        "PRIVATE_CHAPTER_PHASE_STOPPED_REVIEW_PRIVATE_EVIDENCE"
+    )
+    assert len(seen) == 1
+
+
+def test_in_flight_chapter_phase_reentry_stays_interrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, path, config = _private_setup(tmp_path, monkeypatch)
+    _locked(runner, path, config)
+    bundle = config["chapter_1"]["bundle_sha256"]
+    scope = config["chapter_1"]["scope_sha256"]
+    chapter_host._phase(runner, 1, bundle, scope, "NOT_STARTED")
+    chapter_host._phase(runner, 1, bundle, scope, "MINING_IN_FLIGHT")
+    provider = Mock(side_effect=AssertionError("interrupted attempt was consumed"))
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", provider)
+    monkeypatch.setattr(chapter_host, "_release_models", lambda: None)
+    result = _call(runner, path, "brief")
+    assert result["chapters"]["1"]["status"] == "INTERRUPTED_DURING_MINING"
+    provider.assert_not_called()
+
