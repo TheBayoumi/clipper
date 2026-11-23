@@ -364,20 +364,24 @@ with tarfile.open(archive_path, mode="r:") as source:
                         raise ValueError("hybrid member changed")
                     return json.loads(raw)
 
-                assert set(verified_ids) == {
+                if set(verified_ids) != {
                     "brief_identity","argument_identity","audit_identities",
                     "producer_identity_sha256","adaptation_identity",
                     "script_identity","direction_identity",
                     "narration_report_identity","final_result_identity",
-                }
+                }:
+                    raise ValueError("hybrid terminal identities incomplete")
                 argument_id = verified_ids["argument_identity"]
                 audit_ids = verified_ids["audit_identities"]
                 producer_id = verified_ids["producer_identity_sha256"]
-                assert all(isinstance(x, str) and dig.fullmatch(x) for x in
-                           (argument_id, producer_id))
-                assert (isinstance(audit_ids, list) and 1 <= len(audit_ids) <= 128
-                        and len(set(audit_ids)) == len(audit_ids)
-                        and all(isinstance(x, str) and dig.fullmatch(x) for x in audit_ids))
+                if not all(isinstance(x, str) and dig.fullmatch(x) for x in (
+                    argument_id, producer_id
+                )):
+                    raise ValueError("hybrid argument/producer identity invalid")
+                if (not isinstance(audit_ids, list) or not 1 <= len(audit_ids) <= 128
+                    or len(set(audit_ids)) != len(audit_ids)
+                    or not all(isinstance(x, str) and dig.fullmatch(x) for x in audit_ids)):
+                    raise ValueError("hybrid local audit identities invalid")
 
                 def stage_artifact(stage, identity):
                     candidates = [r["relative_path"] for r in contents
@@ -440,6 +444,12 @@ with tarfile.open(archive_path, mode="r:") as source:
                 if paths.get(final_path,{}).get("kind") != "final_result":
                     raise ValueError("hybrid final result path differs")
                 final = member_json(final_path, 500_000)
+                final_digest = hashlib.sha256(
+                    json.dumps(final,ensure_ascii=False,sort_keys=True,
+                               separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+                if final_digest != verified_ids["final_result_identity"]:
+                    raise ValueError("hybrid final result content identity differs")
                 review_id = final["human_review_sha256"]
                 human_path = ("book-candidates/chapter-evaluations/"+scope_key+
                               "/human-review-"+review_id+".json")
@@ -460,8 +470,17 @@ with tarfile.open(archive_path, mode="r:") as source:
                             ("narration_report_key","narration_report_identity")))):
                     raise ValueError("hybrid final source or creative identity differs")
                 human = member_json(human_path, 250_000)
+                review_data = human.get("review")
+                if not isinstance(review_data, dict):
+                    raise ValueError("hybrid human approval malformed")
+                review_digest = hashlib.sha256(
+                    (json.dumps(review_data,ensure_ascii=False,sort_keys=True)+"\\n").encode("utf-8")
+                ).hexdigest()
                 if (human.get("review_sha256") != review_id
-                    or human.get("review",{}).get("brief_artifact_identity")
+                    or review_digest != review_id
+                    or human.get("schema") != "clipper-chapter-hybrid-human-review-v1"
+                    or human.get("publish_eligible") is not False
+                    or review_data.get("brief_artifact_identity")
                        != verified_ids["brief_identity"]):
                     raise ValueError("hybrid human approval not recovered")
             except (ValueError, TypeError, KeyError, AssertionError, AttributeError):
