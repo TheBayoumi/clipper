@@ -29,6 +29,7 @@ from clipper.stage_contracts import content_fingerprint
 from . import (
     acquisition,
     chapter,
+    chapter_hybrid,
     chapter_lifecycle,
     evaluation,
     narration,
@@ -905,6 +906,315 @@ def execute(
     return {
         "status": "PRIVATE_TWO_CHAPTER_CHECKPOINT",
         "chapters": outcomes,
+        "publish_eligible": False,
+    }
+
+
+
+def _claim_hybrid_resume(
+    runner: BookOrchestrator,
+    number: int,
+    bundle: str,
+    scope: str,
+    brief_identity: str,
+    owner: str,
+) -> None:
+    """Reserve one source-driven post-review continuation without a mining ledger."""
+    _phase(
+        runner,
+        number,
+        bundle,
+        scope,
+        "RESUME_IN_FLIGHT",
+        {
+            "brief_identity": brief_identity,
+            "chapter_mode": "DIRECT_SOURCE_HYBRID",
+            "claim_owner": owner,
+        },
+    )
+
+
+def _hybrid_review_packet(
+    runner: BookOrchestrator, number: int, summary: dict[str, object]
+) -> None:
+    """Bind original source, final reconciled beats, and human decision template."""
+    base = runner.root / "book-candidates"
+    key = summary["chapter_scope_identity"]
+    if not isinstance(key, str) or DIGEST.fullmatch(key) is None:
+        raise PrivateHostStop("hybrid review chapter scope identity missing")
+    ledger_path = base / "chapter-evaluations" / key / "source-ledger.json"
+    raw = evaluation._read(ledger_path, chapter_hybrid.MAX_SOURCE_BYTES + 1024)
+    if hashlib.sha256(raw).hexdigest() != summary["source_ledger_sha256"]:
+        raise PrivateHostStop("hybrid original source ledger changed before review")
+    original: object = whole_book.load_strict_reply(raw)
+    if not isinstance(original, dict):
+        raise PrivateHostStop("hybrid original source ledger malformed")
+    chapter_hybrid.validate_ledger(original)
+    candidates = list((base / "hybrid_reconcile").glob("*/validated.json"))
+    if len(candidates) > 128:
+        raise PrivateHostStop("hybrid reconciliation inventory exceeds finite bound")
+    matching = [
+        path
+        for path in candidates
+        if isinstance(
+            (obj := whole_book.load_strict_reply(evaluation._read(path, 250_000))),
+            dict,
+        )
+        and obj.get("artifact_identity") == summary["brief_identity"]
+    ]
+    if len(matching) != 1:
+        raise PrivateHostStop("final reviewed hybrid brief absent or ambiguous")
+    envelope = whole_book.load_strict_reply(evaluation._read(matching[0], 250_000))
+    if not isinstance(envelope, dict) or not isinstance(envelope.get("payload"), dict):
+        raise PrivateHostStop("hybrid reconciliation final payload missing")
+    brief = envelope["payload"]
+    if brief.get("ledger_sha256") != original["ledger_sha256"]:
+        raise PrivateHostStop("hybrid final chapter brief detached from source ledger")
+    packet = chapter_hybrid.human_review_packet(brief, original)
+    packet.update(
+        {
+            "chapter": number,
+            "brief_identity": summary["brief_identity"],
+            "source_ledger_sha256": summary["source_ledger_sha256"],
+            "review_template": {
+                "schema": chapter_hybrid.REVIEW_SCHEMA,
+                "brief_sha256": brief["brief_sha256"],
+                "brief_artifact_identity": summary["brief_identity"],
+                "reviewer": "",
+                "unit_decisions": [
+                    {"id": item["id"], "review": "REVIEW_REQUIRED", "reason": ""}
+                    for item in original["entries"]
+                ],
+                "beat_decisions": [
+                    {"beat_id": beat["beat_id"], "review": "REVIEW_REQUIRED", "reason": ""}
+                    for beat in brief["beats"]
+                ],
+            },
+        }
+    )
+    evaluation._store(
+        base, base / "private-host" / f"chapter-{number}-review-packet.json", packet
+    )
+
+
+def _execute_hybrid(
+    runner: BookOrchestrator,
+    prepared: list[Prepared],
+    plan: chapter.ChapterPlan,
+    mode: str,
+    root: Path,
+    created_at: str,
+) -> dict[str, object]:
+    """Separate host journal for source-driven chapters, never invoke lesson mining."""
+    if mode not in {"hybrid-brief", "hybrid-resume"} or not all(
+        (plan.brief_cpu, plan.adaptation_cpu, plan.script_cpu, plan.direction_cpu, plan.kokoro_cpu)
+    ):
+        raise PrivateHostStop("hybrid private CPU phases require explicitly authorized plan")
+    if any(block["scope_sha256"] != scope for _, block, _, _, _, scope, _ in prepared):
+        raise PrivateHostStop("hybrid requires operator-locked original selected scopes")
+    for number, _block, _bundle, verified, _section, scope, _counts in prepared:
+        if not _phase_records(root, number, verified.bundle_sha256, scope):
+            with suppress(PhaseClaimContended):
+                _phase(runner, number, verified.bundle_sha256, scope, "NOT_STARTED")
+    outcomes: dict[str, object] = {}
+    for number, block, bundle, verified, section, scope, _counts in prepared:
+        bundle_sha = verified.bundle_sha256
+        prior = _phase_records(root, number, bundle_sha, scope)[-1]
+        state = str(prior["phase"])
+        if (
+            (mode == "hybrid-brief" and state != "NOT_STARTED")
+            or (mode == "hybrid-resume" and state != "AWAITING_HUMAN_REVIEW")
+        ):
+            outcomes[str(number)] = _outcome_from_phase(prior)
+            continue
+        private = root / "book-candidates"
+        saved = private / "private-host" / f"chapter-{number}-brief-record.json"
+        owner = uuid4().hex
+        identity: str | None = None
+        try:
+            chapter_lifecycle.verify_lifecycle(
+                private, caller_created_at=created_at, codespace_name=os.environ["CODESPACE_NAME"]
+            )
+            _check_deadline(_created_at(created_at))
+            review = None
+            if mode == "hybrid-brief":
+                _phase(
+                    runner,
+                    number,
+                    bundle_sha,
+                    scope,
+                    "HYBRID_BRIEF_IN_FLIGHT",
+                    {"claim_owner": owner, "chapter_mode": "DIRECT_SOURCE_HYBRID"},
+                )
+            else:
+                record: object = whole_book.load_strict_reply(evaluation._read(saved, 16384))
+                if (
+                    not isinstance(record, dict)
+                    or set(record) != {
+                        "chapter_mode",
+                        "chapter",
+                        "phase",
+                        "scope_sha256",
+                        "bundle_sha256",
+                        "brief_identity",
+                        "source_ledger_sha256",
+                        "argument_identity",
+                        "audit_identities",
+                        "plan_fingerprint",
+                    }
+                    or record["chapter_mode"] != "DIRECT_SOURCE_HYBRID"
+                    or record["chapter"] != number
+                    or record["phase"] != "AWAITING_HUMAN_REVIEW"
+                    or record["scope_sha256"] != scope
+                    or record["bundle_sha256"] != bundle_sha
+                    or record["plan_fingerprint"] != plan.fingerprint
+                    or record["brief_identity"] != prior["artifacts"].get("brief_identity")
+                    or record["source_ledger_sha256"]
+                    != prior["artifacts"].get("source_ledger_sha256")
+                    or record["argument_identity"]
+                    != prior["artifacts"].get("argument_identity")
+                    or record["audit_identities"] != prior["artifacts"].get("audit_identities")
+                    or not isinstance(record["brief_identity"], str)
+                    or DIGEST.fullmatch(record["brief_identity"]) is None
+                    or not isinstance(record["audit_identities"], list)
+                    or not 1 <= len(record["audit_identities"]) <= chapter_hybrid.MAX_AUDITS
+                    or any(
+                        not isinstance(value, str) or DIGEST.fullmatch(value) is None
+                        for value in record["audit_identities"]
+                    )
+                ):
+                    raise PrivateHostStop("hybrid resume requires exact immutable brief journal")
+                identity = record["brief_identity"]
+                if block["review_file"] is None:
+                    outcomes[str(number)] = {
+                        **_outcome_from_phase(prior),
+                        "review_status": "REVIEW_REQUIRED",
+                    }
+                    continue
+                review = _private_path(block["review_file"], root, must_exist=True)
+            output = chapter.evaluate_hybrid_chapter(
+                runner,
+                bundle,
+                section,
+                review_file=review,
+                plan=plan,
+                argument_completion=scripting._local_chapter_completion,
+                audit_completion=scripting._local_chapter_completion,
+                reconcile_completion=scripting._local_chapter_completion,
+                adaptation_completion=scripting._local_chapter_completion,
+                script_completion=scripting._local_chapter_completion,
+                direction_completion=scripting._local_chapter_completion,
+                narration_producer=narration._kokoro_wav,
+                expected_brief_identity=identity,
+                on_stage_progress=(
+                    partial(
+                        _record_verified_stage,
+                        runner,
+                        number,
+                        bundle_sha,
+                        scope,
+                        owner,
+                    )
+                    if mode == "hybrid-resume"
+                    else None
+                ),
+                on_resume_verified=(
+                    partial(_claim_hybrid_resume, runner, number, bundle_sha, scope, identity, owner)
+                    if mode == "hybrid-resume" and identity is not None
+                    else None
+                ),
+            )
+            if mode == "hybrid-brief":
+                if output["status"] != "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW":
+                    raise PrivateHostStop("hybrid brief skipped mandatory semantic human gate")
+                evidence = {
+                    "chapter_mode": "DIRECT_SOURCE_HYBRID",
+                    "chapter": number,
+                    "phase": "AWAITING_HUMAN_REVIEW",
+                    "scope_sha256": scope,
+                    "bundle_sha256": bundle_sha,
+                    "brief_identity": output["brief_identity"],
+                    "source_ledger_sha256": output["source_ledger_sha256"],
+                    "argument_identity": output["argument_identity"],
+                    "audit_identities": output["audit_identities"],
+                    "plan_fingerprint": plan.fingerprint,
+                }
+                evaluation._store(private, saved, evidence)
+                _hybrid_review_packet(runner, number, output)
+                final = _phase(
+                    runner,
+                    number,
+                    bundle_sha,
+                    scope,
+                    "AWAITING_HUMAN_REVIEW",
+                    {
+                        **{
+                            name: evidence[name]
+                            for name in (
+                                "brief_identity",
+                                "source_ledger_sha256",
+                                "argument_identity",
+                                "audit_identities",
+                                "chapter_mode",
+                            )
+                        },
+                        "claim_owner": owner,
+                    },
+                )
+            else:
+                if output["status"] != "CHAPTER_PREPRODUCTION_READY_UNREVIEWED":
+                    raise PrivateHostStop("hybrid reviewed chapter did not finish CPU audio")
+                manifest = _save_final_manifest(
+                    root, number, bundle_sha, scope, str(output["final_result_identity"])
+                )
+                final = _phase(
+                    runner,
+                    number,
+                    bundle_sha,
+                    scope,
+                    "PREPRODUCTION_READY",
+                    {
+                        "final_result_identity": output["final_result_identity"],
+                        "output_manifest_sha256": manifest,
+                        "audio_provenance": output["audio_provenance"],
+                        "claim_owner": owner,
+                    },
+                )
+            outcomes[str(number)] = _outcome_from_phase(final)
+        except PhaseClaimContended:
+            current = _phase_records(root, number, bundle_sha, scope)[-1]
+            outcomes[str(number)] = _outcome_from_phase(current)
+        except chapter.ChapterReviewPending:
+            outcomes[str(number)] = {
+                **_outcome_from_phase(prior),
+                "review_status": "REVIEW_REQUIRED",
+            }
+        except (ValueError, OSError, RuntimeError, TypeError, KeyError):
+            current = _phase_records(root, number, bundle_sha, scope)[-1]
+            if mode == "hybrid-resume" and current["phase"] == "AWAITING_HUMAN_REVIEW":
+                outcomes[str(number)] = {
+                    **_outcome_from_phase(current),
+                    "review_status": "RESUME_PREFLIGHT_BLOCKED",
+                }
+            else:
+                try:
+                    stopped = _phase(
+                        runner,
+                        number,
+                        bundle_sha,
+                        scope,
+                        "STOPPED",
+                        {"claim_owner": owner},
+                    )
+                except PhaseClaimContended:
+                    stopped = _phase_records(root, number, bundle_sha, scope)[-1]
+                outcomes[str(number)] = _outcome_from_phase(stopped)
+        finally:
+            _release_models()
+    return {
+        "status": "PRIVATE_TWO_CHAPTER_HYBRID_CHECKPOINT",
+        "chapters": outcomes,
+        "source_mode": "DIRECT_SOURCE_HYBRID",
         "publish_eligible": False,
     }
 
