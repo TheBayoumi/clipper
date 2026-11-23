@@ -128,14 +128,17 @@ def _section_manifest(
 
 
 Prepared = tuple[
-    int, dict[str, Any], Path, selected_scope.SelectedEvidence,
-    Path, str, dict[str, object],
+    int,
+    dict[str, Any],
+    Path,
+    selected_scope.SelectedEvidence,
+    Path,
+    str,
+    dict[str, object],
 ]
 
 
-def _prepare(
-    runner: BookOrchestrator, inputs: dict[str, Any]
-) -> list[Prepared]:
+def _prepare(runner: BookOrchestrator, inputs: dict[str, Any]) -> list[Prepared]:
     """Validate both bundles, independent chapter identities, and disjoint source BEFORE CPU."""
     prepared: list[Prepared] = []
     sections: set[str] = set()
@@ -161,10 +164,7 @@ def _prepare(
         parent = identity
         sections.update(verified.work.section_ids)
         section_path, scope_sha, counts = _section_manifest(runner, verified)
-        if (
-            block["scope_sha256"] is not None
-            and block["scope_sha256"] != scope_sha
-        ):
+        if block["scope_sha256"] is not None and block["scope_sha256"] != scope_sha:
             raise PrivateHostStop("selected chapter scope identity mismatch")
         if (
             cast(int, counts["work_units"]) + cast(int, counts["skipped_units"])

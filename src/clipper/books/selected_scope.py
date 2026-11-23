@@ -20,6 +20,28 @@ from . import acquisition, faithful, mining, whole_book
 from .contracts import BookSource, BookText, ReadingBlock
 
 SCHEMA = "clipper-private-selected-chapter-evidence-v1"
+BUNDLE_KEYS = frozenset(
+    {
+        "schema",
+        "chapter_number",
+        "verification",
+        "parent_original_reverified_on_host",
+        "parent_full_book_complete",
+        "review_status",
+        "publish_eligible",
+        "parent_ref",
+        "source",
+        "source_identity",
+        "chapter_section_ids",
+        "linked_section_ids",
+        "reading_blocks",
+        "work_plan",
+        "section_manifest",
+        "section_manifest_sha256",
+        "linked_notes_figures_completeness",
+        "parent_excluded_page_count",
+    }
+)
 MAX_BUNDLE_BYTES = 1_500_000
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -90,9 +112,7 @@ def _section_manifest(ref: SelectedRef, book: SelectedSource, work: whole_book.W
     }
 
 
-def _work_from_blocks(
-    blocks: tuple[ReadingBlock, ...], expected: whole_book.WorkPlan
-) -> None:
+def _work_from_blocks(blocks: tuple[ReadingBlock, ...], expected: whole_book.WorkPlan) -> None:
     """Rebuild every text chunk/gap from selected blocks, ignoring absent parent text."""
     if not expected.units or not blocks:
         raise SelectedSourceStop("selected chapter has no original work evidence")
@@ -111,11 +131,7 @@ def _work_from_blocks(
     selected = set(expected.section_ids)
     for block in blocks:
         key = (block.section_id, block.anchor, block.source_path)
-        if (
-            block.section_id not in selected
-            or key in seen_blocks
-            or block.origin not in fields
-        ):
+        if block.section_id not in selected or key in seen_blocks or block.origin not in fields:
             raise SelectedSourceStop("selected reading block is duplicated or out of scope")
         seen_blocks.add(key)
         field = fields[block.origin]
@@ -294,15 +310,7 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
         if len(raw) > MAX_BUNDLE_BYTES or hashlib.sha256(raw).hexdigest() != path.stem:
             raise SelectedSourceStop("selected chapter bundle length/hash mismatch")
         data: object = whole_book.load_strict_reply(raw)
-        if not isinstance(data, dict) or set(data) != {
-            "schema", "chapter_number", "verification",
-            "parent_original_reverified_on_host", "parent_full_book_complete",
-            "review_status", "publish_eligible", "parent_ref", "source",
-            "source_identity", "chapter_section_ids", "linked_section_ids",
-            "reading_blocks", "work_plan", "section_manifest",
-            "section_manifest_sha256", "linked_notes_figures_completeness",
-            "parent_excluded_page_count",
-        } or raw != _json(data):
+        if not isinstance(data, dict) or set(data) != BUNDLE_KEYS or raw != _json(data):
             raise SelectedSourceStop("selected chapter bundle is noncanonical or wrong schema")
         if (
             data["schema"] != SCHEMA
@@ -327,9 +335,14 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
         ):
             raise SelectedSourceStop("selected original parent references malformed")
         ref = SelectedRef(**reference)
-        if not isinstance(ref.book_id, str) or not ref.book_id or any(
-            type(getattr(ref, k)) is not str or DIGEST.fullmatch(getattr(ref, k)) is None
-            for k in SelectedRef.__dataclass_fields__ if k != "book_id"
+        if (
+            not isinstance(ref.book_id, str)
+            or not ref.book_id
+            or any(
+                type(getattr(ref, k)) is not str or DIGEST.fullmatch(getattr(ref, k)) is None
+                for k in SelectedRef.__dataclass_fields__
+                if k != "book_id"
+            )
         ):
             raise SelectedSourceStop("selected original parent identity digest malformed")
         from .contracts import BookSource
@@ -341,14 +354,23 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
         source = BookSource(**data["source"])
         identity = data["source_identity"]
         if not isinstance(identity, dict) or set(identity) != {
-            "edition_identity", "parent_book_fingerprint", "parent_content_sha256",
-            "source_fingerprint", "parser_version", "parser_config_sha256", "recovery_status",
+            "edition_identity",
+            "parent_book_fingerprint",
+            "parent_content_sha256",
+            "source_fingerprint",
+            "parser_version",
+            "parser_config_sha256",
+            "recovery_status",
         }:
             raise SelectedSourceStop("selected parent source identity malformed")
         if any(
             type(identity[k]) is not str or DIGEST.fullmatch(identity[k]) is None
-            for k in ("parent_book_fingerprint", "parent_content_sha256", "source_fingerprint",
-                      "parser_config_sha256")
+            for k in (
+                "parent_book_fingerprint",
+                "parent_content_sha256",
+                "source_fingerprint",
+                "parser_config_sha256",
+            )
         ) or (
             identity["parent_content_sha256"] != ref.raw_sha256
             or source.content_sha256 != ref.raw_sha256
@@ -364,14 +386,19 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
             raise SelectedSourceStop("selected original reading blocks absent/oversized")
         allowed = set(ReadingBlock.__dataclass_fields__)
         if any(
-            not isinstance(block, dict) or set(block) != allowed
-            for block in data["reading_blocks"]
+            not isinstance(block, dict) or set(block) != allowed for block in data["reading_blocks"]
         ):
             raise SelectedSourceStop("selected reading block shape invalid")
         blocks = tuple(ReadingBlock(**block) for block in data["reading_blocks"])
         if not isinstance(data["work_plan"], dict) or set(data["work_plan"]) != {
-            "book_fingerprint", "units", "skipped", "section_ids", "parent_plan_fingerprint",
-            "parent_total_units", "excluded_units", "fingerprint",
+            "book_fingerprint",
+            "units",
+            "skipped",
+            "section_ids",
+            "parent_plan_fingerprint",
+            "parent_total_units",
+            "excluded_units",
+            "fingerprint",
         }:
             raise SelectedSourceStop("selected original work plan shape invalid")
         record = data["work_plan"]
@@ -381,8 +408,7 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
             or not isinstance(record["skipped"], list)
             or len(record["units"]) + len(record["skipped"]) > 64
             or any(
-                not isinstance(u, dict)
-                or set(u) != set(whole_book.WorkUnit.__dataclass_fields__)
+                not isinstance(u, dict) or set(u) != set(whole_book.WorkUnit.__dataclass_fields__)
                 for u in record["units"]
             )
             or type(record["parent_total_units"]) is not int
@@ -422,13 +448,16 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
             raise SelectedSourceStop("selected chapter source block section order changed")
         _work_from_blocks(blocks, work)
         book = SelectedSource(
-            source=source, edition_identity=identity["edition_identity"],
-            content_sha256=ref.raw_sha256, source_fingerprint=ref.source_fingerprint,
+            source=source,
+            edition_identity=identity["edition_identity"],
+            content_sha256=ref.raw_sha256,
+            source_fingerprint=ref.source_fingerprint,
             fingerprint=identity["parent_book_fingerprint"],
             parser_version=identity["parser_version"],
             parser_config_sha256=identity["parser_config_sha256"],
             recovery_status=identity["recovery_status"],
-            selected_reading_blocks=blocks, selected_plan=work,
+            selected_reading_blocks=blocks,
+            selected_plan=work,
         )
         manifest = _section_manifest(ref, book, work)
         if (
@@ -437,12 +466,22 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
         ):
             raise SelectedSourceStop("selected source scope manifest/parent hashes diverge")
         return SelectedEvidence(
-            ref, book, work, data["chapter_number"], path.stem,
-            data["section_manifest_sha256"], tuple(linked),
+            ref,
+            book,
+            work,
+            data["chapter_number"],
+            path.stem,
+            data["section_manifest_sha256"],
+            tuple(linked),
         )
     except (
-        OSError, ValueError, TypeError, KeyError,
-        AttributeError, RecursionError, OverflowError,
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        AttributeError,
+        RecursionError,
+        OverflowError,
     ):
         raise SelectedSourceStop("selected chapter evidence cannot be verified") from None
 

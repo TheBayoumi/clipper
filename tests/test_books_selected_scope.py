@@ -13,9 +13,7 @@ from clipper.books import chapter, evaluation, selected_scope, whole_book
 from clipper.books.orchestrator import BookOrchestrator
 
 
-def _bundle(tmp_path: Path, *, with_image: bool = True) -> tuple[
-    BookOrchestrator, Path, dict
-]:
+def _bundle(tmp_path: Path, *, with_image: bool = True) -> tuple[BookOrchestrator, Path, dict]:
     owner = tmp_path / "owner"
     owner.mkdir()
     exporter, acquired, _ = ingested(owner, paragraphs=8, with_image=with_image)
@@ -59,16 +57,18 @@ def test_selected_chapter_is_private_full_source_order_and_host_requires_no_pare
     verified = selected_scope.import_chapter(runner.root, path)
     assert verified.work.units
     assert all(u.section_id in verified.work.section_ids for u in verified.work.units)
-    assert all(b.section_id in verified.work.section_ids for b in verified.book.selected_reading_blocks)
+    assert all(
+        b.section_id in verified.work.section_ids for b in verified.book.selected_reading_blocks
+    )
     assert tuple(u.ordinal for u in verified.work.units) == tuple(
         sorted(u.ordinal for u in verified.work.units)
     )
     assert verified.ref.raw_sha256 == verified.book.content_sha256
     assert verified.book.source_boundary == "HOST_VERIFIED_SELECTED_BUNDLE_EXPORTER_ATTESTED_PARENT"
     assert verified.work.parent_total_units > len(verified.work.units)
-    assert whole_book.plan_for(
-        verified.book, section_ids=verified.work.section_ids
-    ) == verified.work
+    assert (
+        whole_book.plan_for(verified.book, section_ids=verified.work.section_ids) == verified.work
+    )
     with pytest.raises(ValueError):
         whole_book.plan_for(verified.book, section_ids=("other-chapter",))
 
@@ -108,7 +108,9 @@ def test_selected_scope_rejects_canonical_and_rehashed_tampering(
         return
     if mutation in {"wrong_digest", "noncanonical"}:
         if mutation == "wrong_digest":
-            path.write_bytes(path.read_bytes().replace(b"SELECTED_SCOPE_SOURCE_UNREVIEWED", b"UNREVIEWED"))
+            path.write_bytes(
+                path.read_bytes().replace(b"SELECTED_SCOPE_SOURCE_UNREVIEWED", b"UNREVIEWED")
+            )
         else:
             path.write_bytes(path.read_bytes() + b" ")
         with pytest.raises(selected_scope.SelectedSourceStop):
@@ -122,7 +124,8 @@ def test_selected_scope_rejects_canonical_and_rehashed_tampering(
         del data["reading_blocks"][0]
     elif mutation == "reordered_blocks":
         data["reading_blocks"][0], data["reading_blocks"][1] = (
-            data["reading_blocks"][1], data["reading_blocks"][0]
+            data["reading_blocks"][1],
+            data["reading_blocks"][0],
         )
     elif mutation == "duplicated_block":
         data["reading_blocks"].insert(1, data["reading_blocks"][0])
@@ -132,7 +135,8 @@ def test_selected_scope_rejects_canonical_and_rehashed_tampering(
         data["work_plan"]["units"].pop()
     elif mutation == "reordered_units":
         data["work_plan"]["units"][0], data["work_plan"]["units"][1] = (
-            data["work_plan"]["units"][1], data["work_plan"]["units"][0]
+            data["work_plan"]["units"][1],
+            data["work_plan"]["units"][0],
         )
     elif mutation == "bool_ordinal":
         data["work_plan"]["units"][0]["ordinal"] = True
@@ -164,8 +168,8 @@ def test_selected_chapter_mining_uses_real_canonical_validation_and_raw_cache(
     runner, bundle, data = _bundle(tmp_path, with_image=False)
     verified = selected_scope.import_chapter(runner.root, bundle)
     manifest = selected_scope._json(data["section_manifest"])
-    section = runner.root / "book-candidates/section-scopes" / (
-        data["section_manifest_sha256"] + ".json"
+    section = (
+        runner.root / "book-candidates/section-scopes" / (data["section_manifest_sha256"] + ".json")
     )
     section.parent.mkdir(parents=True)
     section.write_bytes(manifest)

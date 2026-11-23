@@ -32,8 +32,10 @@ def _private_setup(
     scopes: dict[str, dict] = {}
     for number, section in ((1, sections[0]), (7, sections[1])):
         exported, sha = selected_scope.export_chapter(
-            exporter, acquired.analysis_ref_path,
-            chapter_number=number, chapter_section_ids=(section,),
+            exporter,
+            acquired.analysis_ref_path,
+            chapter_number=number,
+            chapter_section_ids=(section,),
         )
         target = bundle_dir / f"{sha}.json"
         target.write_bytes(exported.read_bytes())
