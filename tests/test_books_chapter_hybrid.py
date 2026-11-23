@@ -1207,3 +1207,134 @@ def test_hybrid_producer_binding_reacts_to_tokenizer_template_and_generation_cha
     with monkeypatch.context() as patch:
         patch.setattr(hybrid.scripting, "SCRIPT_REVISION", "synthetic-new-revision")
         assert bound() != original
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "empty",
+        "overcap",
+        "duplicate_id",
+        "bad_text",
+        "wrong_hash",
+        "unknown_kind",
+        "gap_claims_text",
+        "missing_order",
+        "oversize_ledger",
+    ),
+)
+def test_hybrid_source_ledger_rejects_forged_metadata_and_unbounded_input(
+    case: str,
+) -> None:
+    units, gaps, original_order = _original(3)
+    if case == "empty":
+        units, gaps, original_order = [], [], []
+    elif case == "overcap":
+        units, gaps, original_order = _original(129)
+    elif case == "duplicate_id":
+        units[1]["source_id"] = units[0]["source_id"]
+    elif case == "bad_text":
+        units[0]["text"] = None
+    elif case == "wrong_hash":
+        units[0]["text"] = "changed without digest"
+    elif case == "unknown_kind":
+        units[0]["kind"] = "UNSUPPORTED"
+    elif case == "gap_claims_text":
+        gaps[0]["text"] = "invented original"
+    elif case == "missing_order":
+        original_order.pop()
+    elif case == "oversize_ledger":
+        units[0]["text"] = "x" * hybrid.MAX_SOURCE_BYTES
+        units[0]["text_sha256"] = hashlib.sha256(units[0]["text"].encode()).hexdigest()
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.freeze(units, gaps, original_order, {"chapter": 1})
+
+
+@pytest.mark.parametrize(
+    "case",
+    ("bad_schema", "empty_units", "wrong_recomputed_order", "bad_identity"),
+)
+def test_hybrid_replay_fails_even_with_canonical_attacker_rehash(case: str) -> None:
+    forged = copy.deepcopy(_ledger(3))
+    if case == "bad_schema":
+        forged["schema"] = "synthetic-other-schema"
+    elif case == "empty_units":
+        forged["entries"] = []
+    elif case == "wrong_recomputed_order":
+        forged["entries"][0]["order"] = 2
+    elif case == "bad_identity":
+        forged["identity"] = None
+    forged["ledger_sha256"] = hybrid.digest(
+        {key: value for key, value in forged.items() if key != "ledger_sha256"}
+    )
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_ledger(forged)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ("no_hybrid_key", "invalid_hybrid_key", "mismatched_stage_contract"),
+)
+def test_stage_rejects_unbound_hybrid_attempt_before_any_generator(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    callback = Mock(side_effect=AssertionError("no generator may be called"))
+    args: dict[str, object] = {
+        "prepared_request": {"max_new_tokens": 4096},
+        "contract_version": "clipper-hybrid-argument-v1",
+        "hybrid_request_identity": "a" * 64,
+        "safe_context_tokens": hybrid.SAFE_CONTEXT_TOKENS,
+    }
+    if case == "no_hybrid_key":
+        args.pop("hybrid_request_identity")
+    elif case == "invalid_hybrid_key":
+        args["hybrid_request_identity"] = "not-a-sha"
+    else:
+        args.pop("contract_version")
+    with pytest.raises(chapter.ChapterStop, match="hybrid"):
+        chapter._stage(
+            tmp_path / "book-candidates",
+            "hybrid_argument",
+            {},
+            chapter.ChapterPlan(),
+            lambda raw: raw,
+            callback,
+            **args,
+        )
+    callback.assert_not_called()
+
+
+@pytest.mark.parametrize("case", ("reject_unit", "missing_beat", "reject_beat"))
+def test_human_semantic_review_rejects_omission_or_unattested_meaning(
+    case: str,
+) -> None:
+    ledger = _ledger(25)
+    brief = hybrid.reconcile(
+        _reconciliation(ledger), ledger, _argument(ledger), _audit_outputs(ledger)
+    )
+    review = {
+        "schema": hybrid.REVIEW_SCHEMA,
+        "brief_sha256": brief["brief_sha256"],
+        "reviewer": "Synthetic semantic reviewer",
+        "unit_decisions": [
+            {"id": unit["id"], "review": "accept", "reason": "Read complete original"}
+            for unit in ledger["entries"]
+        ],
+        "beat_decisions": [
+            {
+                "beat_id": beat["beat_id"],
+                "review": "support_attested",
+                "reason": "Compared meaning, contradiction and qualification",
+            }
+            for beat in brief["beats"]
+        ],
+    }
+    if case == "reject_unit":
+        review["unit_decisions"][0]["review"] = "reject"
+    elif case == "missing_beat":
+        review["beat_decisions"].pop()
+    else:
+        review["beat_decisions"][0]["review"] = "reject"
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_human_review(review, brief, ledger)
