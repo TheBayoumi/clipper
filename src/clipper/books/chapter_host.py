@@ -321,7 +321,9 @@ def execute(
         ]
     ):
         raise PrivateHostStop("real chapter phases require explicit full CPU permissions")
-    outcomes: dict[str, object] = {}
+    # Lock BOTH scopes before making even the first irreversible mining call.
+    # A mismatched chapter 7 must not waste chapter 1's shared host allowance.
+    prepared: list[tuple[int, dict[str, Any], Path, str, dict[str, object]]] = []
     for number in (1, 7):
         _check_deadline(created)
         block = inputs[f"chapter_{number}"]
@@ -333,6 +335,10 @@ def execute(
             > chapter.MAX_SOURCE_UNITS
         ):
             raise PrivateHostStop("chapter full source-unit budget exceeded")
+        prepared.append((number, block, section_path, scope_sha, counts))
+    outcomes: dict[str, object] = {}
+    for number, block, section_path, scope_sha, counts in prepared:
+        _check_deadline(created)
         private_root = root / "book-candidates"
         state = private_root / "private-host" / f"chapter-{number}-brief-record.json"
         try:

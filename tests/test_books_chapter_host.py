@@ -123,12 +123,13 @@ def test_codespace_manifest_rejects_unlocked_or_malformed_scope(
         _call(runner, path, "inspect")
 
 
+@pytest.mark.parametrize("number", [1, 7])
 def test_codespace_scope_lock_mismatch_blocks_mining_before_inference(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, number: int
 ) -> None:
     runner, path, config = _private_setup(tmp_path, monkeypatch)
     _locked(runner, path, config)
-    config["chapter_1"]["scope_sha256"] = "f" * 64
+    config[f"chapter_{number}"]["scope_sha256"] = "f" * 64
     path.write_bytes(evaluation._json_bytes(config))
     called = Mock(side_effect=AssertionError("no model before scope lock"))
     monkeypatch.setattr(BookOrchestrator, "mine_candidate", called)
