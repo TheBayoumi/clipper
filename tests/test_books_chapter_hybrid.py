@@ -1489,10 +1489,17 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
                     evidence["producer_identity_sha256"] = "0" * 64
                 forged[path] = evaluation._json_bytes(evidence)
         fully_rebind_metadata(forged)
-        assert owner_accepts(forged)[0] != 0, (
-            attack,
-            "even a fully rehashed hybrid archive must fail the source/review/final binding",
-        )
+        exit_code, rejected = owner_accepts(forged)
+        # The verifier intentionally preserves the other independently
+        # recoverable chapter: per-chapter INCOMPLETE with a PARTIAL report is
+        # fail-closed, even when the outer TAR is checksum-valid (exit 0).
+        assert exit_code == 0 and rejected is not None, attack
+        assert rejected["chapters"] == {
+            "1": "INCOMPLETE",
+            "7": "READY_OUTPUTS_VERIFIED",
+        }, attack
+        assert rejected["output_scope"] == "PARTIAL", attack
+        assert rejected["retrieval_status"] == "VERIFIED_PRIVATE_ARCHIVE_PARTIAL"
 
     # Corrupted plan records must not become recoverable post-review phases,
     # even if a caller presents the historical valid stage identifiers.
@@ -2540,6 +2547,12 @@ def test_hybrid_reserved_stage_rejects_invalid_output_before_any_attempt(
     if failure == "mismatched_output_budget":
         request["max_new_tokens"] += 1
     else:
+        request["verified_input_encoding"] = {
+            "input_token_ids_sha256": "c" * 64,
+            "tokenizer_config_sha256": "d" * 64,
+            "chat_template_sha256": "e" * 64,
+            "tokenizer_json_sha256": "f" * 64,
+        }
         monkeypatch.setattr(scripting, "_ORIGINAL_LOCAL_CHAPTER_COMPLETION", callback)
         monkeypatch.setattr(scripting, "_local_chapter_completion", callback)
         monkeypatch.setattr(
