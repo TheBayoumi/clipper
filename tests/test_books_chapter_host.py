@@ -752,9 +752,7 @@ def test_in_flight_chapter_phase_reentry_stays_interrupted(
     provider.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "damage", ["empty", "folder_symlink", "entry_symlink", "canonical_tamper"]
-)
+@pytest.mark.parametrize("damage", ["empty", "folder_symlink", "entry_symlink", "canonical_tamper"])
 def test_private_phase_journal_missing_or_rewritten_records_never_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
 ) -> None:
