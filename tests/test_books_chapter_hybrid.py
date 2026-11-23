@@ -10,7 +10,9 @@ import pytest
 from clipper.books import chapter_hybrid as hybrid
 
 
-def _original(count: int = 101) -> tuple[list[dict[str, object]], list[dict[str, object]], list[str]]:
+def _original(
+    count: int = 101,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[str]]:
     units: list[dict[str, object]] = []
     for index in range(count):
         text = f"Unit {index}: an example and an assertion about choices."
@@ -60,9 +62,7 @@ def _audit_outputs(ledger: dict[str, object]) -> list[dict[str, object]]:
     for window in hybrid.audit_windows(ledger):
         decisions = []
         for sid in window["core_ids"]:
-            source = {
-                entry["id"]: entry for entry in hybrid.validate_ledger(ledger)
-            }[sid]
+            source = {entry["id"]: entry for entry in hybrid.validate_ledger(ledger)}[sid]
             if source["kind"] == "CANONICAL_WORK_UNIT":
                 evidence = [
                     {
@@ -130,9 +130,7 @@ def _argument(ledger: dict[str, object]) -> dict[str, object]:
     return {
         "hypothesis": "Provisional interpretation, not a settled claim.",
         "questions": ["Does the middle qualifier contradict this interpretation?"],
-        "source_links": [
-            {"id": "s0003", "start": 0, "end": 13, "role": "ASSERTION"}
-        ],
+        "source_links": [{"id": "s0003", "start": 0, "end": 13, "role": "ASSERTION"}],
     }
 
 
@@ -142,16 +140,14 @@ def test_101_units_and_gap_preserve_bytes_order_reversible_ids() -> None:
     entries = hybrid.validate_ledger(ledger)
     assert len(entries) == 102
     assert [e["source_id"] for e in entries] == ordered
-    assert [e["text"].encode() for e in entries] == [
-        u["text"].encode() for u in [*original, *gap]
-    ]
+    assert [e["text"].encode() for e in entries] == [u["text"].encode() for u in [*original, *gap]]
     assert entries[0]["id"] == "s0001"
     assert entries[-1]["id"] == "s0102"
     assert ledger["identity"]["parent"] == "a" * 64
     assert len(hybrid.audit_windows(ledger)) == 9
-    assert [
-        sid for window in hybrid.audit_windows(ledger) for sid in window["core_ids"]
-    ] == [entry["id"] for entry in entries]
+    assert [sid for window in hybrid.audit_windows(ledger) for sid in window["core_ids"]] == [
+        entry["id"] for entry in entries
+    ]
 
 
 def test_real_unicode_offsets_and_many_to_one_beats_without_forced_omissions() -> None:
@@ -275,23 +271,39 @@ def test_pinned_context_capacity_and_cache_identity_changes() -> None:
     assert count == 7968
     assert req["revision"] == hybrid.scripting.SCRIPT_REVISION
     changed = {**identity, "producer": "b" * 64}
-    assert hybrid.request(
-        "argument", payload, output_tokens=4096,
-        token_count=lambda _messages: 7968, producer_identity=changed,
-    )[1] != key
-    assert hybrid.request(
-        "argument", {"source": [*payload["source"], ["new"]]},
-        output_tokens=4096, token_count=lambda _messages: 7968,
-        producer_identity=identity,
-    )[1] != key
+    assert (
+        hybrid.request(
+            "argument",
+            payload,
+            output_tokens=4096,
+            token_count=lambda _messages: 7968,
+            producer_identity=changed,
+        )[1]
+        != key
+    )
+    assert (
+        hybrid.request(
+            "argument",
+            {"source": [*payload["source"], ["new"]]},
+            output_tokens=4096,
+            token_count=lambda _messages: 7968,
+            producer_identity=identity,
+        )[1]
+        != key
+    )
     with pytest.raises(hybrid.HybridStop, match="safe context"):
         hybrid.request(
-            "argument", payload, output_tokens=4096,
-            token_count=lambda _messages: 28700, producer_identity=identity,
+            "argument",
+            payload,
+            output_tokens=4096,
+            token_count=lambda _messages: 28700,
+            producer_identity=identity,
         )
     with pytest.raises(hybrid.HybridStop, match="unavailable"):
         hybrid.request(
-            "argument", payload, output_tokens=4096,
+            "argument",
+            payload,
+            output_tokens=4096,
             token_count=lambda _messages: (_ for _ in ()).throw(RuntimeError()),
             producer_identity=identity,
         )
