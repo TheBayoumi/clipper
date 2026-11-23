@@ -275,7 +275,7 @@ with tarfile.open(archive_path, mode="r:") as source:
             chapter_results[label] = "INCOMPLETE"
             continue
         original_manifest = {k:v for k,v in manifest_row.items() if k != "inventory_status"}
-        original_bytes = (json.dumps(original_manifest,sort_keys=True,ensure_ascii=False)+"\\n").encode("utf-8")
+        original_bytes = (json.dumps(original_manifest,sort_keys=True,ensure_ascii=False)+"\n").encode("utf-8")
         if digest(original_bytes) != safe["chapters"][label]["output_manifest_sha256"]:
             chapter_results[label] = "INCOMPLETE"
             continue
