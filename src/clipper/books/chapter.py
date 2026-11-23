@@ -180,9 +180,9 @@ def _full_source_scope(
         if block.section_id not in scoped.section_ids:
             continue
         key = (block.section_id, block.anchor, block.source_path)
-        if key in grouped and grouped[key]:
+        if grouped.get(key):
             reading_order.extend(grouped.pop(key))
-        elif key in skipped_grouped and skipped_grouped[key]:
+        elif skipped_grouped.get(key):
             reading_order.append(skipped_grouped[key].pop(0))
         else:
             raise ChapterStop("chapter faithful reading order has an unaccounted source block")
