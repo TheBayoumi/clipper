@@ -809,9 +809,7 @@ def test_internal_real_token_receipt_is_bound_to_raw_and_replay_checked(
     runner, bundle, _ = _bundle(tmp_path, with_image=False)
     selected = selected_scope.import_chapter(runner.root, bundle)
     unit = selected.work.units[0]
-    request = whole_book._request_for_identity(
-        selected.book, unit, selected.book.fingerprint
-    )
+    request = whole_book._request_for_identity(selected.book, unit, selected.book.fingerprint)
     request["source_boundary"] = selected.book.source_boundary
     request["selected_scope_bundle_sha256"] = selected.bundle_sha256
     request_key = content_fingerprint(request)
