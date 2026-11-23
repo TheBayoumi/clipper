@@ -1063,7 +1063,9 @@ def _verified_text_artifact(
             raise ChapterStop("chapter cached text artifact digest mismatch")
         return result, identity
     except (TypeError, ValueError, KeyError, OSError, RecursionError, OverflowError):
-        raise ChapterStop("chapter text artifact cannot be verified; manual review required") from None
+        raise ChapterStop(
+            "chapter text artifact cannot be verified; manual review required"
+        ) from None
 
 
 def _stage(
