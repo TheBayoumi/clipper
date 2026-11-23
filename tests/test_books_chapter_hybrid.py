@@ -832,7 +832,12 @@ def test_selected_chapter_rejects_overcap_export_and_rehashed_reading_blocks(
     host, _valid_path, data = _bundle(tmp_path)
     base = data["reading_blocks"]
     assert 0 < len(base) < selected_scope.MAX_CHAPTER_ENTRIES
-    forged = {**data, "reading_blocks": (base * (selected_scope.MAX_CHAPTER_ENTRIES + 1))[: selected_scope.MAX_CHAPTER_ENTRIES + 1]}
+    forged = {
+        **data,
+        "reading_blocks": (base * (selected_scope.MAX_CHAPTER_ENTRIES + 1))[
+            : selected_scope.MAX_CHAPTER_ENTRIES + 1
+        ],
+    }
     encoded = selected_scope._json(forged)
     digest = hashlib.sha256(encoded).hexdigest()
     path = host.root / "book-candidates" / "selected-scopes" / f"{digest}.json"
@@ -850,9 +855,7 @@ def test_45_units_plus_gap_shards_have_single_core_owner() -> None:
     assert cores == [item["id"] for item in ledger["entries"]]
     assert len(cores) == len(set(cores))
     for window in windows:
-        assert not set(window["core_ids"]) & {
-            item[0] for item in window["halo_context_only"]
-        }
+        assert not set(window["core_ids"]) & {item[0] for item in window["halo_context_only"]}
 
 
 def test_runtime_only_change_invalidates_actual_hybrid_stage_artifacts_and_review(
@@ -867,9 +870,17 @@ def test_runtime_only_change_invalidates_actual_hybrid_stage_artifacts_and_revie
         "local_producer_material",
         lambda: {**original, "synthetic_runtime_probe": runtime["probe"]},
     )
-    calls = {name: 0 for name in (
-        "argument", "audit", "reconcile", "adaptation", "chapter_script", "chapter_direction"
-    )}
+    calls = {
+        name: 0
+        for name in (
+            "argument",
+            "audit",
+            "reconcile",
+            "adaptation",
+            "chapter_script",
+            "chapter_direction",
+        )
+    }
 
     def completion(name: str):
         def execute(req: dict[str, object]) -> str:
@@ -898,10 +909,7 @@ def test_runtime_only_change_invalidates_actual_hybrid_stage_artifacts_and_revie
         "token_counter": lambda _messages: 1200,
     }
     base = runner.root / "book-candidates"
-    ledger = json.loads(next((base / "chapter-evaluations").glob("*/source-ledger.json")).read_bytes()) if (
-        (base / "chapter-evaluations").exists()
-        and list((base / "chapter-evaluations").glob("*/source-ledger.json"))
-    ) else None
+    ledger: dict[str, object] | None = None
 
     def approve(pending: dict[str, object], label: str) -> Path:
         nonlocal ledger
@@ -913,9 +921,11 @@ def test_runtime_only_change_invalidates_actual_hybrid_stage_artifacts_and_revie
             json.loads(path.read_bytes())
             for path in (base / "hybrid_reconcile").glob("*/validated.json")
         ]
-        matches = [candidate for candidate in candidates if (
-            candidate["artifact_identity"] == pending["brief_identity"]
-        )]
+        matches = [
+            candidate
+            for candidate in candidates
+            if candidate["artifact_identity"] == pending["brief_identity"]
+        ]
         assert len(matches) == 1
         brief = matches[0]["payload"]
         review = {
@@ -943,7 +953,9 @@ def test_runtime_only_change_invalidates_actual_hybrid_stage_artifacts_and_revie
     pending_a = chapter.evaluate_hybrid_chapter(runner, selected, section, **args)
     approval_a = approve(pending_a, "runtime-a")
     result_a = chapter.evaluate_hybrid_chapter(
-        runner, selected, section,
+        runner,
+        selected,
+        section,
         review_file=approval_a,
         expected_brief_identity=pending_a["brief_identity"],
         **args,
@@ -951,7 +963,9 @@ def test_runtime_only_change_invalidates_actual_hybrid_stage_artifacts_and_revie
     assert result_a["status"] == "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED"
     frozen = dict(calls)
     repeated_a = chapter.evaluate_hybrid_chapter(
-        runner, selected, section,
+        runner,
+        selected,
+        section,
         review_file=approval_a,
         expected_brief_identity=pending_a["brief_identity"],
         **args,
@@ -962,7 +976,9 @@ def test_runtime_only_change_invalidates_actual_hybrid_stage_artifacts_and_revie
     runtime["probe"] = "runtime-B"
     with pytest.raises(chapter.ChapterStop, match="cache missing or changed"):
         chapter.evaluate_hybrid_chapter(
-            runner, selected, section,
+            runner,
+            selected,
+            section,
             review_file=approval_a,
             expected_brief_identity=pending_a["brief_identity"],
             **args,
@@ -979,14 +995,18 @@ def test_runtime_only_change_invalidates_actual_hybrid_stage_artifacts_and_revie
 
     with pytest.raises(chapter.ChapterReviewPending):
         chapter.evaluate_hybrid_chapter(
-            runner, selected, section,
+            runner,
+            selected,
+            section,
             review_file=approval_a,
             expected_brief_identity=pending_b["brief_identity"],
             **args,
         )
     approval_b = approve(pending_b, "runtime-b")
     result_b = chapter.evaluate_hybrid_chapter(
-        runner, selected, section,
+        runner,
+        selected,
+        section,
         review_file=approval_b,
         expected_brief_identity=pending_b["brief_identity"],
         **args,
