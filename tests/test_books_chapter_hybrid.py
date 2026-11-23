@@ -14,7 +14,7 @@ import pytest
 from test_books_selected_scope import _bundle
 from test_books_whole_book import ingested
 
-from clipper.books import chapter, evaluation, selected_scope, whole_book
+from clipper.books import chapter, chapter_host, evaluation, selected_scope, whole_book
 from clipper.books import chapter_hybrid as hybrid
 from clipper.books.orchestrator import BookOrchestrator
 
@@ -809,3 +809,210 @@ def test_export_import_101_plus_unresolved_gap_preserves_original_scoped_source(
     )
     assert not list(host_root.rglob("*.epub"))
     assert not list(host_root.rglob("analysis-refs"))
+
+
+def test_selected_chapter_rejects_overcap_export_and_rehashed_reading_blocks(
+    tmp_path: Path,
+) -> None:
+    owner = tmp_path / "overcap-source"
+    owner.mkdir()
+    runner, acquired, _transport = ingested(owner, paragraphs=384, with_image=True)
+    section_id = acquired.book.sections[1].chapter_id
+    plan = whole_book.plan_for(acquired.book, section_ids=(section_id,))
+    assert len(plan.units) + len(plan.skipped) > selected_scope.MAX_CHAPTER_ENTRIES
+    with pytest.raises(selected_scope.SelectedSourceStop, match="original-unit budget"):
+        selected_scope.export_chapter(
+            runner,
+            acquired.analysis_ref_path,
+            chapter_number=1,
+            chapter_section_ids=(section_id,),
+        )
+
+    host, _valid_path, data = _bundle(tmp_path)
+    base = data["reading_blocks"]
+    assert 0 < len(base) < selected_scope.MAX_CHAPTER_ENTRIES
+    forged = {**data, "reading_blocks": (base * 30)[: selected_scope.MAX_CHAPTER_ENTRIES + 1]}
+    encoded = selected_scope._json(forged)
+    digest = hashlib.sha256(encoded).hexdigest()
+    path = host.root / "book-candidates" / "selected-scopes" / f"{digest}.json"
+    path.write_bytes(encoded)
+    with pytest.raises(selected_scope.SelectedSourceStop, match="reading blocks"):
+        selected_scope.import_chapter(host.root, path)
+
+
+def test_45_units_plus_gap_shards_have_single_core_owner() -> None:
+    ledger = _ledger(45)
+    windows = hybrid.audit_windows(ledger)
+    assert len(ledger["entries"]) == 46
+    assert len(windows) == 4
+    cores = [sid for window in windows for sid in window["core_ids"]]
+    assert cores == [item["id"] for item in ledger["entries"]]
+    assert len(cores) == len(set(cores))
+    for window in windows:
+        assert not set(window["core_ids"]) & {
+            item[0] for item in window["halo_context_only"]
+        }
+
+
+def test_runtime_only_change_invalidates_actual_hybrid_stage_artifacts_and_review(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner, selected, section = _selected_hybrid_source(tmp_path)
+    original = whole_book.local_producer_material()
+    runtime = {"probe": "runtime-A"}
+    monkeypatch.setattr(
+        whole_book,
+        "local_producer_material",
+        lambda: {**original, "synthetic_runtime_probe": runtime["probe"]},
+    )
+    calls = {name: 0 for name in (
+        "argument", "audit", "reconcile", "adaptation", "chapter_script", "chapter_direction"
+    )}
+
+    def completion(name: str):
+        def execute(req: dict[str, object]) -> str:
+            calls[name] += 1
+            if name in {"argument", "audit", "reconcile"}:
+                return _injected_hybrid_response(name, req)
+            return _hybrid_creative_output(name, req)
+
+        return execute
+
+    args = {
+        "plan": chapter.ChapterPlan(
+            brief_cpu=True,
+            adaptation_cpu=True,
+            script_cpu=True,
+            direction_cpu=True,
+            kokoro_cpu=True,
+        ),
+        "argument_completion": completion("argument"),
+        "audit_completion": completion("audit"),
+        "reconcile_completion": completion("reconcile"),
+        "adaptation_completion": completion("adaptation"),
+        "script_completion": completion("chapter_script"),
+        "direction_completion": completion("chapter_direction"),
+        "narration_producer": _hybrid_wav,
+        "token_counter": lambda _messages: 1200,
+    }
+    base = runner.root / "book-candidates"
+    ledger = json.loads(next((base / "chapter-evaluations").glob("*/source-ledger.json")).read_bytes()) if (
+        (base / "chapter-evaluations").exists()
+        and list((base / "chapter-evaluations").glob("*/source-ledger.json"))
+    ) else None
+
+    def approve(pending: dict[str, object], label: str) -> Path:
+        nonlocal ledger
+        if ledger is None:
+            ledger = json.loads(
+                next((base / "chapter-evaluations").glob("*/source-ledger.json")).read_bytes()
+            )
+        candidates = [
+            json.loads(path.read_bytes())
+            for path in (base / "hybrid_reconcile").glob("*/validated.json")
+        ]
+        matches = [candidate for candidate in candidates if (
+            candidate["artifact_identity"] == pending["brief_identity"]
+        )]
+        assert len(matches) == 1
+        brief = matches[0]["payload"]
+        review = {
+            "schema": hybrid.REVIEW_SCHEMA,
+            "brief_sha256": brief["brief_sha256"],
+            "brief_artifact_identity": pending["brief_identity"],
+            "reviewer": "Synthetic human for isolated cache test",
+            "unit_decisions": [
+                {"id": unit["id"], "review": "accept", "reason": "Source checked by fixture"}
+                for unit in ledger["entries"]
+            ],
+            "beat_decisions": [
+                {
+                    "beat_id": beat["beat_id"],
+                    "review": "support_attested",
+                    "reason": "Explicit synthetic approval of context",
+                }
+                for beat in brief["beats"]
+            ],
+        }
+        review_path = tmp_path / f"review-{label}.json"
+        review_path.write_text(json.dumps(review), encoding="utf-8")
+        return review_path
+
+    pending_a = chapter.evaluate_hybrid_chapter(runner, selected, section, **args)
+    approval_a = approve(pending_a, "runtime-a")
+    result_a = chapter.evaluate_hybrid_chapter(
+        runner, selected, section,
+        review_file=approval_a,
+        expected_brief_identity=pending_a["brief_identity"],
+        **args,
+    )
+    assert result_a["status"] == "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED"
+    frozen = dict(calls)
+    repeated_a = chapter.evaluate_hybrid_chapter(
+        runner, selected, section,
+        review_file=approval_a,
+        expected_brief_identity=pending_a["brief_identity"],
+        **args,
+    )
+    assert repeated_a["final_result_identity"] == result_a["final_result_identity"]
+    assert calls == frozen, "same runtime must recover exact cached raw stages without calls"
+
+    runtime["probe"] = "runtime-B"
+    with pytest.raises(chapter.ChapterStop, match="cache missing or changed"):
+        chapter.evaluate_hybrid_chapter(
+            runner, selected, section,
+            review_file=approval_a,
+            expected_brief_identity=pending_a["brief_identity"],
+            **args,
+        )
+    assert calls == frozen, "old approved identity must fail before a new producer call"
+    pending_b = chapter.evaluate_hybrid_chapter(runner, selected, section, **args)
+    assert pending_b["producer_identity_sha256"] != pending_a["producer_identity_sha256"]
+    for key in ("argument_identity", "brief_identity"):
+        assert pending_b[key] != pending_a[key]
+    assert pending_b["audit_identities"] != pending_a["audit_identities"]
+    assert calls["argument"] == frozen["argument"] + 1
+    assert calls["reconcile"] == frozen["reconcile"] + 1
+    assert calls["audit"] > frozen["audit"]
+
+    with pytest.raises(chapter.ChapterReviewPending):
+        chapter.evaluate_hybrid_chapter(
+            runner, selected, section,
+            review_file=approval_a,
+            expected_brief_identity=pending_b["brief_identity"],
+            **args,
+        )
+    approval_b = approve(pending_b, "runtime-b")
+    result_b = chapter.evaluate_hybrid_chapter(
+        runner, selected, section,
+        review_file=approval_b,
+        expected_brief_identity=pending_b["brief_identity"],
+        **args,
+    )
+    for key in ("adaptation_identity", "script_identity", "direction_identity"):
+        assert result_b[key] != result_a[key]
+    assert result_b["final_result_identity"] != result_a["final_result_identity"]
+    for name in ("adaptation", "chapter_script", "chapter_direction"):
+        assert calls[name] == frozen[name] + 1
+    source_ledger = next((base / "chapter-evaluations").glob("*/source-ledger.json"))
+    source = json.loads(source_ledger.read_bytes())
+    assert (
+        chapter_host._hybrid_producer_sha256(
+            source,
+            pending_b["section_scope_sha256"],
+            pending_b["selected_source_bundle_sha256"],
+            args["plan"],
+        )
+        == pending_b["producer_identity_sha256"]
+    )
+    runtime["probe"] = "runtime-A"
+    assert (
+        chapter_host._hybrid_producer_sha256(
+            source,
+            pending_a["section_scope_sha256"],
+            pending_a["selected_source_bundle_sha256"],
+            args["plan"],
+        )
+        == pending_a["producer_identity_sha256"]
+    )
