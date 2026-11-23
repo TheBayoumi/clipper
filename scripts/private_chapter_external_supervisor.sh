@@ -385,7 +385,7 @@ with tarfile.open(archive_path, mode="r:") as source:
 
                 def stage_artifact(stage, identity):
                     # Reproduce EXACTLY the production chapter text-artifact
-                    # contract, independently of the host's saved labels.
+                    # contract, independently of any saved host identity label.
                     # Archive/file-level SHA hashes only prove transport, not
                     # the immutable source->response->validated-stage identity.
                     candidates = [
