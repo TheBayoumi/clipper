@@ -7,11 +7,13 @@ key OUTSIDE the Codespace and force stop/deletion at the creation deadline.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -79,6 +81,54 @@ def _trusted_file(root: Path, name: str, limit: int) -> Path:
     return path
 
 
+def _snapshot(root: Path, name: str, limit: int) -> bytes:
+    """Open once, refuse symlinks, and capture only bounded immutable evidence."""
+    path = _trusted_file(root, name, limit)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            import stat
+
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise LifecycleStop("external supervisor evidence is not a regular file")
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                data = stream.read(limit + 1)
+        finally:
+            os.close(fd)
+    except OSError:
+        raise LifecycleStop("external supervisor evidence cannot be snapshotted") from None
+    if len(data) > limit:
+        raise LifecycleStop("external supervisor evidence exceeds finite limit")
+    return data
+
+
+def _signed_snapshot(private_root: Path) -> tuple[bytes, bytes]:
+    """Prefer the one-file atomically published payload/signature envelope."""
+    envelope = private_root / "private-host" / "external-supervisor-heartbeat-envelope.json"
+    if envelope.exists() or envelope.is_symlink():
+        try:
+            container = json.loads(_snapshot(private_root, envelope.name, 16384))
+            if (
+                not isinstance(container, dict)
+                or set(container) != {"schema", "payload_b64", "signature_b64"}
+                or container["schema"] != "clipper-external-supervisor-envelope-v1"
+            ):
+                raise ValueError("invalid envelope")
+            payload = base64.b64decode(container["payload_b64"], validate=True)
+            signature = base64.b64decode(container["signature_b64"], validate=True)
+            if not payload or len(payload) > 8192 or not signature or len(signature) > 8192:
+                raise ValueError("oversized envelope")
+            return payload, signature
+        except (ValueError, TypeError, KeyError):
+            raise LifecycleStop("external supervisor signed envelope malformed") from None
+    # Read legacy pair once each; verification MUST use these exact snapshots,
+    # not re-open pathnames after the OpenSSL check.
+    return (
+        _snapshot(private_root, "external-supervisor-heartbeat.json", 8192),
+        _snapshot(private_root, "external-supervisor-heartbeat.sig", 8192),
+    )
+
+
 def verify_lifecycle(
     private_root: Path,
     *,
@@ -137,25 +187,29 @@ def verify_lifecycle(
     now = datetime.now(UTC)
     if created > now or now >= created + timedelta(seconds=EXECUTION_SECONDS):
         raise LifecycleStop("shared creation-time execution deadline expired")
-    key = _trusted_file(private_root, "external-supervisor-public.pem", 8192)
-    heartbeat = _trusted_file(private_root, "external-supervisor-heartbeat.json", 8192)
-    signature = _trusted_file(private_root, "external-supervisor-heartbeat.sig", 8192)
-    if hashlib.sha256(key.read_bytes()).hexdigest() != public_key_sha:
+    key_bytes = _snapshot(private_root, "external-supervisor-public.pem", 8192)
+    raw, signature_bytes = _signed_snapshot(private_root)
+    if hashlib.sha256(key_bytes).hexdigest() != public_key_sha:
         raise LifecycleStop("independent supervisor public key pin changed")
-    # Verification is by OpenSSL's public-key verifier; no secret may be on host.
-    _command(
-        [
-            "openssl",
-            "dgst",
-            "-sha256",
-            "-verify",
-            str(key),
-            "-signature",
-            str(signature),
-            str(heartbeat),
-        ]
-    )
-    raw = heartbeat.read_bytes()
+    # OpenSSL sees only the snapshotted public key, signature and exact payload.
+    # A writer replacing any source path during verification cannot alter it.
+    with tempfile.TemporaryDirectory(prefix="clipper-public-verify-") as temp:
+        key_path = Path(temp) / "public.pem"
+        signature_path = Path(temp) / "signature.bin"
+        key_path.write_bytes(key_bytes)
+        signature_path.write_bytes(signature_bytes)
+        _command(
+            [
+                "openssl",
+                "dgst",
+                "-sha256",
+                "-verify",
+                str(key_path),
+                "-signature",
+                str(signature_path),
+            ],
+            input_bytes=raw,
+        )
     try:
         evidence: Any = json.loads(raw)
     except ValueError:
@@ -183,6 +237,11 @@ def verify_lifecycle(
     ):
         raise LifecycleStop("external supervisor does not attest this exact Codespace")
     recent = _utc(evidence["observed_at"])
+    # Freshness must be checked AFTER cryptographic verification, not before a
+    # potentially slow external process.
+    now = datetime.now(UTC)
+    if now >= created + timedelta(seconds=EXECUTION_SECONDS):
+        raise LifecycleStop("shared creation-time execution deadline expired")
     age = (now - recent).total_seconds()
     if age < -5 or age > MAX_HEARTBEAT_AGE_SECONDS:
         raise LifecycleStop("external supervisor heartbeat is stale or future-dated")
