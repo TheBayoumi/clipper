@@ -264,7 +264,8 @@ def request(
     if isinstance(counted, dict):
         ids = counted.get("token_ids")
         if (
-            set(counted) != {
+            set(counted)
+            != {
                 "token_ids",
                 "tokenizer_config_sha256",
                 "chat_template_sha256",
