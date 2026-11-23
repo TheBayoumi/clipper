@@ -357,7 +357,8 @@ def _mined_export(
             or not 0 <= start < end <= len(candidate_unit.text)
             or candidate_unit.text[start:end] != evidence.get("quote")
             or occurrence.get("id") != item.get("proposed_id")
-            or occurrence.get("quote_sha256") != _sha(candidate_unit.text[start:end].encode("utf-8"))
+            or occurrence.get("quote_sha256")
+            != _sha(candidate_unit.text[start:end].encode("utf-8"))
         ):
             raise EvaluationStop("mined source occurrence is inconsistent")
         item["_evaluation_context"] = {
@@ -370,7 +371,9 @@ def _mined_export(
             "source_review_status": candidate_unit.review_status,
             "research_link_status": candidate_unit.research_link_status,
             "evidence_quote": evidence["quote"],
-            "source_context": candidate_unit.text[max(0, start - 250) : min(len(candidate_unit.text), end + 250)],
+            "source_context": candidate_unit.text[
+                max(0, start - 250) : min(len(candidate_unit.text), end + 250)
+            ],
             "recovery_status": book.recovery_status,
             "authorization_status": book.source.authorization_status,
         }
