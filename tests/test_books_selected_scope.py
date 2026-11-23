@@ -308,11 +308,11 @@ def test_selected_source_minable_chapter_brief_replays_without_parent_or_human_a
         brief_completion=completion,
     )
     assert second["brief_identity"] == first["brief_identity"]
+    assert second["selected_source_bundle_sha256"] == chosen.bundle_sha256
     assert second["brief_attempts"] == 0
     assert completion.call_count == 1
     assert not list(runner.root.rglob("analysis-refs"))
     assert not list(runner.root.rglob("*.epub"))
-
 
 
 def test_selected_scope_exporter_cli_sanitizes_private_diagnostics(

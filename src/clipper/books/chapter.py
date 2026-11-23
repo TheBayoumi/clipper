@@ -1541,6 +1541,11 @@ def evaluate_chapter(
             "progress_sha256": evaluation._sha(evaluation._read(progress_path, 20_000_000)),
             "section_manifest_sha256": manifest_sha,
             "run_plan": limits.fingerprint,
+            **(
+                {"selected_source_bundle_sha256": selected_scope_path.stem}
+                if selected_scope_path is not None
+                else {}
+            ),
         }
     )
     base = root / "chapter-evaluations" / chapter_key
@@ -1599,6 +1604,9 @@ def evaluate_chapter(
             if selected_scope_path is not None
             else "LOCALLY_VERIFIED_RETAINED_PARENT"
         ),
+        "selected_source_bundle_sha256": (
+            selected_scope_path.stem if selected_scope_path is not None else None
+        ),
         "parent_original_reverified_on_host": selected_scope_path is None,
         "parent_excluded_pages_not_transferred": (
             book.parent_excluded_page_count if selected_scope_path is not None else 0
@@ -1621,6 +1629,7 @@ def evaluate_chapter(
         "section_scope_sha256": manifest_sha,
         "parent_full_book_complete": False,
         "source_boundary": source["source_boundary"],
+        "selected_source_bundle_sha256": source["selected_source_bundle_sha256"],
         "parent_original_reverified_on_host": source["parent_original_reverified_on_host"],
         "included_units": len(scoped.units),
         "excluded_units": scoped.excluded_units,
