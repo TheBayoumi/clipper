@@ -1805,3 +1805,145 @@ def test_human_attestation_refuses_partial_editorial_signoff(case: str) -> None:
         review["beat_decisions"][0]["reason"] = ""
     with pytest.raises(hybrid.HybridStop):
         hybrid.validate_human_review(review, brief, ledger)
+
+
+def test_interrupted_hybrid_host_has_no_review_and_cannot_duplicate_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, manifest, settings = _private_setup(tmp_path, monkeypatch)
+    _locked(runner, manifest, settings)
+    called = Mock(side_effect=AssertionError("interrupted reconciliation cannot repeat"))
+    miner = Mock(side_effect=AssertionError("direct source cannot mine"))
+    monkeypatch.setattr(chapter, "evaluate_hybrid_chapter", called)
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", miner)
+    monkeypatch.setattr(chapter_host, "_release_models", lambda: None)
+    for number in (1, 7):
+        block = settings[f"chapter_{number}"]
+        chapter_host._phase(
+            runner, number, block["bundle_sha256"], block["scope_sha256"], "NOT_STARTED"
+        )
+        chapter_host._phase(
+            runner,
+            number,
+            block["bundle_sha256"],
+            block["scope_sha256"],
+            "HYBRID_BRIEF_IN_FLIGHT",
+            {"claim_owner": "a" * 32, "chapter_mode": "DIRECT_SOURCE_HYBRID"},
+        )
+    result = _call(runner, manifest, "hybrid-brief")
+    assert {chapter_result["status"] for chapter_result in result["chapters"].values()} == {
+        "INTERRUPTED_DURING_HYBRID_RECONCILIATION"
+    }
+    for number in (1, 7):
+        block = settings[f"chapter_{number}"]
+        inventory = chapter_host._hybrid_output_manifest(
+            runner.root, number, block["bundle_sha256"], block["scope_sha256"]
+        )
+        assert inventory["inflight_inventory"] == "UNATTESTED_FAIL_CLOSED"
+        assert inventory["files"] == []
+        assert inventory["verified_artifact_identities"] == {}
+    state = chapter_host.recovery_report(runner.root)
+    assert {item["recovery_state"] for item in state["chapters"].values()} == {"IN_FLIGHT"}
+    called.assert_not_called()
+    miner.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "case", ("invalid_plan", "source_overcap", "source_freeze_failure", "tampered_ledger",
+             "missing_test_tokenizer", "context_overflow")
+)
+def test_original_hybrid_source_and_context_fail_before_any_producer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    runner, selected, section = _selected_hybrid_source(tmp_path)
+    producer = Mock(side_effect=AssertionError("model-free preflight must reject"))
+    if case == "invalid_plan":
+        with pytest.raises(chapter.ChapterStop, match="validated ChapterPlan"):
+            chapter.evaluate_hybrid_chapter(runner, selected, section, plan=object())
+    elif case == "source_overcap":
+        monkeypatch.setattr(hybrid, "MAX_ENTRIES", 1)
+        with pytest.raises(chapter.ChapterStop, match="finite original source cap"):
+            chapter.evaluate_hybrid_chapter(runner, selected, section)
+    elif case == "source_freeze_failure":
+        monkeypatch.setattr(
+            hybrid, "freeze",
+            Mock(side_effect=hybrid.HybridStop("synthetic source schema rejected"))
+        )
+        with pytest.raises(chapter.ChapterStop, match="preflight refused"):
+            chapter.evaluate_hybrid_chapter(runner, selected, section)
+    elif case == "tampered_ledger":
+        chapter.evaluate_hybrid_chapter(runner, selected, section)
+        ledger_file = next(
+            (runner.root / "book-candidates" / "chapter-evaluations").glob(
+                "*/source-ledger.json"
+            )
+        )
+        ledger_file.write_bytes(ledger_file.read_bytes() + b" ")
+        with pytest.raises(chapter.ChapterStop, match="source ledger changed"):
+            chapter.evaluate_hybrid_chapter(runner, selected, section)
+    elif case == "missing_test_tokenizer":
+        with pytest.raises(chapter.ChapterStop, match="tokenizer counter"):
+            chapter.evaluate_hybrid_chapter(
+                runner,
+                selected,
+                section,
+                plan=chapter.ChapterPlan(brief_cpu=True),
+                argument_completion=producer,
+            )
+    else:
+        with pytest.raises(chapter.ChapterStop, match="token request preflight refused"):
+            chapter.evaluate_hybrid_chapter(
+                runner,
+                selected,
+                section,
+                plan=chapter.ChapterPlan(brief_cpu=True),
+                argument_completion=producer,
+                token_counter=lambda _messages: 32768,
+            )
+    producer.assert_not_called()
+
+
+def test_private_hybrid_review_packet_rejects_stale_source_and_brief(
+    tmp_path: Path,
+) -> None:
+    runner, selected, section = _selected_hybrid_source(tmp_path)
+    args = {
+        "plan": chapter.ChapterPlan(brief_cpu=True),
+        "argument_completion": lambda req: _injected_hybrid_response("argument", req),
+        "audit_completion": lambda req: _injected_hybrid_response("audit", req),
+        "reconcile_completion": lambda req: _injected_hybrid_response("reconcile", req),
+        "token_counter": lambda _messages: 1200,
+    }
+    valid = chapter.evaluate_hybrid_chapter(runner, selected, section, **args)
+    assert valid["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
+    chapter_host._hybrid_review_packet(runner, 1, valid)
+    packet = (
+        runner.root / "book-candidates" / "private-host" / "chapter-1-review-packet.json"
+    )
+    assert packet.is_file()
+    for field, invalid, expected in (
+        ("chapter_scope_identity", "not-a-digest", "scope identity"),
+        ("source_ledger_sha256", "0" * 64, "source ledger changed"),
+        ("brief_identity", "0" * 64, "brief absent or ambiguous"),
+    ):
+        forged = {**valid, field: invalid}
+        with pytest.raises(chapter_host.PrivateHostStop):
+            chapter_host._hybrid_review_packet(runner, 1, forged)
+        assert packet.is_file()
+    validated = next(
+        (runner.root / "book-candidates" / "hybrid_reconcile").glob(
+            "*/validated.json"
+        )
+    )
+    saved = validated.read_bytes()
+    envelope = json.loads(saved)
+    envelope["payload"] = None
+    try:
+        validated.write_bytes(evaluation._json_bytes(envelope))
+        with pytest.raises(chapter_host.PrivateHostStop, match="payload missing"):
+            chapter_host._hybrid_review_packet(runner, 1, valid)
+    finally:
+        validated.write_bytes(saved)
+    chapter_host._hybrid_review_packet(runner, 1, valid)
