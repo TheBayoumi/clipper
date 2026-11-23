@@ -91,6 +91,18 @@ def local_producer_material() -> dict[str, object]:
     }
 
 
+def hybrid_chapter_producer_material() -> dict[str, object]:
+    """Bind the verified public tokenizer observation only to chapter work.
+
+    The legacy miner reserves its DAG attempt before the provider may warm
+    the cache. This chapter-only material must never enter the legacy key.
+    """
+    return {
+        **local_producer_material(),
+        "effective_tokenizer_cache": scripting._cached_chapter_tokenizer_material(),
+    }
+
+
 class LocalReplyFailure(RuntimeError):
     """A sanitized producer/response failure; never includes private content."""
 
