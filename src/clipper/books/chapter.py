@@ -1115,7 +1115,15 @@ def _verified_rejected_attempt(
                 or evidence["raw_sha256"] != raw_digest
                 or evidence["claim_sha256"] != hashlib.sha256(claim_bytes).hexdigest()
                 or evidence["failure_type"]
-                not in {"ValueError", "TypeError", "KeyError", "RecursionError", "ChapterStop"}
+                not in {
+                    "ValueError",
+                    "JSONDecodeError",
+                    "UnicodeDecodeError",
+                    "TypeError",
+                    "KeyError",
+                    "RecursionError",
+                    "ChapterStop",
+                }
                 or not isinstance(evidence["failure_sha256"], str)
                 or re.fullmatch(r"[0-9a-f]{64}", evidence["failure_sha256"]) is None
             ):
