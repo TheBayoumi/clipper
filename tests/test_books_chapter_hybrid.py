@@ -2038,8 +2038,7 @@ def test_private_hybrid_review_packet_rejects_stale_source_and_brief(
 
     stage_root = runner.root / "book-candidates" / "hybrid_reconcile"
     overflow = [
-        stage_root / f"synthetic-untrusted-extra-reconcile-{index:03d}"
-        for index in range(128)
+        stage_root / f"synthetic-untrusted-extra-reconcile-{index:03d}" for index in range(128)
     ]
     try:
         for directory in overflow:
