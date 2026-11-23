@@ -946,9 +946,7 @@ def _stage_output_entries(
         record = whole_book.load_strict_reply(evaluation._read(candidate, 250_000))
         if isinstance(record, dict) and record.get("artifact_identity") == identity:
             if (
-                not {"payload", "provenance", "token_receipt", "attempt", "owner"}.issubset(
-                    record
-                )
+                not {"payload", "provenance", "token_receipt", "attempt", "owner"}.issubset(record)
                 or type(record["attempt"]) is not int
                 or not 1 <= record["attempt"] <= 2
                 or not isinstance(record["owner"], str)
