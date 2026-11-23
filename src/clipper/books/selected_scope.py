@@ -420,7 +420,7 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
             not isinstance(record["units"], list)
             or not 1 <= len(record["units"]) <= whole_book.MAX_PLAN_UNITS
             or not isinstance(record["skipped"], list)
-            or len(record["units"]) + len(record["skipped"]) > 64
+            or len(record["units"]) + len(record["skipped"]) > MAX_CHAPTER_ENTRIES
             or any(
                 not isinstance(u, dict) or set(u) != set(whole_book.WorkUnit.__dataclass_fields__)
                 for u in record["units"]
