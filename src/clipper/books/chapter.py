@@ -2232,6 +2232,7 @@ def evaluate_hybrid_chapter(
         argument_completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
         and scripting._local_chapter_completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
     )
+    tokens: Callable[[list[dict[str, str]]], int]
     if authentic:
 
         def tokens(messages: list[dict[str, str]]) -> int:
@@ -2314,6 +2315,9 @@ def evaluate_hybrid_chapter(
     audit_keys: list[str] = []
     audit_attempts = 0
     for window in chapter_hybrid.audit_windows(ledger):
+        def validate_local(raw: object) -> dict[str, Any]:
+            return chapter_hybrid.validate_audit(raw, ledger, window)
+
         audit, identity, origin, attempts = stage(
             "hybrid_audit",
             "audit",
@@ -2352,7 +2356,7 @@ def evaluate_hybrid_chapter(
                     ],
                 },
             },
-            lambda raw, win=window: chapter_hybrid.validate_audit(raw, ledger, win),
+            validate_local,
             audit_completion,
             replay_only=replay,
         )
