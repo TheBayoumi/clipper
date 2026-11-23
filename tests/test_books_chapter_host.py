@@ -1857,7 +1857,7 @@ def test_same_shape_semantically_invalid_source_retries_and_recovers_with_origin
         (stage_dir / "failed-1.json").write_bytes(evaluation._json_bytes(first_failure))
         # Ordinary replay independently checks the ORIGINAL source validator
         # in addition to the digest-bound recovery commitment.
-        with pytest.raises(chapter.ChapterStop, match="rejection differs"):
+        with pytest.raises(chapter.ChapterStop, match="text artifact cannot be verified"):
             chapter._stage(*arguments, Mock(side_effect=AssertionError("no new model invocation")))
     elif tamper == "changed_original_rejection_type":
         first_failure["validation_evidence"]["failure_type"] = "UNRECOGNIZED_FAILURE"
@@ -1870,7 +1870,7 @@ def test_same_shape_semantically_invalid_source_retries_and_recovers_with_origin
         validated = json.loads(validated_path.read_bytes())
         del validated["prior_rejection_sha256"]
         validated_path.write_bytes(evaluation._json_bytes(validated))
-        with pytest.raises(chapter.ChapterStop, match="missing bound original rejection"):
+        with pytest.raises(chapter.ChapterStop, match="text artifact cannot be verified"):
             chapter._verified_text_artifact(
                 base,
                 stage_dir,
@@ -1892,7 +1892,7 @@ def test_same_shape_semantically_invalid_source_retries_and_recovers_with_origin
         path.write_bytes(evaluation._json_bytes(changed))
 
     if tamper == "none":
-        with pytest.raises(chapter.ChapterStop, match="outside active retry budget"):
+        with pytest.raises(chapter.ChapterStop, match="prior attempt history cannot be verified"):
             chapter._verified_rejected_attempt(
                 base,
                 stage_dir,
