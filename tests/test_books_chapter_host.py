@@ -1284,8 +1284,25 @@ def test_resumed_host_interruption_reports_precise_last_subphase_and_verified_pr
         assert verified["direction_identity"] == "f" * 64
 
 
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "wav_changed",
+        "wav_missing",
+        "report_missing",
+        "source_changed",
+        "source_missing",
+        "human_review_missing",
+        "final_result_changed",
+        "final_result_missing",
+        "stage_validated_missing",
+        "saved_manifest_changed",
+        "saved_manifest_missing",
+        "recovery_archive_symlink",
+    ],
+)
 def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
-    tmp_path: Path,
+    tmp_path: Path, damage: str,
 ) -> None:
     """Synthetic outputs only; all archive members are independently content-bound."""
     import io
@@ -1465,8 +1482,42 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         saved_manifest = json.load(archive.extractfile("private-recovery-manifest.json"))
         assert saved_manifest["schema"] == "clipper-chapter-private-recovery-archive-manifest-v1"
         assert any(entry["kind"] == "wav" for entry in saved_manifest["files"])
-    wav_path.write_bytes(b"tampered-and-missing-signed-audio")
-    with pytest.raises(chapter_host.PrivateHostStop, match="WAV hash"):
+    final_path = base_dir / f"chapter-result-{final_key}.json"
+    report_path = base / f"narration-report-{report_identity}.json"
+    source_path = base_dir / "source-ledger.json"
+    human_path = base_dir / f"human-review-{review_id}.json"
+    saved_manifest = base / "private-host/chapter-1-output-manifest.json"
+    archived_path = base / "private-host/chapter-recovery.tar"
+    if damage == "wav_changed":
+        wav_path.write_bytes(b"tampered synthetic audio")
+    elif damage == "wav_missing":
+        wav_path.unlink()
+    elif damage == "report_missing":
+        report_path.unlink()
+    elif damage == "source_changed":
+        source_path.write_bytes(evaluation._json_bytes({"synthetic": "modified source"}))
+    elif damage == "source_missing":
+        source_path.unlink()
+    elif damage == "human_review_missing":
+        human_path.unlink()
+    elif damage == "final_result_changed":
+        final_path.write_bytes(evaluation._json_bytes({**result, "publish_eligible": True}))
+    elif damage == "final_result_missing":
+        final_path.unlink()
+    elif damage == "stage_validated_missing":
+        key = hashlib.sha256("adaptation".encode("ascii")).hexdigest()
+        (base / "adaptation" / key / "validated.json").unlink()
+    elif damage == "saved_manifest_changed":
+        saved_manifest.write_bytes(saved_manifest.read_bytes() + b" ")
+    elif damage == "saved_manifest_missing":
+        saved_manifest.unlink()
+    else:
+        assert damage == "recovery_archive_symlink"
+        archived_path.unlink()
+        forbidden = tmp_path / "not-private-archive"
+        forbidden.write_bytes(b"outside synthetic marker")
+        archived_path.symlink_to(forbidden)
+    with pytest.raises(chapter_host.PrivateHostStop):
         chapter_host.private_recovery_archive(root)
 
 
