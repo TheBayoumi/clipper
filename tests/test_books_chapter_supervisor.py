@@ -144,8 +144,6 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         if hang in {"cleanup_116", "near_deadline_hung_stop"}
         else 124
         if hang in {"ssh", "copy"}
-        else 3
-        if hang == "stop"
         else 2
     )
     assert result.returncode == expected_status
@@ -660,3 +658,136 @@ def test_actual_codespace_wrapper_dispatches_all_modes_through_shared_preflight(
     killed = invoke()
     assert killed.returncode == 2
     assert "PRIVATE_CHAPTER_SHARED_DEADLINE_STOP_NO_AUTO_RESTART" in killed.stderr
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "provisioning_then_ready",
+        "never_ready_original_clock",
+        "transient_ssh",
+        "identity_swap",
+        "lost_rest",
+        "hung_rest",
+        "hung_ssh",
+        "bootstrap_over_execution_reserve",
+    ],
+)
+def test_external_supervisor_bootstrap_real_shell_consumer(
+    tmp_path: Path, scenario: str
+) -> None:
+    """Execute real owner script, fake only external commands and REST responses."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "operations.log"
+    state_counter = tmp_path / "rest-counter"
+    ssh_counter = tmp_path / "ssh-counter"
+    key = tmp_path / "owner-private.key"
+    pub = tmp_path / "owner-public.pem"
+    key.write_text("SYNTHETIC_KEY", encoding="utf-8")
+    pub.write_text("SYNTHETIC_PUBLIC", encoding="utf-8")
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        f"#!{sys.executable}\\n"
+        "import json,os,pathlib,sys,time\\n"
+        "a=sys.argv[1:]\\n"
+        "p=pathlib.Path(os.environ['MOCK_LOG'])\\n"
+        "with p.open('a') as f: f.write(' '.join(a)+'\\n')\\n"
+        "mode=os.environ['MOCK_BOOTSTRAP']\\n"
+        "if a[:2]==['api','-X']:\\n"
+        "  if a[2]=='POST': pathlib.Path(os.environ['MOCK_STOP']).write_text('stopped')\\n"
+        "  sys.exit(0)\\n"
+        "if a[:2]==['api','-i']:\\n"
+        "  print('HTTP/2 404 Not Found'); sys.exit(0)\\n"
+        "if a[:1]==['api']:\\n"
+        "  c=pathlib.Path(os.environ['MOCK_REST_COUNTER'])\\n"
+        "  n=int(c.read_text())+1 if c.exists() else 1; c.write_text(str(n))\\n"
+        "  if mode=='hung_rest' and n==4: time.sleep(120)\\n"
+        "  if mode=='lost_rest' and n==4: sys.exit(3)\\n"
+        "  state='Available'\\n"
+        "  if mode in ('provisioning_then_ready','transient_ssh') and n<5: state='Created'\\n"
+        "  if mode=='never_ready_original_clock': state='Created'\\n"
+        "  host_id=999 if mode=='identity_swap' and n>=4 else 12\\n"
+        "  print(json.dumps({'id':host_id,'name':os.environ['CODESPACE_NAME'],"
+        "'created_at':os.environ['MOCK_CREATED'],'state':state,"
+        "'repository':{'full_name':'TheBayoumi/clipper'},"
+        "'machine':{'cpus':4,'memory_in_bytes':17179869184,"
+        "'storage_in_bytes':34359738368}})); sys.exit(0)\\n"
+        "if a[:2]==['codespace','ssh']:\\n"
+        "  c=pathlib.Path(os.environ['MOCK_SSH_COUNTER'])\\n"
+        "  n=int(c.read_text())+1 if c.exists() else 1; c.write_text(str(n))\\n"
+        "  if mode=='hung_ssh': time.sleep(120)\\n"
+        "  if mode=='transient_ssh' and n<3: sys.exit(3)\\n"
+        "  sys.exit(0)\\n"
+        "if a[:2]==['codespace','cp']:\\n"
+        "  if 'heartbeat-envelope.watchdog.pending' in ' '.join(a): sys.exit(3)\\n"
+        "  sys.exit(0)\\n"
+        "sys.exit(3)\\n",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o700)
+    fake_openssl = fake_bin / "openssl"
+    fake_openssl.write_text(
+        f"#!{sys.executable}\\n"
+        "import pathlib,sys\\n"
+        "a=sys.argv[1:]; pathlib.Path(a[a.index('-out')+1]).write_bytes(b'SYNTHETIC_SIGNATURE')\\n",
+        encoding="utf-8",
+    )
+    fake_openssl.chmod(0o700)
+    age = (
+        599 if scenario == "never_ready_original_clock"
+        else 6890 if scenario == "bootstrap_over_execution_reserve"
+        else 1
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": str(fake_bin) + os.pathsep + env["PATH"],
+            "CODESPACE_NAME": "synthetic-approved-host",
+            "PRIVATE_CHAPTER_APPROVED_SHA": "f" * 40,
+            "PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY": str(key),
+            "PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY": str(pub),
+            "PRIVATE_CHAPTER_ROOT": str(tmp_path / "host-private"),
+            "PRIVATE_CHAPTER_RECOVERY_DIR": str(tmp_path / "owner-private"),
+            "MOCK_BOOTSTRAP": scenario,
+            "MOCK_CREATED": (datetime.now(UTC) - timedelta(seconds=age)).isoformat(),
+            "MOCK_REST_COUNTER": str(state_counter),
+            "MOCK_SSH_COUNTER": str(ssh_counter),
+            "MOCK_STOP": str(tmp_path / "stopped"),
+            "MOCK_LOG": str(log),
+        }
+    )
+    env.pop("CODESPACES", None)
+    result = subprocess.run(
+        ["bash", str(_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    actions = log.read_text(encoding="utf-8")
+    assert result.returncode != 0
+    assert "api -X DELETE" in actions or scenario == "identity_swap", result.stderr
+    if scenario == "identity_swap":
+        assert "api -X DELETE" not in actions
+        assert "api -X POST" not in actions
+    if scenario in ("never_ready_original_clock", "bootstrap_over_execution_reserve"):
+        assert "codespace ssh" not in actions
+        assert "codespace cp" not in actions
+    if scenario in ("lost_rest", "hung_rest", "identity_swap"):
+        assert "codespace cp" not in actions
+    if scenario == "hung_ssh":
+        assert "BOOTSTRAP_REMOTE_HUNG" in result.stderr
+    if scenario in ("provisioning_then_ready", "transient_ssh"):
+        assert "codespace ssh" in actions
+        assert "external-supervisor-public.pem" in actions
+        assert "external-supervisor-heartbeat-envelope.watchdog.pending" in actions
+        assert actions.index("external-supervisor-public.pem") < actions.index(
+            "external-supervisor-heartbeat-envelope.watchdog.pending"
+        )
+        if scenario == "transient_ssh":
+            assert actions.count("codespace ssh") >= 3
+    else:
+        assert "external-supervisor-heartbeat-envelope.watchdog.pending" not in actions
+    assert "chapter_host" not in actions
