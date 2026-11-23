@@ -178,7 +178,14 @@ def request(
 ) -> tuple[dict[str, object], str, int]:
     """Exact pinned-template preflight supplied by caller, never a byte proxy."""
     if (
-        stage not in {"argument", "audit", "reconcile", "adaptation", "chapter_script", "chapter_direction"}
+        stage not in {
+            "argument",
+            "audit",
+            "reconcile",
+            "adaptation",
+            "chapter_script",
+            "chapter_direction",
+        }
         or type(output_tokens) is not int
         or not 1024 <= output_tokens <= 8192
         or not producer_identity
