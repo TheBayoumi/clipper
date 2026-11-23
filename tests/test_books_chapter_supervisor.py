@@ -541,3 +541,122 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
                 )
     assert (folder / "chapter-recovery.tar").exists() is not tamper_archive
     assert "fabricated fixture text" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("mode", ["inspect", "brief", "resume", "hybrid-brief", "hybrid-resume"])
+def test_actual_codespace_wrapper_dispatches_all_modes_through_shared_preflight(
+    tmp_path: Path, mode: str
+) -> None:
+    """A subprocess executes the REAL wrapper; all GitHub/host commands are local stubs."""
+    host_script = Path(__file__).resolve().parents[1] / "scripts/private_chapter_codespace.sh"
+    fake_bin = tmp_path / "fake-codespace-bin"
+    fake_bin.mkdir()
+    operations = tmp_path / "codespace-subprocess-log.jsonl"
+    for command, source in {
+        "git": (
+            "import os,sys\n"
+            "args=sys.argv[1:]\n"
+            "if args==['rev-parse','--abbrev-ref','HEAD']: print('review/unified-tts-cleanup')\n"
+            "elif args==['rev-parse','HEAD']: print(os.environ['MOCK_CHECKOUT_SHA'])\n"
+            "elif args==['rev-parse','--show-toplevel']: print(os.environ['MOCK_REPO_ROOT'])\n"
+            "else: sys.exit(2)\n"
+        ),
+        "gh": (
+            "import json,os,sys\n"
+            "if sys.argv[1:]!=['api','user/codespaces/'+os.environ['CODESPACE_NAME']]: sys.exit(2)\n"
+            "print(json.dumps({'name':os.environ['CODESPACE_NAME'],"
+            "'created_at':os.environ['MOCK_CREATED'],"
+            "'repository':{'full_name':'TheBayoumi/clipper'},"
+            "'machine':{'cpus':4,'memory_in_bytes':17179869184,"
+            "'storage_in_bytes':int(os.environ['MOCK_STORAGE'])}}))\n"
+        ),
+        "python": (
+            "import json,os,sys\n"
+            "args=sys.argv[1:]\n"
+            "if args[:1]==['-c']: os.execv(sys.executable,[sys.executable,*args])\n"
+            "with open(os.environ['MOCK_OPERATIONS'],'a',encoding='utf-8') as f:\n"
+            "  f.write(json.dumps(args)+'\\n')\n"
+            "if args[:3]==['-m','clipper.books.chapter_lifecycle','--artifact-root']:\n"
+            "  sys.exit(int(os.environ['MOCK_LIFECYCLE_STATUS']))\n"
+            "if args[:3]==['-m','clipper.books.chapter_host',os.environ['MOCK_MODE']]:\n"
+            "  sys.exit(int(os.environ['MOCK_HOST_STATUS']))\n"
+            "sys.exit(2)\n"
+        ),
+    }.items():
+        executable = fake_bin / command
+        executable.write_text(f"#!{sys.executable}\\n" + source, encoding="utf-8")
+        executable.chmod(0o700)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": str(fake_bin) + os.pathsep + env["PATH"],
+            "CODESPACES": "true",
+            "CODESPACE_NAME": "synthetic-approved-machine",
+            "PRIVATE_CHAPTER_APPROVED_SHA": "a" * 40,
+            "PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY_SHA256": "b" * 64,
+            "PRIVATE_CHAPTER_ROOT": str(tmp_path / "private-root"),
+            "PRIVATE_CHAPTER_MANIFEST": str(tmp_path / "private-root/two-chapters.json"),
+            "MOCK_REPO_ROOT": str(tmp_path / "fake-checkout"),
+            "MOCK_CHECKOUT_SHA": "a" * 40,
+            "MOCK_CREATED": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+            "MOCK_STORAGE": "34359738368",
+            "MOCK_OPERATIONS": str(operations),
+            "MOCK_MODE": mode,
+            "MOCK_LIFECYCLE_STATUS": "0",
+            "MOCK_HOST_STATUS": "0",
+        }
+    )
+
+    def invoke(*, selected: str = mode) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", str(host_script), selected],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+
+    good = invoke()
+    assert good.returncode == 0, (good.stderr, good.stdout)
+    recorded = [json.loads(line) for line in operations.read_text().splitlines()]
+    assert len(recorded) == 2
+    assert recorded[0][:2] == ["-m", "clipper.books.chapter_lifecycle"]
+    assert recorded[1][:3] == ["-m", "clipper.books.chapter_host", mode]
+    assert "--codespace-created-at" in recorded[1]
+    assert recorded[1][recorded[1].index("--artifact-root") + 1] == env["PRIVATE_CHAPTER_ROOT"]
+    assert recorded[1][recorded[1].index("--manifest") + 1] == env["PRIVATE_CHAPTER_MANIFEST"]
+    operations.unlink()
+
+    # Unknown modes fail before touching REST, lifecycle or host commands.
+    rejected = invoke(selected="not-a-mode")
+    assert rejected.returncode == 2 and not operations.exists()
+    # A mismatched SHA, external heartbeat, REST shape, or original deadline
+    # cannot dispatch even the approved hybrid or legacy modes.
+    for mutation, value in (
+        ("MOCK_CHECKOUT_SHA", "c" * 40),
+        ("MOCK_STORAGE", "1"),
+        ("MOCK_CREATED", (datetime.now(UTC) - timedelta(minutes=116)).isoformat()),
+        ("MOCK_LIFECYCLE_STATUS", "2"),
+        ("CODESPACES", "false"),
+    ):
+        original = env[mutation]
+        env[mutation] = value
+        blocked = invoke()
+        assert blocked.returncode != 0
+        if mutation != "MOCK_LIFECYCLE_STATUS":
+            assert not operations.exists(), mutation
+        else:
+            records = [json.loads(line) for line in operations.read_text().splitlines()]
+            assert len(records) == 1
+            assert records[0][:2] == ["-m", "clipper.books.chapter_lifecycle"]
+            operations.unlink()
+        env[mutation] = original
+    env["MOCK_HOST_STATUS"] = "124"
+    timed_out = invoke()
+    assert timed_out.returncode == 2
+    assert "PRIVATE_CHAPTER_SHARED_DEADLINE_STOP_NO_AUTO_RESTART" in timed_out.stderr
+    env["MOCK_HOST_STATUS"] = "137"
+    killed = invoke()
+    assert killed.returncode == 2
+    assert "PRIVATE_CHAPTER_SHARED_DEADLINE_STOP_NO_AUTO_RESTART" in killed.stderr
