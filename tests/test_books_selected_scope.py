@@ -938,9 +938,7 @@ def test_selected_legacy_mining_preserves_attempt_identity_across_cold_to_warm_l
          "source_boundary": verified.book.source_boundary,
          "selected_scope_bundle_sha256": verified.bundle_sha256}
     )
-    assert first_entry["status"] == (
-        "zero_candidate" if outcome == "success" else "failed"
-    )
+    assert first_entry["status"] == ("zero_candidate" if outcome == "success" else "failed")
     if outcome == "failure":
         assert first_entry["failure_category"] == "runtime_error"
 
@@ -962,8 +960,7 @@ def test_selected_legacy_mining_preserves_attempt_identity_across_cold_to_warm_l
             assert rerun_first["status"] == "failed"
             assert rerun_first["failure_category"] == "prior_attempt_interrupted_or_failed"
         stage_path = (
-            runner.root / "book-dag" / "books-mining-local-completion-v1"
-            / first_key / "stage.json"
+            runner.root / "book-dag" / "books-mining-local-completion-v1" / first_key / "stage.json"
         )
         persisted = json.loads(stage_path.read_bytes())
         assert persisted["attempt_count"] == 1
