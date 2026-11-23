@@ -28,6 +28,7 @@ from . import (
     narration,
     scripting,
     selection,
+    selected_scope,
     storyboards,
     whole_book,
 )
@@ -870,8 +871,9 @@ class BookOrchestrator:
         local_completion: Callable[[dict[str, object]], str] | None = None,
         section_ids: tuple[str, ...] | None = None,
         section_manifest_sha256: str | None = None,
+        selected_scope_path: Path | None = None,
     ) -> dict[str, Any]:
-        """Process faithful original work units, optionally scoped to exact parent sections."""
+        """Process original units from locally verified parent or selected host bundle."""
         producer_provenance = (
             "INJECTED_TEST_PRODUCER"
             if local_cpu and local_completion is not None
@@ -879,7 +881,19 @@ class BookOrchestrator:
             if local_cpu
             else "RECORDED_RESPONSE_UNVERIFIED"
         )
-        ref, book = self.load_candidate_for_analysis(ref_path, book_id=book_id)
+        if selected_scope_path is not None:
+            if ref_path != selected_scope_path:
+                raise BookRunError("selected source cannot masquerade as an ordinary candidate ref")
+            chosen = selected_scope.import_chapter(self.root, selected_scope_path)
+            ref, book = chosen.ref, chosen.book
+            if (
+                section_ids != chosen.work.section_ids
+                or section_manifest_sha256 != chosen.section_manifest_sha256
+                or (book_id is not None and book_id != ref.book_id)
+            ):
+                raise BookRunError("selected mining scope does not match immutable export")
+        else:
+            ref, book = self.load_candidate_for_analysis(ref_path, book_id=book_id)
         if (section_ids is None) != (section_manifest_sha256 is None) or (
             section_manifest_sha256 is not None
             and re.fullmatch(r"[0-9a-f]{64}", section_manifest_sha256) is None

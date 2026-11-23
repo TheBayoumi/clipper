@@ -159,8 +159,15 @@ class WorkPlan:
         )
 
 
-def plan_for(book: BookText, *, section_ids: tuple[str, ...] | None = None) -> WorkPlan:
+def plan_for(book: BookText | Any, *, section_ids: tuple[str, ...] | None = None) -> WorkPlan:
     """Visit every ordered source/image block; never silently discard an image gap."""
+    from .selected_scope import SelectedSource
+
+    if isinstance(book, SelectedSource):
+        # Preserve original parent ordinals; do not reassemble truncated BookText.
+        if section_ids != book.selected_plan.section_ids:
+            raise mining.BookMiningError("selected chapter cannot broaden or reorder source scope")
+        return book.selected_plan
     if not book.blocks:
         raise mining.BookMiningError("candidate analysis requires faithful ordered reading blocks")
     if book.source.authorization_status != "unverified":

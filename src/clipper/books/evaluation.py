@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from clipper.stage_contracts import content_fingerprint
 
-from . import acquisition, constrained, narration, scripting, whole_book
+from . import acquisition, constrained, narration, scripting, whole_book, selected_scope
 from .contracts import BookText
 
 if TYPE_CHECKING:
@@ -117,10 +117,20 @@ def _sha(value: bytes) -> str:
 
 
 def _section_scope(
-    runner: BookOrchestrator, ref_path: Path, section_manifest: Path
+    runner: BookOrchestrator,
+    ref_path: Path,
+    section_manifest: Path,
+    *,
+    selected_scope_path: Path | None = None,
 ) -> tuple[whole_book.WorkPlan, str]:
-    """Verify exact source-bound section IDs; copy original manifest bytes privately."""
-    ref, book = runner.load_candidate_for_analysis(ref_path)
+    """Verify original source-bound section IDs without inventing parent BookText."""
+    if selected_scope_path is not None:
+        if ref_path != selected_scope_path:
+            raise EvaluationStop("selected source cannot substitute ordinary candidate")
+        verified = selected_scope.import_chapter(runner.root, selected_scope_path)
+        ref, book = verified.ref, verified.book
+    else:
+        ref, book = runner.load_candidate_for_analysis(ref_path)
     raw = _read(section_manifest, 16_384)
     try:
         manifest: object = whole_book.load_strict_reply(raw)
@@ -159,6 +169,8 @@ def _section_scope(
     if manifest != expected:
         raise EvaluationStop("section manifest bounds or parent source identity mismatch")
     digest = _sha(raw)
+    if selected_scope_path is not None and digest != verified.section_manifest_sha256:
+        raise EvaluationStop("selected original scope digest mismatch")
     root = runner.root / "book-candidates"
     acquisition._private_write(
         root / "section-scopes" / f"{digest}.json",
@@ -200,9 +212,18 @@ def _mined_export(
     *,
     section_plan: whole_book.WorkPlan | None = None,
     section_manifest_sha256: str | None = None,
-) -> tuple[dict[str, Any], list[dict[str, Any]], BookText]:
-    """Bind the existing private export to immutable ingest, progress and raw source."""
-    ref, book = runner.load_candidate_for_analysis(ref_path)
+    selected_scope_path: Path | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], Any]:
+    """Bind raw mining/export evidence to verified retained or selected source."""
+    if selected_scope_path is not None:
+        if ref_path != selected_scope_path:
+            raise EvaluationStop("selected source cannot masquerade as ordinary candidate")
+        chosen = selected_scope.import_chapter(runner.root, selected_scope_path)
+        ref, book = chosen.ref, chosen.book
+        if section_plan != chosen.work or section_manifest_sha256 != chosen.section_manifest_sha256:
+            raise EvaluationStop("selected progress no longer matches original scoped source")
+    else:
+        ref, book = runner.load_candidate_for_analysis(ref_path)
     base = runner.root / "book-candidates"
     directory = base / "analysis" / "progress" / ref.book_id
     if progress_path.is_symlink() or progress_path.parent.resolve() != directory.resolve():

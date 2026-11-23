@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from clipper.stage_contracts import content_fingerprint
 
-from . import acquisition, evaluation, faithful, narration, scripting, whole_book
+from . import acquisition, evaluation, faithful, narration, scripting, whole_book, selected_scope
 
 if TYPE_CHECKING:
     from .orchestrator import BookOrchestrator
@@ -209,7 +209,7 @@ def _full_source_scope(
         key = (gap["section_id"], gap["anchor"], gap["source_path"])
         skipped_grouped.setdefault(key, []).append(gap["source_id"])
     reading_order: list[str] = []
-    for block in faithful.reading_blocks(book):
+    for block in selected_scope.reading_blocks(book):
         if block.section_id not in scoped.section_ids:
             continue
         key = (block.section_id, block.anchor, block.source_path)
@@ -1509,19 +1509,23 @@ def evaluate_chapter(
     script_completion: Callable[[dict[str, object]], str] | None = None,
     direction_completion: Callable[[dict[str, object]], str] | None = None,
     narration_producer: Callable[[str, str], bytes] | None = None,
+    selected_scope_path: Path | None = None,
 ) -> dict[str, object]:
     """Finite, source-bound chapter preproduction; no legacy catalog, short or render."""
     limits = plan if plan is not None else ChapterPlan()
     if type(limits) is not ChapterPlan:
         raise ChapterStop("chapter plan must use the validated ChapterPlan type")
     limits.validate()
-    scoped, manifest_sha = evaluation._section_scope(runner, ref_path, section_manifest)
+    scoped, manifest_sha = evaluation._section_scope(
+        runner, ref_path, section_manifest, selected_scope_path=selected_scope_path
+    )
     ledger, candidates, book = evaluation._mined_export(
         runner,
         ref_path,
         progress_path,
         section_plan=scoped,
         section_manifest_sha256=manifest_sha,
+        selected_scope_path=selected_scope_path,
     )
     if len(scoped.units) + len(scoped.skipped) > MAX_SOURCE_UNITS:
         raise ChapterStop(
@@ -1590,6 +1594,12 @@ def evaluate_chapter(
         ),
         "mining_producer_fingerprint": ledger.get("producer_fingerprint"),
         "parent_full_book_complete": False,
+        "source_boundary": (
+            "HOST_VERIFIED_SELECTED_BUNDLE_EXPORTER_ATTESTED_PARENT"
+            if selected_scope_path is not None
+            else "LOCALLY_VERIFIED_RETAINED_PARENT"
+        ),
+        "parent_original_reverified_on_host": selected_scope_path is None,
         "publish_eligible": False,
         "units": units,
         "gaps": gaps,
@@ -1607,6 +1617,8 @@ def evaluate_chapter(
         "status": "AWAITING_EXPLICIT_CPU_CHAPTER_BRIEF",
         "section_scope_sha256": manifest_sha,
         "parent_full_book_complete": False,
+        "source_boundary": source["source_boundary"],
+        "parent_original_reverified_on_host": source["parent_original_reverified_on_host"],
         "included_units": len(scoped.units),
         "excluded_units": scoped.excluded_units,
         "candidate_count": len(candidates),
