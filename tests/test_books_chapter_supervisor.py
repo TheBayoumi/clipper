@@ -7,8 +7,8 @@ import io
 import json
 import os
 import subprocess
-import tarfile
 import sys
+import tarfile
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
