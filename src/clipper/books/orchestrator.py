@@ -749,9 +749,7 @@ class BookOrchestrator:
             not isinstance(receipt, dict)
             or receipt["raw_sha256"] != digest
             or type(receipt["generated_token_count"]) is not int
-            or not 1
-            <= receipt["generated_token_count"]
-            <= cast(int, request["max_new_tokens"])
+            or not 1 <= receipt["generated_token_count"] <= cast(int, request["max_new_tokens"])
             or type(receipt["terminal_token_id"]) is not int
             or cast(int, receipt["terminal_token_id"]) < 0
             or receipt["eos_decision"] != "EOS_VERIFIED"

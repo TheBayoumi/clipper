@@ -739,9 +739,7 @@ def test_in_flight_chapter_phase_reentry_stays_interrupted(
     # The other selected chapter is independently NOT_STARTED. In order
     # to assert zero calls, mark its own unrelated request interrupted too.
     other = config["chapter_7"]
-    chapter_host._phase(
-        runner, 7, other["bundle_sha256"], other["scope_sha256"], "NOT_STARTED"
-    )
+    chapter_host._phase(runner, 7, other["bundle_sha256"], other["scope_sha256"], "NOT_STARTED")
     chapter_host._phase(
         runner, 7, other["bundle_sha256"], other["scope_sha256"], "MINING_IN_FLIGHT"
     )

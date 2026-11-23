@@ -630,11 +630,7 @@ def test_gap_only_linked_section_preserved_in_source_order(
         asset_sha256="e" * 64,
         media_type="image/png",
         byte_count=5,
-        occurrences=(
-            ImageOccurrence(
-                "note-figure-001", "notes/figure-001.png", ""
-            ),
-        ),
+        occurrences=(ImageOccurrence("note-figure-001", "notes/figure-001.png", ""),),
         review_status="needs_review",
     )
     derived = replace(book, blocks=(*book.blocks, missing), images=(*book.images, asset))
@@ -668,27 +664,29 @@ def test_selected_chapter_final_record_repeats_bound_source_identity(
     target.write_bytes(exported.read_bytes())
     runner = BookOrchestrator(host)
     chosen = selected_scope.import_chapter(host, target)
-    section = host / "book-candidates/section-scopes" / (
-        chosen.section_manifest_sha256 + ".json"
-    )
+    section = host / "book-candidates/section-scopes" / (chosen.section_manifest_sha256 + ".json")
     section.parent.mkdir(parents=True)
-    section.write_bytes(selected_scope._json(selected_scope._section_manifest(
-        chosen.ref, chosen.book, chosen.work
-    )))
+    section.write_bytes(
+        selected_scope._json(selected_scope._section_manifest(chosen.ref, chosen.book, chosen.work))
+    )
 
     def miner(req: dict[str, object]) -> str:
         span = req["constraints"]["spans"][0]
-        return json.dumps({
-            "lessons": [{
-                "id": span["id"],
-                "evidence": span["text"],
-                "evidence_field": req["constraints"]["evidence_field"],
-                "topic": "Synthetic source passage",
-                "claim": "An invented worker uses observed evidence.",
-                "hook_angle": "Specific example",
-                "visual_action": "The worker records a note.",
-            }],
-        })
+        return json.dumps(
+            {
+                "lessons": [
+                    {
+                        "id": span["id"],
+                        "evidence": span["text"],
+                        "evidence_field": req["constraints"]["evidence_field"],
+                        "topic": "Synthetic source passage",
+                        "claim": "An invented worker uses observed evidence.",
+                        "hook_angle": "Specific example",
+                        "visual_action": "The worker records a note.",
+                    }
+                ],
+            }
+        )
 
     mined = runner.mine_candidate(
         target,
@@ -717,17 +715,14 @@ def test_selected_chapter_final_record_repeats_bound_source_identity(
         **_full_kwargs(reviewed),
     )
     assert full["status"] == "TEST_DOUBLE_CHAPTER_TEXT_READY_UNREVIEWED"
-    record = next(
-        (host / "book-candidates/chapter-evaluations").rglob("chapter-result-*.json")
-    )
+    record = next((host / "book-candidates/chapter-evaluations").rglob("chapter-result-*.json"))
     outcome = json.loads(record.read_bytes())
-    ledger = next(
-        (host / "book-candidates/chapter-evaluations").rglob("source-ledger.json")
-    )
+    ledger = next((host / "book-candidates/chapter-evaluations").rglob("source-ledger.json"))
     source = json.loads(ledger.read_bytes())
-    assert outcome["source_ledger_sha256"] == hashlib.sha256(
-        evaluation._json_bytes(source)
-    ).hexdigest()
+    assert (
+        outcome["source_ledger_sha256"]
+        == hashlib.sha256(evaluation._json_bytes(source)).hexdigest()
+    )
     assert outcome["selected_source_bundle_sha256"] == sha
     assert outcome["source_boundary"] == source["source_boundary"]
     assert outcome["parent_original_reverified_on_host"] is False
@@ -747,9 +742,7 @@ def test_mocked_real_qwen_raw_receipt_uses_generated_token_ids_without_weights(
 
     tokenizer = Mock()
     tokenizer.eos_token_id = 2
-    tokenizer.apply_chat_template.return_value = {
-        "input_ids": torch.tensor([[77]], dtype=torch.long)
-    }
+    tokenizer.apply_chat_template.return_value = {"input_ids": torch.tensor([[77]])}
     tokenizer.decode.return_value = '{"lessons":[]}'
     model = Mock()
     model.generation_config.eos_token_id = 2
@@ -758,12 +751,11 @@ def test_mocked_real_qwen_raw_receipt_uses_generated_token_ids_without_weights(
     monkeypatch.setattr(scripting, "_public_cpu_smoke_phase", lambda _phase: None)
     monkeypatch.setattr(constrained, "prefix_for", lambda *_: lambda *_args: [2])
     request = {
-        "seed": 42, "max_new_tokens": 960,
+        "seed": 42,
+        "max_new_tokens": 960,
         "messages": [{"role": "user", "content": "fully synthetic"}],
     }
-    output = scripting._run_pinned_qwen(
-        request, normalize_script=False, capture_receipt=True
-    )
+    output = scripting._run_pinned_qwen(request, normalize_script=False, capture_receipt=True)
     assert isinstance(output, scripting.PinnedQwenRawReceipt)
     assert output.generated_token_count == 3
     assert output.terminal_token_id == 2
@@ -771,9 +763,7 @@ def test_mocked_real_qwen_raw_receipt_uses_generated_token_ids_without_weights(
     assert output.raw_sha256 == hashlib.sha256(output.raw.encode()).hexdigest()
     model.generate.return_value = torch.tensor([[77, 11, 12, 13]], dtype=torch.long)
     with pytest.raises(scripting.IncompleteConstrainedResponse):
-        scripting._run_pinned_qwen(
-            request, normalize_script=False, capture_receipt=True
-        )
+        scripting._run_pinned_qwen(request, normalize_script=False, capture_receipt=True)
 
 
 def test_injected_fake_real_token_receipt_is_not_accepted_as_provider(
@@ -784,8 +774,11 @@ def test_injected_fake_real_token_receipt_is_not_accepted_as_provider(
     runner, bundle, _ = _bundle(tmp_path, with_image=False)
     chosen = selected_scope.import_chapter(runner.root, bundle)
     forged = scripting.PinnedQwenRawReceipt(
-        raw='{"lessons":[]}', raw_sha256="0" * 64,
-        generated_token_count=2, terminal_token_id=2, eos_decision="EOS_VERIFIED",
+        raw='{"lessons":[]}',
+        raw_sha256="0" * 64,
+        generated_token_count=2,
+        terminal_token_id=2,
+        eos_decision="EOS_VERIFIED",
     )
     mined = runner.mine_candidate(
         bundle,

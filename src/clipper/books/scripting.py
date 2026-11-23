@@ -721,9 +721,7 @@ def _local_book_generate(
     model, _tokenizer = _script_pipeline()
     if str(model.device) != "cpu":
         raise NicheVideoError("local book completion requires CPU-resident pinned Qwen weights")
-    return _run_pinned_qwen(
-        request, normalize_script=False, capture_receipt=capture_receipt
-    )
+    return _run_pinned_qwen(request, normalize_script=False, capture_receipt=capture_receipt)
 
 
 def _local_book_completion(request: dict[str, object]) -> str:
