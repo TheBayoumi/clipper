@@ -1194,7 +1194,9 @@ class BookOrchestrator:
                     "source_boundary": "HOST_VERIFIED_SELECTED_BUNDLE_EXPORTER_ATTESTED_PARENT",
                     "selected_scope_bundle_sha256": chosen.bundle_sha256,
                     "parent_original_reverified_here": False,
-                    "parent_excluded_page_count": book.parent_excluded_page_count,
+                    "parent_excluded_page_count": cast(
+                        selected_scope.SelectedSource, book
+                    ).parent_excluded_page_count,
                 }
                 if selected_scope_path is not None
                 else {}
@@ -1239,7 +1241,9 @@ class BookOrchestrator:
                         "source_boundary": "HOST_VERIFIED_SELECTED_BUNDLE_EXPORTER_ATTESTED_PARENT",
                         "selected_scope_bundle_sha256": chosen.bundle_sha256,
                         "parent_original_reverified_here": False,
-                        "parent_excluded_page_count": book.parent_excluded_page_count,
+                        "parent_excluded_page_count": cast(
+                        selected_scope.SelectedSource, book
+                    ).parent_excluded_page_count,
                     }
                     if selected_scope_path is not None
                     else {}
