@@ -13,7 +13,7 @@ import pytest
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts/private_chapter_external_supervisor.sh"
 
 
-@pytest.mark.parametrize("hang", ["ssh", "copy", "stop"])
+@pytest.mark.parametrize("hang", ["ssh", "copy", "stop", "wrong_identity"])
 def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
     tmp_path: Path, hang: str
 ) -> None:
@@ -42,7 +42,7 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         "-datetime.timedelta(minutes=5)).isoformat()\n"
         "    print(json.dumps({'id':12,'name':os.environ['CODESPACE_NAME'],"
         "'state':'Available','created_at':created,"
-        "'repository':{'full_name':'TheBayoumi/clipper'},"
+        "'repository':{'full_name':os.environ['MOCK_REPO']},"
         "'machine':{'cpus':4,'memory_in_bytes':17179869184,"
         "'storage_in_bytes':34359738368}}))\n"
         "  sys.exit(0)\n"
@@ -73,6 +73,9 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
             "PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY": str(public),
             "PRIVATE_CHAPTER_ROOT": str(tmp_path / "synthetic-host"),
             "MOCK_HANG": hang,
+            "MOCK_REPO": (
+                "other/unauthorized" if hang == "wrong_identity" else "TheBayoumi/clipper"
+            ),
             "MOCK_GH_LOG": str(log),
             "MOCK_STOPPED": str(tmp_path / "synthetic-stopped.txt"),
         }
@@ -91,8 +94,12 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
     assert result.returncode != 0
     assert elapsed < 30
     actions = log.read_text(encoding="utf-8")
-    assert "api -X POST" in actions
-    assert "api -X DELETE" in actions
-    assert "api -i" in actions
+    if hang == "wrong_identity":
+        assert "api -X POST" not in actions
+        assert "api -X DELETE" not in actions
+    else:
+        assert "api -X POST" in actions
+        assert "api -X DELETE" in actions
+        assert "api -i" in actions
     # Stop returning or stalling never licenses running another host.
     assert "PRIVATE_CHAPTER" not in actions

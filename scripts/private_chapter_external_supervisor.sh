@@ -39,10 +39,18 @@ bounded() {
 session="$(mktemp -d)"
 chmod 700 "$session"
 cleanup_verified=0
+verified_identity=0
 terminate_host() {
   original_status=$?
   trap - EXIT INT TERM HUP
   set +e
+  if [[ "$verified_identity" != 1 ]]; then
+    # NEVER send destructive REST operations to an unverified repository or
+    # Codespace name. No safe automatic deletion exists without that identity.
+    rm -rf -- "$session"
+    echo "EXTERNAL_SUPERVISOR_IDENTITY_UNVERIFIED_OWNER_MUST_CHECK_HOST" >&2
+    exit 2
+  fi
   stop_verified=0
   deletion_verified=0
   # Every remote operation in the trap is independently bounded. A hung
@@ -107,6 +115,7 @@ print(x["id"], x["created_at"], remaining)
   exit 2
 }
 read -r codespace_id created_at initial_remaining <<< "$validated"
+verified_identity=1
 remote="$PRIVATE_CHAPTER_ROOT/book-candidates/private-host"
 
 # Remote strings must never allow an operator-provided path to become a
