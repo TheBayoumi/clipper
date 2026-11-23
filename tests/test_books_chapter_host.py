@@ -1299,6 +1299,18 @@ def test_resumed_host_interruption_reports_precise_last_subphase_and_verified_pr
         "saved_manifest_changed",
         "saved_manifest_missing",
         "recovery_archive_symlink",
+        "invalid_final_identity",
+        "forged_selected_bundle",
+        "forged_source_boundary",
+        "forged_parent_attestation",
+        "forged_publish_eligible",
+        "forged_brief",
+        "forged_adaptation",
+        "forged_script",
+        "forged_direction",
+        "forged_narration",
+        "forged_human_review",
+        "invalid_brief_checkpoint",
     ],
 )
 def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
@@ -1489,6 +1501,52 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
     human_path = base_dir / f"human-review-{review_id}.json"
     saved_manifest = base / "private-host/chapter-1-output-manifest.json"
     archived_path = base / "private-host/chapter-recovery.tar"
+    if damage == "invalid_final_identity":
+        with pytest.raises(chapter_host.PrivateHostStop, match="final result identity invalid"):
+            chapter_host._chapter_output_manifest(
+                root, 1, bundle, scope, final_result_identity="not-a-digest"
+            )
+        return
+    if damage == "invalid_brief_checkpoint":
+        evaluation._store(
+            base,
+            base / "private-host/chapter-1-brief-record.json",
+            {"brief_identity": "0" * 64, "status": "synthetic invalid"},
+        )
+        with pytest.raises(chapter_host.PrivateHostStop, match="review record changed"):
+            chapter_host._chapter_output_manifest(root, 1, bundle, scope)
+        return
+    if damage.startswith("forged_"):
+        # Rehash the complete forged JSON and give it a correctly named path.
+        # A digest-valid altered final result must still fail the chapter's
+        # attested source boundary and exact reviewed-stage identity checks.
+        field, bad_value = {
+            "forged_selected_bundle": ("selected_source_bundle_sha256", "9" * 64),
+            "forged_source_boundary": ("source_boundary", "UNVERIFIED_FULL_BOOK"),
+            "forged_parent_attestation": ("parent_original_reverified_on_host", True),
+            "forged_publish_eligible": ("publish_eligible", True),
+            "forged_brief": ("brief_key", "9" * 64),
+            "forged_adaptation": ("adaptation_key", "9" * 64),
+            "forged_script": ("script_key", "9" * 64),
+            "forged_direction": ("direction_key", "9" * 64),
+            "forged_narration": ("narration_report_key", "9" * 64),
+            "forged_human_review": ("human_review_sha256", "invalid-review-id"),
+        }[damage]
+        tampered_result = {**result, field: bad_value}
+        altered_id = content_fingerprint(tampered_result)
+        evaluation._store(
+            base, base_dir / f"chapter-result-{altered_id}.json", tampered_result
+        )
+        expected_error = (
+            "human review identity missing"
+            if damage == "forged_human_review"
+            else "final result differs from reviewed stages"
+        )
+        with pytest.raises(chapter_host.PrivateHostStop, match=expected_error):
+            chapter_host._chapter_output_manifest(
+                root, 1, bundle, scope, final_result_identity=altered_id
+            )
+        return
     if damage == "wav_changed":
         wav_path.write_bytes(b"tampered synthetic audio")
     elif damage == "wav_missing":
