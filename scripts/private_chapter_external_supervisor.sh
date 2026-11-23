@@ -87,44 +87,152 @@ sys.exit(0 if valid else 2)
 }
 
 recover_private() (
-  # Recovery has its own strict 16-second ceiling *inside* the already reserved
-  # external cleanup window. Subshell prevents the cap contaminating STOP/DELETE.
+  # Recovery is always best-effort and bounded within original cleanup reserve.
   recovery_epoch="$(( $(date -u +%s) + 16 ))"
-  # Owner-side only. Neither status nor private artifacts enter git, logs or
-  # ChatGPT; failure here must NEVER postpone STOP/DELETE.
-  if ! identity_matches; then return 2; fi
+  if (( recovery_allowed != 1 )) || ! identity_matches; then return 2; fi
   local destination="$PRIVATE_CHAPTER_RECOVERY_DIR/$CODESPACE_NAME"
   bounded mkdir -p -m 700 -- "$destination" || return 2
   bounded chmod 700 "$destination" || return 2
+  # One scoped, allowlisted private output TAR includes final WAVs, text
+  # validation records, narration reports and safe status; never a whole EPUB.
   if bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
-    "python3 -m clipper.books.chapter_host status --artifact-root '$PRIVATE_CHAPTER_ROOT'" \
-    >"$session/recovery.json" 2>/dev/null; then
-    if bounded python3 -c '
-import json, re, sys
-with open(sys.argv[1], "rb") as f: raw = f.read(16385)
-if len(raw) > 16384: sys.exit(2)
-x = json.loads(raw)
-if (x.get("schema") != "clipper-private-chapter-safe-recovery-v1"
-    or x.get("status") != "PRIVATE_CHAPTER_RECOVERY_CHECKPOINT_ONLY"
-    or set(x.get("chapters", {})) != {"1","7"}
-    or x.get("publish_eligible") is not False): sys.exit(2)
-for item in x["chapters"].values():
-    if (item.get("recovery_state") not in
-        {"NEVER_STARTED","IN_FLIGHT","INTERRUPTED","AWAITING_REVIEW","READY"}
-        or not isinstance(item.get("last_subphase"), str)
-        or len(item["last_subphase"]) > 64): sys.exit(2)
-' "$session/recovery.json"; then
-      bounded cp -- "$session/recovery.json" "$destination/safe-recovery-status.json" || true
-      bounded chmod 600 "$destination/safe-recovery-status.json" || true
+    "python3 -m clipper.books.chapter_host recover --artifact-root '$PRIVATE_CHAPTER_ROOT'" \
+    >"$session/recovery-created.json" 2>/dev/null; then
+    if identity_matches && bounded gh codespace cp -c "$CODESPACE_NAME" \
+      "remote:$PRIVATE_CHAPTER_ROOT/book-candidates/private-host/chapter-recovery.tar" \
+      "$destination/chapter-recovery.tar" >/dev/null 2>&1; then
+      if bounded python3 -c '
+import hashlib, json, pathlib, re, sys, tarfile
+created_path, archive_path, report_path, safe_path = map(pathlib.Path, sys.argv[1:])
+dig = re.compile(r"[0-9a-f]{64}\\Z")
+def digest(raw):
+    return hashlib.sha256(raw).hexdigest()
+created_raw = created_path.read_bytes()
+if len(created_raw) > 2048:
+    sys.exit(2)
+created = json.loads(created_raw)
+if (created.get("schema") != "clipper-private-chapter-recovery-created-v1"
+    or not isinstance(created.get("archive_sha256"), str)
+    or dig.fullmatch(created["archive_sha256"]) is None):
+    sys.exit(2)
+if archive_path.is_symlink() or not archive_path.is_file() or archive_path.stat().st_size > 800_000_000:
+    sys.exit(2)
+h = hashlib.sha256()
+with archive_path.open("rb") as source:
+    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+        h.update(chunk)
+if h.hexdigest() != created["archive_sha256"]:
+    sys.exit(2)
+with tarfile.open(archive_path, mode="r:") as source:
+    members = source.getmembers()
+    if len(members) > 514 or any(not x.isfile() for x in members):
+        sys.exit(2)
+    names = [x.name for x in members]
+    if len(names) != len(set(names)) or "private-recovery-manifest.json" not in names or "safe-recovery-status.json" not in names:
+        sys.exit(2)
+    manifest_member = source.extractfile("private-recovery-manifest.json")
+    safe_member = source.extractfile("safe-recovery-status.json")
+    if manifest_member is None or safe_member is None:
+        sys.exit(2)
+    manifest_bytes = manifest_member.read(200_001)
+    safe_bytes = safe_member.read(16_385)
+    if len(manifest_bytes) > 200_000 or len(safe_bytes) > 16_384:
+        sys.exit(2)
+    manifest, safe = json.loads(manifest_bytes), json.loads(safe_bytes)
+    if (manifest.get("schema") != "clipper-chapter-private-recovery-archive-manifest-v1"
+        or digest(manifest_bytes) != created.get("manifest_sha256")
+        or manifest.get("runtime_status_sha256") != digest(safe_bytes)
+        or safe.get("schema") != "clipper-private-chapter-safe-recovery-v1"
+        or set(safe.get("chapters", {})) != {"1", "7"}
+        or safe.get("publish_eligible") is not False
+        or safe.get("files_retrieved") is not False):
+        sys.exit(2)
+    rows = manifest.get("files")
+    if not isinstance(rows, list) or len(rows) > 512:
+        sys.exit(2)
+    expected = {"private-recovery-manifest.json", "safe-recovery-status.json"}
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"chapter", "kind", "relative_path", "sha256", "bytes"}:
+            sys.exit(2)
+        path = row["relative_path"]
+        if (row["chapter"] not in (1, 7)
+            or row["kind"] not in {"text","wav","narration_report","review","final_result","source_ledger","human_review"}
+            or not isinstance(path, str) or not path.startswith("book-candidates/")
+            or any(x in ("", ".", "..") for x in pathlib.PurePosixPath(path).parts)
+            or not isinstance(row["sha256"], str) or dig.fullmatch(row["sha256"]) is None
+            or type(row["bytes"]) is not int or not 0 <= row["bytes"] <= 300_000_000):
+            sys.exit(2)
+        expected.add(path)
+        member = source.getmember(path)
+        if member.size != row["bytes"]:
+            sys.exit(2)
+        content = source.extractfile(member)
+        if content is None:
+            sys.exit(2)
+        h = hashlib.sha256()
+        for chunk in iter(lambda: content.read(1024 * 1024), b""):
+            h.update(chunk)
+        if h.hexdigest() != row["sha256"]:
+            sys.exit(2)
+    if set(names) != expected or len(names) != len(expected):
+        sys.exit(2)
+    for chapter in safe["chapters"].values():
+        if (not isinstance(chapter, dict)
+            or chapter.get("recovery_state") not in {"NEVER_STARTED","IN_FLIGHT","INTERRUPTED","AWAITING_REVIEW","READY"}
+            or not isinstance(chapter.get("last_subphase"), str)
+            or len(chapter["last_subphase"]) > 64
+            or chapter.get("retrieval_status") != "NOT_ATTEMPTED"
+            or not isinstance(chapter.get("last_verified_artifact_identities"), dict)):
+            sys.exit(2)
+    summary = {
+        "schema": "clipper-private-owner-recovery-verification-v1",
+        "retrieval_status": "VERIFIED_PRIVATE_ARCHIVE",
+        "recovered_file_count": len(rows),
+        "output_scope": ("COMPLETE" if all(x["recovery_state"] == "READY"
+                                      for x in safe["chapters"].values()) else "PARTIAL"),
+        "host_cleanup_status": "NOT_YET_REST_VERIFIED",
+    }
+    report_path.write_text(json.dumps(summary, sort_keys=True) + "\\n", encoding="utf-8")
+    safe_path.write_bytes(safe_bytes)
+' "$session/recovery-created.json" "$destination/chapter-recovery.tar" \
+  "$destination/retrieval-verification.json" "$destination/safe-recovery-status.json"; then
+        bounded chmod 600 "$destination/chapter-recovery.tar" \
+          "$destination/retrieval-verification.json" \
+          "$destination/safe-recovery-status.json" || true
+        return 0
+      fi
     fi
   fi
-  local section
-  for section in private-host chapter-evaluations brief adaptation chapter_script chapter_direction; do
-    if ! identity_matches; then break; fi
-    bounded gh codespace cp --recursive -c "$CODESPACE_NAME" \
-      "remote:$PRIVATE_CHAPTER_ROOT/book-candidates/$section" \
-      "$destination/" >/dev/null 2>&1 || true
-  done
+  # Incomplete is distinct from REST cleanup; never report files recovered.
+  bounded rm -f -- "$destination/chapter-recovery.tar" || true
+  bounded python3 -c '
+import json, sys
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump({"schema":"clipper-private-owner-recovery-verification-v1",
+               "retrieval_status":"INCOMPLETE",
+               "host_cleanup_status":"NOT_YET_REST_VERIFIED"}, f)
+' "$destination/retrieval-verification.json" || true
+  # Fallback safe phase-only checkpoint, still within the same retrieval cap.
+  if identity_matches; then
+    bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
+      "python3 -m clipper.books.chapter_host status --artifact-root '$PRIVATE_CHAPTER_ROOT'" \
+      >"$session/safe-status.json" 2>/dev/null || true
+    bounded python3 -c '
+import json, pathlib, sys
+p=pathlib.Path(sys.argv[1])
+raw=p.read_bytes()
+if len(raw) > 16384: sys.exit(2)
+x=json.loads(raw)
+if x.get("schema") != "clipper-private-chapter-safe-recovery-v1" or set(x.get("chapters",{})) != {"1","7"}: sys.exit(2)
+for chapter in x["chapters"].values():
+    if (not isinstance(chapter,dict)
+        or chapter.get("recovery_state") not in {"NEVER_STARTED","IN_FLIGHT","INTERRUPTED","AWAITING_REVIEW","READY"}
+        or not isinstance(chapter.get("last_subphase"),str)
+        or len(chapter["last_subphase"]) > 64): sys.exit(2)
+pathlib.Path(sys.argv[2]).write_bytes(raw)
+' "$session/safe-status.json" "$destination/safe-recovery-status.json" || true
+  fi
+  return 2
 )
 
 terminate_host() {
