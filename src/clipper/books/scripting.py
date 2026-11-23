@@ -596,6 +596,84 @@ def _run_pinned_qwen(request: dict[str, object], *, normalize_script: bool) -> s
     return result
 
 
+def _chapter_context_tokens(request: dict[str, object]) -> int:
+    """Preflight the full real chapter chat with the pinned tokenizer, before weights."""
+    if (
+        request.get("model") != SCRIPT_MODEL
+        or request.get("revision") != SCRIPT_REVISION
+        or type(request.get("seed")) is not int
+        or request["seed"] != 42
+        or type(request.get("max_new_tokens")) is not int
+        or not 1024 <= cast(int, request["max_new_tokens"]) <= 8192
+    ):
+        raise NicheVideoError("chapter pinned model request or output budget mismatch")
+    tokenizer, limit = _public_book_context()
+    try:
+        tokens = tokenizer.apply_chat_template(
+            request["messages"],
+            tokenize=True,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+        count = len(tokens)
+    except (ValueError, TypeError, KeyError, RuntimeError) as exc:
+        raise NicheVideoError("chapter pinned tokenizer preflight failed") from exc
+    if count <= 0 or count + cast(int, request["max_new_tokens"]) > limit:
+        raise NicheVideoError(
+            "chapter complete source, chat template and output exceed pinned token context"
+        )
+    return count
+
+
+def _local_chapter_completion(request: dict[str, object]) -> str:
+    """Real CPU-only chapter response; exact raw tokens, no short Episode repair."""
+    _chapter_context_tokens(request)
+    # Kokoro may have been used just before the direction stage. Never retain
+    # both large inference graphs when switching between generation phases.
+    from . import narration
+
+    narration._kokoro_pipeline.cache_clear()
+    import gc
+
+    gc.collect()
+    torch = importlib.import_module("torch")
+    model, tokenizer = _script_pipeline()
+    if str(model.device) != "cpu":
+        raise NicheVideoError("chapter requires CPU-resident pinned Qwen weights")
+    torch.manual_seed(42)
+    inputs = tokenizer.apply_chat_template(
+        request["messages"],
+        tokenize=True,
+        add_generation_prompt=True,
+        enable_thinking=False,
+        return_dict=True,
+        return_tensors="pt",
+    )
+    if inputs["input_ids"].shape[-1] + cast(int, request["max_new_tokens"]) > MAX_CHAPTER_CONTEXT:
+        raise NicheVideoError("chapter final token context differs from preflight")
+    with torch.inference_mode():
+        output = model.generate(
+            **inputs,
+            max_new_tokens=cast(int, request["max_new_tokens"]),
+            **QWEN_GENERATION_SETTINGS,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    ids = output[0][inputs["input_ids"].shape[-1] :]
+    raw: str = tokenizer.decode(ids, skip_special_tokens=True)
+    configured = getattr(getattr(model, "generation_config", None), "eos_token_id", None)
+    if configured is None:
+        configured = tokenizer.eos_token_id
+    eos = {configured} if type(configured) is int else (
+        set(configured) if isinstance(configured, (list, tuple)) else set()
+    )
+    if len(ids) == 0 or int(ids[-1]) not in eos:
+        raise IncompleteConstrainedResponse(raw)
+    return raw
+
+
+MAX_CHAPTER_CONTEXT = 40_960
+
+
 def _local_script_completion(request: dict[str, object]) -> str:
     """Generate locally; keep weights resident for bounded script repair."""
     return _run_pinned_qwen(request, normalize_script=True)
