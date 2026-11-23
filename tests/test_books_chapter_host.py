@@ -1789,6 +1789,7 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         "duplicate_key_first_valid_second",
         "duplicate_key_tampered_receipt",
         "duplicate_key_missing_claim",
+        "equal_count_wrong_inventory",
     ],
 )
 def test_source_or_duplicate_key_rejection_retries_and_recovers_with_original_receipt(
@@ -1906,7 +1907,7 @@ def test_source_or_duplicate_key_rejection_retries_and_recovers_with_original_re
         changed["raw"] = json.dumps(second)
         path.write_bytes(evaluation._json_bytes(changed))
 
-    if tamper in {"none", "duplicate_key_first_valid_second"}:
+    if tamper in {"none", "duplicate_key_first_valid_second", "equal_count_wrong_inventory"}:
         with pytest.raises(chapter.ChapterStop, match="prior attempt history cannot be verified"):
             chapter._verified_rejected_attempt(
                 base,
@@ -1916,15 +1917,59 @@ def test_source_or_duplicate_key_rejection_retries_and_recovers_with_original_re
                 plan.max_attempts_per_stage,
                 real_source_bound_validator,
             )
+        # Independent inventory contract: every exact source file, chapter,
+        # type, relative path, digest and byte count, in canonical path order.
+        expected_names = (
+            "validated.json",
+            "started-1.json",
+            "raw-1.json",
+            "failed-1.json",
+            "started-2.json",
+            "raw-2.json",
+        )
+        expected = []
+        for name in expected_names:
+            path = stage_dir / name
+            data = path.read_bytes()
+            expected.append(
+                {
+                    "chapter": 1,
+                    "kind": "text",
+                    "relative_path": path.relative_to(root).as_posix(),
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                    "bytes": len(data),
+                }
+            )
+        expected.sort(key=lambda row: row["relative_path"])
+
+        def assert_exact_inventory(rows: list[dict]) -> None:
+            assert rows == expected
+
         entries = chapter_host._stage_output_entries(root, 1, "brief", identity)
         assert len(entries) == 6
+        assert_exact_inventory(sorted(entries, key=lambda row: row["relative_path"]))
         manifest = chapter_host._chapter_output_manifest(root, 1, bundle, scope)
-        assert manifest["files"] == entries or len(manifest["files"]) == len(entries)
+        assert_exact_inventory(manifest["files"])
+        if tamper == "equal_count_wrong_inventory":
+            # Equal-length forged rows must not pass merely on cardinality.
+            for field, value in (
+                ("chapter", 7),
+                ("kind", "wav"),
+                ("relative_path", "book-candidates/brief/forged.json"),
+                ("sha256", "0" * 64),
+                ("bytes", -1),
+            ):
+                forged = [dict(row) for row in manifest["files"]]
+                forged[0][field] = value
+                assert len(forged) == len(expected)
+                with pytest.raises(AssertionError):
+                    assert_exact_inventory(forged)
         archived = chapter_host.private_recovery_archive(root)
         assert archived["file_count"] == 6
         with tarfile.open(base / "private-host/chapter-recovery.tar", "r:") as output:
             rows = json.load(output.extractfile("private-recovery-manifest.json"))
             assert rows["chapters"][0]["inventory_status"] == "VERIFIED"
+            assert_exact_inventory(rows["chapters"][0]["files"])
             assert rows["chapters"][1]["inventory_status"] == "NOT_STARTED"
     else:
         with pytest.raises(chapter_host.PrivateHostStop):
