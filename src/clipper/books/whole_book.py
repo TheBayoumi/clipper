@@ -10,12 +10,32 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from clipper.stage_contracts import content_fingerprint
 
 from . import constrained, faithful, mining, scripting, selection
-from .contracts import BookText
+from .contracts import BookSource, BookText
+
+if TYPE_CHECKING:
+    from .selected_scope import SelectedSource
+
+
+class SourceMetadata(Protocol):
+    """Narrow source identity shared by retained and selected work-unit validators."""
+
+    @property
+    def source(self) -> BookSource: ...
+
+    @property
+    def edition_identity(self) -> str | None: ...
+
+    @property
+    def content_sha256(self) -> str: ...
+
+    @property
+    def fingerprint(self) -> str: ...
+
 
 REF_SCHEMA = "clipper-book-candidate-analysis-ref-v1"
 PLAN_SCHEMA = "clipper-book-evidence-work-plan-v1"
@@ -159,7 +179,7 @@ class WorkPlan:
         )
 
 
-def plan_for(book: BookText | Any, *, section_ids: tuple[str, ...] | None = None) -> WorkPlan:
+def plan_for(book: BookText | SelectedSource, *, section_ids: tuple[str, ...] | None = None) -> WorkPlan:
     """Visit every ordered source/image block; never silently discard an image gap."""
     from .selected_scope import SelectedSource
 
@@ -272,7 +292,7 @@ def request_for(book: BookText, unit: WorkUnit) -> dict[str, object]:
 
 
 def _request_for_identity(
-    book: BookText, unit: WorkUnit, book_fingerprint: str
+    book: SourceMetadata, unit: WorkUnit, book_fingerprint: str
 ) -> dict[str, object]:
     """Private batching helper: identity comes from plan_for(book), not caller input."""
     pool = constrained.span_pool(unit.text, unit.evidence_field)
@@ -399,7 +419,7 @@ def validate_reply(payload: object, unit: WorkUnit) -> list[dict[str, str]]:
 
 
 def candidate_for(
-    book: BookText,
+    book: SourceMetadata,
     unit: WorkUnit,
     item: dict[str, str],
     *,

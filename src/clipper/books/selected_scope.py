@@ -98,7 +98,9 @@ def _json(value: object) -> bytes:
     return (json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
 
 
-def _section_manifest(ref: SelectedRef, book: SelectedSource, work: whole_book.WorkPlan) -> dict:
+def _section_manifest(
+    ref: SelectedRef, book: SelectedSource, work: whole_book.WorkPlan
+) -> dict[str, object]:
     return {
         "schema": "clipper-book-section-evaluation-scope-v1",
         "book_fingerprint": book.fingerprint,

@@ -683,7 +683,7 @@ class BookOrchestrator:
     def _produce_local_unit(
         self,
         *,
-        ref: whole_book.CandidateAnalysisRef,
+        ref: whole_book.CandidateAnalysisRef | selected_scope.SelectedRef,
         identity: StageIdentity,
         request: dict[str, object],
         request_sha256: str,
@@ -750,7 +750,7 @@ class BookOrchestrator:
     def _read_local_unit(
         self,
         *,
-        ref: whole_book.CandidateAnalysisRef,
+        ref: whole_book.CandidateAnalysisRef | selected_scope.SelectedRef,
         identity: StageIdentity,
         request_sha256: str,
         request: dict[str, object],
@@ -820,7 +820,7 @@ class BookOrchestrator:
     def _record_local_failure(
         self,
         *,
-        ref: whole_book.CandidateAnalysisRef,
+        ref: whole_book.CandidateAnalysisRef | selected_scope.SelectedRef,
         identity: StageIdentity,
         request_sha256: str,
         producer_fingerprint: str,
@@ -881,6 +881,8 @@ class BookOrchestrator:
             if local_cpu
             else "RECORDED_RESPONSE_UNVERIFIED"
         )
+        ref: whole_book.CandidateAnalysisRef | selected_scope.SelectedRef
+        book: BookText | selected_scope.SelectedSource
         if selected_scope_path is not None:
             if ref_path != selected_scope_path:
                 raise BookRunError("selected source cannot masquerade as an ordinary candidate ref")
@@ -1186,7 +1188,7 @@ class BookOrchestrator:
             "authorization_status": book.source.authorization_status,
             "parser_version": book.parser_version,
             "parser_config_sha256": book.parser_config_sha256,
-            "excluded_pages": [asdict(p) for p in book.excluded_pages],
+            "excluded_pages": [asdict(page) for page in book.excluded_pages],
             "gaps": list(work.skipped),
             "progress": progress,
             "evidence_coverage_summary": constrained.coverage_summary(

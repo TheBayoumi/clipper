@@ -20,6 +20,7 @@ from uuid import uuid4
 from clipper.stage_contracts import content_fingerprint
 
 from . import acquisition, constrained, narration, scripting, selected_scope, whole_book
+from .contracts import BookText
 
 if TYPE_CHECKING:
     from .orchestrator import BookOrchestrator
@@ -123,6 +124,8 @@ def _section_scope(
     selected_scope_path: Path | None = None,
 ) -> tuple[whole_book.WorkPlan, str]:
     """Verify original source-bound section IDs without inventing parent BookText."""
+    ref: whole_book.CandidateAnalysisRef | selected_scope.SelectedRef
+    book: BookText | selected_scope.SelectedSource
     if selected_scope_path is not None:
         if ref_path != selected_scope_path:
             raise EvaluationStop("selected source cannot substitute ordinary candidate")
@@ -214,6 +217,8 @@ def _mined_export(
     selected_scope_path: Path | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], Any]:
     """Bind raw mining/export evidence to verified retained or selected source."""
+    ref: whole_book.CandidateAnalysisRef | selected_scope.SelectedRef
+    book: BookText | selected_scope.SelectedSource
     if selected_scope_path is not None:
         if ref_path != selected_scope_path:
             raise EvaluationStop("selected source cannot masquerade as ordinary candidate")
