@@ -153,13 +153,10 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
     actions = log.read_text(encoding="utf-8")
     if hang == "near_deadline_hung_stop":
         records = [
-            (float(line.split(" ", 1)[0]), line.split(" ", 1)[1])
-            for line in actions.splitlines()
+            (float(line.split(" ", 1)[0]), line.split(" ", 1)[1]) for line in actions.splitlines()
         ]
         approved_hard_deadline = datetime.fromisoformat(env["MOCK_CREATED"]).timestamp() + 7200
-        deletes = [
-            stamp for stamp, call in records if "api -X DELETE" in call
-        ]
+        deletes = [stamp for stamp, call in records if "api -X DELETE" in call]
         assert len(deletes) == 1
         assert deletes[0] < approved_hard_deadline
         assert not any("api -X POST" in call for _, call in records)
