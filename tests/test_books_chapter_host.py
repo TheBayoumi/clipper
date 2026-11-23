@@ -12,17 +12,37 @@ from unittest.mock import Mock
 import pytest
 from test_books_whole_book import ingested
 
-from clipper.books import chapter, chapter_host, evaluation, scripting
+from clipper.books import chapter, chapter_host, evaluation, scripting, selected_scope
 from clipper.books.orchestrator import BookOrchestrator
 
 
 def _private_setup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[BookOrchestrator, Path, dict]:
-    runner, acquired, _ = ingested(tmp_path, paragraphs=12, with_image=True)
+    # Export from retained source, transfer ONLY two selected bundles to host.
+    # The host never receives an ordinary ingest ref, extracted BookText, or EPUB.
+    owner = tmp_path / "owner-retained-source"
+    owner.mkdir()
+    exporter, acquired, _ = ingested(owner, paragraphs=12, with_image=True)
     monkeypatch.setenv("CODESPACE_NAME", "synthetic-private-host")
-    section_ids = [item.chapter_id for item in acquired.book.sections][:2]
-    assert len(section_ids) == 2
+    sections = [item.chapter_id for item in acquired.book.sections]
+    host = tmp_path / "host-only"
+    bundle_dir = host / "book-candidates" / "selected-scopes"
+    bundle_dir.mkdir(parents=True)
+    scopes: dict[str, dict] = {}
+    for number, section in ((1, sections[0]), (7, sections[1])):
+        exported, sha = selected_scope.export_chapter(
+            exporter, acquired.analysis_ref_path,
+            chapter_number=number, chapter_section_ids=(section,),
+        )
+        target = bundle_dir / f"{sha}.json"
+        target.write_bytes(exported.read_bytes())
+        scopes[f"chapter_{number}"] = {
+            "bundle_path": str(target),
+            "bundle_sha256": sha,
+            "scope_sha256": None,
+            "review_file": None,
+        }
     plan = asdict(
         chapter.ChapterPlan(
             brief_cpu=True,
@@ -34,21 +54,15 @@ def _private_setup(
     )
     config = {
         "schema": chapter_host.BATCH_SCHEMA,
-        "candidate_ref": str(acquired.analysis_ref_path),
-        "chapter_1": {
-            "section_ids": [section_ids[0]],
-            "scope_sha256": None,
-            "review_file": None,
-        },
-        "chapter_7": {
-            "section_ids": [section_ids[1]],
-            "scope_sha256": None,
-            "review_file": None,
-        },
+        **scopes,
         "plan": {"schema": chapter.PLAN_SCHEMA, **plan},
     }
-    path = runner.root / "two-private-chapters.json"
+    path = host / "two-private-chapters.json"
     path.write_bytes(evaluation._json_bytes(config))
+    runner = BookOrchestrator(host)
+    assert not list(host.rglob("*.epub"))
+    assert not list(host.rglob("analysis-refs"))
+    assert not list(host.rglob("extracted"))
     return runner, path, config
 
 
@@ -90,13 +104,12 @@ def test_scope_inspection_only_two_sections_and_exposes_source_gaps(
     )
     assert len(report_files) == 1
     report = json.loads(report_files[0].read_bytes())
-    assert report["semantic_scope_approval"] == "NOT_ATTESTED"
-    assert report["footnote_caption_figure_completeness"] == (
-        "UNVERIFIED_REQUIRES_SOURCE_INSPECTION"
-    )
+    assert report["semantic_approval"] == "NOT_ATTESTED"
+    assert report["source_linkage_review"] == "REQUIRED"
     assert report["parent_full_book_complete"] is False
-    assert report["unselected_sections"]
-    assert "source_counts" in report["chapters"]["1"]
+    assert report["parent_original_bytes_reverified_on_host"] is False
+    assert report["chapters"]["1"]["selected_reading_blocks"]
+    assert report["chapters"]["1"]["bundle_sha256"] == config["chapter_1"]["bundle_sha256"]
     assert len(list((runner.root / "book-candidates/section-scopes").glob("*.json"))) == 2
 
 
@@ -111,7 +124,7 @@ def test_codespace_manifest_rejects_unlocked_or_malformed_scope(
     if bad == "missing":
         del config["chapter_7"]
     elif bad == "overlap":
-        config["chapter_7"]["section_ids"] = config["chapter_1"]["section_ids"]
+        config["chapter_7"]["bundle_path"] = config["chapter_1"]["bundle_path"]
     elif bad == "bad_digest":
         config["chapter_1"]["scope_sha256"] = "not-a-sha"
     elif bad == "invalid_plan":
@@ -133,7 +146,7 @@ def test_codespace_scope_lock_mismatch_blocks_mining_before_inference(
     path.write_bytes(evaluation._json_bytes(config))
     called = Mock(side_effect=AssertionError("no model before scope lock"))
     monkeypatch.setattr(BookOrchestrator, "mine_candidate", called)
-    with pytest.raises(chapter_host.PrivateHostStop, match="locked"):
+    with pytest.raises(chapter_host.PrivateHostStop, match="mismatch"):
         _call(runner, path, "brief")
     called.assert_not_called()
 
@@ -197,6 +210,7 @@ def test_two_chapters_brief_stops_for_independent_review_and_resume(
         assert kwargs["direction_completion"] is scripting._local_chapter_completion
         assert kwargs["narration_producer"] is chapter_host.narration._kokoro_wav
         assert section.is_file()
+        assert kwargs["selected_scope_path"] == _ref
         if kwargs["review_file"] is None:
             scope = json.loads(section.read_bytes())
             # The phase is deliberately non-semantic and yields no approval.
@@ -416,24 +430,17 @@ def test_actual_kokoro_provenance_requires_exact_real_adapter_identity(
     real.assert_called_once()
 
 
-def test_private_scope_inspection_preserves_prior_report_during_selection_revision(
+def test_private_scope_inspection_repeat_is_content_addressed_and_idempotent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runner, path, config = _private_setup(tmp_path, monkeypatch)
+    runner, path, _ = _private_setup(tmp_path, monkeypatch)
     first = _call(runner, path, "inspect")
-    _ref, book = runner.load_candidate_for_analysis(Path(config["candidate_ref"]))
-    config["chapter_7"]["section_ids"] = [book.sections[2].chapter_id]
-    path.write_bytes(evaluation._json_bytes(config))
-    revised = _call(runner, path, "inspect")
-    assert revised["inspection_sha256"] != first["inspection_sha256"]
-    assert revised["chapters"]["7"]["scope_sha256"] != first["chapters"]["7"]["scope_sha256"]
+    second = _call(runner, path, "inspect")
+    assert first == second
     report_dir = runner.root / "book-candidates/private-host"
     reports = list(report_dir.glob("scope-inspection-*.json"))
-    assert len(reports) == 2
-    for result in (first, revised):
-        report = report_dir / f"scope-inspection-{result['inspection_sha256']}.json"
-        assert report.is_file()
-        assert hashlib.sha256(report.read_bytes()).hexdigest() == result["inspection_sha256"]
+    assert len(reports) == 1
+    assert hashlib.sha256(reports[0].read_bytes()).hexdigest() == first["inspection_sha256"]
 
 
 def test_private_review_packet_contains_full_source_and_invalid_human_template(
