@@ -530,6 +530,7 @@ def validate_human_review(
         raise HybridStop("hybrid meaning and qualifications have not been human attested")
     return doc
 
+
 def validate_adaptation(raw: object, brief: dict[str, Any], plan: Any) -> dict[str, Any]:
     """Reuse the existing chapter creative contract without a lexical meaning proxy.
 
