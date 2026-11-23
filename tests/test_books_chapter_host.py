@@ -648,6 +648,13 @@ def test_pinned_chapter_cpu_adapter_generate_eos_and_memory_error_paths_are_mode
     generated.return_value = [[10, 20, 99]]
     assert isinstance(scripting._local_chapter_completion(request), scripting.PinnedQwenRawReceipt)
     assert generated.call_count == 3
+    # A missing generation-config EOS must fall back to the pinned tokenizer
+    # rather than silently accepting a truncated continuation.
+    model.generation_config.eos_token_id = None
+    eos_fallback = scripting._local_chapter_completion(request)
+    assert eos_fallback.eos_decision == "EOS_VERIFIED"
+    assert eos_fallback.terminal_token_id == tokenizer.eos_token_id
+    assert generated.call_count == 4
 
 
 def test_private_host_cli_status_codes_do_not_expose_private_failure(
