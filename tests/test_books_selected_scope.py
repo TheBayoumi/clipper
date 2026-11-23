@@ -222,3 +222,93 @@ def test_selected_chapter_mining_uses_real_canonical_validation_and_raw_cache(
                 '{"argument":"cannot omit source","beats":[],"coverage":[]}'
             ),
         )
+
+
+def test_selected_source_minable_chapter_brief_replays_without_parent_or_human_approval(
+    tmp_path: Path,
+) -> None:
+    from unittest.mock import Mock
+
+    runner, bundle, data = _bundle(tmp_path, with_image=True)
+    chosen = selected_scope.import_chapter(runner.root, bundle)
+    original = data["section_manifest"]
+    section = runner.root / "book-candidates/section-scopes" / (
+        data["section_manifest_sha256"] + ".json"
+    )
+    section.parent.mkdir(parents=True)
+    section.write_bytes(selected_scope._json(original))
+    result = runner.mine_candidate(
+        bundle,
+        local_cpu=True,
+        section_ids=chosen.work.section_ids,
+        section_manifest_sha256=chosen.section_manifest_sha256,
+        selected_scope_path=bundle,
+        max_new_units=len(chosen.work.units),
+        local_completion=lambda _request: '{"lessons":[]}',
+    )
+    assert result["status"] == "complete"
+
+    def brief_completion(request: dict[str, object]) -> str:
+        input_data = json.loads(request["messages"][1]["content"])["input"]
+        source = input_data["source"]
+        units = source["units"]
+        gaps = source["gaps"]
+        assert len(units) == len(chosen.work.units)
+        assert len(gaps) == len(chosen.work.skipped)
+        assert len(source["reading_order"]) == len(units) + len(gaps)
+        assert source["parent_original_reverified_on_host"] is False
+        assert source["source_boundary"] == (
+            "HOST_VERIFIED_SELECTED_BUNDLE_EXPORTER_ATTESTED_PARENT"
+        )
+        return json.dumps(
+            {
+                "argument": "Synthetic original chapter material is reviewed unit by unit.",
+                "beats": [
+                    {
+                        "beat_id": f"beat-{index:02d}",
+                        "unit_id": unit["source_id"],
+                        "span_start": 0,
+                        "span_end": min(120, len(unit["text"])),
+                        "quote": unit["text"][:120],
+                        "candidate_id": None,
+                        "meaning": "Original synthetic passage retained without invented support.",
+                        "qualification": "",
+                        "essential": True,
+                        "source_role": "BOOK_ASSERTION",
+                    }
+                    for index, unit in enumerate(units, 1)
+                ],
+                "coverage": [
+                    {
+                        "source_id": item["source_id"],
+                        "decision": "omit" if item["kind"] != "CANONICAL_WORK_UNIT" else "keep",
+                        "reason": "Retain the exact original unit or acknowledge its gap.",
+                    }
+                    for item in [*units, *gaps]
+                ],
+            }
+        )
+
+    completion = Mock(side_effect=brief_completion)
+    args = (runner, bundle, Path(result["progress_path"]), section)
+    first = chapter.evaluate_chapter(
+        *args,
+        selected_scope_path=bundle,
+        plan=chapter.ChapterPlan(brief_cpu=True),
+        brief_completion=completion,
+    )
+    assert first["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
+    assert first["parent_original_reverified_on_host"] is False
+    assert first["publish_eligible"] is False
+    assert first["brief_provenance"] == "INJECTED_TEST_PRODUCER"
+    second = chapter.evaluate_chapter(
+        *args,
+        selected_scope_path=bundle,
+        plan=chapter.ChapterPlan(brief_cpu=True),
+        brief_completion=completion,
+    )
+    assert second["brief_identity"] == first["brief_identity"]
+    assert second["brief_attempts"] == 0
+    assert completion.call_count == 1
+    assert not list(runner.root.rglob("analysis-refs"))
+    assert not list(runner.root.rglob("*.epub"))
