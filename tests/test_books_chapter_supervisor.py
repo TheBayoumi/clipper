@@ -584,7 +584,7 @@ def test_actual_codespace_wrapper_dispatches_all_modes_through_shared_preflight(
         ),
     }.items():
         executable = fake_bin / command
-        executable.write_text(f"#!{sys.executable}\\n" + source, encoding="utf-8")
+        executable.write_text(f"#!{sys.executable}\n" + source, encoding="utf-8")
         executable.chmod(0o700)
     env = os.environ.copy()
     env.update(
