@@ -355,7 +355,8 @@ if [[ "$PRIVATE_CHAPTER_ROOT" =~ ^/[a-zA-Z0-9_./-]+$ &&
       "$PRIVATE_CHAPTER_ROOT" != *"/.." &&
       "$PRIVATE_CHAPTER_ROOT" != *"/." ]]; then
   remote_safe=1
-  recovery_allowed=1
+  # Retrieval is armed only after safe SSH setup and public-key transfer.
+  recovery_allowed=0
 else
   echo "EXTERNAL_SUPERVISOR_UNSAFE_REMOTE_PATH_CLEANUP_ONLY" >&2
   exit 2
@@ -376,6 +377,7 @@ identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_CHANGED" >&2; exit 2; }
 bounded gh codespace cp -c "$CODESPACE_NAME" \
   "$PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY" \
   "remote:$remote/external-supervisor-public.pem" >/dev/null
+recovery_allowed=1
 
 # Every iteration bounds both the individual operation and the time remaining.
 # Execution stops at host creation +115m; the remaining five minutes are for
