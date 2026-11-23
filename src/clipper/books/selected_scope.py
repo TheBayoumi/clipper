@@ -395,7 +395,7 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
             raise SelectedSourceStop("selected original source parent hashes disagree")
         if (
             not isinstance(data["reading_blocks"], list)
-            or not 1 <= len(data["reading_blocks"]) <= 100
+            or not 1 <= len(data["reading_blocks"]) <= MAX_CHAPTER_ENTRIES
         ):
             raise SelectedSourceStop("selected original reading blocks absent/oversized")
         allowed = set(ReadingBlock.__dataclass_fields__)
