@@ -1869,3 +1869,142 @@ def test_changed_verified_direction_text_rekeys_final_result_without_new_produce
     assert replay["final_result_identity"] != first["final_result_identity"]
     assert len(list((root / "chapter-evaluations").rglob("chapter-result-*.json"))) == 2
     no_provider.assert_not_called()
+
+
+@pytest.mark.parametrize("claim_change", ["delete", "replace", "partial"])
+@pytest.mark.parametrize("rejection", ["malformed", "schema", "source"])
+def test_rejected_chapter_text_cannot_retry_with_lost_claim(
+    tmp_path: Path, claim_change: str, rejection: str
+) -> None:
+    root = tmp_path / "private"
+    first_response = "{" if rejection == "malformed" else json.dumps(
+        {"source": "unattested"} if rejection == "source" else {"wrong": "schema"}
+    )
+    responses: list[str] = []
+
+    def producer(_request: dict[str, object]) -> str:
+        responses.append(first_response)
+        if len(responses) != 1:
+            raise AssertionError("changed first claim must forbid second producer call")
+        started = next((root / "brief").rglob("started-1.json"))
+        if claim_change == "delete":
+            started.unlink()
+        elif claim_change == "partial":
+            started.write_bytes(b"{")
+        else:
+            record = json.loads(started.read_bytes())
+            record["owner"] = "0" * 32
+            started.write_bytes(evaluation._json_bytes(record))
+        return first_response
+
+    def validator(value: object) -> dict:
+        if not isinstance(value, dict) or (
+            rejection == "schema" and "source" not in value
+        ) or (rejection == "source" and value.get("source") == "unattested"):
+            raise chapter.ChapterStop("synthetic schema/source rejection")
+        return value
+
+    args = (root, "brief", {"fixture": "claim-invalid-response"}, _plan())
+    with pytest.raises(chapter.ChapterStop):
+        chapter._stage(*args, validator, producer)
+    assert len(responses) == 1
+    raw_files = list((root / "brief").rglob("raw-1.json"))
+    assert len(raw_files) == 1
+    recorded = json.loads(raw_files[0].read_bytes())
+    assert recorded["raw"] == first_response
+    assert recorded["attempt"] == 1
+    assert recorded["sha256"] == hashlib.sha256(first_response.encode()).hexdigest()
+    assert not list((root / "brief").rglob("started-2.json"))
+    assert not list((root / "brief").rglob("validated.json"))
+    with pytest.raises(chapter.ChapterStop, match="prior unresolved"):
+        chapter._stage(*args, validator, producer)
+    assert len(responses) == 1
+
+
+def test_healthy_rejected_chapter_first_attempt_retries_with_distinct_claims(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "private"
+    answers = Mock(side_effect=["{", '{"value":"accepted synthetic"}'])
+    args = (root, "brief", {"fixture": "healthy-two-attempts"}, _plan())
+    first, identity, _, attempts = chapter._stage(*args, lambda x: x, answers)
+    assert first == {"value": "accepted synthetic"}
+    assert attempts == 2
+    directory = next((root / "brief").iterdir())
+    claims = [
+        json.loads((directory / f"started-{index}.json").read_bytes())
+        for index in (1, 2)
+    ]
+    raws = [
+        json.loads((directory / f"raw-{index}.json").read_bytes())
+        for index in (1, 2)
+    ]
+    assert [type(claim["attempt"]) for claim in claims] == [int, int]
+    assert [raw["attempt"] for raw in raws] == [1, 2]
+    assert [claim["attempt"] for claim in claims] == [1, 2]
+    assert claims[0]["owner"] != claims[1]["owner"]
+    assert all(raw["owner"] == claim["owner"] for raw, claim in zip(raws, claims))
+    assert json.loads((directory / "failed-1.json").read_bytes())["status"] == (
+        "SCHEMA_OR_SOURCE_REJECTED"
+    )
+    replay, replay_id, _, replay_attempts = chapter._stage(*args, lambda x: x, answers)
+    assert (replay, replay_id, replay_attempts) == (first, identity, 0)
+    assert answers.call_count == 2
+
+
+@pytest.mark.parametrize("envelope", ["claim", "raw", "validated"])
+@pytest.mark.parametrize("attempt", [True, False, 0, -1, 2, 3, 1.0, "1"])
+def test_canonical_chapter_text_attempt_envelope_requires_exact_bounded_int(
+    tmp_path: Path, envelope: str, attempt: object
+) -> None:
+    root = tmp_path / "private"
+    producer = Mock(return_value='{"value":"synthetic"}')
+    args = (
+        root,
+        "brief",
+        {"fixture": "attempt-envelope"},
+        _plan(max_attempts_per_stage=1),
+    )
+    chapter._stage(*args, lambda x: x, producer)
+    directory = next((root / "brief").iterdir())
+    target = (
+        directory / "started-1.json"
+        if envelope == "claim"
+        else directory / "raw-1.json"
+        if envelope == "raw"
+        else directory / "validated.json"
+    )
+    record = json.loads(target.read_bytes())
+    record["attempt"] = attempt
+    target.write_bytes(evaluation._json_bytes(record))
+    with pytest.raises(chapter.ChapterStop):
+        chapter._stage(*args, lambda x: x, producer)
+    producer.assert_called_once()
+
+
+def test_consistently_rewritten_second_attempt_rejected_under_one_attempt_plan(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "private"
+    producer = Mock(return_value='{"value":"synthetic"}')
+    args = (
+        root,
+        "brief",
+        {"fixture": "attempt-ceiling"},
+        _plan(max_attempts_per_stage=1),
+    )
+    chapter._stage(*args, lambda x: x, producer)
+    directory = next((root / "brief").iterdir())
+    for prefix in ("started", "raw"):
+        original = directory / f"{prefix}-1.json"
+        record = json.loads(original.read_bytes())
+        record["attempt"] = 2
+        (directory / f"{prefix}-2.json").write_bytes(evaluation._json_bytes(record))
+        original.unlink()
+    validated = directory / "validated.json"
+    record = json.loads(validated.read_bytes())
+    record["attempt"] = 2
+    validated.write_bytes(evaluation._json_bytes(record))
+    with pytest.raises(chapter.ChapterStop, match="artifact cannot be verified"):
+        chapter._stage(*args, lambda x: x, producer)
+    producer.assert_called_once()
