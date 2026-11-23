@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tarfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
