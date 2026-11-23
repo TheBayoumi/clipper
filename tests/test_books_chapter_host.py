@@ -975,7 +975,11 @@ def test_model_free_recovery_report_has_precise_phase_and_only_safe_identities(
     assert report["chapters"]["1"]["recovery_state"] == "IN_FLIGHT"
     chapter_host._phase(runner, 1, digest, scope, "BRIEF_IN_FLIGHT")
     chapter_host._phase(
-        runner, 1, digest, scope, "AWAITING_HUMAN_REVIEW",
+        runner,
+        1,
+        digest,
+        scope,
+        "AWAITING_HUMAN_REVIEW",
         {"brief_identity": "a" * 64, "progress_path": "/private/never-print-this.json"},
     )
     report = chapter_host.recovery_report(runner.root)
@@ -985,11 +989,19 @@ def test_model_free_recovery_report_has_precise_phase_and_only_safe_identities(
     }
     assert "never-print-this" not in json.dumps(report)
     chapter_host._phase(
-        runner, 1, digest, scope, "RESUME_IN_FLIGHT",
+        runner,
+        1,
+        digest,
+        scope,
+        "RESUME_IN_FLIGHT",
         {"brief_identity": "a" * 64},
     )
     chapter_host._phase(
-        runner, 1, digest, scope, "PREPRODUCTION_READY",
+        runner,
+        1,
+        digest,
+        scope,
+        "PREPRODUCTION_READY",
         {"final_result_identity": "b" * 64, "audio_provenance": "ACTUAL_CPU_KOKORO"},
     )
     report = chapter_host.recovery_report(runner.root)
@@ -1013,8 +1025,7 @@ def test_resume_missing_review_or_changed_plan_keeps_same_review_checkpoint(
         return {"status": "complete", "progress_path": str(progress), "total_work_units": 1}
 
     def evaluate(
-        _runner: BookOrchestrator, _ref: Path, _progress: Path, _scope: Path,
-        **kwargs: object
+        _runner: BookOrchestrator, _ref: Path, _progress: Path, _scope: Path, **kwargs: object
     ) -> dict[str, object]:
         counter()
         if kwargs["review_file"] is None:
@@ -1045,7 +1056,8 @@ def test_resume_missing_review_or_changed_plan_keeps_same_review_checkpoint(
     assert counter.call_count == 4
     for n in (1, 7):
         records = chapter_host._phase_records(
-            runner.root, n,
+            runner.root,
+            n,
             config[f"chapter_{n}"]["bundle_sha256"],
             config[f"chapter_{n}"]["scope_sha256"],
         )
@@ -1054,7 +1066,6 @@ def test_resume_missing_review_or_changed_plan_keeps_same_review_checkpoint(
     path.write_bytes(evaluation._json_bytes(config))
     blocked = _call(runner, path, "resume")
     assert all(
-        c["review_status"] == "RESUME_PREFLIGHT_BLOCKED"
-        for c in blocked["chapters"].values()
+        c["review_status"] == "RESUME_PREFLIGHT_BLOCKED" for c in blocked["chapters"].values()
     )
     assert counter.call_count == 4
