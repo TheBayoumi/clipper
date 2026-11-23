@@ -2297,3 +2297,51 @@ def test_injected_chapter_cache_cannot_relabel_text_as_actual_token_evidence(
     with pytest.raises(chapter.ChapterStop, match="cannot be verified"):
         chapter._stage(*args, lambda value: value, producer, replay_only=True)
     producer.assert_called_once()
+
+
+def test_real_synthetic_chapter_pipeline_journals_every_completed_subphase(
+    tmp_path: Path,
+) -> None:
+    """The actual staged control flow emits durable callbacks; no model is run."""
+    runner, ref, progress, scope, _ = _source(tmp_path)
+    plan = _plan(kokoro_cpu=True)
+    initial, brief = _first_brief(runner, ref, progress, scope, plan)
+    review = _review(tmp_path, initial["brief_identity"], brief)
+    events: list[tuple[str, str | None]] = []
+
+    def checkpoint(stage: str, identity: str | None) -> None:
+        events.append((stage, identity))
+
+    result = chapter.evaluate_chapter(
+        runner,
+        ref,
+        progress,
+        scope,
+        **_full_kwargs(review, kokoro=True),
+        expected_brief_identity=initial["brief_identity"],
+        on_resume_verified=lambda: events.append(("RESUME_IN_FLIGHT", None)),
+        on_stage_progress=checkpoint,
+    )
+    assert result["status"] == "TEST_DOUBLE_CHAPTER_TEXT_READY_UNREVIEWED"
+    assert result["audio_provenance"] == "INJECTED_TEST_WAV"
+    assert result["publish_eligible"] is False
+    assert [stage for stage, _ in events] == [
+        "RESUME_IN_FLIGHT",
+        "ADAPTATION_IN_FLIGHT",
+        "ADAPTATION_VERIFIED",
+        "SCRIPT_IN_FLIGHT",
+        "SCRIPT_VERIFIED",
+        "NARRATION_IN_FLIGHT",
+        "NARRATION_VERIFIED",
+        "DIRECTION_IN_FLIGHT",
+        "DIRECTION_VERIFIED",
+    ]
+    for stage, identity in events:
+        if stage.endswith("_IN_FLIGHT"):
+            assert identity is None
+        else:
+            assert isinstance(identity, str) and len(identity) == 64
+    assert dict(events)["ADAPTATION_VERIFIED"] == result["adaptation_identity"]
+    assert dict(events)["SCRIPT_VERIFIED"] == result["script_identity"]
+    assert dict(events)["NARRATION_VERIFIED"] == result["narration_report_identity"]
+    assert dict(events)["DIRECTION_VERIFIED"] == result["direction_identity"]
