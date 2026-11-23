@@ -1001,11 +1001,11 @@ def _stage_output_entries(
     if len(matched) != 1:
         raise PrivateHostStop("reviewed chapter stage identity absent or ambiguous")
     selected = matched[0]
-    # Reuse the production cache replay verifier. A validated/raw pair alone
-    # does NOT establish an exclusive winning claim or prior retry history.
-    # Without the original source-bound validator context, require the exact
-    # stage's canonical top-level schema and conservatively reject any prior
-    # parseable same-schema response as unverifiable (never bless a retry).
+    # Verify full winning claim/raw/validated identity and all preceding
+    # retry records. Offline recovery uses an original-validator rejection
+    # receipt bound at rejection time: a shape-only replay cannot determine
+    # whether a syntactically valid reply failed SOURCE-bound validation.
+    # Normal producer/cache replay still independently runs the real validator.
     shapes: dict[str, set[str]] = {
         "brief": {"argument", "beats", "coverage"},
         "adaptation": {
@@ -1041,6 +1041,7 @@ def _stage_output_entries(
             lambda raw: chapter._shape(raw, shapes[stage], "chapter recovery shape invalid"),
             2,
             8192,
+            recovery_evidence_only=True,
         )
     except chapter.ChapterStop:
         raise PrivateHostStop("reviewed chapter replay history cannot be verified") from None
