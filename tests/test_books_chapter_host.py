@@ -1295,7 +1295,6 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
     import tarfile
     import wave
 
-    from clipper.books import whole_book
     from clipper.stage_contracts import content_fingerprint
 
     root = tmp_path / "synthetic-private-host"
