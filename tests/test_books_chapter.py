@@ -1622,12 +1622,11 @@ def test_text_reservation_loss_before_publish_never_commits_success(
     with pytest.raises(chapter.ChapterStop):
         chapter._stage(*args, lambda x: x, hostile)
     assert list((root / "brief").rglob("validated.json")) == []
-    # A missing claim may be present only as a raw orphan; no successful replay.
+    # Even a deleted marker leaves a raw orphan; no new provider call is permitted.
     replay = Mock(side_effect=AssertionError("must not call provider twice"))
-    if tamper != "delete":
-        with pytest.raises(chapter.ChapterStop):
-            chapter._stage(*args, lambda x: x, replay)
-        replay.assert_not_called()
+    with pytest.raises(chapter.ChapterStop, match="prior unresolved"):
+        chapter._stage(*args, lambda x: x, replay)
+    replay.assert_not_called()
     calls.assert_called_once()
 
 

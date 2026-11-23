@@ -1114,7 +1114,7 @@ def _stage(
             root, directory, stage, stage_key, provenance, validate
         )
         return validated, artifact_key, provenance, 0
-    if directory.is_dir() and any(directory.glob("started-*.json")):
+    if directory.is_dir() and any(directory.iterdir()):
         raise ChapterStop("chapter stage has prior unresolved/failed attempts")
     for index in range(1, plan.max_attempts_per_stage + 1):
         marker = directory / f"started-{index}.json"
