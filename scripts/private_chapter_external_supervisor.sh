@@ -265,66 +265,109 @@ with open(sys.argv[1],"w",encoding="utf-8") as out:
   bounded chmod 600 "$destination/host-cleanup-verification.json" || true
 }
 
+# Emit a distinct sanitized category for exhausted clock versus changed host.
+cleanup_identity_failure() {
+  local reason="$1"
+  if (( deadline_epoch - $(date -u +%s) <= 0 )); then
+    echo "EXTERNAL_SUPERVISOR_TOTAL_DEADLINE_EXPIRED_MANUAL_REST_CHECK_REQUIRED" >&2
+  else
+    echo "$reason" >&2
+  fi
+}
+
 terminate_host() {
   original_status=$?
   trap - EXIT INT TERM HUP
   set +e
   if [[ "$verified_identity" != 1 ]]; then
-    # NEVER send destructive REST operations to an unverified repository or
-    # Codespace name. No safe automatic deletion exists without that identity.
     rm -rf -- "$session"
     echo "EXTERNAL_SUPERVISOR_IDENTITY_UNVERIFIED_OWNER_MUST_CHECK_HOST" >&2
     exit 2
   fi
   stop_verified=0
   deletion_verified=0
-  # Recover safe status and bounded private outputs before deletion, within
-  # the original shared deadline. Failed retrieval never vetoes cleanup.
-  if (( recovery_allowed == 1 && cleanup_only == 0 )); then
+  delete_dispatched=0
+  # Recovery is never allowed to consume the final DELETE reserve.
+  if (( recovery_allowed == 1 && cleanup_only == 0 &&
+        deadline_epoch - $(date -u +%s) > 45 )); then
     recover_private >/dev/null 2>&1 || true
   fi
-  if ! identity_matches; then
+  # Near the original hard deadline, DELETE is the FIRST destructive request.
+  # It takes priority over graceful STOP, polling, recovery, and local reports.
+  # Use short probes to reserve time for the exact-identity-checked DELETE.
+  remaining="$(( deadline_epoch - $(date -u +%s) ))"
+  if (( remaining <= 0 )); then
     rm -rf -- "$session"
-    echo "EXTERNAL_SUPERVISOR_REJECTED_HOST_IDENTITY_NO_DESTRUCTIVE_CALL" >&2
+    echo "EXTERNAL_SUPERVISOR_TOTAL_DEADLINE_EXPIRED_MANUAL_REST_CHECK_REQUIRED" >&2
     exit 2
   fi
-  # Every remote operation in the trap is independently bounded. A hung
-  # stop or status call CANNOT suppress the subsequent DELETE attempt.
-  bounded gh api -X POST "user/codespaces/$CODESPACE_NAME/stop" >/dev/null 2>&1
-  for _ in 1 2 3 4; do
-    state="$(bounded gh api "user/codespaces/$CODESPACE_NAME" 2>/dev/null |
-      bounded python3 -c 'import json,sys; print(json.load(sys.stdin).get("state",""))' 2>/dev/null || true)"
-    if [[ "$state" == "Shutdown" || "$state" == "Stopped" ]]; then
-      stop_verified=1
-      break
+  if (( remaining > 22 )); then
+    OP_LIMIT=2
+    if ! identity_matches; then
+      cleanup_identity_failure "EXTERNAL_SUPERVISOR_REJECTED_HOST_IDENTITY_NO_DESTRUCTIVE_CALL"
+      rm -rf -- "$session"
+      exit 2
     fi
-    bounded sleep 1 || break
-  done
+    # Only attempt STOP while enough time remains to probe and DELETE later.
+    if (( deadline_epoch - $(date -u +%s) > 18 )); then
+      bounded gh api -X POST "user/codespaces/$CODESPACE_NAME/stop" >/dev/null 2>&1 || true
+      for _ in 1 2; do
+        if (( deadline_epoch - $(date -u +%s) <= 12 )); then break; fi
+        state="$(bounded gh api "user/codespaces/$CODESPACE_NAME" 2>/dev/null |
+          bounded python3 -c 'import json,sys; print(json.load(sys.stdin).get("state",""))' 2>/dev/null || true)"
+        if [[ "$state" == "Shutdown" || "$state" == "Stopped" ]]; then
+          stop_verified=1
+          break
+        fi
+      done
+    fi
+  fi
+  # Reserve the last seconds for a fresh exact numeric identity probe and
+  # DELETE. Never send DELETE on a changed name/ID/repository/machine.
+  OP_LIMIT=1
   if ! identity_matches; then
+    cleanup_identity_failure "EXTERNAL_SUPERVISOR_REJECTED_HOST_IDENTITY_NO_DELETE"
     rm -rf -- "$session"
-    echo "EXTERNAL_SUPERVISOR_REJECTED_HOST_IDENTITY_NO_DELETE" >&2
     exit 2
   fi
-  bounded gh api -X DELETE "user/codespaces/$CODESPACE_NAME" >/dev/null 2>&1
-  for _ in 1 2 3 4; do
-    code="$(bounded gh api -i "user/codespaces/$CODESPACE_NAME" 2>/dev/null |
-      head -n 1 | grep -oE '404' || true)"
-    if [[ "$code" == "404" ]]; then
-      deletion_verified=1
-      break
-    fi
-    bounded sleep 1 || break
-  done
-  # Owner cleanup status and recovered file status are separate artifacts.
-  # This tiny local write runs AFTER destructive REST operations, never before.
+  if (( deadline_epoch - $(date -u +%s) <= 0 )); then
+    rm -rf -- "$session"
+    echo "EXTERNAL_SUPERVISOR_TOTAL_DEADLINE_EXPIRED_MANUAL_REST_CHECK_REQUIRED" >&2
+    exit 2
+  fi
+  # Even a hung STOP cannot consume the last DELETE slot: near expiry STOP
+  # is skipped altogether. Keep the DELETE call bounded to the ORIGINAL clock.
+  OP_LIMIT=2
+  delete_dispatched=1
+  bounded gh api -X DELETE "user/codespaces/$CODESPACE_NAME" >/dev/null 2>&1 || true
+  OP_LIMIT=1
+  if (( deadline_epoch - $(date -u +%s) > 0 )); then
+    for _ in 1 2; do
+      code="$(bounded gh api -i "user/codespaces/$CODESPACE_NAME" 2>/dev/null |
+        head -n 1 | grep -oE '404' || true)"
+      if [[ "$code" == "404" ]]; then
+        deletion_verified=1
+        break
+      fi
+      if (( deadline_epoch - $(date -u +%s) <= 0 )); then break; fi
+    done
+  fi
   write_owner_cleanup_status
   rm -rf -- "$session"
-  if [[ "$stop_verified" == 1 && "$deletion_verified" == 1 ]]; then
+  if (( deletion_verified == 1 )); then
     cleanup_verified=1
-    echo "EXTERNAL_SUPERVISOR_HOST_STOP_AND_DELETION_REST_VERIFIED"
+    if (( stop_verified == 1 )); then
+      echo "EXTERNAL_SUPERVISOR_HOST_STOP_AND_DELETION_REST_VERIFIED"
+    else
+      echo "EXTERNAL_SUPERVISOR_HOST_DELETION_REST_VERIFIED_STOP_NOT_ATTESTED"
+    fi
     exit "$original_status"
   fi
-  echo "EXTERNAL_SUPERVISOR_CLEANUP_NOT_VERIFIED_MANUAL_REST_CHECK_REQUIRED" >&2
+  if (( deadline_epoch - $(date -u +%s) <= 0 )); then
+    echo "EXTERNAL_SUPERVISOR_TOTAL_DEADLINE_EXPIRED_DELETE_DISPATCHED_VERIFICATION_INCOMPLETE" >&2
+  elif (( delete_dispatched == 1 )); then
+    echo "EXTERNAL_SUPERVISOR_DELETE_DISPATCHED_REST_VERIFICATION_INCOMPLETE" >&2
+  fi
   exit 2
 }
 # Signal handlers must TERMINATE; do not resume an interrupted sign/copy loop
@@ -366,12 +409,19 @@ if created.tzinfo is None:
 now = datetime.datetime.now(datetime.timezone.utc)
 # Identity verification and permission to execute are DISTINCT.
 # Even at 116 minutes, an exact approved Codespace must be cleaned up.
-if created > now or now >= created + datetime.timedelta(seconds=7200):
+if created > now:
     sys.exit(2)
+if now >= created + datetime.timedelta(seconds=7200):
+    sys.exit(3)
 execution_allowed = now < created + datetime.timedelta(seconds=6900)
 print(x["id"], x["created_at"], "EXECUTION" if execution_allowed else "CLEANUP_ONLY")
 ')" || {
-  echo "EXTERNAL_SUPERVISOR_WRONG_HOST_OR_TOTAL_DEADLINE" >&2
+  code=$?
+  if (( code == 3 )); then
+    echo "EXTERNAL_SUPERVISOR_TOTAL_DEADLINE_EXPIRED_NO_AUTOMATED_DELETE" >&2
+  else
+    echo "EXTERNAL_SUPERVISOR_WRONG_HOST_IDENTITY" >&2
+  fi
   exit 2
 }
 read -r codespace_id created_at lifecycle_mode <<< "$validated"
