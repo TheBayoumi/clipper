@@ -178,7 +178,8 @@ def request(
 ) -> tuple[dict[str, object], str, int]:
     """Exact pinned-template preflight supplied by caller, never a byte proxy."""
     if (
-        stage not in {
+        stage
+        not in {
             "argument",
             "audit",
             "reconcile",
@@ -529,9 +530,7 @@ def validate_human_review(
         raise HybridStop("hybrid meaning and qualifications have not been human attested")
     return doc
 
-def validate_adaptation(
-    raw: object, brief: dict[str, Any], plan: Any
-) -> dict[str, Any]:
+def validate_adaptation(raw: object, brief: dict[str, Any], plan: Any) -> dict[str, Any]:
     """Reuse the existing chapter creative contract without a lexical meaning proxy.
 
     Exact original spans and qualifications are appended to the validated artifact,
@@ -556,8 +555,7 @@ def validate_adaptation(
         ]
     }
     decisions = {
-        beat["beat_id"]: {"decision": "support_attested", "qualifier_quote": ""}
-        for beat in beats
+        beat["beat_id"]: {"decision": "support_attested", "qualifier_quote": ""} for beat in beats
     }
     try:
         adapted = chapter._adapt_validate(raw, shape, decisions, plan)
@@ -600,19 +598,13 @@ def validate_script(
         for beat in brief["beats"]
     }
     try:
-        script = chapter._script_validate(
-            raw, base_adaptation, decisions, plan, brief=base_brief
-        )
+        script = chapter._script_validate(raw, base_adaptation, decisions, plan, brief=base_brief)
     except chapter.ChapterStop as error:
         raise HybridStop("hybrid script violated connected chapter scene contract") from error
     source_beats = {beat["beat_id"]: beat for beat in brief["beats"]}
     annotated: list[dict[str, Any]] = []
     for scene in script["scenes"]:
-        spans = [
-            span
-            for bid in scene["beat_ids"]
-            for span in source_beats[bid]["spans"]
-        ]
+        spans = [span for bid in scene["beat_ids"] for span in source_beats[bid]["spans"]]
         annotated.append(
             {
                 **scene,
