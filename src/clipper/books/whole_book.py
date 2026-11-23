@@ -179,7 +179,9 @@ class WorkPlan:
         )
 
 
-def plan_for(book: BookText | SelectedSource, *, section_ids: tuple[str, ...] | None = None) -> WorkPlan:
+def plan_for(
+    book: BookText | SelectedSource, *, section_ids: tuple[str, ...] | None = None
+) -> WorkPlan:
     """Visit every ordered source/image block; never silently discard an image gap."""
     from .selected_scope import SelectedSource
 
