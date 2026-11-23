@@ -1958,7 +1958,6 @@ def test_local_offline_missing_cache_is_failed_not_zero_candidate(
     assert progress["progress"][0]["failure_category"] == "pinned_model_cache_unavailable"
 
 
-
 def test_injected_source_mining_has_distinct_identity_from_cpu_material() -> None:
     from clipper.stage_contracts import content_fingerprint
 

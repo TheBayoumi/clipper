@@ -1181,7 +1181,6 @@ def test_chapter_manifest_permissions_and_budgets_reject_bad_inputs(mutation: st
         chapter.ChapterPlan.from_manifest(settings)
 
 
-
 def test_concurrent_chapter_stage_exclusive_owner_and_legacy_cache_rejection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1261,7 +1260,6 @@ def test_concurrent_chapter_narration_single_winner_and_interrupted_block(
     with pytest.raises(chapter.ChapterStop, match="unresolved"):
         run()
     producer.assert_called_once()
-
 
 
 def test_qualified_invented_beats_cannot_be_relabeled_or_silently_denarrated() -> None:

@@ -867,7 +867,6 @@ def _request(stage: str, payload: dict[str, Any], plan: ChapterPlan) -> dict[str
     }
 
 
-
 def _claim(root: Path, marker: Path, request_key: str, attempt: int) -> str:
     """Exclusive local-filesystem reservation; a partial write stays unresolved.
 

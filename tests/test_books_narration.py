@@ -205,7 +205,6 @@ def test_synthetic_kokoro_pipeline_and_wave_conversion_without_model_weights(
         narration._kokoro_pipeline.cache_clear()
 
 
-
 @pytest.mark.parametrize("cached", [False, True])
 @pytest.mark.parametrize(
     "mutation", ["data-claims-more", "missing-pcm", "wrong-sample-width", "trailing-data"]
