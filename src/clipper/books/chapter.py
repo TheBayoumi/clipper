@@ -954,17 +954,18 @@ def _verified_owner(root: Path, marker: Path, key: str, attempt: int, owner: str
         started = whole_book.load_strict_reply(evaluation._read(marker, 2048))
     except (ValueError, TypeError, OSError):
         raise ChapterStop("chapter cached attempt has ambiguous reservation") from None
+    expected = {
+        "request_key": key,
+        "attempt": attempt,
+        "owner": owner,
+        "status": "STARTED_UNRESOLVED",
+    }
     if (
         type(attempt) is not int
         or attempt < 1
         or not isinstance(started, dict)
         or type(started.get("attempt")) is not int
-        or started != {
-            "request_key": key,
-            "attempt": attempt,
-            "owner": owner,
-            "status": "STARTED_UNRESOLVED",
-        }
+        or started != expected
     ):
         raise ChapterStop("chapter cached attempt owner mismatch")
 
@@ -1122,7 +1123,12 @@ def _stage(
     complete = directory / "validated.json"
     if complete.is_file():
         validated, artifact_key = _verified_text_artifact(
-            root, directory, stage, stage_key, provenance, validate,
+            root,
+            directory,
+            stage,
+            stage_key,
+            provenance,
+            validate,
             plan.max_attempts_per_stage,
         )
         return validated, artifact_key, provenance, 0
@@ -1133,8 +1139,11 @@ def _stage(
         # Revalidate the rejected attempt immediately before authorizing a retry.
         if previous_owner is not None:
             _verified_owner(
-                root, directory / f"started-{index - 1}.json",
-                stage_key, index - 1, previous_owner,
+                root,
+                directory / f"started-{index - 1}.json",
+                stage_key,
+                index - 1,
+                previous_owner,
             )
         marker = directory / f"started-{index}.json"
         owner = _claim(root, marker, stage_key, index)
@@ -1207,7 +1216,12 @@ def _stage(
             },
         )
         verified, verified_key = _verified_text_artifact(
-            root, directory, stage, stage_key, provenance, validate,
+            root,
+            directory,
+            stage,
+            stage_key,
+            provenance,
+            validate,
             plan.max_attempts_per_stage,
         )
         return verified, verified_key, provenance, index

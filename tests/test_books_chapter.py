@@ -1877,8 +1877,10 @@ def test_rejected_chapter_text_cannot_retry_with_lost_claim(
     tmp_path: Path, claim_change: str, rejection: str
 ) -> None:
     root = tmp_path / "private"
-    first_response = "{" if rejection == "malformed" else json.dumps(
-        {"source": "unattested"} if rejection == "source" else {"wrong": "schema"}
+    first_response = (
+        "{"
+        if rejection == "malformed"
+        else json.dumps({"source": "unattested"} if rejection == "source" else {"wrong": "schema"})
     )
     responses: list[str] = []
 
@@ -1898,9 +1900,11 @@ def test_rejected_chapter_text_cannot_retry_with_lost_claim(
         return first_response
 
     def validator(value: object) -> dict:
-        if not isinstance(value, dict) or (
-            rejection == "schema" and "source" not in value
-        ) or (rejection == "source" and value.get("source") == "unattested"):
+        if (
+            not isinstance(value, dict)
+            or (rejection == "schema" and "source" not in value)
+            or (rejection == "source" and value.get("source") == "unattested")
+        ):
             raise chapter.ChapterStop("synthetic schema/source rejection")
         return value
 
@@ -1931,14 +1935,8 @@ def test_healthy_rejected_chapter_first_attempt_retries_with_distinct_claims(
     assert first == {"value": "accepted synthetic"}
     assert attempts == 2
     directory = next((root / "brief").iterdir())
-    claims = [
-        json.loads((directory / f"started-{index}.json").read_bytes())
-        for index in (1, 2)
-    ]
-    raws = [
-        json.loads((directory / f"raw-{index}.json").read_bytes())
-        for index in (1, 2)
-    ]
+    claims = [json.loads((directory / f"started-{index}.json").read_bytes()) for index in (1, 2)]
+    raws = [json.loads((directory / f"raw-{index}.json").read_bytes()) for index in (1, 2)]
     assert [type(claim["attempt"]) for claim in claims] == [int, int]
     assert [raw["attempt"] for raw in raws] == [1, 2]
     assert [claim["attempt"] for claim in claims] == [1, 2]
