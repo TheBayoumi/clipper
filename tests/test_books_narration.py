@@ -203,3 +203,39 @@ def test_synthetic_kokoro_pipeline_and_wave_conversion_without_model_weights(
             )
     finally:
         narration._kokoro_pipeline.cache_clear()
+
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("mutation", ["data-claims-more", "missing-pcm", "wrong-sample-width", "trailing-data"])
+def test_wav_validation_uses_real_pcm_frames_not_forged_metadata(
+    tmp_path: Path, cached: bool, mutation: str
+) -> None:
+    original = _valid_wav(frames=8000)
+    corrupted = bytearray(original)
+    if mutation == "data-claims-more":
+        corrupted[40:44] = (384000).to_bytes(4, "little")
+        corrupted[4:8] = (384036).to_bytes(4, "little")
+    elif mutation == "missing-pcm":
+        corrupted = corrupted[:-2]
+        corrupted[4:8] = (len(corrupted) - 8).to_bytes(4, "little")
+    elif mutation == "wrong-sample-width":
+        corrupted[34:36] = (1).to_bytes(2, "little")
+    elif mutation == "trailing-data":
+        corrupted.extend(b"\0\0")
+    audio = bytes(corrupted)
+    config = scripting.NicheConfig.load(ROOT / "niches/book-lessons.yaml")
+    scene = scripting.Scene("synthetic", "synthetic sentence")
+    root = tmp_path / ("cache" if cached else "new")
+    path = narration.tts_cache_path(scene, config, root)
+    if cached:
+        path.parent.mkdir(parents=True)
+        path.write_bytes(audio)
+    supplied = Mock(return_value=audio)
+    with pytest.raises(scripting.NicheVideoError, match="invalid WAV audio"):
+        narration.synthesize_scene(scene, config, root, producer=supplied)
+    if cached:
+        supplied.assert_not_called()
+    else:
+        supplied.assert_called_once()
+        assert not path.exists()

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 import io
 import json
 import sys
@@ -1176,3 +1178,83 @@ def test_chapter_manifest_permissions_and_budgets_reject_bad_inputs(mutation: st
         settings["voice"] = "unknown-speaker"
     with pytest.raises(chapter.ChapterStop):
         chapter.ChapterPlan.from_manifest(settings)
+
+
+
+def test_concurrent_chapter_stage_exclusive_owner_and_legacy_cache_rejection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    barrier = Barrier(2)
+    original_claim = chapter._claim
+
+    def synchronized_claim(*args: object) -> str:
+        barrier.wait(timeout=5)
+        return original_claim(*args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(chapter, "_claim", synchronized_claim)
+    provider = Mock(return_value='{"ok": true}')
+    args = (tmp_path / "root", "brief", {"scope": "synthetic"}, _plan(max_attempts_per_stage=1))
+    def run() -> tuple[dict, str, str, int]:
+        return chapter._stage(*args, lambda v: v, provider)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(run) for _ in range(2)]
+        results = []
+        errors = []
+        for future in futures:
+            try:
+                results.append(future.result())
+            except chapter.ChapterStop as exc:
+                errors.append(str(exc))
+    assert len(results) == 1
+    assert len(errors) == 1 and "reservation" in errors[0]
+    provider.assert_called_once()
+    stage_dir = next((tmp_path / "root" / "brief").iterdir())
+    complete = json.loads((stage_dir / "validated.json").read_bytes())
+    assert complete["owner"]
+    assert json.loads((stage_dir / "started-1.json").read_bytes())["owner"] == complete["owner"]
+    monkeypatch.setattr(chapter, "_claim", original_claim)
+    assert run()[3] == 0
+    (stage_dir / "started-1.json").unlink()
+    with pytest.raises(chapter.ChapterStop, match="ambiguous reservation"):
+        run()
+    provider.assert_called_once()
+
+
+def test_concurrent_chapter_narration_single_winner_and_interrupted_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    barrier = Barrier(2)
+    original_claim = chapter._claim
+
+    def synchronized_claim(*args: object) -> str:
+        barrier.wait(timeout=5)
+        return original_claim(*args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(chapter, "_claim", synchronized_claim)
+    producer = Mock(side_effect=_wav)
+    script = {"scenes": [{"scene_id": "scene-01", "narration": "synthetic", "dialogue": []}]}
+    def run() -> tuple[list[dict], str, str]:
+        return chapter._narrate(tmp_path / "root", script, _plan(), producer)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(run) for _ in range(2)]
+        results = []
+        failures = []
+        for future in futures:
+            try:
+                results.append(future.result())
+            except chapter.ChapterStop as exc:
+                failures.append(str(exc))
+    assert len(results) == 1
+    assert len(failures) == 1 and "reservation" in failures[0]
+    producer.assert_called_once()
+    monkeypatch.setattr(chapter, "_claim", original_claim)
+    assert run() == results[0]
+    producer.assert_called_once()
+    root = tmp_path / "root"
+    marker = next((root / "chapter-audio-injected_test_wav" / "attempts").glob("completed-*.json"))
+    marker.unlink()
+    with pytest.raises(chapter.ChapterStop, match="unresolved"):
+        run()
+    producer.assert_called_once()

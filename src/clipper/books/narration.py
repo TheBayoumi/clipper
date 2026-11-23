@@ -10,6 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from . import acquisition
 from .scripting import (
     VOICE_CONTRACT,
     VOICE_MODEL,
@@ -18,7 +19,6 @@ from .scripting import (
     NicheVideoError,
     Scene,
     _fingerprint,
-    _write_atomic,
 )
 
 
@@ -31,11 +31,46 @@ def _kokoro_pipeline() -> Any:
     return kokoro.KPipeline(lang_code="a", repo_id=VOICE_MODEL)
 
 
+MAX_WAV_BYTES = 40_000_000
+
+
 def _wav_metadata(payload: bytes) -> tuple[int, int, int]:
+    """Validate RIFF structure and actual decoded PCM, never just declared frame count."""
     try:
+        if (
+            not isinstance(payload, bytes)
+            or not 44 <= len(payload) <= MAX_WAV_BYTES
+            or payload[:4] != b"RIFF"
+            or payload[8:12] != b"WAVE"
+            or int.from_bytes(payload[4:8], "little") + 8 != len(payload)
+        ):
+            raise ValueError("invalid RIFF envelope")
+        offset = 12
+        data_sizes: list[int] = []
+        while offset < len(payload):
+            if offset + 8 > len(payload):
+                raise ValueError("incomplete RIFF chunk header")
+            size = int.from_bytes(payload[offset + 4 : offset + 8], "little")
+            end = offset + 8 + size
+            if end + (size & 1) > len(payload):
+                raise ValueError("truncated RIFF chunk")
+            if payload[offset : offset + 4] == b"data":
+                data_sizes.append(size)
+            offset = end + (size & 1)
+        if offset != len(payload) or len(data_sizes) != 1:
+            raise ValueError("missing or duplicate PCM data chunk")
         with wave.open(io.BytesIO(payload), "rb") as wav:
-            return wav.getnchannels(), wav.getframerate(), wav.getnframes()
-    except (wave.Error, EOFError) as exc:
+            channels, rate, frames = wav.getnchannels(), wav.getframerate(), wav.getnframes()
+            expected = frames * channels * wav.getsampwidth()
+            if (
+                wav.getsampwidth() != 2
+                or wav.getcomptype() != "NONE"
+                or expected != data_sizes[0]
+                or len(wav.readframes(frames + 1)) != expected
+            ):
+                raise ValueError("truncated or unsupported PCM geometry")
+        return channels, rate, frames
+    except (wave.Error, EOFError, ValueError, TypeError, OverflowError) as exc:
         raise NicheVideoError("Kokoro produced invalid WAV audio") from exc
 
 
@@ -101,5 +136,5 @@ def synthesize_scene(
         return path
     audio = (producer or _kokoro_wav)(scene.narration, config.voice)
     validated_wav(audio)
-    _write_atomic(path, audio)
+    acquisition._private_write(path, audio, private_root=cache_root)
     return path

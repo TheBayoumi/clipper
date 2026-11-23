@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 from typing import TYPE_CHECKING, Any, cast
 
 from clipper.stage_contracts import content_fingerprint
 
-from . import evaluation, faithful, narration, scripting, whole_book
+from . import acquisition, evaluation, faithful, narration, scripting, whole_book
 
 if TYPE_CHECKING:
     from .orchestrator import BookOrchestrator
@@ -808,6 +811,49 @@ def _request(stage: str, payload: dict[str, Any], plan: ChapterPlan) -> dict[str
     }
 
 
+
+def _claim(root: Path, marker: Path, request_key: str, attempt: int) -> str:
+    """Exclusive local-filesystem reservation; a partial write stays unresolved.
+
+    O_EXCL chooses a single process/thread on a filesystem honoring exclusive
+    creation. This is not a distributed lease or an execution timeout.
+    """
+    acquisition._private_directory(marker.parent, private_root=root)
+    owner = uuid4().hex
+    record = evaluation._json_bytes(
+        {
+            "request_key": request_key,
+            "attempt": attempt,
+            "owner": owner,
+            "status": "STARTED_UNRESOLVED",
+        }
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(marker, flags, 0o600)
+    except FileExistsError:
+        raise ChapterStop("chapter attempt has prior unresolved reservation") from None
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(record)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return owner
+
+
+def _verified_owner(root: Path, marker: Path, key: str, attempt: int, owner: str) -> None:
+    try:
+        started = whole_book.load_strict_reply(evaluation._read(marker, 2048))
+    except (ValueError, TypeError, OSError):
+        raise ChapterStop("chapter cached attempt has ambiguous reservation") from None
+    if started != {
+        "request_key": key,
+        "attempt": attempt,
+        "owner": owner,
+        "status": "STARTED_UNRESOLVED",
+    }:
+        raise ChapterStop("chapter cached attempt owner mismatch")
+
+
 def _stage(
     root: Path,
     stage: str,
@@ -816,9 +862,11 @@ def _stage(
     validate: Callable[[object], dict[str, Any]],
     completion: Callable[[dict[str, object]], str] | None,
 ) -> tuple[dict[str, Any], str, str, int]:
-    """Raw-preserving, immutable, content-bound stage with a pre-call reservation."""
+    """Reserve each irreversible provider attempt before calling any producer."""
+    if completion is None:
+        raise ChapterStop("actual chapter CPU route blocked pending a verified bounded private host")
     request = _request(stage, payload, plan)
-    provenance = "INJECTED_TEST_PRODUCER" if completion is not None else "ACTUAL_CPU_QWEN"
+    provenance = "INJECTED_TEST_PRODUCER"
     stage_key = content_fingerprint(
         {
             "contract": stage,
@@ -847,58 +895,52 @@ def _stage(
     if complete.is_file():
         saved = _shape(
             whole_book.load_strict_reply(evaluation._read(complete)),
-            {"request_key", "provenance", "contract", "payload"},
-            "chapter stage cache schema mismatch",
+            {"request_key", "provenance", "contract", "payload", "owner", "attempt"},
+            "chapter stage cache schema/owner mismatch; legacy execution requires reconciliation",
         )
         if (
             saved["request_key"] != stage_key
             or saved["provenance"] != provenance
-            or (saved["contract"] != stage)
+            or saved["contract"] != stage
+            or not isinstance(saved["owner"], str)
+            or type(saved["attempt"]) is not int
+            or not 1 <= saved["attempt"] <= plan.max_attempts_per_stage
         ):
             raise ChapterStop("chapter stage cache identity changed")
+        _verified_owner(
+            root,
+            directory / f"started-{saved['attempt']}.json",
+            stage_key,
+            saved["attempt"],
+            saved["owner"],
+        )
         return validate(saved["payload"]), stage_key, provenance, 0
     if directory.is_dir() and any(directory.glob("started-*.json")):
         raise ChapterStop("chapter stage has prior unresolved/failed attempts")
-    producer = completion or scripting._local_script_completion
     for index in range(1, plan.max_attempts_per_stage + 1):
-        evaluation._store(
-            root,
-            directory / f"started-{index}.json",
-            {
-                "request_key": stage_key,
-                "attempt": index,
-                "status": "STARTED_UNRESOLVED",
-            },
-        )
+        marker = directory / f"started-{index}.json"
+        owner = _claim(root, marker, stage_key, index)
         try:
             response = evaluation._capture_private_generator(
-                root, directory, lambda: producer(request)
+                root, directory, lambda: completion(request)
             )
         except Exception:
             evaluation._store(
-                root,
-                directory / f"failed-{index}.json",
-                {
-                    "attempt": index,
-                    "status": "PRODUCER_FAILURE",
-                },
+                root, directory / f"failed-{index}.json",
+                {"attempt": index, "owner": owner, "status": "PRODUCER_FAILURE"},
             )
             raise ChapterStop("private chapter producer failed; no automatic retry") from None
         if not isinstance(response, str) or len(response.encode("utf-8")) > MAX_RAW_BYTES:
             evaluation._store(
-                root,
-                directory / f"failed-{index}.json",
-                {
-                    "attempt": index,
-                    "status": "NON_TEXT_OR_OVERSIZE",
-                },
+                root, directory / f"failed-{index}.json",
+                {"attempt": index, "owner": owner, "status": "NON_TEXT_OR_OVERSIZE"},
             )
             raise ChapterStop("chapter producer returned invalid bounded raw output")
         evaluation._store(
-            root,
-            directory / f"raw-{index}.json",
+            root, directory / f"raw-{index}.json",
             {
                 "attempt": index,
+                "owner": owner,
                 "raw": response,
                 "sha256": hashlib.sha256(response.encode("utf-8")).hexdigest(),
             },
@@ -907,12 +949,8 @@ def _stage(
             result = validate(whole_book.load_strict_reply(response))
         except (ValueError, TypeError, KeyError, RecursionError):
             evaluation._store(
-                root,
-                directory / f"failed-{index}.json",
-                {
-                    "attempt": index,
-                    "status": "SCHEMA_OR_SOURCE_REJECTED",
-                },
+                root, directory / f"failed-{index}.json",
+                {"attempt": index, "owner": owner, "status": "SCHEMA_OR_SOURCE_REJECTED"},
             )
             if index == plan.max_attempts_per_stage:
                 raise ChapterStop("chapter stage exhausted all recorded attempts") from None
@@ -924,6 +962,8 @@ def _stage(
                 "request_key": stage_key,
                 "provenance": provenance,
                 "contract": stage,
+                "owner": owner,
+                "attempt": index,
                 "payload": result,
             },
         )
@@ -936,10 +976,12 @@ def _narrate(
     script: dict[str, Any],
     plan: ChapterPlan,
     producer: Callable[[str, str], bytes] | None,
-) -> tuple[list[dict[str, Any]], str]:
-    """Kokoro only when explicitly opted into; one immutable WAV per utterance."""
+) -> tuple[list[dict[str, Any]], str, str]:
+    """One exclusive audio owner; record reproducible sample-accurate utterance offsets."""
     from .scripting import NicheConfig, Scene
 
+    if producer is None:
+        raise ChapterStop("actual chapter Kokoro route blocked pending a verified bounded private host")
     config = NicheConfig(
         niche="private_chapter_preproduction",
         audience="private",
@@ -949,9 +991,10 @@ def _narrate(
         topic="private chapter",
         format="general",
     )
-    provenance = "INJECTED_TEST_WAV" if producer is not None else "ACTUAL_CPU_KOKORO"
+    provenance = "INJECTED_TEST_WAV"
     audio_root = root / f"chapter-audio-{provenance.lower()}"
     records: list[dict[str, Any]] = []
+    position = 0
     for scene in script["scenes"]:
         utterances = [("narration", scene["narration"], "narrator")]
         utterances += [
@@ -960,71 +1003,97 @@ def _narrate(
         for index, (kind, text, speaker_id) in enumerate(utterances):
             item = Scene(headline=scene["scene_id"], narration=text)
             path = narration.tts_cache_path(item, config, audio_root)
-            marker_key = content_fingerprint(
-                {
-                    "request": narration.tts_request(item, config),
-                    "provenance": provenance,
-                }
-            )
+            request = narration.tts_request(item, config)
+            marker_key = content_fingerprint({"request": request, "provenance": provenance})
             marker = audio_root / "attempts" / f"{marker_key}.json"
-            if not path.is_file():
-                if marker.exists():
-                    raise ChapterStop("prior Kokoro utterance is unresolved; no retry")
-                evaluation._store(
-                    root, marker, {"status": "STARTED_UNRESOLVED", "request_sha256": marker_key}
-                )
-            try:
-
-                def make_utterance(utterance: Scene = item) -> Path:
-                    return narration.synthesize_scene(
-                        utterance, config, audio_root, producer=producer
+            complete = audio_root / "attempts" / f"completed-{marker_key}.json"
+            if complete.is_file():
+                try:
+                    saved = _shape(
+                        whole_book.load_strict_reply(evaluation._read(complete, 2048)),
+                        {"request_key", "owner", "attempt", "status", "sha256", "bytes"},
+                        "chapter audio completion ownership schema",
                     )
-
-                wave_path = evaluation._capture_private_generator(root, audio_root, make_utterance)
-                data = evaluation._read(wave_path, 40_000_000)
+                except (ValueError, OSError, TypeError):
+                    raise ChapterStop("chapter audio completion record invalid") from None
+                if (
+                    not path.is_file()
+                    or saved["request_key"] != marker_key
+                    or saved["attempt"] != 1
+                    or saved["status"] != "VALIDATED_WAV"
+                    or not isinstance(saved["owner"], str)
+                ):
+                    raise ChapterStop("chapter audio has incomplete or conflicting publication")
+                _verified_owner(root, marker, marker_key, 1, saved["owner"])
+                data = evaluation._read(path, narration.MAX_WAV_BYTES)
+                if len(data) != saved["bytes"] or hashlib.sha256(data).hexdigest() != saved["sha256"]:
+                    raise ChapterStop("chapter audio cache changed after owner publication")
                 channels, sample_rate, frames = narration.validated_wav(data, cached=True)
-            except Exception:
-                raise ChapterStop("chapter narration failed; private attempt retained") from None
+            else:
+                if marker.exists() or path.exists():
+                    raise ChapterStop("prior Kokoro utterance is unresolved; no retry")
+                _claim(root, marker, marker_key, 1)
+                try:
+
+                    def make_utterance(utterance: Scene = item) -> Path:
+                        return narration.synthesize_scene(
+                            utterance, config, audio_root, producer=producer
+                        )
+
+                    wave_path = evaluation._capture_private_generator(root, audio_root, make_utterance)
+                    data = evaluation._read(wave_path, narration.MAX_WAV_BYTES)
+                    channels, sample_rate, frames = narration.validated_wav(data, cached=True)
+                    owner = whole_book.load_strict_reply(evaluation._read(marker, 2048))["owner"]
+                    evaluation._store(
+                        root,
+                        complete,
+                        {
+                            "request_key": marker_key,
+                            "attempt": 1,
+                            "owner": owner,
+                            "status": "VALIDATED_WAV",
+                            "sha256": hashlib.sha256(data).hexdigest(),
+                            "bytes": len(data),
+                        },
+                    )
+                except Exception:
+                    raise ChapterStop("chapter narration failed; private attempt retained") from None
+            start_sample = position
+            position += frames
             records.append(
                 {
                     "scene_id": scene["scene_id"],
                     "utterance": index,
                     "kind": kind,
                     "speaker_id": speaker_id,
-                    "tts_request_sha256": content_fingerprint(narration.tts_request(item, config)),
+                    "tts_request_sha256": content_fingerprint(request),
                     "sha256": hashlib.sha256(data).hexdigest(),
+                    "wav_relative_path": str(path.relative_to(root)),
                     "voice": plan.voice,
                     "sample_rate": sample_rate,
                     "channels": channels,
                     "samples": frames,
-                    "duration_seconds": round(frames / sample_rate, 4),
+                    "start_sample": start_sample,
+                    "end_sample": position,
+                    "start_seconds": round(start_sample / sample_rate, 6),
+                    "end_seconds": round(position / sample_rate, 6),
+                    "duration_seconds": round(frames / sample_rate, 6),
                     "provenance": provenance,
                 }
             )
-    report_key = content_fingerprint(
-        {
-            "script": script,
-            "records": records,
-            "voice": plan.voice,
-            "model": scripting.VOICE_MODEL,
-            "voice_revision_label": scripting.VOICE_REVISION,
-        }
-    )
-    evaluation._store(
-        root,
-        root / f"narration-report-{report_key}.json",
-        {
-            "schema": "clipper-chapter-narration-v1",
-            "records": records,
-            "voice_model": scripting.VOICE_MODEL,
-            "voice_revision_label": scripting.VOICE_REVISION,
-            "resolved_model_commit": None,
-            "resolved_commit_verified": False,
-            "provenance": provenance,
-            "publish_eligible": False,
-        },
-    )
-    return records, provenance
+    report = {
+        "schema": "clipper-chapter-narration-v2",
+        "records": records,
+        "voice_model": scripting.VOICE_MODEL,
+        "voice_revision_label": scripting.VOICE_REVISION,
+        "resolved_model_commit": None,
+        "resolved_commit_verified": False,
+        "provenance": provenance,
+        "publish_eligible": False,
+    }
+    report_key = content_fingerprint(report)
+    evaluation._store(root, root / f"narration-report-{report_key}.json", report)
+    return records, provenance, report_key
 
 
 def evaluate_chapter(
@@ -1226,13 +1295,15 @@ def evaluate_chapter(
     )
     audio: list[dict[str, Any]] | None = None
     audio_origin = "NO_AUDIO"
+    narration_report_key: str | None = None
     if limits.kokoro_cpu:
-        audio, audio_origin = _narrate(root, script, limits, narration_producer)
+        audio, audio_origin, narration_report_key = _narrate(root, script, limits, narration_producer)
     times = _timings(script, limits, audio)
     summary.update(
         {
             "actual_audio": audio_origin == "ACTUAL_CPU_KOKORO",
             "audio_provenance": audio_origin,
+            "narration_report_identity": narration_report_key,
             "duration_seconds": times[-1]["end_seconds"],
             "timing_basis": times[0]["basis"],
         }
