@@ -1822,7 +1822,6 @@ def test_text_artifact_envelope_rejects_trailing_unbound_bytes(tmp_path: Path) -
     producer.assert_called_once()
 
 
-
 def test_changed_verified_direction_text_rekeys_final_result_without_new_producer(
     tmp_path: Path,
 ) -> None:
