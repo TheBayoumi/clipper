@@ -1406,7 +1406,6 @@ def test_omitted_qualified_unit_needs_human_disposition(tmp_path: Path) -> None:
     source = json.loads(source_file.read_bytes())
     review = json.loads(review_path.read_bytes())
     brief["coverage"][0]["decision"] = "omit"
-    brief["beats"] = brief["beats"][1:]
     # Directly validate explicit reviewer treatment of an omitted, qualified unit.
     review["unit_decisions"][0]["decision"] = "omit"
     review["unit_decisions"][0]["qualifier_quote"] = source["units"][0]["text"][:40]

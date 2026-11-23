@@ -435,7 +435,9 @@ def _adapt_validate(
             and beat["decision"] == "omit"
             and (qualifier or original_qualification)
         ):
-            raise ChapterStop("qualified supported beat requires narrated preservation or new review")
+            raise ChapterStop(
+                "qualified supported beat requires narrated preservation or new review"
+            )
         if decisions[bid]["decision"] == "reject" and beat["decision"] != "omit":
             raise ChapterStop("human-rejected chapter beat cannot become a scene")
         if source_beats[bid]["essential"] and (
