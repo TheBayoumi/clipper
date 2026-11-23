@@ -679,7 +679,8 @@ def _chapter_prompt_encoding(
 def _chapter_encoding_receipt(encoding: dict[str, object]) -> dict[str, str]:
     """Canonical SHA-256 encoding shared by preflight, stage key and generation."""
     ids = encoding["token_ids"]
-    assert isinstance(ids, list)
+    if not isinstance(ids, list) or not ids or any(type(x) is not int or x < 0 for x in ids):
+        raise PinnedQwenSnapshotError("chapter verified token sequence malformed")
     digest = hashlib.sha256(
         (
             json.dumps(ids, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
