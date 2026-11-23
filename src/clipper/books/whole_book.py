@@ -159,9 +159,7 @@ class WorkPlan:
         )
 
 
-def plan_for(
-    book: BookText, *, section_ids: tuple[str, ...] | None = None
-) -> WorkPlan:
+def plan_for(book: BookText, *, section_ids: tuple[str, ...] | None = None) -> WorkPlan:
     """Visit every ordered source/image block; never silently discard an image gap."""
     if not book.blocks:
         raise mining.BookMiningError("candidate analysis requires faithful ordered reading blocks")
@@ -232,9 +230,7 @@ def plan_for(
         not isinstance(section_ids, tuple)
         or not 1 <= len(section_ids) <= 16
         or any(
-            not isinstance(value, str)
-            or not value
-            or value not in available
+            not isinstance(value, str) or not value or value not in available
             for value in section_ids
         )
         or len(set(section_ids)) != len(section_ids)
@@ -246,15 +242,19 @@ def plan_for(
     if not scoped_units:
         raise mining.BookMiningError("section scope contains no faithful source work units")
     order = tuple(
-        section_id for section_id in dict.fromkeys(unit.section_id for unit in parent.units)
+        section_id
+        for section_id in dict.fromkeys(unit.section_id for unit in parent.units)
         if section_id in selected
     )
     if order != section_ids:
         raise mining.BookMiningError("section IDs must follow canonical source reading order")
     return WorkPlan(
-        parent.book_fingerprint, scoped_units,
+        parent.book_fingerprint,
+        scoped_units,
         tuple(item for item in parent.skipped if item["section_id"] in selected),
-        section_ids, parent.fingerprint, len(parent.units),
+        section_ids,
+        parent.fingerprint,
+        len(parent.units),
         len(parent.units) - len(scoped_units),
     )
 

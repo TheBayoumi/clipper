@@ -245,9 +245,10 @@ def test_actual_script_injected_generated_direction_and_no_visual_stage(
     script_report = _private_report(runner.root, "script-report-*.json")
     assert script_report["script_semantic_review"] == "PENDING"
     assert script_report["raw_attempt_count"] == 1
-    assert _private_report(runner.root, "narration-report-*.json")[
-        "voice_revision_resolved_commit"
-    ] is None
+    assert (
+        _private_report(runner.root, "narration-report-*.json")["voice_revision_resolved_commit"]
+        is None
+    )
     shots = _private_report(runner.root, "validated-text-shots.json")
     assert all(shot["scene_id"] == f"scene-{i:02d}" for i, shot in enumerate(shots["shots"]))
     assert all(shot["timing"]["basis"] == "estimated_no_audio" for shot in shots["shots"])
@@ -308,19 +309,21 @@ def test_opt_in_kokoro_real_wav_metadata_and_replay(
     no_more.assert_not_called()
     script_before = _private_report(runner.root, "script-report-*.json")
     estimate = runner.evaluate_candidate(
-        ref, progress_path=progress, review_file=review,
-        options=evaluation.EvaluationOptions(
-            script_cpu=True, direction_cpu=True, kokoro_cpu=False
-        ),
-        script_completion=no_more, direction_completion=shots,
+        ref,
+        progress_path=progress,
+        review_file=review,
+        options=evaluation.EvaluationOptions(script_cpu=True, direction_cpu=True, kokoro_cpu=False),
+        script_completion=no_more,
+        direction_completion=shots,
         narration_producer=no_more,
     )
     assert estimate["narration_included"] is False
     assert estimate["timing_basis"] == "estimated_no_audio"
     assert _private_report(runner.root, "script-report-*.json") == script_before
-    assert len(list(
-        (runner.root / "book-candidates/evaluations").rglob("narration-report-*.json")
-    )) == 2
+    assert (
+        len(list((runner.root / "book-candidates/evaluations").rglob("narration-report-*.json")))
+        == 2
+    )
     assert audio.call_count == 4
     no_more.assert_not_called()
 
@@ -458,13 +461,12 @@ def test_script_failed_provider_never_reinvoked_on_identical_resume(
     runner, ref, progress, candidates = _mined(tmp_path)
     review = _review(tmp_path, progress, candidates)
     provider = Mock(
-        side_effect=RuntimeError("PRIVATE_SOURCE_DO_NOT_ECHO")
-        if kind == "exception" else None,
-        return_value={"PRIVATE_SOURCE_DO_NOT_ECHO": True}
-        if kind == "nontext" else None,
+        side_effect=RuntimeError("PRIVATE_SOURCE_DO_NOT_ECHO") if kind == "exception" else None,
+        return_value={"PRIVATE_SOURCE_DO_NOT_ECHO": True} if kind == "nontext" else None,
     )
     kwargs = {
-        "progress_path": progress, "review_file": review,
+        "progress_path": progress,
+        "review_file": review,
         "options": evaluation.EvaluationOptions(script_cpu=True),
         "script_completion": provider,
     }
@@ -473,9 +475,7 @@ def test_script_failed_provider_never_reinvoked_on_identical_resume(
     with pytest.raises(evaluation.EvaluationStop, match="previous script attempt"):
         runner.evaluate_candidate(ref, **kwargs)
     assert provider.call_count == 1
-    started = list(
-        (runner.root / "book-candidates/evaluations").rglob("started-1.json")
-    )
+    started = list((runner.root / "book-candidates/evaluations").rglob("started-1.json"))
     assert len(started) == 1
     assert json.loads(started[0].read_bytes())["status"] == "STARTED_UNRESOLVED"
 
@@ -488,15 +488,15 @@ def test_direction_failed_provider_never_reinvoked_on_identical_resume(
     review = _review(tmp_path, progress, candidates)
     script = Mock(return_value=json.dumps(_episode()))
     provider = Mock(
-        side_effect=RuntimeError("PRIVATE_DIRECTION_DO_NOT_ECHO")
-        if kind == "exception" else None,
-        return_value={"PRIVATE_DIRECTION_DO_NOT_ECHO": True}
-        if kind == "nontext" else None,
+        side_effect=RuntimeError("PRIVATE_DIRECTION_DO_NOT_ECHO") if kind == "exception" else None,
+        return_value={"PRIVATE_DIRECTION_DO_NOT_ECHO": True} if kind == "nontext" else None,
     )
     kwargs = {
-        "progress_path": progress, "review_file": review,
+        "progress_path": progress,
+        "review_file": review,
         "options": evaluation.EvaluationOptions(script_cpu=True, direction_cpu=True),
-        "script_completion": script, "direction_completion": provider,
+        "script_completion": script,
+        "direction_completion": provider,
     }
     with pytest.raises(evaluation.EvaluationStop):
         runner.evaluate_candidate(ref, **kwargs)
@@ -510,9 +510,7 @@ def test_direction_failed_provider_never_reinvoked_on_identical_resume(
     assert len(direction_starts) == 1
 
 
-def test_immutable_exact_five_unit_section_scope_and_incomplete_fail_stop(
-    tmp_path: Path
-) -> None:
+def test_immutable_exact_five_unit_section_scope_and_incomplete_fail_stop(tmp_path: Path) -> None:
     runner, acquired, _ = ingested(tmp_path, paragraphs=12, with_image=False)
     parent = whole_book.plan_for(acquired.book)
     grouped: dict[str, int] = {}
@@ -545,26 +543,33 @@ def test_immutable_exact_five_unit_section_scope_and_incomplete_fail_stop(
     def producer(request: dict[str, object]) -> str:
         calls(request)
         span = request["constraints"]["spans"][0]  # type: ignore[index]
-        return json.dumps({
-            "lessons": [{
-                "id": span["id"], "topic": "Synthetic section evidence",
-                "claim": "The exact synthetic source states a limited observation.",
-                "hook_angle": "A single concrete observation",
-                "visual_action": "A worker marks a tool on a card",
-                "evidence": span["text"],
-                "evidence_field": request["constraints"]["evidence_field"],  # type: ignore[index]
-            }]
-        })
+        return json.dumps(
+            {
+                "lessons": [
+                    {
+                        "id": span["id"],
+                        "topic": "Synthetic section evidence",
+                        "claim": "The exact synthetic source states a limited observation.",
+                        "hook_angle": "A single concrete observation",
+                        "visual_action": "A worker marks a tool on a card",
+                        "evidence": span["text"],
+                        "evidence_field": request["constraints"]["evidence_field"],  # type: ignore[index]
+                    }
+                ]
+            }
+        )
 
     with pytest.raises(evaluation.EvaluationStop, match="incomplete"):
         runner.evaluate_candidate(
-            acquired.analysis_ref_path, section_manifest=path,
+            acquired.analysis_ref_path,
+            section_manifest=path,
             options=evaluation.EvaluationOptions(mine_cpu=True, max_new_units=4),
             mine_completion=producer,
         )
     assert calls.call_count == 4
     outcome = runner.evaluate_candidate(
-        acquired.analysis_ref_path, section_manifest=path,
+        acquired.analysis_ref_path,
+        section_manifest=path,
         options=evaluation.EvaluationOptions(mine_cpu=True, max_new_units=5),
         mine_completion=producer,
     )
@@ -575,8 +580,11 @@ def test_immutable_exact_five_unit_section_scope_and_incomplete_fail_stop(
     assert calls.call_count == 5
     ledger_paths = list((runner.root / "book-candidates/analysis/progress").rglob("*.json"))
     assert len(ledger_paths) == 2
-    complete = next(json.loads(p.read_bytes()) for p in ledger_paths
-                    if json.loads(p.read_bytes())["status"] == "complete")
+    complete = next(
+        json.loads(p.read_bytes())
+        for p in ledger_paths
+        if json.loads(p.read_bytes())["status"] == "complete"
+    )
     assert complete["section_manifest_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
     assert complete["counts"]["unresolved"] == 0
     assert complete["total_work_units"] == 5
@@ -586,9 +594,11 @@ def test_immutable_exact_five_unit_section_scope_and_incomplete_fail_stop(
     path.write_text(json.dumps(manifest))
     with pytest.raises(evaluation.EvaluationStop, match="bounds"):
         runner.evaluate_candidate(
-            acquired.analysis_ref_path, section_manifest=path,
-            progress_path=next(p for p in ledger_paths
-                               if json.loads(p.read_bytes())["status"] == "complete"),
+            acquired.analysis_ref_path,
+            section_manifest=path,
+            progress_path=next(
+                p for p in ledger_paths if json.loads(p.read_bytes())["status"] == "complete"
+            ),
         )
 
 
@@ -599,6 +609,7 @@ def test_cli_private_model_keys_and_provider_output_do_not_escape(
     review = _review(tmp_path, progress, candidates)
     private_marker = "PRIV_SYNT_SENTINEL_8CF1AA12"
     private_token = private_marker
+
     def malicious(_request: dict[str, object]) -> str:
         print(private_token)
         print(private_token, file=sys.stderr)
@@ -607,20 +618,35 @@ def test_cli_private_model_keys_and_provider_output_do_not_escape(
     monkeypatch.setattr(scripting, "_local_script_completion", malicious)
     manifest = {
         "schema": evaluation.MANIFEST_SCHEMA,
-        "mine_cpu": False, "script_cpu": True,
-        "direction_cpu": False, "kokoro_cpu": False,
-        "max_new_units": 1, "pillar": "self_improvement", "voice": "af_heart",
+        "mine_cpu": False,
+        "script_cpu": True,
+        "direction_cpu": False,
+        "kokoro_cpu": False,
+        "max_new_units": 1,
+        "pillar": "self_improvement",
+        "voice": "af_heart",
     }
     manifest_path = tmp_path / "private-cpu-opt-in.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     parser = argparse.ArgumentParser()
     root = parser.add_subparsers(dest="command", required=True)
     cli.configure_books_parser(root)
-    args = parser.parse_args([
-        "books", "evaluate", "--artifact-root", str(runner.root),
-        "--candidate-ref", str(ref), "--progress", str(progress),
-        "--review-file", str(review), "--run-manifest", str(manifest_path),
-    ])
+    args = parser.parse_args(
+        [
+            "books",
+            "evaluate",
+            "--artifact-root",
+            str(runner.root),
+            "--candidate-ref",
+            str(ref),
+            "--progress",
+            str(progress),
+            "--review-file",
+            str(review),
+            "--run-manifest",
+            str(manifest_path),
+        ]
+    )
     assert cli.dispatch_books(args) == 2
     stdout, stderr = capsys.readouterr()
     assert private_token not in stdout + stderr
@@ -629,8 +655,6 @@ def test_cli_private_model_keys_and_provider_output_do_not_escape(
     paths = list((runner.root / "book-candidates/evaluations").rglob("raw-*.json"))
     assert len(paths) == 3
     assert private_token in paths[0].read_text(encoding="utf-8")
-    console_logs = list(
-        (runner.root / "book-candidates/evaluations").rglob("log-*.json")
-    )
+    console_logs = list((runner.root / "book-candidates/evaluations").rglob("log-*.json"))
     assert console_logs
     assert any(private_token in item.read_text(encoding="utf-8") for item in console_logs)
