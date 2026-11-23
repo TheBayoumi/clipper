@@ -197,12 +197,9 @@ def _run_legacy_private_evaluation(
         response_bytes = evaluation._read(args.responses, 64_000_000)
         parsed: object = json.loads(response_bytes)
         if not isinstance(parsed, dict) or any(
-            not isinstance(k, str) or re.fullmatch(r"[0-9a-f]{64}", k) is None
-            for k in parsed
+            not isinstance(k, str) or re.fullmatch(r"[0-9a-f]{64}", k) is None for k in parsed
         ):
-            raise evaluation.EvaluationStop(
-                "recorded responses require SHA-256 keys"
-            )
+            raise evaluation.EvaluationStop("recorded responses require SHA-256 keys")
         evaluation_replies = parsed
         response_sha = hashlib.sha256(response_bytes).hexdigest()
     return BookOrchestrator(args.artifact_root).evaluate_candidate(
@@ -526,30 +523,53 @@ def dispatch_books(args: argparse.Namespace) -> int:
             return 2
         if args.books_action == "chapter-evaluate":
             chapter_fields = (
-                "schema", "status", "section_scope_sha256", "parent_full_book_complete",
-                "included_units", "excluded_units", "candidate_count",
-                "source_review", "recovery_status", "authorization_status",
-                "publish_eligible", "visual_calls", "max_text_attempts",
-                "max_kokoro_utterances", "actual_audio", "automation_claim",
-                "brief_identity", "brief_provenance", "brief_attempts",
-                "human_review_sha256", "human_attested_beat_count",
-                "adaptation_identity", "adaptation_attempts",
-                "script_identity", "script_scene_count", "script_words",
-                "script_attempts", "audio_provenance", "duration_seconds",
-                "timing_basis", "direction_identity", "direction_attempts",
+                "schema",
+                "status",
+                "section_scope_sha256",
+                "parent_full_book_complete",
+                "included_units",
+                "excluded_units",
+                "candidate_count",
+                "source_review",
+                "recovery_status",
+                "authorization_status",
+                "publish_eligible",
+                "visual_calls",
+                "max_text_attempts",
+                "max_kokoro_utterances",
+                "actual_audio",
+                "automation_claim",
+                "brief_identity",
+                "brief_provenance",
+                "brief_attempts",
+                "human_review_sha256",
+                "human_attested_beat_count",
+                "adaptation_identity",
+                "adaptation_attempts",
+                "script_identity",
+                "script_scene_count",
+                "script_words",
+                "script_attempts",
+                "audio_provenance",
+                "duration_seconds",
+                "timing_basis",
+                "direction_identity",
+                "direction_attempts",
                 "shot_count",
             )
             safe = {
-                key: evaluation_result[key]
-                for key in chapter_fields if key in evaluation_result
+                key: evaluation_result[key] for key in chapter_fields if key in evaluation_result
             }
             print(json.dumps(safe, sort_keys=True))
             return (
-                0 if evaluation_result["status"] in {
+                0
+                if evaluation_result["status"]
+                in {
                     "CHAPTER_PREPRODUCTION_READY_UNREVIEWED",
                     "CHAPTER_TEXT_PLAN_READY_NO_AUDIO_UNREVIEWED",
                     "TEST_DOUBLE_CHAPTER_TEXT_READY_UNREVIEWED",
-                } else 2
+                }
+                else 2
             )
         # No source quotations, book titles, file paths or mined IDs on stdout.
         keys = (
