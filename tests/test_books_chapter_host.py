@@ -1676,8 +1676,12 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         stage_dir = base / "brief" / key
         for index in range(22):
             (stage_dir / f"synthetic-foreign-{index:03}.json").write_bytes(b"{}")
-        with pytest.raises(chapter_host.PrivateHostStop, match="replay file inventory"):
-            chapter_host.private_recovery_archive(root)
+        scoped = chapter_host.private_recovery_archive(root)
+        assert scoped["file_count"] == 0
+        with tarfile.open(base / "private-host/chapter-recovery.tar", "r:") as skipped:
+            state = json.load(skipped.extractfile("private-recovery-manifest.json"))
+            assert state["chapters"][0]["inventory_status"] == "INCOMPLETE"
+            assert state["chapters"][0]["files"] == []
         return
     if damage == "changed_between_inventory_and_archive":
         original_inventory = chapter_host._chapter_output_manifest
@@ -1758,8 +1762,17 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         forbidden = tmp_path / "not-private-archive"
         forbidden.write_bytes(b"outside synthetic marker")
         archived_path.symlink_to(forbidden)
-    with pytest.raises(chapter_host.PrivateHostStop):
-        chapter_host.private_recovery_archive(root)
+    if damage == "recovery_archive_symlink":
+        with pytest.raises(chapter_host.PrivateHostStop, match="redirected"):
+            chapter_host.private_recovery_archive(root)
+    else:
+        receipt = chapter_host.private_recovery_archive(root)
+        assert receipt["file_count"] == 0
+        with tarfile.open(base / "private-host/chapter-recovery.tar", "r:") as isolated:
+            manifest = json.load(isolated.extractfile("private-recovery-manifest.json"))
+            assert manifest["chapters"][0]["inventory_status"] == "INCOMPLETE"
+            assert manifest["chapters"][0]["files"] == []
+            assert manifest["files"] == []
 
 
 @pytest.mark.parametrize(
