@@ -202,6 +202,9 @@ def test_selected_chapter_mining_uses_real_canonical_validation_and_raw_cache(
     assert book.fingerprint == verified.book.fingerprint
     assert ledger["counts"]["zero_candidate"] == len(verified.work.units)
     assert ledger["execution_provenance"] == "INJECTED_TEST_PRODUCER"
+    assert ledger["source_boundary"] == "HOST_VERIFIED_SELECTED_BUNDLE_EXPORTER_ATTESTED_PARENT"
+    assert ledger["parent_original_reverified_here"] is False
+    assert ledger["selected_scope_bundle_sha256"] == verified.bundle_sha256
     assert progress.is_file()
     assert result["export_path"] is not None
     with pytest.raises(chapter.ChapterStop):

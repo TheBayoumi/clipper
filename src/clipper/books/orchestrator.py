@@ -1189,6 +1189,16 @@ class BookOrchestrator:
             "parser_version": book.parser_version,
             "parser_config_sha256": book.parser_config_sha256,
             "excluded_pages": [asdict(page) for page in book.excluded_pages],
+            **(
+                {
+                    "source_boundary": "HOST_VERIFIED_SELECTED_BUNDLE_EXPORTER_ATTESTED_PARENT",
+                    "selected_scope_bundle_sha256": chosen.bundle_sha256,
+                    "parent_original_reverified_here": False,
+                    "parent_excluded_page_count": book.parent_excluded_page_count,
+                }
+                if selected_scope_path is not None
+                else {}
+            ),
             "gaps": list(work.skipped),
             "progress": progress,
             "evidence_coverage_summary": constrained.coverage_summary(
@@ -1215,11 +1225,25 @@ class BookOrchestrator:
         if outcome == "complete":
             export = {
                 "schema": "clipper-book-editorial-catalog-v1",
-                "input_kind": "mined_separate_unreviewed_whole_book",
+                "input_kind": (
+                    "mined_unreviewed_selected_chapter_evidence"
+                    if selected_scope_path is not None
+                    else "mined_separate_unreviewed_whole_book"
+                ),
                 "review_status": "MINED_UNREVIEWED",
                 "publish_eligible": False,
                 "analysis_plan_fingerprint": plan_fingerprint,
                 "progress_sha256": progress_sha256,
+                **(
+                    {
+                        "source_boundary": "HOST_VERIFIED_SELECTED_BUNDLE_EXPORTER_ATTESTED_PARENT",
+                        "selected_scope_bundle_sha256": chosen.bundle_sha256,
+                        "parent_original_reverified_here": False,
+                        "parent_excluded_page_count": book.parent_excluded_page_count,
+                    }
+                    if selected_scope_path is not None
+                    else {}
+                ),
                 **(
                     {
                         "section_scope": work.section_scope,
@@ -1239,7 +1263,11 @@ class BookOrchestrator:
                         "author": book.source.author,
                         "pillar": "unreviewed",
                         "source_url": book.source.source_uri,
-                        "status": "source_verified_candidate",
+                        "status": (
+                            "selected_original_scope_exporter_attested"
+                            if selected_scope_path is not None
+                            else "source_verified_candidate"
+                        ),
                         "review_status": "MINED_UNREVIEWED",
                         "publish_eligible": False,
                         "source_fingerprint": book.source_fingerprint,

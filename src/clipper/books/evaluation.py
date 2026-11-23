@@ -264,6 +264,16 @@ def _mined_export(
             "review_status": "MINED_UNREVIEWED",
             "publish_eligible": False,
             "status": "complete",
+            **(
+                {
+                    "source_boundary": "HOST_VERIFIED_SELECTED_BUNDLE_EXPORTER_ATTESTED_PARENT",
+                    "selected_scope_bundle_sha256": chosen.bundle_sha256,
+                    "parent_original_reverified_here": False,
+                    "parent_excluded_page_count": book.parent_excluded_page_count,
+                }
+                if selected_scope_path is not None
+                else {}
+            ),
         }.items()
     ):
         raise EvaluationStop("mined progress is incomplete or does not match pinned source")
@@ -304,12 +314,26 @@ def _mined_export(
         export.get(k) != v
         for k, v in {
             "schema": "clipper-book-editorial-catalog-v1",
-            "input_kind": "mined_separate_unreviewed_whole_book",
+            "input_kind": (
+                "mined_unreviewed_selected_chapter_evidence"
+                if selected_scope_path is not None
+                else "mined_separate_unreviewed_whole_book"
+            ),
             "review_status": "MINED_UNREVIEWED",
             "publish_eligible": False,
             "analysis_plan_fingerprint": progress["plan_fingerprint"],
             "progress_sha256": _sha(progress_raw),
             "ingest_fingerprint": book.fingerprint,
+            **(
+                {
+                    "source_boundary": "HOST_VERIFIED_SELECTED_BUNDLE_EXPORTER_ATTESTED_PARENT",
+                    "selected_scope_bundle_sha256": chosen.bundle_sha256,
+                    "parent_original_reverified_here": False,
+                    "parent_excluded_page_count": book.parent_excluded_page_count,
+                }
+                if selected_scope_path is not None
+                else {}
+            ),
             "recovery_status": book.recovery_status,
             **(
                 {
@@ -335,6 +359,11 @@ def _mined_export(
             "id": ref.book_id,
             "source_fingerprint": book.source_fingerprint,
             "authorization_status": "unverified",
+            **(
+                {"status": "selected_original_scope_exporter_attested"}
+                if selected_scope_path is not None
+                else {}
+            ),
             "review_status": "MINED_UNREVIEWED",
             "publish_eligible": False,
         }.items()

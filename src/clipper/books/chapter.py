@@ -1600,6 +1600,9 @@ def evaluate_chapter(
             else "LOCALLY_VERIFIED_RETAINED_PARENT"
         ),
         "parent_original_reverified_on_host": selected_scope_path is None,
+        "parent_excluded_pages_not_transferred": (
+            book.parent_excluded_page_count if selected_scope_path is not None else 0
+        ),
         "publish_eligible": False,
         "units": units,
         "gaps": gaps,

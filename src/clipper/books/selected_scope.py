@@ -78,6 +78,7 @@ class SelectedSource:
     recovery_status: str
     selected_reading_blocks: tuple[ReadingBlock, ...]
     selected_plan: whole_book.WorkPlan
+    parent_excluded_page_count: int = 0
     excluded_pages: tuple[()] = ()
     parent_original_reverified_on_host: bool = False
     source_boundary: str = "HOST_VERIFIED_SELECTED_BUNDLE_EXPORTER_ATTESTED_PARENT"
@@ -460,6 +461,7 @@ def import_chapter(private_root: Path, path: Path) -> SelectedEvidence:
             recovery_status=identity["recovery_status"],
             selected_reading_blocks=blocks,
             selected_plan=work,
+            parent_excluded_page_count=data["parent_excluded_page_count"],
         )
         manifest = _section_manifest(ref, book, work)
         if (
