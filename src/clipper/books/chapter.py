@@ -1379,6 +1379,21 @@ def _stage(
     )
     if request["max_new_tokens"] != plan.max_new_tokens:
         raise ChapterStop("chapter stage reservation differs from plan output budget")
+    if real_qwen and hybrid_request_identity is not None:
+        encoding = request.get("verified_input_encoding")
+        if (
+            not isinstance(encoding, dict)
+            or set(encoding)
+            != {
+                "input_token_ids_sha256",
+                "tokenizer_config_sha256",
+                "chat_template_sha256",
+                "tokenizer_json_sha256",
+            }
+            or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                   for value in encoding.values())
+        ):
+            raise ChapterStop("real hybrid producer requires a complete rendered-token identity")
     if real_qwen:
         # Public tokenizer only, before the first irreversible owner reservation.
         try:
