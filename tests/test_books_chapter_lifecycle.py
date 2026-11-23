@@ -242,9 +242,11 @@ def test_rest_and_supervisor_evidence_are_finite_and_fail_closed(
         chapter_lifecycle._trusted_file(root, heartbeat.name, 1)
     valid_command = chapter_lifecycle._command
     for payload in (b"not-json", b"[]"):
-        def poisoned(argv: list[str], *, input_bytes: bytes | None = None) -> bytes:
+        def poisoned(
+            argv: list[str], *, input_bytes: bytes | None = None, bad: bytes = payload
+        ) -> bytes:
             if argv[:2] == ["gh", "api"]:
-                return payload
+                return bad
             return valid_command(argv, input_bytes=input_bytes)
 
         monkeypatch.setattr(chapter_lifecycle, "_command", poisoned)
