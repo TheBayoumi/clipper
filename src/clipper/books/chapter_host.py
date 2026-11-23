@@ -17,7 +17,16 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
-from . import acquisition, chapter, evaluation, narration, scripting, selected_scope, whole_book
+from . import (
+    acquisition,
+    chapter,
+    chapter_lifecycle,
+    evaluation,
+    narration,
+    scripting,
+    selected_scope,
+    whole_book,
+)
 from .orchestrator import BookOrchestrator
 
 BATCH_SCHEMA = "clipper-two-private-chapter-codespace-v2"
@@ -312,6 +321,96 @@ def _release_models() -> None:
     gc.collect()
 
 
+def _phase_records(
+    root: Path, number: int, bundle: str, scope: str
+) -> list[dict[str, Any]]:
+    """Verify every exact, append-only private transition before trusting resume."""
+    folder = root / "book-candidates/private-host" / f"chapter-{number}-phase-events"
+    if not folder.exists():
+        return []
+    if folder.is_symlink() or not folder.is_dir():
+        raise PrivateHostStop("private chapter phase history is redirected")
+    records: list[dict[str, Any]] = []
+    for path in sorted(folder.iterdir()):
+        if path.is_symlink() or not path.is_file():
+            raise PrivateHostStop("private chapter phase history has invalid entry")
+        raw = evaluation._read(path, 16384)
+        record: object = whole_book.load_strict_reply(raw)
+        index = len(records) + 1
+        if (
+            not isinstance(record, dict)
+            or set(record) != {
+                "schema", "sequence", "chapter", "bundle_sha256",
+                "scope_sha256", "phase", "artifacts", "publish_eligible",
+            }
+            or record["schema"] != "clipper-private-chapter-phase-event-v1"
+            or type(record["sequence"]) is not int
+            or record["sequence"] != index
+            or record["chapter"] != number
+            or record["bundle_sha256"] != bundle
+            or record["scope_sha256"] != scope
+            or record["publish_eligible"] is not False
+            or not isinstance(record["phase"], str)
+            or not isinstance(record["artifacts"], dict)
+            or path.name != f"{index:05d}-{hashlib.sha256(raw).hexdigest()}.json"
+            or raw != evaluation._json_bytes(record)
+        ):
+            raise PrivateHostStop("private chapter phase history changed or is incomplete")
+        records.append(record)
+    return records
+
+
+def _phase(
+    runner: BookOrchestrator,
+    number: int,
+    bundle: str,
+    scope: str,
+    state: str,
+    artifacts: dict[str, object] | None = None,
+) -> dict[str, Any]:
+    root = runner.root
+    records = _phase_records(root, number, bundle, scope)
+    record: dict[str, Any] = {
+        "schema": "clipper-private-chapter-phase-event-v1",
+        "sequence": len(records) + 1,
+        "chapter": number,
+        "bundle_sha256": bundle,
+        "scope_sha256": scope,
+        "phase": state,
+        "artifacts": artifacts or {},
+        "publish_eligible": False,
+    }
+    raw = evaluation._json_bytes(record)
+    base = root / "book-candidates"
+    path = (
+        base / "private-host" / f"chapter-{number}-phase-events"
+        / f"{len(records) + 1:05d}-{hashlib.sha256(raw).hexdigest()}.json"
+    )
+    acquisition._private_write(path, raw, private_root=base)
+    return record
+
+
+def _outcome_from_phase(record: dict[str, Any]) -> dict[str, object]:
+    state = str(record["phase"])
+    artifacts = record["artifacts"]
+    status = {
+        "NOT_STARTED": "NOT_STARTED",
+        "MINING_IN_FLIGHT": "INTERRUPTED_DURING_MINING",
+        "SCOPED_MINING_INCOMPLETE": "SCOPED_MINING_INCOMPLETE",
+        "BRIEF_IN_FLIGHT": "INTERRUPTED_DURING_CHAPTER_BRIEF",
+        "AWAITING_HUMAN_REVIEW": "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW",
+        "RESUME_IN_FLIGHT": "INTERRUPTED_DURING_CHAPTER_RESUME",
+        "PREPRODUCTION_READY": "CHAPTER_PREPRODUCTION_READY_UNREVIEWED",
+        "STOPPED": "PRIVATE_CHAPTER_PHASE_STOPPED_REVIEW_PRIVATE_EVIDENCE",
+    }.get(state, "PRIVATE_CHAPTER_PHASE_STOPPED_REVIEW_PRIVATE_EVIDENCE")
+    return {
+        "status": status,
+        "bundle_sha256": record["bundle_sha256"],
+        "last_verified_artifacts": artifacts,
+        "publish_eligible": False,
+    }
+
+
 def execute(
     *,
     mode: str,
@@ -319,9 +418,10 @@ def execute(
     manifest_path: Path,
     created_at: str,
 ) -> dict[str, object]:
-    """Only inspection is model-free. Runtime must be under the Codespace hard timeout."""
+    """Verify REST identity AND live external signer before even inspecting sources."""
     created = _created_at(created_at)
-    if not os.environ.get("CODESPACE_NAME"):
+    codespace_name = os.environ.get("CODESPACE_NAME")
+    if not codespace_name:
         raise PrivateHostStop("single approved Codespace environment required")
     root = artifact_root.resolve()
     worktree = Path(__file__).resolve().parents[3]
@@ -332,6 +432,14 @@ def execute(
         or root == Path("/")
     ):
         raise PrivateHostStop("private artifacts must live outside repository checkout")
+    # A caller's time/environment assertion is not authoritative. REST checks
+    # exact machine, numeric instance ID, creation, repository and approved SHA.
+    # The signed 45-second heartbeat is produced by a separate owner machine.
+    context = chapter_lifecycle.verify_lifecycle(
+        root / "book-candidates", caller_created_at=created_at, codespace_name=codespace_name
+    )
+    if context.created_at != created:
+        raise PrivateHostStop("authoritative Codespace creation time mismatch")
     path = _private_path(str(manifest_path), root, must_exist=True)
     inputs = _config(whole_book.load_strict_reply(evaluation._read(path, 32768)))
     plan = chapter.ChapterPlan.from_manifest(inputs["plan"])
@@ -343,26 +451,41 @@ def execute(
     if mode not in {"brief", "resume"}:
         raise PrivateHostStop("unsupported private chapter host phase")
     if not all(
-        [
-            plan.brief_cpu,
-            plan.adaptation_cpu,
-            plan.script_cpu,
-            plan.direction_cpu,
-            plan.kokoro_cpu,
-        ]
+        (plan.brief_cpu, plan.adaptation_cpu, plan.script_cpu, plan.direction_cpu, plan.kokoro_cpu)
     ):
         raise PrivateHostStop("real chapter phases require explicit full CPU permissions")
-    # Lock BOTH scopes before making even the first irreversible mining call.
-    # A mismatched chapter 7 must not waste chapter 1's shared host allowance.
     if any(block["scope_sha256"] != scope_sha for _, block, _, _, _, scope_sha, _ in prepared):
         raise PrivateHostStop("both original selected scopes must be explicitly operator-locked")
+
+    # BOTH chapters have durable NOT_STARTED checkpoints before the first
+    # irreversible call. A terminated process leaves an IN_FLIGHT marker.
+    for number, _block, _bundle, verified, _section, scope_sha, _counts in prepared:
+        if not _phase_records(root, number, verified.bundle_sha256, scope_sha):
+            _phase(runner, number, verified.bundle_sha256, scope_sha, "NOT_STARTED")
+
     outcomes: dict[str, object] = {}
     for number, block, bundle, verified, section_path, scope_sha, counts in prepared:
-        _check_deadline(created)
+        digest = verified.bundle_sha256
+        records = _phase_records(root, number, digest, scope_sha)
+        last = records[-1]
+        state = str(last["phase"])
+        if mode == "brief" and state != "NOT_STARTED":
+            outcomes[str(number)] = _outcome_from_phase(last)
+            continue
+        if mode == "resume" and state != "AWAITING_HUMAN_REVIEW":
+            outcomes[str(number)] = _outcome_from_phase(last)
+            continue
         private_root = root / "book-candidates"
-        state = private_root / "private-host" / f"chapter-{number}-brief-record.json"
+        saved = private_root / "private-host" / f"chapter-{number}-brief-record.json"
         try:
+            # The independent heartbeat must remain current between chapter
+            # phases; a previous invocation never extends the creation clock.
+            chapter_lifecycle.verify_lifecycle(
+                private_root, caller_created_at=created_at, codespace_name=codespace_name
+            )
+            _check_deadline(created)
             if mode == "brief":
+                _phase(runner, number, digest, scope_sha, "MINING_IN_FLIGHT")
                 mined = runner.mine_candidate(
                     bundle,
                     local_cpu=True,
@@ -372,18 +495,22 @@ def execute(
                     max_new_units=cast(int, counts["work_units"]),
                 )
                 if mined["status"] != "complete":
-                    outcomes[str(number)] = {
-                        "status": "SCOPED_MINING_INCOMPLETE",
-                        "units": mined["total_work_units"],
-                    }
+                    last = _phase(
+                        runner, number, digest, scope_sha, "SCOPED_MINING_INCOMPLETE",
+                        {
+                            "progress_path": mined.get("progress_path"),
+                            "units": mined.get("total_work_units"),
+                        },
+                    )
+                    outcomes[str(number)] = _outcome_from_phase(last)
                     continue
                 progress_path = Path(mined["progress_path"])
             else:
-                record: object = whole_book.load_strict_reply(evaluation._read(state, 16384))
+                record: object = whole_book.load_strict_reply(evaluation._read(saved, 16384))
                 if (
                     not isinstance(record, dict)
                     or record.get("scope_sha256") != scope_sha
-                    or record.get("bundle_sha256") != verified.bundle_sha256
+                    or record.get("bundle_sha256") != digest
                     or record.get("chapter") != number
                     or record.get("phase") != "AWAITING_HUMAN_REVIEW"
                     or not isinstance(record.get("progress_path"), str)
@@ -399,6 +526,15 @@ def execute(
                 if block["review_file"] is None:
                     raise PrivateHostStop("independent human review file required per chapter")
                 review_path = _private_path(block["review_file"], root, must_exist=True)
+                _phase(
+                    runner, number, digest, scope_sha, "RESUME_IN_FLIGHT",
+                    {"progress_path": str(progress_path)},
+                )
+            else:
+                _phase(
+                    runner, number, digest, scope_sha, "BRIEF_IN_FLIGHT",
+                    {"progress_path": str(progress_path)},
+                )
             output = chapter.evaluate_chapter(
                 runner,
                 bundle,
@@ -420,28 +556,33 @@ def execute(
                     "chapter": number,
                     "phase": "AWAITING_HUMAN_REVIEW",
                     "scope_sha256": scope_sha,
-                    "bundle_sha256": verified.bundle_sha256,
+                    "bundle_sha256": digest,
                     "progress_path": str(progress_path),
                     "progress_sha256": hashlib.sha256(
                         evaluation._read(progress_path, 20_000_000)
                     ).hexdigest(),
                     "brief_identity": output["brief_identity"],
                 }
-                evaluation._store(private_root, state, evidence)
+                evaluation._store(private_root, saved, evidence)
                 _review_packet(runner, number, output)
-            outcomes[str(number)] = {
-                "status": output["status"],
-                "bundle_sha256": verified.bundle_sha256,
-                "brief_identity": output.get("brief_identity"),
-                "final_result_identity": output.get("final_result_identity"),
-                "audio_provenance": output.get("audio_provenance"),
-                "publish_eligible": False,
-            }
+                last = _phase(
+                    runner, number, digest, scope_sha, "AWAITING_HUMAN_REVIEW",
+                    {"brief_identity": output["brief_identity"], "progress_path": str(progress_path)},
+                )
+            else:
+                if output["status"] != "CHAPTER_PREPRODUCTION_READY_UNREVIEWED":
+                    raise PrivateHostStop("chapter resume did not produce real complete audio")
+                last = _phase(
+                    runner, number, digest, scope_sha, "PREPRODUCTION_READY",
+                    {
+                        "final_result_identity": output.get("final_result_identity"),
+                        "audio_provenance": output.get("audio_provenance"),
+                    },
+                )
+            outcomes[str(number)] = _outcome_from_phase(last)
         except (ValueError, OSError, TypeError, RuntimeError):
-            outcomes[str(number)] = {
-                "status": "PRIVATE_CHAPTER_PHASE_STOPPED_REVIEW_PRIVATE_EVIDENCE",
-                "publish_eligible": False,
-            }
+            last = _phase(runner, number, digest, scope_sha, "STOPPED")
+            outcomes[str(number)] = _outcome_from_phase(last)
         finally:
             _release_models()
     return {
@@ -449,6 +590,7 @@ def execute(
         "chapters": outcomes,
         "publish_eligible": False,
     }
+
 
 
 def main(argv: list[str] | None = None) -> int:
