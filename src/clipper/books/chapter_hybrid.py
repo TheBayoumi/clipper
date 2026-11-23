@@ -218,7 +218,7 @@ def request(
     payload: dict[str, object],
     *,
     output_tokens: int,
-    token_count: Callable[[list[dict[str, str]]], int],
+    token_count: Callable[[list[dict[str, str]]], int | dict[str, object]],
     producer_identity: dict[str, object],
 ) -> tuple[dict[str, object], str, int]:
     """Exact pinned-template preflight supplied by caller, never a byte proxy."""
@@ -254,9 +254,44 @@ def request(
     if len(_canonical(messages)) > MAX_REQUEST_BYTES:
         raise HybridStop("hybrid complete request exceeds finite byte cap")
     try:
-        count = token_count(messages)
+        counted = token_count(messages)
     except Exception as exc:
         raise HybridStop("exact pinned tokenizer preflight unavailable") from exc
+    # Authentic CPU requests carry ALL rendered input token IDs' digest and
+    # effective template/config provenance. A count-only callback is retained
+    # solely for explicitly injected, model-free legacy test fixtures.
+    encoding: dict[str, object] | None = None
+    if isinstance(counted, dict):
+        ids = counted.get("token_ids")
+        if (
+            set(counted) != {
+                "token_ids",
+                "tokenizer_config_sha256",
+                "chat_template_sha256",
+                "tokenizer_json_sha256",
+            }
+            or not isinstance(ids, list)
+            or not ids
+            or len(ids) > SAFE_CONTEXT_TOKENS
+            or any(type(value) is not int or value < 0 for value in ids)
+            or counted["tokenizer_json_sha256"] != constrained.PINNED_TOKENIZER_SHA256
+            or any(
+                not isinstance(counted[field], str)
+                or len(counted[field]) != 64
+                or any(char not in "0123456789abcdef" for char in counted[field])
+                for field in ("tokenizer_config_sha256", "chat_template_sha256")
+            )
+        ):
+            raise HybridStop("hybrid effective token encoding provenance invalid")
+        count = len(ids)
+        encoding = {
+            "input_token_ids_sha256": digest(ids),
+            "tokenizer_config_sha256": counted["tokenizer_config_sha256"],
+            "chat_template_sha256": counted["chat_template_sha256"],
+            "tokenizer_json_sha256": counted["tokenizer_json_sha256"],
+        }
+    else:
+        count = counted
     if type(count) is not int or count < 1 or count + output_tokens > SAFE_CONTEXT_TOKENS:
         raise HybridStop("hybrid exact prompt and reserved output exceed safe context")
     result: dict[str, object] = {
@@ -265,6 +300,7 @@ def request(
         "seed": 42,
         "max_new_tokens": output_tokens,
         "messages": messages,
+        **({"verified_input_encoding": encoding} if encoding is not None else {}),
     }
     key = digest(
         {
