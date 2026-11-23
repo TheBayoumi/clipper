@@ -1009,8 +1009,13 @@ def _stage_output_entries(
     shapes: dict[str, set[str]] = {
         "brief": {"argument", "beats", "coverage"},
         "adaptation": {
-            "throughline", "narrative_form", "choice_reason",
-            "beats", "characters", "locations", "props",
+            "throughline",
+            "narrative_form",
+            "choice_reason",
+            "beats",
+            "characters",
+            "locations",
+            "props",
         },
         "chapter_script": {"title", "scenes"},
         "chapter_direction": {"shots"},
@@ -1241,11 +1246,13 @@ def private_recovery_archive(artifact_root: Path) -> dict[str, object]:
         info = chapters[str(number)]
         state = info["recovery_state"]
         if state in {"NEVER_STARTED", "INCOMPLETE"}:
-            manifests.append({
-                "chapter": number,
-                "inventory_status": "NOT_STARTED" if state == "NEVER_STARTED" else "INCOMPLETE",
-                "files": [],
-            })
+            manifests.append(
+                {
+                    "chapter": number,
+                    "inventory_status": "NOT_STARTED" if state == "NEVER_STARTED" else "INCOMPLETE",
+                    "files": [],
+                }
+            )
             continue
         try:
             manifest = _chapter_output_manifest(
@@ -1253,8 +1260,7 @@ def private_recovery_archive(artifact_root: Path) -> dict[str, object]:
             )
             if state == "READY":
                 saved_path = (
-                    root / "book-candidates/private-host"
-                    / f"chapter-{number}-output-manifest.json"
+                    root / "book-candidates/private-host" / f"chapter-{number}-output-manifest.json"
                 )
                 raw = _read_recovery_artifact(saved_path, 150_000)
                 if raw != evaluation._json_bytes(manifest):
@@ -1269,17 +1275,18 @@ def private_recovery_archive(artifact_root: Path) -> dict[str, object]:
                 key = str(entry["relative_path"])
                 previous = files.get(key)
                 if previous is not None and any(
-                    previous[field] != entry[field]
-                    for field in ("kind", "sha256", "bytes")
+                    previous[field] != entry[field] for field in ("kind", "sha256", "bytes")
                 ):
                     raise PrivateHostStop("private shared output hash or type conflict")
         except (PrivateHostStop, evaluation.EvaluationStop, ValueError, OSError, KeyError):
             info["retrieval_status"] = "INCOMPLETE"
-            manifests.append({
-                "chapter": number,
-                "inventory_status": "INCOMPLETE",
-                "files": [],
-            })
+            manifests.append(
+                {
+                    "chapter": number,
+                    "inventory_status": "INCOMPLETE",
+                    "files": [],
+                }
+            )
             continue
         info["retrieval_status"] = "INVENTORY_VERIFIED_NOT_RETRIEVED"
         manifests.append({**manifest, "inventory_status": "VERIFIED"})
@@ -1353,9 +1360,7 @@ def private_recovery_archive(artifact_root: Path) -> dict[str, object]:
     }
 
 
-def recovery_report(
-    artifact_root: Path, *, tolerate_corrupt: bool = False
-) -> dict[str, object]:
+def recovery_report(artifact_root: Path, *, tolerate_corrupt: bool = False) -> dict[str, object]:
     """Read-only, bounded, model-free owner recovery manifest with no source prose.
 
     This is checkpoint evidence, not proof that remote files were recovered.
