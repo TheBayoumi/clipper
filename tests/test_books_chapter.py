@@ -1943,7 +1943,7 @@ def test_healthy_rejected_chapter_first_attempt_retries_with_distinct_claims(
     assert [raw["attempt"] for raw in raws] == [1, 2]
     assert [claim["attempt"] for claim in claims] == [1, 2]
     assert claims[0]["owner"] != claims[1]["owner"]
-    assert all(raw["owner"] == claim["owner"] for raw, claim in zip(raws, claims))
+    assert [raw["owner"] for raw in raws] == [claim["owner"] for claim in claims]
     assert json.loads((directory / "failed-1.json").read_bytes())["status"] == (
         "SCHEMA_OR_SOURCE_REJECTED"
     )
