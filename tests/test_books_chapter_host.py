@@ -434,3 +434,153 @@ def test_private_scope_inspection_preserves_prior_report_during_selection_revisi
         report = report_dir / f"scope-inspection-{result['inspection_sha256']}.json"
         assert report.is_file()
         assert hashlib.sha256(report.read_bytes()).hexdigest() == result["inspection_sha256"]
+
+
+def test_private_review_packet_contains_full_source_and_invalid_human_template(
+    tmp_path: Path,
+) -> None:
+    from test_books_chapter import _first_brief, _plan, _source
+
+    runner, ref, progress, section, _candidates = _source(tmp_path, with_image=True)
+    summary, brief = _first_brief(runner, ref, progress, section, _plan())
+    chapter_host._review_packet(runner, 1, summary)
+    packet_path = runner.root / "book-candidates/private-host/chapter-1-review-packet.json"
+    packet = json.loads(packet_path.read_bytes())
+    assert packet["brief_identity"] == summary["brief_identity"]
+    assert packet["brief"] == brief
+    assert len(packet["source_ledger"]["units"]) == summary["included_units"]
+    assert packet["source_ledger"]["reading_order"]
+    assert packet["source_ledger"]["gaps"]
+    template = packet["review_template"]
+    assert template["brief_sha256"] == packet["brief_identity"]
+    assert template["reviewer"] == ""
+    assert {row["decision"] for row in template["decisions"]} == {"REVIEW_REQUIRED"}
+    assert {row["review"] for row in template["unit_decisions"]} == {"REVIEW_REQUIRED"}
+    assert packet["publish_eligible"] is False
+    with pytest.raises(chapter_host.PrivateHostStop, match="source ledger"):
+        chapter_host._review_packet(
+            runner, 7, {**summary, "section_scope_sha256": "f" * 64}
+        )
+    with pytest.raises(chapter_host.PrivateHostStop, match="verified brief"):
+        chapter_host._review_packet(
+            runner, 7, {**summary, "brief_identity": "f" * 64}
+        )
+
+
+def test_pinned_chapter_cpu_adapter_generate_eos_and_memory_error_paths_are_model_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from clipper.books import narration
+
+    seeds: list[int] = []
+
+    class FakeTorch:
+        @staticmethod
+        def manual_seed(value: int) -> None:
+            seeds.append(value)
+
+        @staticmethod
+        def inference_mode() -> object:
+            return nullcontext()
+
+    class FakeTokenizer:
+        eos_token_id = 99
+
+        def __init__(self) -> None:
+            self.length = 2
+
+        def apply_chat_template(self, *_args: object, **_kwargs: object) -> dict:
+            return {"input_ids": SimpleNamespace(shape=(1, self.length))}
+
+        def decode(self, ids: list[int], *, skip_special_tokens: bool) -> str:
+            assert skip_special_tokens
+            assert ids in ([99], [55])
+            return '{"value":"synthetic CPU generation with no weights"}'
+
+    tokenizer = FakeTokenizer()
+    generated = Mock(return_value=[[10, 20, 99]])
+    model = SimpleNamespace(
+        device="cpu",
+        generate=generated,
+        generation_config=SimpleNamespace(eos_token_id=99),
+    )
+    original_import = scripting.importlib.import_module
+    monkeypatch.setattr(
+        scripting.importlib,
+        "import_module",
+        lambda name: FakeTorch() if name == "torch" else original_import(name),
+    )
+    monkeypatch.setattr(scripting, "_chapter_context_tokens", lambda _: 2)
+    monkeypatch.setattr(scripting, "_script_pipeline", lambda: (model, tokenizer))
+    narration._kokoro_pipeline.cache_clear()
+    request: dict[str, object] = {
+        "model": scripting.SCRIPT_MODEL,
+        "revision": scripting.SCRIPT_REVISION,
+        "seed": 42,
+        "max_new_tokens": 1024,
+        "messages": [{"role": "user", "content": "synthetic"}],
+    }
+    result = scripting._local_chapter_completion(request)
+    assert result == '{"value":"synthetic CPU generation with no weights"}'
+    assert seeds == [42]
+    assert generated.call_count == 1
+    assert generated.call_args.kwargs["max_new_tokens"] == 1024
+    generated.return_value = [[10, 20, 55]]
+    with pytest.raises(scripting.IncompleteConstrainedResponse) as incomplete:
+        scripting._local_chapter_completion(request)
+    assert incomplete.value.raw == result
+    model.device = "cuda"
+    with pytest.raises(scripting.NicheVideoError, match="CPU"):
+        scripting._local_chapter_completion(request)
+    model.device = "cpu"
+    tokenizer.length = 40960
+    with pytest.raises(scripting.NicheVideoError, match="context"):
+        scripting._local_chapter_completion(request)
+    assert generated.call_count == 2
+
+
+def test_private_host_cli_status_codes_do_not_expose_private_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = [
+        "brief",
+        "--artifact-root",
+        str(tmp_path / "private"),
+        "--manifest",
+        str(tmp_path / "private/manifest.json"),
+        "--codespace-created-at",
+        "2026-11-23T06:30:00+00:00",
+    ]
+
+    def output(status: str) -> dict[str, object]:
+        return {
+            "status": "PRIVATE_TWO_CHAPTER_CHECKPOINT",
+            "chapters": {"1": {"status": status}, "7": {"status": status}},
+            "publish_eligible": False,
+        }
+
+    monkeypatch.setattr(
+        chapter_host, "execute", lambda **_: output("AWAITING_HUMAN_CHAPTER_BEAT_REVIEW")
+    )
+    assert chapter_host.main(args) == 0
+    stdout, stderr = capsys.readouterr()
+    assert "PRIVATE_TWO_CHAPTER_CHECKPOINT" in stdout
+    assert not stderr
+    monkeypatch.setattr(
+        chapter_host, "execute", lambda **_: output("SCOPED_MINING_INCOMPLETE")
+    )
+    assert chapter_host.main(args) == 2
+    capsys.readouterr()
+
+    def failure(**_kwargs: object) -> None:
+        raise ValueError("SYNTHETIC_PRIVATE_CONTENT_MUST_NOT_LEAK")
+
+    monkeypatch.setattr(chapter_host, "execute", failure)
+    assert chapter_host.main(args) == 2
+    stdout, stderr = capsys.readouterr()
+    assert not stdout
+    assert "PRIVATE_CHAPTER_HOST_FAILED_CLOSED" in stderr
+    assert "SYNTHETIC_PRIVATE_CONTENT" not in stderr
