@@ -1650,6 +1650,15 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
         "review_record",
         "source_ledger",
         "reconcile_ledger",
+        "argument_payload",
+        "audit_payload",
+        "reconcile_payload",
+        "adaptation_payload",
+        "adaptation_payload_sha256",
+        "adaptation_artifact_identity",
+        "adaptation_rebound_payload_sha256",
+        "chapter_script_payload",
+        "chapter_direction_payload",
         "final_result",
         "human_review",
         "wav",
@@ -1660,15 +1669,27 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
             listing["chapters"][0]["source_mode"] = "LEGACY_MINED_CHAPTER"
             forged["private-recovery-manifest.json"] = evaluation._json_bytes(listing)
         else:
-            kind = "text" if attack == "reconcile_ledger" else attack
+            stage_attack = {
+                "reconcile_ledger": "hybrid_reconcile",
+                "argument_payload": "hybrid_argument",
+                "audit_payload": "hybrid_audit",
+                "reconcile_payload": "hybrid_reconcile",
+                "adaptation_payload": "adaptation",
+                "adaptation_payload_sha256": "adaptation",
+                "adaptation_artifact_identity": "adaptation",
+                "adaptation_rebound_payload_sha256": "adaptation",
+                "chapter_script_payload": "chapter_script",
+                "chapter_direction_payload": "chapter_direction",
+            }.get(attack)
+            kind = "text" if stage_attack else attack
             item = next(
                 row
                 for row in listing["chapters"][0]["files"]
                 if row["kind"] == kind
                 and (
-                    attack != "reconcile_ledger"
+                    stage_attack is None
                     or (
-                        row["relative_path"].startswith("book-candidates/hybrid_reconcile/")
+                        row["relative_path"].startswith(f"book-candidates/{stage_attack}/")
                         and row["relative_path"].endswith("/validated.json")
                     )
                 )
@@ -1684,6 +1705,22 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
                     evidence["identity"]["selected_bundle_sha256"] = "0" * 64
                 elif attack == "reconcile_ledger":
                     evidence["payload"]["ledger_sha256"] = "0" * 64
+                elif stage_attack is not None:
+                    if attack == "adaptation_payload_sha256":
+                        evidence["payload_sha256"] = "0" * 64
+                    elif attack == "adaptation_artifact_identity":
+                        evidence["artifact_identity"] = "0" * 64
+                    else:
+                        # Forge actual host-produced, originally validated
+                        # chapter text while preserving its terminal identity.
+                        evidence["payload"]["unauthorized_editorial_change"] = attack
+                        if attack == "adaptation_rebound_payload_sha256":
+                            # Even rehashing the inner payload is insufficient:
+                            # exact _text_artifact_identity must also match
+                            # the committed downstream final result.
+                            evidence["payload_sha256"] = hashlib.sha256(
+                                evaluation._json_bytes(evidence["payload"])
+                            ).hexdigest()
                 else:
                     evidence["producer_identity_sha256"] = "0" * 64
                 forged[path] = evaluation._json_bytes(evidence)
