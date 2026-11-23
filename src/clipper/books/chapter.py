@@ -1157,6 +1157,7 @@ def _text_artifact_identity(
     raw_sha256: str,
     payload_sha256: str,
     token_receipt: dict[str, object] | None = None,
+    prior_rejection_sha256: str | None = None,
 ) -> str:
     return content_fingerprint(
         {
@@ -1167,6 +1168,11 @@ def _text_artifact_identity(
             "raw_sha256": raw_sha256,
             "payload_sha256": payload_sha256,
             "token_receipt": token_receipt,
+            **(
+                {"prior_rejection_sha256": prior_rejection_sha256}
+                if prior_rejection_sha256 is not None
+                else {}
+            ),
         }
     )
 
@@ -1186,22 +1192,24 @@ def _verified_text_artifact(
     """Require exact raw, validated bytes, schema and exclusive owner on replay."""
     try:
         validated_bytes = evaluation._read(directory / "validated.json")
+        raw_envelope = whole_book.load_strict_reply(validated_bytes)
+        envelope_fields = {
+            "request_key",
+            "provenance",
+            "contract",
+            "validator_contract",
+            "payload",
+            "owner",
+            "attempt",
+            "raw_sha256",
+            "payload_sha256",
+            "token_receipt",
+            "artifact_identity",
+        }
+        if isinstance(raw_envelope, dict) and "prior_rejection_sha256" in raw_envelope:
+            envelope_fields.add("prior_rejection_sha256")
         saved = _shape(
-            whole_book.load_strict_reply(validated_bytes),
-            {
-                "request_key",
-                "provenance",
-                "contract",
-                "validator_contract",
-                "payload",
-                "owner",
-                "attempt",
-                "raw_sha256",
-                "payload_sha256",
-                "token_receipt",
-                "artifact_identity",
-            },
-            "chapter cached text artifact schema mismatch",
+            raw_envelope, envelope_fields, "chapter cached text artifact schema mismatch"
         )
         if validated_bytes != evaluation._json_bytes(saved):
             raise ChapterStop("chapter validated artifact has noncanonical envelope bytes")
@@ -1221,6 +1229,16 @@ def _verified_text_artifact(
             or re.fullmatch(r"[0-9a-f]{64}", saved["payload_sha256"]) is None
         ):
             raise ChapterStop("chapter cached text artifact identity mismatch")
+        prior_digest = saved.get("prior_rejection_sha256")
+        if (
+            (prior_digest is not None and (
+                attempt != 2
+                or not isinstance(prior_digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", prior_digest) is None
+            ))
+            or (recovery_evidence_only and attempt > 1 and prior_digest is None)
+        ):
+            raise ChapterStop("chapter winning attempt missing bound original rejection")
         for prior in range(1, attempt):
             _verified_rejected_attempt(
                 root,
@@ -1231,6 +1249,10 @@ def _verified_text_artifact(
                 validate,
                 recovery_evidence_only=recovery_evidence_only,
             )
+            if prior_digest is not None and hashlib.sha256(
+                evaluation._read(directory / f"failed-{prior}.json", 2048)
+            ).hexdigest() != prior_digest:
+                raise ChapterStop("chapter prior rejection differs from winning identity")
         _verified_owner(
             root,
             directory / f"started-{attempt}.json",
@@ -1287,6 +1309,7 @@ def _verified_text_artifact(
             saved["raw_sha256"],
             saved["payload_sha256"],
             receipt,
+            prior_digest,
         )
         if saved["artifact_identity"] != identity:
             raise ChapterStop("chapter cached text artifact digest mismatch")
@@ -1487,8 +1510,21 @@ def _stage(
         _verified_owner(root, marker, stage_key, index, owner)
         raw_sha256 = hashlib.sha256(response.encode("utf-8")).hexdigest()
         payload_sha256 = hashlib.sha256(evaluation._json_bytes(result)).hexdigest()
+        prior_rejection_sha256 = (
+            hashlib.sha256(
+                evaluation._read(directory / f"failed-{index - 1}.json", 2048)
+            ).hexdigest()
+            if index > 1
+            else None
+        )
         artifact_key = _text_artifact_identity(
-            stage, stage_key, provenance, raw_sha256, payload_sha256, token_receipt
+            stage,
+            stage_key,
+            provenance,
+            raw_sha256,
+            payload_sha256,
+            token_receipt,
+            prior_rejection_sha256,
         )
         evaluation._store(
             root,
@@ -1505,6 +1541,11 @@ def _stage(
                 "token_receipt": token_receipt,
                 "artifact_identity": artifact_key,
                 "payload": result,
+                **(
+                    {"prior_rejection_sha256": prior_rejection_sha256}
+                    if prior_rejection_sha256 is not None
+                    else {}
+                ),
             },
         )
         verified, verified_key = _verified_text_artifact(
