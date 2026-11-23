@@ -1390,8 +1390,10 @@ def _stage(
                 "chat_template_sha256",
                 "tokenizer_json_sha256",
             }
-            or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
-                   for value in encoding.values())
+            or any(
+                not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                for value in encoding.values()
+            )
         ):
             raise ChapterStop("real hybrid producer requires a complete rendered-token identity")
     if real_qwen:
