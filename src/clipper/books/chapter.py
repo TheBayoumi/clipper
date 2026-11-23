@@ -1098,7 +1098,7 @@ def _narrate(
             else:
                 if marker.exists() or path.exists():
                     raise ChapterStop("prior Kokoro utterance is unresolved; no retry")
-                _claim(root, marker, marker_key, 1)
+                owner = _claim(root, marker, marker_key, 1)
                 try:
 
                     def make_utterance(utterance: Scene = item) -> Path:
@@ -1111,7 +1111,7 @@ def _narrate(
                     )
                     data = evaluation._read(wave_path, narration.MAX_WAV_BYTES)
                     channels, sample_rate, frames = narration.validated_wav(data, cached=True)
-                    owner = whole_book.load_strict_reply(evaluation._read(marker, 2048))["owner"]
+                    _verified_owner(root, marker, marker_key, 1, owner)
                     evaluation._store(
                         root,
                         complete,
