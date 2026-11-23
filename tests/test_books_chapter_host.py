@@ -551,14 +551,14 @@ def test_pinned_chapter_cpu_adapter_generate_eos_and_memory_error_paths_are_mode
             return nullcontext()
 
     class FakeInput:
-        def __init__(self, tokenizer: "FakeTokenizer") -> None:
+        def __init__(self, tokenizer: FakeTokenizer) -> None:
             self.tokenizer = tokenizer
 
         @property
         def shape(self) -> tuple[int, int]:
             return (1, self.tokenizer.length)
 
-        def __getitem__(self, _index: int) -> "FakeInput":
+        def __getitem__(self, _index: int) -> FakeInput:
             return self
 
         def tolist(self) -> list[int]:
