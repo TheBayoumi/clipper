@@ -3,8 +3,9 @@
 set -euo pipefail
 umask 077
 
-if [[ "${1:-}" != "inspect" && "${1:-}" != "brief" && "${1:-}" != "resume" ]]; then
-  echo "Usage: bash scripts/private_chapter_codespace.sh inspect|brief|resume" >&2
+if [[ "${1:-}" != "inspect" && "${1:-}" != "brief" && "${1:-}" != "resume" &&
+      "${1:-}" != "hybrid-brief" && "${1:-}" != "hybrid-resume" ]]; then
+  echo "Usage: bash scripts/private_chapter_codespace.sh inspect|brief|resume|hybrid-brief|hybrid-resume" >&2
   exit 2
 fi
 mode="$1"
