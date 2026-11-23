@@ -1351,6 +1351,7 @@ def _stage(
     prepared_request: dict[str, object] | None = None,
     contract_version: str | None = None,
     safe_context_tokens: int | None = None,
+    hybrid_request_identity: str | None = None,
 ) -> tuple[dict[str, Any], str, str, int]:
     """Reserve each irreversible provider attempt before calling any producer."""
     plan.validate()
@@ -1362,8 +1363,15 @@ def _stage(
         completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
         and scripting._local_chapter_completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
     )
-    if prepared_request is not None and not contract_version:
-        raise ChapterStop("hybrid custom stage requires an explicit contract identity")
+    if (
+        (prepared_request is None) != (contract_version is None)
+        or (prepared_request is None) != (hybrid_request_identity is None)
+    ):
+        raise ChapterStop("hybrid stage requires a complete bound request identity")
+    if hybrid_request_identity is not None and re.fullmatch(
+        r"[0-9a-f]{64}", hybrid_request_identity
+    ) is None:
+        raise ChapterStop("hybrid source/producer request identity malformed")
     request = (
         prepared_request
         if prepared_request is not None
@@ -1408,7 +1416,12 @@ def _stage(
             },
             "provenance": provenance,
             **(
-                {"hybrid_safe_context": safe_context_tokens} if contract_version is not None else {}
+                {
+                    "hybrid_safe_context": safe_context_tokens,
+                    "hybrid_request_sha256": hybrid_request_identity,
+                }
+                if contract_version is not None
+                else {}
             ),
         }
     )
@@ -2251,14 +2264,15 @@ def evaluate_hybrid_chapter(
     else:
         raise ChapterStop("hybrid injected-test tokenizer counter is required")
 
-    producer = {
-        "source_ledger_sha256": ledger["ledger_sha256"],
-        "chapter_scope_sha256": manifest_sha,
-        "selected_source_bundle_sha256": verified.bundle_sha256,
-        "chapter_plan_fingerprint": limits.fingerprint,
-        "model_producer": whole_book.local_producer_material(),
-        "source_mode": "DIRECT_SOURCE_HYBRID",
-    }
+    producer = chapter_hybrid.producer_identity(
+        ledger_sha256=ledger["ledger_sha256"],
+        chapter_scope_sha256=manifest_sha,
+        selected_bundle_sha256=verified.bundle_sha256,
+        plan_fingerprint=limits.fingerprint,
+        model_producer=whole_book.local_producer_material(),
+    )
+    producer_sha256 = chapter_hybrid.digest(producer)
+    summary["producer_identity_sha256"] = producer_sha256
 
     def stage(
         name: str,
@@ -2270,7 +2284,7 @@ def evaluate_hybrid_chapter(
         replay_only: bool = False,
     ) -> tuple[dict[str, Any], str, str, int]:
         try:
-            prepared, _request_key, _count = chapter_hybrid.request(
+            prepared, request_key, _count = chapter_hybrid.request(
                 request_stage,
                 payload,
                 output_tokens=limits.max_new_tokens,
@@ -2290,6 +2304,7 @@ def evaluate_hybrid_chapter(
             prepared_request=prepared,
             contract_version=f"clipper-hybrid-{request_stage}-v1",
             safe_context_tokens=chapter_hybrid.SAFE_CONTEXT_TOKENS,
+            hybrid_request_identity=request_key,
         )
 
     replay = expected_brief_identity is not None
@@ -2583,6 +2598,7 @@ def evaluate_hybrid_chapter(
         "linked_section_completeness": "UNVERIFIED_REQUIRES_SOURCE_REVIEW",
         "source_mining_provenance": "DIRECT_SOURCE_NO_MINING",
         "source_mining_producer_fingerprint": None,
+        "producer_identity_sha256": producer_sha256,
         "progress_sha256": None,
         "brief_key": brief_key,
         "argument_key": argument_key,
