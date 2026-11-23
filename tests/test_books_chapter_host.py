@@ -350,7 +350,6 @@ def test_chapter_incomplete_real_generation_retains_exact_raw(
     producer.assert_called_once()
 
 
-
 def test_real_chapter_allows_full_large_request_only_after_exact_context_preflight(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
