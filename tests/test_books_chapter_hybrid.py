@@ -2244,9 +2244,7 @@ def test_hybrid_private_host_finite_scope_preflight_precedes_any_attempt(
             runner, prepared, plan, mode, runner.root, "unused-before-guard"
         )
     no_producer.assert_not_called()
-    assert not list((runner.root / "book-candidates" / "private-host").glob(
-        "*phase-events"
-    ))
+    assert not list((runner.root / "book-candidates" / "private-host").glob("*phase-events"))
 
 
 @pytest.mark.parametrize("failure", ("mismatched_output_budget", "real_context_overflow"))
