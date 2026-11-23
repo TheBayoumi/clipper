@@ -113,6 +113,9 @@ def freeze(
                 "source_path": unit.get("source_path"),
                 "unit_fingerprint": unit.get("unit_fingerprint"),
                 "original_parent_ordinal": unit.get("original_parent_ordinal"),
+                "unit_word_offset": unit.get("unit_word_offset"),
+                "evidence_field": unit.get("evidence_field"),
+                "asset_sha256": unit.get("asset_sha256"),
                 "text_sha256": hashlib.sha256(unit["text"].encode("utf-8")).hexdigest(),
                 "text": unit["text"],
             }
@@ -134,6 +137,8 @@ def validate_ledger(ledger: dict[str, Any]) -> list[dict[str, Any]]:
         raise HybridStop("empty hybrid source ledger")
     if not isinstance(checked["identity"], dict):
         raise HybridStop("hybrid source identity malformed")
+    if len(_canonical(checked)) > MAX_SOURCE_BYTES + 256:
+        raise HybridStop("hybrid source ledger replay exceeds finite byte cap")
     if digest({k: v for k, v in checked.items() if k != "ledger_sha256"}) != checked[
         "ledger_sha256"
     ]:
@@ -300,7 +305,8 @@ def validate_audit(
 ) -> dict[str, Any]:
     source = {entry["id"]: entry for entry in validate_ledger(ledger)}
     core = window["core_ids"]
-    assert isinstance(core, list)
+    if not isinstance(core, list) or not all(isinstance(sid, str) for sid in core):
+        raise HybridStop("hybrid audit core identity malformed")
     expected = set(core)
     data = _object(raw, {"audit_id", "core_ids", "decisions", "disagreements"})
     if data["audit_id"] != window["audit_id"] or data["core_ids"] != core:
@@ -460,7 +466,11 @@ def reconcile(
 def human_review_packet(brief: dict[str, Any], ledger: dict[str, Any]) -> dict[str, Any]:
     """Full original text and immediate neighbors, not a lexical fidelity certificate."""
     entries = validate_ledger(ledger)
-    if brief.get("ledger_sha256") != ledger["ledger_sha256"]:
+    if (
+        brief.get("ledger_sha256") != ledger["ledger_sha256"]
+        or digest({k: v for k, v in brief.items() if k != "brief_sha256"})
+        != brief.get("brief_sha256")
+    ):
         raise HybridStop("hybrid brief is not bound to the immutable source ledger")
     return {
         "schema": REVIEW_SCHEMA,
@@ -491,6 +501,7 @@ def validate_human_review(
     raw: object, brief: dict[str, Any], ledger: dict[str, Any]
 ) -> dict[str, Any]:
     """Mandatory explicit per-beat AND per-source semantic approval."""
+    human_review_packet(brief, ledger)
     entries = validate_ledger(ledger)
     doc = _object(
         raw, {"schema", "brief_sha256", "reviewer", "unit_decisions", "beat_decisions"}
