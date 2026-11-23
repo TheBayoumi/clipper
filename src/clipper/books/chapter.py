@@ -1097,6 +1097,7 @@ def _verified_text_artifact(
     provenance: str,
     validate: Callable[[object], dict[str, Any]],
     max_attempts: int,
+    max_new_tokens: int,
 ) -> tuple[dict[str, Any], str]:
     """Require exact raw, validated bytes, schema and exclusive owner on replay."""
     try:
@@ -1179,7 +1180,7 @@ def _verified_text_artifact(
                 != {"raw_sha256", "generated_token_count", "terminal_token_id", "eos_decision"}
                 or receipt["raw_sha256"] != saved["raw_sha256"]
                 or type(receipt["generated_token_count"]) is not int
-                or not 1 <= receipt["generated_token_count"] <= 8192
+                or not 1 <= receipt["generated_token_count"] <= max_new_tokens
                 or type(receipt["terminal_token_id"]) is not int
                 or receipt["terminal_token_id"] < 0
                 or receipt["eos_decision"] != "EOS_VERIFIED"
@@ -1266,6 +1267,7 @@ def _stage(
             provenance,
             validate,
             plan.max_attempts_per_stage,
+            plan.max_new_tokens,
         )
         return validated, artifact_key, provenance, 0
     if replay_only:
@@ -1406,6 +1408,7 @@ def _stage(
             provenance,
             validate,
             plan.max_attempts_per_stage,
+            plan.max_new_tokens,
         )
         return verified, verified_key, provenance, index
     raise ChapterStop("chapter stage exhausted bounded attempts")
