@@ -653,6 +653,8 @@ def _chapter_tokenizer_material(tokenizer: Any) -> dict[str, str]:
             "chat_template_sha256": hashlib.sha256(template_raw).hexdigest(),
             "tokenizer_json_sha256": constrained.PINNED_TOKENIZER_SHA256,
         }
+    except PinnedQwenSnapshotError:
+        raise
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         raise PinnedQwenSnapshotError("chapter effective tokenizer provenance unavailable") from exc
 
