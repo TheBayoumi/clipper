@@ -1653,7 +1653,10 @@ def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
                 if row["kind"] == kind
                 and (
                     attack != "reconcile_ledger"
-                    or row["relative_path"].startswith("book-candidates/hybrid_reconcile/")
+                    or (
+                        row["relative_path"].startswith("book-candidates/hybrid_reconcile/")
+                        and row["relative_path"].endswith("/validated.json")
+                    )
                 )
             )
             path = item["relative_path"]
