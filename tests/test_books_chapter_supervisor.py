@@ -407,6 +407,29 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     }
     response = tmp_path / "synthetic-remote-recovery-result.json"
     response.write_text(json.dumps(receipt), encoding="utf-8")
+    if scenario in {"one_complete_one_failed", "all_ready"}:
+        # Exercise the owner's EXACT bounded Python TAR verifier in isolation;
+        # the shell's fallback intentionally hides its private error details.
+        content = _SCRIPT.read_text(encoding="utf-8")
+        core = content.split("if bounded python3 -c '\n", 1)[1].split(
+            "\n' \"$session/recovery-created.json\"", 1
+        )[0]
+        direct = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                core,
+                str(response),
+                str(source),
+                str(tmp_path / "direct-retrieval-report.json"),
+                str(tmp_path / "direct-safe-status.json"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        assert direct.returncode == 0, (direct.stderr, direct.stdout)
     fake_bin = tmp_path / "commands"
     fake_bin.mkdir()
     fake_gh = fake_bin / "gh"
