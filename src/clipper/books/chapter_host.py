@@ -694,7 +694,11 @@ def execute(
             _check_deadline(created)
             if mode == "brief":
                 _phase(
-                    runner, number, digest, scope_sha, "MINING_IN_FLIGHT",
+                    runner,
+                    number,
+                    digest,
+                    scope_sha,
+                    "MINING_IN_FLIGHT",
                     {"claim_owner": claim_owner},
                 )
                 mined = runner.mine_candidate(
@@ -785,9 +789,7 @@ def execute(
                 narration_producer=narration._kokoro_wav,
                 expected_brief_identity=journaled_brief_identity,
                 on_stage_progress=(
-                    partial(
-                        _record_verified_stage, runner, number, digest, scope_sha, claim_owner
-                    )
+                    partial(_record_verified_stage, runner, number, digest, scope_sha, claim_owner)
                     if mode == "resume"
                     else None
                 ),
@@ -879,7 +881,11 @@ def execute(
             else:
                 try:
                     stopped = _phase(
-                        runner, number, digest, scope_sha, "STOPPED",
+                        runner,
+                        number,
+                        digest,
+                        scope_sha,
+                        "STOPPED",
                         {"claim_owner": claim_owner},
                     )
                 except PhaseClaimContended:
@@ -950,9 +956,14 @@ def _stage_output_entries(
                 or hashlib.sha256(evaluation._json_bytes(record["payload"])).hexdigest()
                 != record["payload_sha256"]
                 or chapter._text_artifact_identity(
-                    stage, record["request_key"], record["provenance"],
-                    record["raw_sha256"], record["payload_sha256"], record["token_receipt"]
-                ) != identity
+                    stage,
+                    record["request_key"],
+                    record["provenance"],
+                    record["raw_sha256"],
+                    record["payload_sha256"],
+                    record["token_receipt"],
+                )
+                != identity
             ):
                 raise PrivateHostStop("reviewed chapter stage identity changed")
             raw_path = directory / f"raw-{record['attempt']}.json"
@@ -975,17 +986,18 @@ def _stage_output_entries(
     allowed = re.compile(r"(?:validated|started-[12]|raw-[12]|failed-[12])\.json\Z")
     collected = [
         _private_output_entry(root, file, number, "text", 250_000)
-        for file in files if allowed.fullmatch(file.name)
+        for file in files
+        if allowed.fullmatch(file.name)
     ]
-    if not any(row["relative_path"] == (selected / "validated.json").relative_to(root).as_posix()
-               for row in collected):
+    if not any(
+        row["relative_path"] == (selected / "validated.json").relative_to(root).as_posix()
+        for row in collected
+    ):
         raise PrivateHostStop("reviewed chapter validated replay artifact absent")
     return collected
 
 
-def _narration_output_entries(
-    root: Path, number: int, key: str
-) -> list[dict[str, object]]:
+def _narration_output_entries(root: Path, number: int, key: str) -> list[dict[str, object]]:
     path = root / "book-candidates" / f"narration-report-{key}.json"
     report = whole_book.load_strict_reply(evaluation._read(path, 300_000))
     if (
@@ -1040,8 +1052,12 @@ def _chapter_output_manifest(
     identities: dict[str, str] = {}
     for item in records:
         for key in (
-            "brief_identity", "adaptation_identity", "script_identity",
-            "narration_report_identity", "direction_identity", "final_result_identity",
+            "brief_identity",
+            "adaptation_identity",
+            "script_identity",
+            "narration_report_identity",
+            "direction_identity",
+            "final_result_identity",
         ):
             value = item["artifacts"].get(key)
             if isinstance(value, str) and DIGEST.fullmatch(value):
@@ -1111,8 +1127,11 @@ def _chapter_output_manifest(
             raise PrivateHostStop("private chapter human review identity missing")
         entries.append(
             _private_output_entry(
-                root, result_file.parent / f"human-review-{review_id}.json",
-                number, "human_review", 250_000
+                root,
+                result_file.parent / f"human-review-{review_id}.json",
+                number,
+                "human_review",
+                250_000,
             )
         )
     unique: dict[str, dict[str, object]] = {}
@@ -1282,9 +1301,14 @@ def recovery_report(artifact_root: Path) -> dict[str, object]:
         for record in reversed(records):
             artifacts = record["artifacts"]
             for key in (
-                "brief_identity", "adaptation_identity", "script_identity",
-                "narration_report_identity", "direction_identity",
-                "final_result_identity", "output_manifest_sha256", "progress_sha256",
+                "brief_identity",
+                "adaptation_identity",
+                "script_identity",
+                "narration_report_identity",
+                "direction_identity",
+                "final_result_identity",
+                "output_manifest_sha256",
+                "progress_sha256",
             ):
                 value = artifacts.get(key)
                 if key not in identities and isinstance(value, str) and DIGEST.fullmatch(value):
