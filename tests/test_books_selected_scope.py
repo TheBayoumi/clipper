@@ -312,3 +312,130 @@ def test_selected_source_minable_chapter_brief_replays_without_parent_or_human_a
     assert completion.call_count == 1
     assert not list(runner.root.rglob("analysis-refs"))
     assert not list(runner.root.rglob("*.epub"))
+
+
+
+def test_selected_scope_exporter_cli_sanitizes_private_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from unittest.mock import Mock
+
+    calls: list[tuple[int, tuple[str, ...], tuple[str, ...]]] = []
+
+    def safe_export(
+        _runner: object,
+        _candidate: Path,
+        *,
+        chapter_number: int,
+        chapter_section_ids: tuple[str, ...],
+        linked_section_ids: tuple[str, ...],
+    ) -> tuple[Path, str]:
+        calls.append((chapter_number, chapter_section_ids, linked_section_ids))
+        return tmp_path / "synthetic.json", "a" * 64
+
+    monkeypatch.setattr(selected_scope, "export_chapter", safe_export)
+    args = [
+        "--artifact-root",
+        str(tmp_path),
+        "--candidate-ref",
+        str(tmp_path / "private-candidate.json"),
+        "--chapter-number",
+        "1",
+        "--chapter-sections",
+        "chapter-one",
+        "--linked-sections",
+        "footnote-one",
+    ]
+    assert selected_scope.main(args) == 0
+    standard, errors = capsys.readouterr()
+    result = json.loads(standard)
+    assert result["status"] == "SELECTED_SCOPE_EXPORTED"
+    assert result["sha256"] == "a" * 64
+    assert not errors
+    assert calls == [(1, ("chapter-one",), ("footnote-one",))]
+    failure = Mock(side_effect=RuntimeError("PRIVATE_SYNTHETIC_SOURCE_TEXT_CANARY"))
+    monkeypatch.setattr(selected_scope, "export_chapter", failure)
+    assert selected_scope.main(args) == 2
+    standard, errors = capsys.readouterr()
+    assert json.loads(standard)["status"] == "SELECTED_SCOPE_EXPORT_FAILED_CLOSED"
+    assert not errors
+    assert "PRIVATE_SYNTHETIC_SOURCE_TEXT_CANARY" not in standard
+    failure.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "selection",
+    ["zero_chapter", "empty", "same_linked", "missing_id", "reordered_chapters"],
+)
+def test_exporter_rejects_unverified_scope_before_creating_bundle(
+    tmp_path: Path, selection: str
+) -> None:
+    owner = tmp_path / "retained"
+    owner.mkdir()
+    runner, acquired, _ = ingested(owner, paragraphs=8, with_image=True)
+    ids = tuple(section.chapter_id for section in acquired.book.sections)
+    chapter_number = 1
+    chapters, linked = (ids[0],), ()
+    if selection == "zero_chapter":
+        chapter_number = 0
+    elif selection == "empty":
+        chapters = ()
+    elif selection == "same_linked":
+        linked = chapters
+    elif selection == "missing_id":
+        chapters = ("missing-original-section",)
+    else:
+        assert selection == "reordered_chapters"
+        chapters = (ids[1], ids[0])
+    with pytest.raises(selected_scope.SelectedSourceStop):
+        selected_scope.export_chapter(
+            runner,
+            acquired.analysis_ref_path,
+            chapter_number=chapter_number,
+            chapter_section_ids=chapters,
+            linked_section_ids=linked,
+        )
+    assert not list((runner.root / "book-candidates").rglob("selected-scopes/*.json"))
+
+
+def test_importer_retains_explicit_linked_section_and_original_parent_order(
+    tmp_path: Path,
+) -> None:
+    owner = tmp_path / "retained"
+    owner.mkdir()
+    runner, acquired, _ = ingested(owner, paragraphs=8, with_image=True)
+    ids = tuple(section.chapter_id for section in acquired.book.sections)
+    path, _sha = selected_scope.export_chapter(
+        runner,
+        acquired.analysis_ref_path,
+        chapter_number=1,
+        chapter_section_ids=(ids[0],),
+        linked_section_ids=(ids[1],),
+    )
+    chosen = selected_scope.import_chapter(runner.root, path)
+    assert chosen.linked_section_ids == (ids[1],)
+    assert chosen.work.section_ids == ids[:2]
+    assert chosen.book.parent_original_reverified_on_host is False
+    assert len(chosen.book.selected_reading_blocks) > 1
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    ["source_schema", "identity_schema", "empty_blocks", "missing_work_units"],
+)
+def test_importer_rejects_internally_rehashed_incomplete_selected_evidence(
+    tmp_path: Path, malformed: str
+) -> None:
+    runner, _path, evidence = _bundle(tmp_path)
+    if malformed == "source_schema":
+        evidence["source"].pop("title")
+    elif malformed == "identity_schema":
+        evidence["source_identity"].pop("parser_version")
+    elif malformed == "empty_blocks":
+        evidence["reading_blocks"] = []
+    else:
+        evidence["work_plan"]["units"] = []
+    with pytest.raises(selected_scope.SelectedSourceStop):
+        selected_scope.import_chapter(runner.root, _edited(runner, evidence))
