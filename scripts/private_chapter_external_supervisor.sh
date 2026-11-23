@@ -176,13 +176,22 @@ with tarfile.open(archive_path, mode="r:") as source:
             sys.exit(2)
     if set(names) != expected or len(names) != len(expected):
         sys.exit(2)
+    if set(safe) != {"schema","status","chapters","files_retrieved","publish_eligible"}:
+        sys.exit(2)
+    allowed = {"recovery_state","last_subphase","runtime_journal_status",
+               "retrieval_status","last_verified_artifact_identities",
+               "bundle_sha256","scope_sha256","committed_phase_event_sha256",
+               "output_manifest_sha256"}
     for chapter in safe["chapters"].values():
-        if (not isinstance(chapter, dict)
+        if (not isinstance(chapter, dict) or not set(chapter).issubset(allowed)
             or chapter.get("recovery_state") not in {"NEVER_STARTED","IN_FLIGHT","INTERRUPTED","AWAITING_REVIEW","READY"}
             or not isinstance(chapter.get("last_subphase"), str)
             or len(chapter["last_subphase"]) > 64
             or chapter.get("retrieval_status") != "NOT_ATTEMPTED"
             or not isinstance(chapter.get("last_verified_artifact_identities"), dict)):
+            sys.exit(2)
+        if any(not isinstance(value, str) or dig.fullmatch(value) is None
+               for value in chapter["last_verified_artifact_identities"].values()):
             sys.exit(2)
     summary = {
         "schema": "clipper-private-owner-recovery-verification-v1",
@@ -224,8 +233,14 @@ raw=p.read_bytes()
 if len(raw) > 16384: sys.exit(2)
 x=json.loads(raw)
 if x.get("schema") != "clipper-private-chapter-safe-recovery-v1" or set(x.get("chapters",{})) != {"1","7"}: sys.exit(2)
+if set(x) != {"schema","status","chapters","files_retrieved","publish_eligible"}:
+    sys.exit(2)
+allowed={"recovery_state","last_subphase","runtime_journal_status",
+         "retrieval_status","last_verified_artifact_identities",
+         "bundle_sha256","scope_sha256","committed_phase_event_sha256",
+         "output_manifest_sha256"}
 for chapter in x["chapters"].values():
-    if (not isinstance(chapter,dict)
+    if (not isinstance(chapter,dict) or not set(chapter).issubset(allowed)
         or chapter.get("recovery_state") not in {"NEVER_STARTED","IN_FLIGHT","INTERRUPTED","AWAITING_REVIEW","READY"}
         or not isinstance(chapter.get("last_subphase"),str)
         or len(chapter["last_subphase"]) > 64): sys.exit(2)
