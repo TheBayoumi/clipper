@@ -27,10 +27,13 @@ def _source(
     for unit in parent.units:
         grouped[unit.section_id] = grouped.get(unit.section_id, 0) + 1
     selected = next(
-        (sid for sid, count in grouped.items()
-         if count == 5 and (
-             not with_image or any(item["section_id"] == sid for item in parent.skipped)
-         )), None
+        (
+            sid
+            for sid, count in grouped.items()
+            if count == 5
+            and (not with_image or any(item["section_id"] == sid for item in parent.skipped))
+        ),
+        None,
     )
     assert selected is not None
     scoped = whole_book.plan_for(acquired.book, section_ids=(selected,))
@@ -1034,10 +1037,7 @@ def test_entire_chapter_request_and_output_preflight_abstains_before_provider(
     assert not list(tmp_path.rglob("started-*.json"))
 
 
-
-def test_skipped_image_marker_kept_in_original_order_and_human_review(
-    tmp_path: Path
-) -> None:
+def test_skipped_image_marker_kept_in_original_order_and_human_review(tmp_path: Path) -> None:
     runner, ref, progress, section, _ = _source(tmp_path, with_image=True)
     plan = _plan(adaptation_cpu=False, script_cpu=False, direction_cpu=False)
     initial, brief = _first_brief(runner, ref, progress, section, plan)
@@ -1057,8 +1057,7 @@ def test_skipped_image_marker_kept_in_original_order_and_human_review(
     assert all(covered[sid]["decision"] == "omit" for sid in gap_ids)
     review = _review(tmp_path, initial["brief_identity"], brief)
     accepted = chapter.evaluate_chapter(
-        runner, ref, progress, section, review_file=review,
-        plan=plan, brief_completion=_brief
+        runner, ref, progress, section, review_file=review, plan=plan, brief_completion=_brief
     )
     assert accepted["status"] == "AWAITING_EXPLICIT_CPU_CHAPTER_ADAPTATION"
     bad = json.loads(json.dumps(brief))
@@ -1067,11 +1066,21 @@ def test_skipped_image_marker_kept_in_original_order_and_human_review(
         chapter._brief_validate(bad, source["units"], source["gaps"], plan)
 
 
-@pytest.mark.parametrize("mutation", [
-    "missing-unit", "duplicate-unit", "wrong-unit-decision", "unit-qualifier",
-    "reject-unit", "bad-brief", "missing-beat", "duplicate-beat",
-    "unknown-beat", "beat-qualifier",
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing-unit",
+        "duplicate-unit",
+        "wrong-unit-decision",
+        "unit-qualifier",
+        "reject-unit",
+        "bad-brief",
+        "missing-beat",
+        "duplicate-beat",
+        "unknown-beat",
+        "beat-qualifier",
+    ],
+)
 def test_human_review_checks_every_original_unit_and_exact_span(
     tmp_path: Path, mutation: str
 ) -> None:
@@ -1117,7 +1126,11 @@ def test_chapter_source_budget_fails_without_truncation_or_model(
     producer = Mock(side_effect=AssertionError("no model permitted"))
     with pytest.raises(chapter.ChapterStop, match="source preflight budget"):
         chapter.evaluate_chapter(
-            runner, ref, progress, section, plan=_plan(),
+            runner,
+            ref,
+            progress,
+            section,
+            plan=_plan(),
             brief_completion=producer,
         )
     producer.assert_not_called()
@@ -1133,29 +1146,26 @@ def test_chapter_explicit_stage_hold_never_silently_calls_later_provider(
     never = Mock(side_effect=AssertionError("held producer invoked"))
     kwargs = {
         "review_file": review,
-        "plan": _plan(
-            script_cpu=hold != "script", direction_cpu=False
-        ),
-        "brief_completion": _brief, "adaptation_completion": _adapt,
+        "plan": _plan(script_cpu=hold != "script", direction_cpu=False),
+        "brief_completion": _brief,
+        "adaptation_completion": _adapt,
         "script_completion": never if hold == "script" else _script,
         "direction_completion": never,
     }
     result = chapter.evaluate_chapter(runner, ref, progress, section, **kwargs)
     assert result["status"] == (
-        "AWAITING_EXPLICIT_CPU_CHAPTER_SCRIPT" if hold == "script"
+        "AWAITING_EXPLICIT_CPU_CHAPTER_SCRIPT"
+        if hold == "script"
         else "AWAITING_EXPLICIT_CPU_CHAPTER_DIRECTION"
     )
     never.assert_not_called()
-
 
 
 @pytest.mark.parametrize("mutation", ["schema", "nonbool", "over-limit", "voice"])
 def test_chapter_manifest_permissions_and_budgets_reject_bad_inputs(mutation: str) -> None:
     from dataclasses import asdict
 
-    settings: dict[str, object] = {
-        "schema": chapter.PLAN_SCHEMA, **asdict(_plan())
-    }
+    settings: dict[str, object] = {"schema": chapter.PLAN_SCHEMA, **asdict(_plan())}
     if mutation == "schema":
         settings["schema"] = "unexpected-bypass"
     elif mutation == "nonbool":
