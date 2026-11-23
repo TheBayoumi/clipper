@@ -1002,8 +1002,8 @@ def _hybrid_review_packet(
                 ],
             },
         }
-
     )
+    evaluation._store(base, base / "private-host" / f"chapter-{number}-review-packet.json", packet)
 
 
 def _execute_hybrid(
