@@ -599,9 +599,10 @@ def test_selected_bundle_metadata_relabel_is_not_a_generation_cache_hit(
     assert replay["status"] == "complete"
     assert calls == 2 * len(work.units)
     assert replay["progress_path"] != first["progress_path"]
-    assert json.loads(Path(replay["progress_path"]).read_bytes())[
-        "selected_scope_bundle_sha256"
-    ] == chapter_seven.stem
+    assert (
+        json.loads(Path(replay["progress_path"]).read_bytes())["selected_scope_bundle_sha256"]
+        == chapter_seven.stem
+    )
 
 
 def test_gap_only_linked_section_preserved_in_source_order(
@@ -618,8 +619,12 @@ def test_gap_only_linked_section_preserved_in_source_order(
     selected_id = book.sections[0].chapter_id
     gap_id = "original-linked-gap-only-note"
     missing = SourceBlock(
-        "note-figure-001", gap_id, "notes/figure-001.png",
-        "image", "", "e" * 64,
+        "note-figure-001",
+        gap_id,
+        "notes/figure-001.png",
+        "image",
+        "",
+        "e" * 64,
     )
     derived = replace(book, blocks=(*book.blocks, missing))
     ordered = whole_book.plan_for(derived, section_ids=(selected_id, gap_id))
@@ -629,4 +634,3 @@ def test_gap_only_linked_section_preserved_in_source_order(
     assert any(gap["section_id"] == gap_id for gap in ordered.skipped)
     with pytest.raises(ValueError):
         whole_book.plan_for(derived, section_ids=(gap_id, selected_id))
-

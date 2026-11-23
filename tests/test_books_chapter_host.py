@@ -742,4 +742,3 @@ def test_in_flight_chapter_phase_reentry_stays_interrupted(
     result = _call(runner, path, "brief")
     assert result["chapters"]["1"]["status"] == "INTERRUPTED_DURING_MINING"
     provider.assert_not_called()
-
