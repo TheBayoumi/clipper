@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from datetime import UTC, datetime, timedelta
 import sys
 import time
 from pathlib import Path
@@ -13,7 +14,9 @@ import pytest
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts/private_chapter_external_supervisor.sh"
 
 
-@pytest.mark.parametrize("hang", ["ssh", "copy", "stop", "wrong_identity"])
+@pytest.mark.parametrize(
+    "hang", ["ssh", "copy", "stop", "wrong_identity", "swap_before_stop", "swap_after_stop"]
+)
 def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
     tmp_path: Path, hang: str
 ) -> None:
@@ -29,19 +32,20 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         "hang=os.environ['MOCK_HANG']\n"
         "if args[:2]==['api','-X']:\n"
         "  if args[2]=='POST' and hang=='stop': time.sleep(120)\n"
+        "  if args[2]=='POST' and hang=='swap_after_stop':\n"
+        "    open(os.environ['MOCK_SWAPPED'],'w').write('replaced')\n"
         "  if args[2]=='DELETE': sys.exit(0)\n"
         "  sys.exit(0)\n"
         "if args[:2]==['api','-i']:\n"
         "  print('HTTP/2 404 Not Found')\n"
         "  sys.exit(0)\n"
         "if args[:1]==['api']:\n"
-        "  if os.path.exists(os.environ['MOCK_STOPPED']):\n"
-        "    print(json.dumps({'state':'Stopped'}))\n"
-        "  else:\n"
-        "    created=(datetime.datetime.now(datetime.timezone.utc)"
-        "-datetime.timedelta(minutes=5)).isoformat()\n"
-        "    print(json.dumps({'id':12,'name':os.environ['CODESPACE_NAME'],"
-        "'state':'Available','created_at':created,"
+        "  created=os.environ['MOCK_CREATED']\n"
+        "  swapped=os.path.exists(os.environ['MOCK_SWAPPED'])\n"
+        "  state='Stopped' if os.path.exists(os.environ['MOCK_STOPPED']) else 'Available'\n"
+        "  print(json.dumps({'id':999 if swapped else 12,"
+        "'name':os.environ['CODESPACE_NAME'],"
+        "'state':state,'created_at':created,"
         "'repository':{'full_name':os.environ['MOCK_REPO']},"
         "'machine':{'cpus':4,'memory_in_bytes':17179869184,"
         "'storage_in_bytes':34359738368}}))\n"
@@ -50,6 +54,9 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         "  if hang=='ssh': time.sleep(120)\n"
         "  if hang=='stop':\n"
         "    open(os.environ['MOCK_STOPPED'],'w').write('stopped')\n"
+        "    sys.exit(3)\n"
+        "  if hang=='swap_before_stop':\n"
+        "    open(os.environ['MOCK_SWAPPED'],'w').write('replaced')\n"
         "    sys.exit(3)\n"
         "  sys.exit(0)\n"
         "if args[:2]==['codespace','cp']:\n"
@@ -72,6 +79,9 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
             "PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY": str(key),
             "PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY": str(public),
             "PRIVATE_CHAPTER_ROOT": str(tmp_path / "synthetic-host"),
+            "PRIVATE_CHAPTER_RECOVERY_DIR": str(tmp_path / "owner-private-recovery"),
+            "MOCK_CREATED": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
+            "MOCK_SWAPPED": str(tmp_path / "synthetic-swapped.txt"),
             "MOCK_HANG": hang,
             "MOCK_REPO": (
                 "other/unauthorized" if hang == "wrong_identity" else "TheBayoumi/clipper"
@@ -94,8 +104,11 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
     assert result.returncode != 0
     assert elapsed < 30
     actions = log.read_text(encoding="utf-8")
-    if hang == "wrong_identity":
+    if hang in {"wrong_identity", "swap_before_stop"}:
         assert "api -X POST" not in actions
+        assert "api -X DELETE" not in actions
+    elif hang == "swap_after_stop":
+        assert "api -X POST" in actions
         assert "api -X DELETE" not in actions
     else:
         assert "api -X POST" in actions
