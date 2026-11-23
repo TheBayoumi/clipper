@@ -33,15 +33,43 @@ occurrences and private unreviewed export still present. Missing, incomplete
 or mismatched mining records fail closed. This is not yet a partial-book
 editorial-completeness guarantee.
 
-For a **fresh real CPU** evaluation, after free/private execution approval,
-omit `--progress` and provide a manifest with `mine_cpu: true`. This
-explicitly invokes the existing `BookOrchestrator.mine_candidate`. A bounded
-`max_new_units` caps *new* mining calls; remaining work units remain unresolved
-and an incomplete progress record cannot be selected. The first real chapter
-must therefore be an independently frozen and fully accounted-for section or
-a previously completed pinned progress. **Section-scoped faithful mining is
-not implemented in this patch**; do not misrepresent a full-book cap as
-chapter completeness.
+For a **fresh real CPU** evaluation, only after free/private execution
+approval, omit `--progress` and provide a manifest with `mine_cpu: true`.
+This explicitly invokes the existing `BookOrchestrator.mine_candidate`.
+A bounded `max_new_units` caps *new* mining calls. **A cap is not a scope**:
+unresolved included units fail-stop, and no complete export exists until
+all included units finish.
+
+To freeze one real-source section without forging a new mini-book, derive
+the exact `section_id` and unit counts from the parent source's
+`whole_book.plan_for(book)`. Freeze a **private immutable section scope**
+manifest (`$PRIVATE_SECTION_MANIFEST`) with this exact JSON structure:
+
+```json
+{
+  "schema": "clipper-book-section-evaluation-scope-v1",
+  "book_fingerprint": "<original full BookText fingerprint>",
+  "source_fingerprint": "<original source fingerprint>",
+  "ingest_stage_key": "<original faithful ingest stage key>",
+  "parent_plan_fingerprint": "<whole parent plan fingerprint>",
+  "section_ids": ["<exact canonical section_id in source order>"],
+  "parent_total_units": 27,
+  "included_units": 5,
+  "excluded_units": 22
+}
+```
+
+The displayed counts are illustrative **only**; the actual manifest must
+contain the exact verified parent and section counts. Supply
+`--section-manifest "$PRIVATE_SECTION_MANIFEST"` on **both mining and
+replay**. It is pinned by raw SHA-256 in the scoped private ledger, and
+its original bytes are privately retained immutably. Plan/cache/review
+identities include the selected parent work units without renumbering,
+replacing source fingerprints or changing evidence anchors. Scoped
+`complete` means **every included unit** completed; the ledger and
+export explicitly set `parent_full_book_complete: false`. It does NOT
+mean the full book is complete. Tampered or partial scope ledgers must fail.
+
 
 For an **offline synthetic** integration regression only,
 `--responses "$PRIVATE_SHA256_KEYED_RESPONSES"` feeds the existing recorded
@@ -106,10 +134,15 @@ decision, **not provided or authorized by these code changes**:
 No CLI option silently invokes weights. To evaluate an already mined ledger,
 keep `mine_cpu: false` and provide `--progress`. The **same canonical
 scripting.generate_episode** permits at most **3 Qwen script attempts**.
-Each producer output is saved as raw private bytes before validation,
-including rejected drafts; the canonical audit records rejection reasons and
-complete-sentence edits. A failed prior script cannot be automatically
-retried or reinitialized via this evaluation cache.
+Each provider call reserves a **durable started/attempt marker before**
+invocation, including calls that subsequently throw, return nontext, are
+interrupted or fail while saving raw evidence. Every textual completion
+is privately saved before validation. The canonical script audit records
+rejections and complete-sentence edits. A failed or ambiguous attempt
+cannot be silently reinvoked on replay; a separately authorized recovery
+process would be needed. Immutable script evidence is independent of
+per-invocation attempts and audio mode; measured WAV reports and estimated
+timing reports carry distinct content-addressed identities.
 
 When `kokoro_cpu: true`, **actual Kokoro-generated WAVs** (one per scene)
 are obtained by `narration.synthesize_scene` and independently validated.
@@ -127,7 +160,11 @@ checks scene count/order/IDs, nonempty bounded fields and narrator-aligned
 timing (actual WAV when available; estimates otherwise). There are at most
 **2 Qwen text-direction attempts**, each raw response stored privately.
 Cache replay validates the previously generated shots and their timing
-without any second inference. No image/video generator is called.
+without any second inference. A new narration mode has a distinct
+duration-specific shot plan key; it must not overwrite the other mode.
+No image/video generator is called. Canonical Qwen script feedback and
+provider stdout/stderr are retained **only in private diagnostics** on this
+evaluation path; the public CLI prints safe statuses/hashes/counts.
 
 Only a reviewer can judge whether the generated script conveys the specific
 mechanism honestly, whether narration is intelligible, and whether actual
@@ -140,6 +177,7 @@ direction is concrete rather than vague. The terminal status
 clipper books evaluate \
   --artifact-root "$PRIVATE_ARTIFACTS" \
   --candidate-ref "$PRIVATE_ANALYSIS_REF" \
+  --section-manifest "$PRIVATE_SECTION_MANIFEST" \
   --progress "$PRIVATE_COMPLETE_PROGRESS" \
   --review-file "$PRIVATE_HUMAN_REVIEW" \
   --run-manifest "$PRIVATE_MANIFEST"

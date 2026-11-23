@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import io
 import json
+import sys
 import wave
 from pathlib import Path
 from unittest.mock import Mock
@@ -12,7 +14,7 @@ from unittest.mock import Mock
 import pytest
 from test_books_whole_book import ingested
 
-from clipper.books import evaluation, narration, scripting, selection, whole_book
+from clipper.books import cli, evaluation, narration, scripting, selection, whole_book
 from clipper.books.orchestrator import BookOrchestrator
 
 
@@ -243,7 +245,9 @@ def test_actual_script_injected_generated_direction_and_no_visual_stage(
     script_report = _private_report(runner.root, "script-report-*.json")
     assert script_report["script_semantic_review"] == "PENDING"
     assert script_report["raw_attempt_count"] == 1
-    assert script_report["voice_revision_resolved_commit"] is None
+    assert _private_report(runner.root, "narration-report-*.json")[
+        "voice_revision_resolved_commit"
+    ] is None
     shots = _private_report(runner.root, "validated-text-shots.json")
     assert all(shot["scene_id"] == f"scene-{i:02d}" for i, shot in enumerate(shots["shots"]))
     assert all(shot["timing"]["basis"] == "estimated_no_audio" for shot in shots["shots"])
@@ -276,7 +280,7 @@ def test_opt_in_kokoro_real_wav_metadata_and_replay(
     assert result["timing_basis"] == "measured_wav"
     assert result["measured_duration_seconds"] == 32.0
     assert audio.call_count == 4
-    report = _private_report(runner.root, "script-report-*.json")
+    report = _private_report(runner.root, "narration-report-*.json")
     assert len(report["narration"]) == 4
     assert all(track["duration_seconds"] == 8 for track in report["narration"])
     assert all(track["source"] == "actual_cpu_kokoro_wav" for track in report["narration"])
@@ -290,7 +294,7 @@ def test_opt_in_kokoro_real_wav_metadata_and_replay(
     # This is a replay proof, not authority to run again: existing immutable
     # text direction must NOT allow the model producer to be reinvoked.
     no_more = Mock(side_effect=AssertionError("no repeat inference"))
-    runner.evaluate_candidate(
+    replay = runner.evaluate_candidate(
         ref,
         progress_path=progress,
         review_file=review,
@@ -299,6 +303,25 @@ def test_opt_in_kokoro_real_wav_metadata_and_replay(
         direction_completion=no_more,
         narration_producer=no_more,
     )
+    assert replay["script_attempts"] == 0
+    assert replay["direction_cache_reused"] is True
+    no_more.assert_not_called()
+    script_before = _private_report(runner.root, "script-report-*.json")
+    estimate = runner.evaluate_candidate(
+        ref, progress_path=progress, review_file=review,
+        options=evaluation.EvaluationOptions(
+            script_cpu=True, direction_cpu=True, kokoro_cpu=False
+        ),
+        script_completion=no_more, direction_completion=shots,
+        narration_producer=no_more,
+    )
+    assert estimate["narration_included"] is False
+    assert estimate["timing_basis"] == "estimated_no_audio"
+    assert _private_report(runner.root, "script-report-*.json") == script_before
+    assert len(list(
+        (runner.root / "book-candidates/evaluations").rglob("narration-report-*.json")
+    )) == 2
+    assert audio.call_count == 4
     no_more.assert_not_called()
 
 
@@ -426,3 +449,187 @@ def test_prompt_version_keeps_legacy_cache_stable_and_strengthens_evidence() -> 
         "exact selected evidence entry ALONE"
         in whole_book._request_for_identity.__code__.co_consts.__str__()
     )
+
+
+@pytest.mark.parametrize("kind", ["exception", "nontext"])
+def test_script_failed_provider_never_reinvoked_on_identical_resume(
+    tmp_path: Path, kind: str
+) -> None:
+    runner, ref, progress, candidates = _mined(tmp_path)
+    review = _review(tmp_path, progress, candidates)
+    provider = Mock(
+        side_effect=RuntimeError("PRIVATE_SOURCE_DO_NOT_ECHO")
+        if kind == "exception" else None,
+        return_value={"PRIVATE_SOURCE_DO_NOT_ECHO": True}
+        if kind == "nontext" else None,
+    )
+    kwargs = {
+        "progress_path": progress, "review_file": review,
+        "options": evaluation.EvaluationOptions(script_cpu=True),
+        "script_completion": provider,
+    }
+    with pytest.raises(evaluation.EvaluationStop):
+        runner.evaluate_candidate(ref, **kwargs)
+    with pytest.raises(evaluation.EvaluationStop, match="previous script attempt"):
+        runner.evaluate_candidate(ref, **kwargs)
+    assert provider.call_count == 1
+    started = list(
+        (runner.root / "book-candidates/evaluations").rglob("started-1.json")
+    )
+    assert len(started) == 1
+    assert json.loads(started[0].read_bytes())["status"] == "STARTED_UNRESOLVED"
+
+
+@pytest.mark.parametrize("kind", ["exception", "nontext"])
+def test_direction_failed_provider_never_reinvoked_on_identical_resume(
+    tmp_path: Path, kind: str
+) -> None:
+    runner, ref, progress, candidates = _mined(tmp_path)
+    review = _review(tmp_path, progress, candidates)
+    script = Mock(return_value=json.dumps(_episode()))
+    provider = Mock(
+        side_effect=RuntimeError("PRIVATE_DIRECTION_DO_NOT_ECHO")
+        if kind == "exception" else None,
+        return_value={"PRIVATE_DIRECTION_DO_NOT_ECHO": True}
+        if kind == "nontext" else None,
+    )
+    kwargs = {
+        "progress_path": progress, "review_file": review,
+        "options": evaluation.EvaluationOptions(script_cpu=True, direction_cpu=True),
+        "script_completion": script, "direction_completion": provider,
+    }
+    with pytest.raises(evaluation.EvaluationStop):
+        runner.evaluate_candidate(ref, **kwargs)
+    with pytest.raises(evaluation.EvaluationStop, match="previous direction attempt"):
+        runner.evaluate_candidate(ref, **kwargs)
+    assert script.call_count == 1
+    assert provider.call_count == 1
+    direction_starts = list(
+        (runner.root / "book-candidates/evaluations").rglob("direction-*/started-1.json")
+    )
+    assert len(direction_starts) == 1
+
+
+def test_immutable_exact_five_unit_section_scope_and_incomplete_fail_stop(
+    tmp_path: Path
+) -> None:
+    runner, acquired, _ = ingested(tmp_path, paragraphs=12, with_image=False)
+    parent = whole_book.plan_for(acquired.book)
+    grouped: dict[str, int] = {}
+    for unit in parent.units:
+        grouped[unit.section_id] = grouped.get(unit.section_id, 0) + 1
+    chosen = next((sid for sid, n in grouped.items() if n == 5), None)
+    assert chosen is not None, grouped
+    scoped = whole_book.plan_for(acquired.book, section_ids=(chosen,))
+    assert len(scoped.units) == 5
+    assert len(parent.units) > 5
+    assert scoped.fingerprint != parent.fingerprint
+    assert [u.ordinal for u in scoped.units] == [
+        u.ordinal for u in parent.units if u.section_id == chosen
+    ]
+    manifest = {
+        "schema": evaluation.SECTION_MANIFEST_SCHEMA,
+        "book_fingerprint": acquired.book.fingerprint,
+        "source_fingerprint": acquired.book.source_fingerprint,
+        "ingest_stage_key": acquired.stage_key,
+        "parent_plan_fingerprint": parent.fingerprint,
+        "section_ids": [chosen],
+        "parent_total_units": len(parent.units),
+        "included_units": 5,
+        "excluded_units": len(parent.units) - 5,
+    }
+    path = tmp_path / "private-canonical-section.json"
+    path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    calls = Mock()
+
+    def producer(request: dict[str, object]) -> str:
+        calls(request)
+        span = request["constraints"]["spans"][0]  # type: ignore[index]
+        return json.dumps({
+            "lessons": [{
+                "id": span["id"], "topic": "Synthetic section evidence",
+                "claim": "The exact synthetic source states a limited observation.",
+                "hook_angle": "A single concrete observation",
+                "visual_action": "A worker marks a tool on a card",
+                "evidence": span["text"],
+                "evidence_field": request["constraints"]["evidence_field"],  # type: ignore[index]
+            }]
+        })
+
+    with pytest.raises(evaluation.EvaluationStop, match="incomplete"):
+        runner.evaluate_candidate(
+            acquired.analysis_ref_path, section_manifest=path,
+            options=evaluation.EvaluationOptions(mine_cpu=True, max_new_units=4),
+            mine_completion=producer,
+        )
+    assert calls.call_count == 4
+    outcome = runner.evaluate_candidate(
+        acquired.analysis_ref_path, section_manifest=path,
+        options=evaluation.EvaluationOptions(mine_cpu=True, max_new_units=5),
+        mine_completion=producer,
+    )
+    assert outcome["status"] == "AWAITING_HUMAN_SOURCE_SUPPORT_REVIEW"
+    assert outcome["section_scope"]["included_units"] == 5
+    assert outcome["section_scope"]["excluded_units"] == len(parent.units) - 5
+    assert outcome["parent_full_book_complete"] is False
+    assert calls.call_count == 5
+    ledger_paths = list((runner.root / "book-candidates/analysis/progress").rglob("*.json"))
+    assert len(ledger_paths) == 2
+    complete = next(json.loads(p.read_bytes()) for p in ledger_paths
+                    if json.loads(p.read_bytes())["status"] == "complete")
+    assert complete["section_manifest_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert complete["counts"]["unresolved"] == 0
+    assert complete["total_work_units"] == 5
+    assert complete["parent_book_fingerprint"] == acquired.book.fingerprint
+    assert complete["section_scope"]["parent_full_book_complete"] is False
+    manifest["included_units"] = 4
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(evaluation.EvaluationStop, match="bounds"):
+        runner.evaluate_candidate(
+            acquired.analysis_ref_path, section_manifest=path,
+            progress_path=next(p for p in ledger_paths
+                               if json.loads(p.read_bytes())["status"] == "complete"),
+        )
+
+
+def test_cli_private_model_keys_and_provider_output_do_not_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner, ref, progress, candidates = _mined(tmp_path)
+    review = _review(tmp_path, progress, candidates)
+    private_token = "PRIV_SYNT_SENTINEL_8CF1AA12"
+    def malicious(_request: dict[str, object]) -> str:
+        print(private_token)
+        print(private_token, file=sys.stderr)
+        return json.dumps({private_token: "private synthetic value", "scenes": []})
+
+    monkeypatch.setattr(scripting, "_local_script_completion", malicious)
+    manifest = {
+        "schema": evaluation.MANIFEST_SCHEMA,
+        "mine_cpu": False, "script_cpu": True,
+        "direction_cpu": False, "kokoro_cpu": False,
+        "max_new_units": 1, "pillar": "self_improvement", "voice": "af_heart",
+    }
+    manifest_path = tmp_path / "private-cpu-opt-in.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    parser = argparse.ArgumentParser()
+    root = parser.add_subparsers(dest="command", required=True)
+    cli.configure_books_parser(root)
+    args = parser.parse_args([
+        "books", "evaluate", "--artifact-root", str(runner.root),
+        "--candidate-ref", str(ref), "--progress", str(progress),
+        "--review-file", str(review), "--run-manifest", str(manifest_path),
+    ])
+    assert cli.dispatch_books(args) == 2
+    stdout, stderr = capsys.readouterr()
+    assert private_token not in stdout + stderr
+    assert "PRIV_SYNT_SENTINEL" not in stdout + stderr
+    assert "PRIVATE_EVALUATION_FAILED_CLOSED" in stderr
+    paths = list((runner.root / "book-candidates/evaluations").rglob("raw-*.json"))
+    assert len(paths) == 3
+    assert private_token in paths[0].read_text(encoding="utf-8")
+    console_logs = list(
+        (runner.root / "book-candidates/evaluations").rglob("log-*.json")
+    )
+    assert console_logs
+    assert any(private_token in item.read_text(encoding="utf-8") for item in console_logs)

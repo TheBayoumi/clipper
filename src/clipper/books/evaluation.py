@@ -9,14 +9,18 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import tempfile
 from collections.abc import Callable
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 from clipper.stage_contracts import content_fingerprint
 
 from . import acquisition, narration, scripting, whole_book
+from .contracts import BookText
 
 if TYPE_CHECKING:
     from .orchestrator import BookOrchestrator
@@ -25,6 +29,7 @@ EVALUATION_SCHEMA = "clipper-book-private-previsual-evaluation-v1"
 REVIEW_SCHEMA = "clipper-book-human-source-support-review-v1"
 MANIFEST_SCHEMA = "clipper-book-private-cpu-evaluation-manifest-v1"
 DIRECTION_SCHEMA = "clipper-book-generated-text-shots-v1"
+SECTION_MANIFEST_SCHEMA = "clipper-book-section-evaluation-scope-v1"
 MAX_PRIVATE_JSON = 2_000_000
 MAX_DIRECTION_ATTEMPTS = 2
 MAX_DIRECTION_BYTES = 16_384
@@ -111,9 +116,79 @@ def _sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _section_scope(
+    runner: BookOrchestrator, ref_path: Path, section_manifest: Path
+) -> tuple[whole_book.WorkPlan, str]:
+    """Verify exact source-bound section IDs; copy original manifest bytes privately."""
+    ref, book = runner.load_candidate_for_analysis(ref_path)
+    raw = _read(section_manifest, 16_384)
+    try:
+        manifest: object = whole_book.load_strict_reply(raw)
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise EvaluationStop("invalid private section scope JSON") from None
+    if not isinstance(manifest, dict) or set(manifest) != {
+        "schema", "book_fingerprint", "source_fingerprint",
+        "ingest_stage_key", "parent_plan_fingerprint",
+        "section_ids", "parent_total_units", "included_units", "excluded_units",
+    }:
+        raise EvaluationStop("invalid section manifest schema")
+    ids = manifest["section_ids"]
+    if not isinstance(ids, list) or not all(isinstance(x, str) for x in ids):
+        raise EvaluationStop("section scope requires canonical section ID strings")
+    try:
+        plan = whole_book.plan_for(book, section_ids=tuple(ids))
+    except ValueError as exc:
+        raise EvaluationStop("section scope does not match canonical parent text") from None
+    expected = {
+        "schema": SECTION_MANIFEST_SCHEMA,
+        "book_fingerprint": book.fingerprint,
+        "source_fingerprint": book.source_fingerprint,
+        "ingest_stage_key": ref.ingest_stage_key,
+        "parent_plan_fingerprint": plan.parent_plan_fingerprint,
+        "section_ids": list(plan.section_ids),
+        "parent_total_units": plan.parent_total_units,
+        "included_units": len(plan.units),
+        "excluded_units": plan.excluded_units,
+    }
+    if manifest != expected:
+        raise EvaluationStop("section manifest bounds or parent source identity mismatch")
+    digest = _sha(raw)
+    root = runner.root / "book-candidates"
+    acquisition._private_write(
+        root / "section-scopes" / f"{digest}.json",
+        raw, private_root=root,
+    )
+    return plan, digest
+
+
+def _capture_private_generator(
+    private_root: Path, log_dir: Path,
+    producer: Callable[[], Any],
+) -> Any:
+    """Suppress canonical script logs on public stderr; retain private diagnostics."""
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as sink:
+        try:
+            with redirect_stdout(sink), redirect_stderr(sink):
+                return producer()
+        finally:
+            sink.flush()
+            sink.seek(0)
+            output = sink.read(262145)
+            if output:
+                _store(private_root, log_dir / f"log-{uuid4().hex}.json", {
+                    "diagnostics": output[:262144],
+                    "truncated": len(output) > 262144,
+                })
+
+
 def _mined_export(
-    runner: BookOrchestrator, ref_path: Path, progress_path: Path
-) -> tuple[dict[str, Any], list[dict[str, Any]], object]:
+    runner: BookOrchestrator,
+    ref_path: Path,
+    progress_path: Path,
+    *,
+    section_plan: whole_book.WorkPlan | None = None,
+    section_manifest_sha256: str | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], BookText]:
     """Bind the existing private export to immutable ingest, progress and raw source."""
     ref, book = runner.load_candidate_for_analysis(ref_path)
     base = runner.root / "book-candidates"
@@ -121,7 +196,13 @@ def _mined_export(
     if progress_path.is_symlink() or progress_path.parent.resolve() != directory.resolve():
         raise EvaluationStop("evaluation progress path is not canonical")
     progress_raw = _read(progress_path, 20_000_000)
-    progress: object = json.loads(progress_raw)
+    progress: object = whole_book.load_strict_reply(progress_raw)
+    work = section_plan if section_plan is not None else whole_book.plan_for(book)
+    if (section_plan is None) != (section_manifest_sha256 is None):
+        raise EvaluationStop("section manifest is required for scoped evaluation")
+    scope_fields = {"section_scope", "section_manifest_sha256", "parent_book_fingerprint"}
+    if section_plan is None and isinstance(progress, dict) and scope_fields & set(progress):
+        raise EvaluationStop("scoped progress requires its exact section manifest")
     if not isinstance(progress, dict) or any(
         progress.get(k) != v
         for k, v in {
@@ -131,7 +212,16 @@ def _mined_export(
             "candidate_fingerprint": ref.candidate_fingerprint,
             "source_fingerprint": book.source_fingerprint,
             "ingest_stage_key": ref.ingest_stage_key,
-            "plan_fingerprint": whole_book.plan_for(book).fingerprint,
+            "plan_fingerprint": work.fingerprint,
+            **(
+                {
+                    "section_scope": work.section_scope,
+                    "section_manifest_sha256": section_manifest_sha256,
+                    "parent_book_fingerprint": book.fingerprint,
+                }
+                if section_plan is not None
+                else {}
+            ),
             "recovery_status": book.recovery_status,
             "authorization_status": "unverified",
             "review_status": "MINED_UNREVIEWED",
@@ -140,6 +230,37 @@ def _mined_export(
         }.items()
     ):
         raise EvaluationStop("mined progress is incomplete or does not match pinned source")
+    records_progress = progress.get("progress")
+    if (
+        not isinstance(records_progress, list)
+        or len(records_progress) != len(work.units)
+        or progress.get("total_work_units") != len(work.units)
+        or progress.get("candidate_count") != sum(
+            x.get("candidate_count", -1)
+            for x in records_progress if isinstance(x, dict)
+        )
+    ):
+        raise EvaluationStop("mining ledger is missing included section units")
+    for record, unit in zip(records_progress, work.units, strict=True):
+        if (
+            not isinstance(record, dict)
+            or record.get("status") not in {"complete", "zero_candidate"}
+            or record.get("unit") != unit.ordinal
+            or record.get("unit_fingerprint") != unit.fingerprint
+            or record.get("anchor") != unit.anchor
+            or record.get("source_path") != unit.source_path
+            or record.get("text_sha256") != unit.text_sha256
+            or record.get("evidence_field") != unit.evidence_field
+        ):
+            raise EvaluationStop("mining progress does not cover canonical scope units")
+    counts = progress.get("counts")
+    if (
+        not isinstance(counts, dict)
+        or any(counts.get(key) != sum(x["status"] == key for x in records_progress)
+               for key in ("complete", "zero_candidate", "unresolved", "failed"))
+        or counts.get("skipped") != len(work.skipped)
+    ):
+        raise EvaluationStop("mining progress count or scope coverage mismatch")
     export_path = base / "analysis" / "exports" / ref.book_id / progress_path.name
     export: object = json.loads(_read(export_path, 20_000_000))
     if not isinstance(export, dict) or any(
@@ -153,9 +274,20 @@ def _mined_export(
             "progress_sha256": _sha(progress_raw),
             "ingest_fingerprint": book.fingerprint,
             "recovery_status": book.recovery_status,
+            **(
+                {
+                    "section_scope": work.section_scope,
+                    "section_manifest_sha256": section_manifest_sha256,
+                    "parent_full_book_complete": False,
+                }
+                if section_plan is not None
+                else {}
+            ),
         }.items()
     ):
         raise EvaluationStop("mined export identity or review gate mismatch")
+    if section_plan is None and isinstance(export, dict) and "section_scope" in export:
+        raise EvaluationStop("unscoped export cannot contain section coverage")
     records = export.get("books")
     if not isinstance(records, list) or len(records) != 1 or not isinstance(records[0], dict):
         raise EvaluationStop("mined export book identity mismatch")
@@ -174,7 +306,7 @@ def _mined_export(
     lessons = record.get("lessons")
     if not isinstance(lessons, list) or len(lessons) != progress.get("candidate_count"):
         raise EvaluationStop("mined export candidate count mismatch")
-    units = whole_book.plan_for(book).units
+    units = work.units
     by_anchor = {(u.anchor, u.word_offset, u.text_sha256): u for u in units}
     seen: set[str] = set()
     for item in lessons:
@@ -410,6 +542,7 @@ def evaluate_candidate(
     ref_path: Path,
     *,
     progress_path: Path | None = None,
+    section_manifest: Path | None = None,
     review_file: Path | None = None,
     options: EvaluationOptions = EvaluationOptions(),
     recorded_responses: dict[str, object] | None = None,
@@ -424,6 +557,12 @@ def evaluate_candidate(
     Every provider is lazy and independently opt-in. No catalog, visuals or ffmpeg.
     Completed output is still assisted, unverified and never publishable.
     """
+    section_plan: whole_book.WorkPlan | None = None
+    section_manifest_sha256: str | None = None
+    if section_manifest is not None:
+        section_plan, section_manifest_sha256 = _section_scope(
+            runner, ref_path, section_manifest
+        )
     if progress_path is not None:
         if options.mine_cpu or recorded_responses is not None or mine_completion is not None:
             raise EvaluationStop("reused progress and new mining are mutually exclusive")
@@ -435,18 +574,27 @@ def evaluate_candidate(
             local_cpu=True,
             max_new_units=options.max_new_units,
             local_completion=mine_completion,
+            section_ids=section_plan.section_ids if section_plan else None,
+            section_manifest_sha256=section_manifest_sha256,
         )
         progress_path = Path(mined["progress_path"])
     elif recorded_responses is not None and response_file_sha256 is not None:
         mined = runner.mine_candidate(
-            ref_path, responses=recorded_responses, response_file_sha256=response_file_sha256
+            ref_path,
+            responses=recorded_responses,
+            response_file_sha256=response_file_sha256,
+            section_ids=section_plan.section_ids if section_plan else None,
+            section_manifest_sha256=section_manifest_sha256,
         )
         progress_path = Path(mined["progress_path"])
     else:
         raise EvaluationStop("evaluation requires pinned progress or explicit mining inputs")
     if progress_path is None:
         raise EvaluationStop("mining progress was not recorded")
-    _progress, lessons, book = _mined_export(runner, ref_path, progress_path)
+    _progress, lessons, book = _mined_export(
+        runner, ref_path, progress_path,
+        section_plan=section_plan, section_manifest_sha256=section_manifest_sha256,
+    )
     progress_sha = _sha(_read(progress_path, 20_000_000))
     private_root = runner.root / "book-candidates"
     evaluation_key = content_fingerprint(
@@ -461,6 +609,7 @@ def evaluate_candidate(
             "progress_sha256": progress_sha,
             "source_fingerprint": book.source_fingerprint,
             "candidate_count": len(lessons),
+            "section_scope": section_plan.section_scope if section_plan else None,
             "candidates": lessons,
             "review_status": "MINED_UNREVIEWED",
             "publish_eligible": False,
@@ -470,6 +619,8 @@ def evaluate_candidate(
         "schema": EVALUATION_SCHEMA,
         "progress_sha256": progress_sha,
         "candidate_count": len(lessons),
+        "section_scope": section_plan.section_scope if section_plan else None,
+        "parent_full_book_complete": False if section_plan else None,
         "publish_eligible": False,
         "source_authorization": book.source.authorization_status,
         "recovery_status": book.recovery_status,
@@ -546,15 +697,18 @@ def evaluate_candidate(
     )
     if script_completion is None:
         script_completion = scripting._local_script_completion
-    script_root = evaluation_root / f"script-{review_sha}"
+    expected_script_key = scripting._script_fingerprint(
+        config, evaluation_context=source_context
+    )
+    script_root = evaluation_root / f"script-{expected_script_key}"
     acquisition._private_directory(script_root, private_root=private_root)
-    expected_script_key = scripting._script_fingerprint(config, evaluation_context=source_context)
-    if (script_root / "script_diagnostics" / f"{expected_script_key}.json").exists() and not (
-        script_root / "scripts" / f"{expected_script_key}.json"
-    ).is_file():
-        raise EvaluationStop(
-            "previous unsuccessful script attempts cannot be automatically repeated"
-        )
+    cached_script = script_root / "scripts" / f"{expected_script_key}.json"
+    if not cached_script.is_file() and (
+        any(script_root.glob("started-*.json"))
+        or any(script_root.glob("raw-*.json"))
+        or (script_root / "script_diagnostics" / f"{expected_script_key}.json").exists()
+    ):
+        raise EvaluationStop("previous script attempt incomplete; retry requires new authority")
     script_attempts = 0
 
     def script_produce(request: dict[str, object]) -> str:
@@ -562,39 +716,42 @@ def evaluate_candidate(
         if script_attempts >= scripting.MAX_SCRIPT_ATTEMPTS:
             raise EvaluationStop("script model attempt budget exhausted")
         script_attempts += 1
+        _store(private_root, script_root / f"started-{script_attempts}.json", {
+            "attempt": script_attempts,
+            "request_sha256": content_fingerprint(request),
+            "status": "STARTED_UNRESOLVED",
+        })
         try:
             raw = script_completion(request)
         except Exception as exc:
-            _store(
-                private_root,
-                script_root / f"attempt-{script_attempts}.json",
-                {
-                    "attempt": script_attempts,
-                    "status": "PRODUCER_FAILED",
-                    "category": type(exc).__name__,
-                },
-            )
-            raise EvaluationStop(
-                "script producer failed; inspect private attempt history"
-            ) from None
-        if not isinstance(raw, str):
-            raise EvaluationStop("script producer returned nontext output")
-        _store(
-            private_root,
-            script_root / f"raw-{script_attempts}.json",
-            {
+            _store(private_root, script_root / f"failed-{script_attempts}.json", {
                 "attempt": script_attempts,
-                "raw": raw,
-                "sha256": _sha(raw.encode("utf-8")),
-            },
-        )
+                "status": "PRODUCER_FAILED",
+                "category": type(exc).__name__,
+            })
+            raise EvaluationStop("script producer failed; private attempts retained") from None
+        if not isinstance(raw, str):
+            _store(private_root, script_root / f"failed-{script_attempts}.json", {
+                "attempt": script_attempts, "status": "NON_TEXT_REPLY",
+            })
+            raise EvaluationStop("script producer returned nontext output")
+        _store(private_root, script_root / f"raw-{script_attempts}.json", {
+            "attempt": script_attempts,
+            "raw": raw,
+            "sha256": _sha(raw.encode("utf-8")),
+        })
         return raw
 
     try:
-        episode, script_key = scripting.generate_episode(
-            config, script_root, completion=script_produce, evaluation_context=source_context
+        episode, script_key = _capture_private_generator(
+            private_root,
+            script_root,
+            lambda: scripting.generate_episode(
+                config, script_root, completion=script_produce,
+                evaluation_context=source_context,
+            ),
         )
-    except (scripting.NicheVideoError, EvaluationStop):
+    except Exception:
         raise EvaluationStop("script generation failed; private attempts retained") from None
     # Original drafts are private; canonical script diagnostics record edits.
     script_audit = script_root / "script_diagnostics" / f"{script_key}.json"
@@ -609,6 +766,18 @@ def evaluate_candidate(
             audio_root = evaluation_root / f"audio-{review_sha}"
             acquisition._private_directory(audio_root, private_root=private_root)
             producer = narration_producer or narration._kokoro_wav
+            wav_cache = narration.tts_cache_path(scene, config, audio_root)
+            started_path = audio_root / "attempts" / f"{wav_cache.stem}.json"
+            if not wav_cache.is_file():
+                if started_path.exists():
+                    raise EvaluationStop("previous Kokoro attempt incomplete; retry requires new authority")
+                _store(private_root, started_path, {
+                    "scene_id": f"scene-{index:02d}",
+                    "request_sha256": content_fingerprint(
+                        narration.tts_request(scene, config)
+                    ),
+                    "status": "STARTED_UNRESOLVED",
+                })
             try:
                 wav_path = narration.synthesize_scene(scene, config, audio_root, producer=producer)
                 wav = _read(wav_path, 40_000_000)
@@ -639,27 +808,35 @@ def evaluate_candidate(
             }
         )
         elapsed += seconds
-    _store(
-        private_root,
-        evaluation_root / f"script-report-{review_sha}.json",
-        {
-            "script_fingerprint": script_key,
-            "script": episode.to_dict(),
-            "model": scripting.SCRIPT_MODEL,
-            "revision": scripting.SCRIPT_REVISION,
-            "attempts": attempts,
-            "raw_attempt_count": script_attempts,
-            "estimated_or_actual_duration_seconds": round(elapsed, 4),
-            "narration": track_data,
-            "voice_id": options.voice,
-            "voice_model": scripting.VOICE_MODEL,
-            "voice_revision_label": scripting.VOICE_REVISION,
-            "voice_revision_resolved_commit": None,
-            "voice_identity_verified": False,
-            "publish_eligible": False,
-            "script_semantic_review": "PENDING",
-        },
-    )
+    _store(private_root, evaluation_root / f"script-report-{script_key}.json", {
+        "script_fingerprint": script_key,
+        "script": episode.to_dict(),
+        "model": scripting.SCRIPT_MODEL,
+        "revision": scripting.SCRIPT_REVISION,
+        "attempts": attempts,
+        "raw_attempt_count": len(attempts),
+        "publish_eligible": False,
+        "script_semantic_review": "PENDING",
+    })
+    audio_identity = content_fingerprint({
+        "script_fingerprint": script_key,
+        "voice": options.voice,
+        "mode": "kokoro_wav" if options.kokoro_cpu else "estimated",
+        "narration": track_data,
+        "timings": timings,
+    })
+    _store(private_root, evaluation_root / f"narration-report-{audio_identity}.json", {
+        "script_fingerprint": script_key,
+        "estimated_or_actual_duration_seconds": round(elapsed, 4),
+        "narration": track_data,
+        "voice_id": options.voice,
+        "voice_model": scripting.VOICE_MODEL,
+        "voice_revision_label": scripting.VOICE_REVISION,
+        "voice_revision_resolved_commit": None,
+        "voice_identity_verified": False,
+        "timing_basis": "measured_wav" if options.kokoro_cpu else "estimated_no_audio",
+        "publish_eligible": False,
+    })
     status.update(
         {
             "script_scene_count": len(episode.scenes),
@@ -713,39 +890,42 @@ def evaluate_candidate(
             "text_shot_count": len(validated),
             "visual_generation_calls": 0,
         }
-    if direction_root.is_dir() and any(direction_root.glob("raw-*.json")):
-        raise EvaluationStop("previous unsuccessful direction must not be automatically retried")
+    if direction_root.is_dir() and (
+        any(direction_root.glob("started-*.json"))
+        or any(direction_root.glob("raw-*.json"))
+    ):
+        raise EvaluationStop("previous direction attempt incomplete; retry requires new authority")
     for index in range(1, MAX_DIRECTION_ATTEMPTS + 1):
+        _store(private_root, direction_root / f"started-{index}.json", {
+            "attempt": index,
+            "request_sha256": content_fingerprint(request),
+            "status": "STARTED_UNRESOLVED",
+        })
         try:
-            raw = direction_completion(request)
-        except Exception as exc:
-            _store(
-                private_root,
-                direction_root / f"attempt-{index}.json",
-                {
-                    "attempt": index,
-                    "status": "PRODUCER_FAILED",
-                    "category": type(exc).__name__,
-                },
+            raw = _capture_private_generator(
+                private_root, direction_root, lambda: direction_completion(request)
             )
+        except Exception as exc:
+            _store(private_root, direction_root / f"failed-{index}.json", {
+                "attempt": index, "status": "PRODUCER_FAILED",
+                "category": type(exc).__name__,
+            })
             raise EvaluationStop("text direction producer failed") from None
         if not isinstance(raw, str):
+            _store(private_root, direction_root / f"failed-{index}.json", {
+                "attempt": index, "status": "NON_TEXT_REPLY",
+            })
             raise EvaluationStop("direction producer returned nontext output")
-        _store(
-            private_root,
-            direction_root / f"raw-{index}.json",
-            {
-                "attempt": index,
-                "raw": raw,
-                "sha256": _sha(raw.encode("utf-8")),
-            },
-        )
+        _store(private_root, direction_root / f"raw-{index}.json", {
+            "attempt": index, "raw": raw,
+            "sha256": _sha(raw.encode("utf-8")),
+        })
         try:
             shots = _shots(raw, episode, selected["id"], timings)
         except EvaluationStop:
             _store(
                 private_root,
-                direction_root / f"attempt-{index}.json",
+                direction_root / f"failed-{index}.json",
                 {"attempt": index, "status": "REJECTED_SCHEMA_OR_SCENE_MAPPING"},
             )
             if index == MAX_DIRECTION_ATTEMPTS:

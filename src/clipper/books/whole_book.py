@@ -126,6 +126,24 @@ class WorkPlan:
     book_fingerprint: str
     units: tuple[WorkUnit, ...]
     skipped: tuple[dict[str, Any], ...]
+    section_ids: tuple[str, ...] = ()
+    parent_plan_fingerprint: str | None = None
+    parent_total_units: int = 0
+    excluded_units: int = 0
+
+    @property
+    def section_scope(self) -> dict[str, object] | None:
+        if not self.section_ids:
+            return None
+        return {
+            "schema": "clipper-book-section-scope-v1",
+            "section_ids": list(self.section_ids),
+            "parent_plan_fingerprint": self.parent_plan_fingerprint,
+            "parent_total_units": self.parent_total_units,
+            "included_units": len(self.units),
+            "excluded_units": self.excluded_units,
+            "parent_full_book_complete": False,
+        }
 
     @property
     def fingerprint(self) -> str:
@@ -136,11 +154,14 @@ class WorkPlan:
                 "units": [unit.fingerprint for unit in self.units],
                 "skipped": self.skipped,
                 "window_units": WINDOW_UNITS,
+                **({"section_scope": self.section_scope} if self.section_ids else {}),
             }
         )
 
 
-def plan_for(book: BookText) -> WorkPlan:
+def plan_for(
+    book: BookText, *, section_ids: tuple[str, ...] | None = None
+) -> WorkPlan:
     """Visit every ordered source/image block; never silently discard an image gap."""
     if not book.blocks:
         raise mining.BookMiningError("candidate analysis requires faithful ordered reading blocks")
@@ -203,7 +224,39 @@ def plan_for(book: BookText) -> WorkPlan:
             )
     if not units and not skipped:
         raise mining.BookMiningError("faithful projection contains no accountable evidence")
-    return WorkPlan(book.fingerprint, tuple(units), tuple(skipped))
+    parent = WorkPlan(book.fingerprint, tuple(units), tuple(skipped))
+    if section_ids is None:
+        return parent
+    available = {block.section_id for block in faithful.reading_blocks(book)}
+    if (
+        not isinstance(section_ids, tuple)
+        or not 1 <= len(section_ids) <= 16
+        or any(
+            not isinstance(value, str)
+            or not value
+            or value not in available
+            for value in section_ids
+        )
+        or len(set(section_ids)) != len(section_ids)
+    ):
+        raise mining.BookMiningError("section scope must contain exact canonical section IDs")
+    # Preserve parent ordinal, source path, offsets and underlying BookText identity.
+    selected = set(section_ids)
+    scoped_units = tuple(unit for unit in parent.units if unit.section_id in selected)
+    if not scoped_units:
+        raise mining.BookMiningError("section scope contains no faithful source work units")
+    order = tuple(
+        section_id for section_id in dict.fromkeys(unit.section_id for unit in parent.units)
+        if section_id in selected
+    )
+    if order != section_ids:
+        raise mining.BookMiningError("section IDs must follow canonical source reading order")
+    return WorkPlan(
+        parent.book_fingerprint, scoped_units,
+        tuple(item for item in parent.skipped if item["section_id"] in selected),
+        section_ids, parent.fingerprint, len(parent.units),
+        len(parent.units) - len(scoped_units),
+    )
 
 
 def request_for(book: BookText, unit: WorkUnit) -> dict[str, object]:

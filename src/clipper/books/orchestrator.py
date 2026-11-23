@@ -868,9 +868,16 @@ class BookOrchestrator:
         local_cpu: bool = False,
         max_new_units: int | None = None,
         local_completion: Callable[[dict[str, object]], str] | None = None,
+        section_ids: tuple[str, ...] | None = None,
+        section_manifest_sha256: str | None = None,
     ) -> dict[str, Any]:
-        """Process the same faithful work plan with recorded or opt-in local completions."""
+        """Process faithful original work units, optionally scoped to exact parent sections."""
         ref, book = self.load_candidate_for_analysis(ref_path, book_id=book_id)
+        if (section_ids is None) != (section_manifest_sha256 is None) or (
+            section_manifest_sha256 is not None
+            and re.fullmatch(r"[0-9a-f]{64}", section_manifest_sha256) is None
+        ):
+            raise BookRunError("scoped mining requires a pinned section manifest digest")
         if local_cpu:
             if responses is not None or response_file_sha256 is not None:
                 raise BookRunError("local CPU and recorded response modes are exclusive")
@@ -900,8 +907,8 @@ class BookOrchestrator:
                     "candidate analysis requires a recorded response mapping and digest"
                 )
             producer_fingerprint = ""
-        work = whole_book.plan_for(book)
-        # plan_for derived this fingerprint from the already validated BookText.
+        work = whole_book.plan_for(book, section_ids=section_ids)
+        # Plan identity binds selected original units and exact section scope, if any.
         book_fingerprint = work.book_fingerprint
         plan_fingerprint = work.fingerprint
         self.dag.protect_stage("books.mining.unit.v1")
@@ -1129,6 +1136,15 @@ class BookOrchestrator:
             "candidate_fingerprint": ref.candidate_fingerprint,
             "ingest_stage_key": ref.ingest_stage_key,
             "plan_fingerprint": plan_fingerprint,
+            **(
+                {
+                    "section_scope": work.section_scope,
+                    "section_manifest_sha256": section_manifest_sha256,
+                    "parent_book_fingerprint": book.fingerprint,
+                }
+                if section_ids is not None
+                else {}
+            ),
             "window_size": whole_book.WINDOW_UNITS,
             "total_work_units": len(work.units),
             "response_file_sha256": response_file_sha256,
@@ -1177,6 +1193,15 @@ class BookOrchestrator:
                 "publish_eligible": False,
                 "analysis_plan_fingerprint": plan_fingerprint,
                 "progress_sha256": progress_sha256,
+                **(
+                    {
+                        "section_scope": work.section_scope,
+                        "section_manifest_sha256": section_manifest_sha256,
+                        "parent_full_book_complete": False,
+                    }
+                    if section_ids is not None
+                    else {}
+                ),
                 "evidence_coverage_summary": ledger["evidence_coverage_summary"],
                 "ingest_fingerprint": book_fingerprint,
                 "recovery_status": book.recovery_status,
@@ -1212,6 +1237,15 @@ class BookOrchestrator:
             "publish_eligible": False,
             "candidate_count": len(lessons),
             "total_work_units": len(work.units),
+            **(
+                {
+                    "section_scope": work.section_scope,
+                    "section_manifest_sha256": section_manifest_sha256,
+                    "parent_full_book_complete": False,
+                }
+                if section_ids is not None
+                else {}
+            ),
             "counts": counts,
             "progress_path": str(progress_path),
             "export_path": str(export_path) if export_path is not None else None,
@@ -1525,6 +1559,7 @@ class BookOrchestrator:
         ref_path: Path,
         *,
         progress_path: Path | None = None,
+        section_manifest: Path | None = None,
         review_file: Path | None = None,
         options: evaluation.EvaluationOptions | None = None,
         recorded_responses: dict[str, object] | None = None,
@@ -1539,6 +1574,7 @@ class BookOrchestrator:
             self,
             ref_path,
             progress_path=progress_path,
+            section_manifest=section_manifest,
             review_file=review_file,
             options=options if options is not None else evaluation.EvaluationOptions(),
             recorded_responses=recorded_responses,

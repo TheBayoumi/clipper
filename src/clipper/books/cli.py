@@ -6,7 +6,11 @@ import argparse
 import hashlib
 import json
 import re
+import sys
+import tempfile
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import asdict
+from uuid import uuid4
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +106,9 @@ def configure_books_parser(subparsers: Any) -> None:
     evaluate.add_argument("--candidate-ref", type=Path, required=True)
     evaluate.add_argument(
         "--progress", type=Path, help="immutable private whole-book mining progress"
+    )
+    evaluate.add_argument(
+        "--section-manifest", type=Path, help="source-bound private section scope"
     )
     evaluate.add_argument("--review-file", type=Path, help="private human source-support verdicts")
     evaluate.add_argument(
@@ -404,59 +411,85 @@ def dispatch_books(args: argparse.Namespace) -> int:
         )
         return 0
     if args.books_action == "evaluate":
-        permissions = (
-            evaluation.EvaluationOptions.from_manifest(
-                json.loads(evaluation._read(args.run_manifest, 16_384))
+        # This branch is a private evaluation. Even legacy/script/model diagnostics
+        # (unexpected JSON key names included) must not reach public Actions logs.
+        result: dict[str, object] | None = None
+        success = False
+        private_root = args.artifact_root / "book-candidates"
+        with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as sink:
+            try:
+                with redirect_stdout(sink), redirect_stderr(sink):
+                    permissions = (
+                        evaluation.EvaluationOptions.from_manifest(
+                            json.loads(evaluation._read(args.run_manifest, 16_384))
+                        )
+                        if args.run_manifest is not None
+                        else evaluation.EvaluationOptions()
+                    )
+                    replies: dict[str, object] | None = None
+                    response_sha: str | None = None
+                    if args.responses is not None:
+                        response_bytes = evaluation._read(args.responses, 64_000_000)
+                        parsed: object = json.loads(response_bytes)
+                        if not isinstance(parsed, dict) or any(
+                            not isinstance(k, str)
+                            or re.fullmatch(r"[0-9a-f]{64}", k) is None
+                            for k in parsed
+                        ):
+                            raise evaluation.EvaluationStop(
+                                "recorded responses require SHA-256 keys"
+                            )
+                        replies = parsed
+                        response_sha = hashlib.sha256(response_bytes).hexdigest()
+                    result = BookOrchestrator(args.artifact_root).evaluate_candidate(
+                        args.candidate_ref,
+                        progress_path=args.progress,
+                        section_manifest=args.section_manifest,
+                        review_file=args.review_file,
+                        options=permissions,
+                        recorded_responses=replies,
+                        response_file_sha256=response_sha,
+                    )
+                    success = True
+            except Exception:
+                # Never expose provider exceptions, private input or generated keys.
+                success = False
+            finally:
+                sink.flush()
+                sink.seek(0)
+                diagnostic = sink.read(262145)
+                if diagnostic:
+                    try:
+                        evaluation._store(
+                            private_root,
+                            private_root / "evaluation-console" / f"{uuid4().hex}.json",
+                            {
+                                "diagnostics": diagnostic[:262144],
+                                "truncated": len(diagnostic) > 262144,
+                            },
+                        )
+                    except Exception:
+                        success = False
+        if not success or result is None:
+            print(
+                json.dumps({
+                    "status": "PRIVATE_EVALUATION_FAILED_CLOSED",
+                    "publish_eligible": False
+                }),
+                file=sys.stderr,
             )
-            if args.run_manifest is not None
-            else evaluation.EvaluationOptions()
+            return 2
+        # No source quotations, book titles, file paths or mined IDs on stdout.
+        keys = (
+            "schema", "status", "progress_sha256", "review_sha256",
+            "candidate_count", "accepted_lessons", "script_scene_count",
+            "script_attempts", "direction_attempts", "text_shot_count",
+            "narration_included", "measured_duration_seconds", "timing_basis",
+            "publish_eligible", "source_authorization", "recovery_status",
+            "execution", "model_calls_authorized", "visual_generation_calls",
+            "section_scope", "parent_full_book_complete",
         )
-        replies: dict[str, object] | None = None
-        response_sha: str | None = None
-        if args.responses is not None:
-            response_bytes = evaluation._read(args.responses, 64_000_000)
-            parsed: object = json.loads(response_bytes)
-            if not isinstance(parsed, dict) or any(
-                not isinstance(k, str) or re.fullmatch(r"[0-9a-f]{64}", k) is None for k in parsed
-            ):
-                raise evaluation.EvaluationStop("recorded responses require SHA-256 keys")
-            replies = parsed
-            response_sha = hashlib.sha256(response_bytes).hexdigest()
-        runner = BookOrchestrator(args.artifact_root)
-        result = runner.evaluate_candidate(
-            args.candidate_ref,
-            progress_path=args.progress,
-            review_file=args.review_file,
-            options=permissions,
-            recorded_responses=replies,
-            response_file_sha256=response_sha,
-        )
-        # Public stdout never includes private quotes, titles, paths or slug IDs.
-        safe = {
-            key: result[key]
-            for key in (
-                "schema",
-                "status",
-                "progress_sha256",
-                "review_sha256",
-                "candidate_count",
-                "accepted_lessons",
-                "script_scene_count",
-                "script_attempts",
-                "direction_attempts",
-                "text_shot_count",
-                "narration_included",
-                "measured_duration_seconds",
-                "timing_basis",
-                "publish_eligible",
-                "source_authorization",
-                "recovery_status",
-                "execution",
-                "model_calls_authorized",
-                "visual_generation_calls",
-            )
-            if key in result
-        }
+        safe = {key: result[key] for key in keys if key in result}
         print(json.dumps(safe, sort_keys=True))
         return 0 if result["status"] == "PREVISUAL_TEXT_READY_UNREVIEWED" else 2
     catalog = _json(args.catalog)
