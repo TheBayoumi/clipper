@@ -550,14 +550,29 @@ def test_pinned_chapter_cpu_adapter_generate_eos_and_memory_error_paths_are_mode
         def inference_mode() -> object:
             return nullcontext()
 
+    class FakeInput:
+        def __init__(self, tokenizer: "FakeTokenizer") -> None:
+            self.tokenizer = tokenizer
+
+        @property
+        def shape(self) -> tuple[int, int]:
+            return (1, self.tokenizer.length)
+
+        def __getitem__(self, _index: int) -> "FakeInput":
+            return self
+
+        def tolist(self) -> list[int]:
+            return list(self.tokenizer.ids)
+
     class FakeTokenizer:
         eos_token_id = 99
 
         def __init__(self) -> None:
             self.length = 2
+            self.ids = [10, 20]
 
         def apply_chat_template(self, *_args: object, **_kwargs: object) -> dict:
-            return {"input_ids": SimpleNamespace(shape=(1, self.length))}
+            return {"input_ids": FakeInput(self)}
 
         def decode(self, ids: list[int], *, skip_special_tokens: bool) -> str:
             assert skip_special_tokens
@@ -610,6 +625,29 @@ def test_pinned_chapter_cpu_adapter_generate_eos_and_memory_error_paths_are_mode
     with pytest.raises(scripting.NicheVideoError, match="context"):
         scripting._local_chapter_completion(request)
     assert generated.call_count == 2
+
+    # The real CPU generation consumer compares the actual input tensor
+    # against the reserved rendered-token digest BEFORE model.generate().
+    from clipper.books import constrained
+
+    material = {
+        "tokenizer_config_sha256": "d" * 64,
+        "chat_template_sha256": "e" * 64,
+        "tokenizer_json_sha256": constrained.PINNED_TOKENIZER_SHA256,
+    }
+    monkeypatch.setattr(scripting, "_chapter_tokenizer_material", lambda _: material)
+    tokenizer.length = 2
+    request["verified_input_encoding"] = scripting._chapter_encoding_receipt(
+        {"token_ids": [10, 20], **material}
+    )
+    tokenizer.ids = [10, 21]  # identical prompt count, different rendered token
+    with pytest.raises(scripting.NicheVideoError, match="rendered tokens differ"):
+        scripting._local_chapter_completion(request)
+    assert generated.call_count == 2, "no model generation on mismatched effective encoding"
+    tokenizer.ids = [10, 20]
+    generated.return_value = [[10, 20, 99]]
+    assert isinstance(scripting._local_chapter_completion(request), scripting.PinnedQwenRawReceipt)
+    assert generated.call_count == 3
 
 
 def test_private_host_cli_status_codes_do_not_expose_private_failure(
