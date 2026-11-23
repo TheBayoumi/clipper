@@ -747,6 +747,11 @@ class BookOrchestrator:
         )
         if len(payload) > whole_book.MAX_RECORDED_REPLY_BYTES:
             raise whole_book.LocalReplyFailure("oversized_reply", digest)
+        # An actual missing-EOS response has deliberately no success receipt.
+        # Persist the exact bounded raw first, then preserve the original
+        # terminal-failure category before applying success-only receipt checks.
+        if truncated:
+            raise whole_book.LocalReplyFailure("incomplete_constrained_generation", digest)
         if actual_provider and (
             not isinstance(receipt, dict)
             or receipt["raw_sha256"] != digest
@@ -757,8 +762,6 @@ class BookOrchestrator:
             or receipt["eos_decision"] != "EOS_VERIFIED"
         ):
             raise whole_book.LocalReplyFailure("invalid_real_token_receipt", digest)
-        if truncated:
-            raise whole_book.LocalReplyFailure("incomplete_constrained_generation", digest)
         try:
             lessons = whole_book.validate_reply(whole_book.load_strict_reply(response), unit)
             constrained.validate_local_choice(lessons, request)
