@@ -881,21 +881,33 @@ bootstrap_identity() {
     return 2
   fi
 }
-# State is checked only AFTER fresh numeric identity verification. A lost REST
-# response, unexpected state, shutdown or replacement fails closed immediately.
+# Bind the readiness state to the SAME REST object carrying the exact
+# approved instance identity. Bracketing probes alone are insufficient:
+# a replaced ID could supply Available between two matching identity reads.
 bootstrap_state() {
   bootstrap_identity || return 2
   local metadata state
   metadata="$(bounded gh api "user/codespaces/$CODESPACE_NAME")" || return 2
   state="$(printf '%s' "$metadata" | bounded python3 -c '
-import json, sys
+import json, os, sys
 try:
-    obj=json.load(sys.stdin)
-    state=obj["state"]
-    if state not in {"Available","Created","Starting","Provisioning","Queued","Rebuilding"}:
+    obj = json.load(sys.stdin)
+    machine = obj.get("machine") or {}
+    state = obj["state"]
+    valid = (
+        type(obj.get("id")) is int
+        and obj["id"] == int(os.environ["SUPERVISED_CODESPACE_ID"])
+        and obj.get("name") == os.environ["CODESPACE_NAME"]
+        and obj.get("repository", {}).get("full_name") == "TheBayoumi/clipper"
+        and obj.get("created_at") == os.environ["SUPERVISED_CREATED_AT"]
+        and (machine.get("cpus"), machine.get("memory_in_bytes"),
+             machine.get("storage_in_bytes")) == (4, 17179869184, 34359738368)
+        and state in {"Available", "Created", "Starting", "Provisioning", "Queued", "Rebuilding"}
+    )
+    if not valid:
         sys.exit(2)
     print(state)
-except (ValueError, TypeError, KeyError):
+except (ValueError, TypeError, KeyError, AttributeError):
     sys.exit(2)
 ')" || return 2
   bootstrap_identity || return 2
