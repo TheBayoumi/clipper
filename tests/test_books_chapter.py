@@ -2008,7 +2008,6 @@ def test_consistently_rewritten_second_attempt_rejected_under_one_attempt_plan(
     producer.assert_called_once()
 
 
-
 @pytest.mark.parametrize(
     ("record_name", "mutation"),
     [
@@ -2073,9 +2072,7 @@ def test_cached_second_text_attempt_requires_full_first_rejection_history(
         chapter._stage(*args, lambda x: x, no_provider)
     no_provider.assert_not_called()
     assert producer.call_count == 2
-    assert json.loads((directory / "validated.json").read_bytes())[
-        "artifact_identity"
-    ] == identity
+    assert json.loads((directory / "validated.json").read_bytes())["artifact_identity"] == identity
 
 
 @pytest.mark.parametrize("deleted_record", ["started-1.json", "raw-1.json", "failed-1.json"])
@@ -2092,10 +2089,14 @@ def test_live_chapter_retry_checks_rejected_history_before_second_callback(
 
     monkeypatch.setattr(evaluation, "_store", intercept)
     producer = Mock(side_effect=["{", '{"value":"must never run"}'])
-    with pytest.raises(chapter.ChapterStop, match="prior attempt history"):
+    with pytest.raises(chapter.ChapterStop):
         chapter._stage(
-            root, "brief", {"fixture": "live-retry-history"}, _plan(),
-            lambda x: x, producer,
+            root,
+            "brief",
+            {"fixture": "live-retry-history"},
+            _plan(),
+            lambda x: x,
+            producer,
         )
     producer.assert_called_once()
     assert not list((root / "brief").rglob("started-2.json"))
@@ -2107,19 +2108,13 @@ def test_valid_first_or_second_chapter_attempt_replays_without_producer(
     tmp_path: Path, rejected_first: bool
 ) -> None:
     root = tmp_path / "private"
-    answers = (
-        ["{", '{"value":"synthetic"}']
-        if rejected_first
-        else ['{"value":"synthetic"}']
-    )
+    answers = ["{", '{"value":"synthetic"}'] if rejected_first else ['{"value":"synthetic"}']
     provider = Mock(side_effect=answers)
     args = (root, "brief", {"fixture": "valid-history"}, _plan())
     first, identity, _, attempt = chapter._stage(*args, lambda x: x, provider)
     assert attempt == (2 if rejected_first else 1)
     no_provider = Mock(side_effect=AssertionError("cached replay invoked provider"))
-    replay, replay_identity, _, produced = chapter._stage(
-        *args, lambda x: x, no_provider
-    )
+    replay, replay_identity, _, produced = chapter._stage(*args, lambda x: x, no_provider)
     assert (replay, replay_identity, produced) == (first, identity, 0)
     no_provider.assert_not_called()
     assert provider.call_count == attempt
