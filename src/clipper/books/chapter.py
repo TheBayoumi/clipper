@@ -2245,20 +2245,13 @@ def evaluate_hybrid_chapter(
         argument_completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
         and scripting._local_chapter_completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
     )
-    tokens: Callable[[list[dict[str, str]]], int]
+    tokens: Callable[[list[dict[str, str]]], int | dict[str, object]]
     if authentic:
-
-        def tokens(messages: list[dict[str, str]]) -> int:
-            tokenizer, _limit = scripting._public_book_context()
-            return len(
-                tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=True,
-                    add_generation_prompt=True,
-                    enable_thinking=False,
-                )
-            )
-
+        # Resolve actual pinned public tokenizer/config BEFORE producer hashing:
+        # the source journal and recovery must never depend on whether a
+        # snapshot happened to be downloaded by a later stage.
+        scripting._public_book_context()
+        tokens = scripting._chapter_prompt_encoding
     elif token_counter is not None:
         tokens = token_counter
     else:
