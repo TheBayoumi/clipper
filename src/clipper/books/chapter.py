@@ -2123,6 +2123,7 @@ def evaluate_chapter(
         "visual_calls": 0,
     }
 
+
 def evaluate_hybrid_chapter(
     runner: BookOrchestrator,
     selected_scope_path: Path,
@@ -2263,9 +2264,7 @@ def evaluate_hybrid_chapter(
         request_stage: str,
         payload: dict[str, object],
         validate: Callable[[object], dict[str, Any]],
-        completion: Callable[
-            [dict[str, object]], str | scripting.PinnedQwenRawReceipt
-        ] | None,
+        completion: Callable[[dict[str, object]], str | scripting.PinnedQwenRawReceipt] | None,
         *,
         replay_only: bool = False,
     ) -> tuple[dict[str, Any], str, str, int]:
@@ -2304,9 +2303,7 @@ def evaluate_hybrid_chapter(
             "response_contract": {
                 "hypothesis": "revisable chapter argument, not a factual conclusion",
                 "questions": ["disputed source-grounded arguments to investigate"],
-                "source_links": [
-                    {"id": "s0001", "start": 0, "end": 10, "role": "ASSERTION"}
-                ],
+                "source_links": [{"id": "s0001", "start": 0, "end": 10, "role": "ASSERTION"}],
             },
         },
         lambda raw: chapter_hybrid.validate_argument(raw, ledger),
@@ -2405,9 +2402,7 @@ def evaluate_hybrid_chapter(
                 "beats": [
                     {
                         "beat_id": "beat-001",
-                        "spans": [
-                            {"id": "source ID", "start": 0, "end": 10, "role": "ASSERTION"}
-                        ],
+                        "spans": [{"id": "source ID", "start": 0, "end": 10, "role": "ASSERTION"}],
                         "meaning": "source-grounded meaning",
                         "qualification": "qualified paraphrase",
                         "causal_link": "relation to neighboring argument",
@@ -2445,10 +2440,7 @@ def evaluate_hybrid_chapter(
     try:
         review_bytes = evaluation._read(review_file, 250_000)
         review: object = whole_book.load_strict_reply(review_bytes)
-        if (
-            not isinstance(review, dict)
-            or review.get("brief_artifact_identity") != brief_key
-        ):
+        if not isinstance(review, dict) or review.get("brief_artifact_identity") != brief_key:
             raise ChapterStop("hybrid human review artifact identity differs from frozen brief")
         human = chapter_hybrid.validate_human_review(
             {key: value for key, value in review.items() if key != "brief_artifact_identity"},
@@ -2565,10 +2557,7 @@ def evaluate_hybrid_chapter(
     )
     if on_stage_progress is not None:
         on_stage_progress("DIRECTION_VERIFIED", direction_key)
-    if any(
-        origin != argument_origin
-        for origin in (adapt_origin, script_origin, direction_origin)
-    ):
+    if any(origin != argument_origin for origin in (adapt_origin, script_origin, direction_origin)):
         raise ChapterStop("hybrid chapter text stages have mismatched producer provenance")
     synthetic = argument_origin != "ACTUAL_CPU_QWEN" or audio_origin == "INJECTED_TEST_WAV"
     final_status = (
@@ -2608,7 +2597,11 @@ def evaluate_hybrid_chapter(
         "audio_records": audio,
         "audio_provenance": audio_origin,
         "text_provenances": [
-            argument_origin, brief_origin, adapt_origin, script_origin, direction_origin
+            argument_origin,
+            brief_origin,
+            adapt_origin,
+            script_origin,
+            direction_origin,
         ],
         "story_review": "PENDING_INDEPENDENT_REVIEW",
         "visual_identity_enforced": False,
