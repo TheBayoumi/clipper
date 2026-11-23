@@ -31,6 +31,7 @@ _SCRIPT = Path(__file__).resolve().parents[1] / "scripts/private_chapter_externa
         "expired_121",
         "unsafe_remote",
         "shell_metacharacters",
+        "near_deadline_hung_stop",
     ],
 )
 def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
@@ -44,10 +45,10 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         f"#!{sys.executable}\n"
         "import datetime,json,os,sys,time\n"
         "args=sys.argv[1:]\n"
-        "with open(os.environ['MOCK_GH_LOG'],'a') as f: f.write(' '.join(args)+'\\n')\n"
+        "with open(os.environ['MOCK_GH_LOG'],'a') as f: f.write(str(time.time())+' '+ ' '.join(args)+'\\n')\n"
         "hang=os.environ['MOCK_HANG']\n"
         "if args[:2]==['api','-X']:\n"
-        "  if args[2]=='POST' and hang=='stop': time.sleep(120)\n"
+        "  if args[2]=='POST' and hang in ('stop','near_deadline_hung_stop'): time.sleep(120)\n"
         "  if args[2]=='POST' and hang=='swap_after_stop':\n"
         "    open(os.environ['MOCK_SWAPPED'],'w').write('replaced')\n"
         "  if args[2]=='POST' and hang!='stop':\n"
@@ -106,8 +107,16 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
             "PRIVATE_CHAPTER_RECOVERY_DIR": str(tmp_path / "owner-private-recovery"),
             "MOCK_CREATED": (
                 datetime.now(UTC)
-                - timedelta(
-                    minutes=116 if hang == "cleanup_116" else 121 if hang == "expired_121" else 5
+                - (
+                    timedelta(seconds=7196)
+                    if hang == "near_deadline_hung_stop"
+                    else timedelta(
+                        minutes=116
+                        if hang == "cleanup_116"
+                        else 121
+                        if hang == "expired_121"
+                        else 5
+                    )
                 )
             ).isoformat(),
             "MOCK_SWAPPED": str(tmp_path / "synthetic-swapped.txt"),
@@ -132,7 +141,7 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
     elapsed = time.monotonic() - started
     expected_status = (
         0
-        if hang == "cleanup_116"
+        if hang in {"cleanup_116", "near_deadline_hung_stop"}
         else 124
         if hang in {"ssh", "copy"}
         else 3
@@ -142,6 +151,19 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
     assert result.returncode == expected_status
     assert elapsed < 30
     actions = log.read_text(encoding="utf-8")
+    if hang == "near_deadline_hung_stop":
+        records = [
+            (float(line.split(" ", 1)[0]), line.split(" ", 1)[1])
+            for line in actions.splitlines()
+        ]
+        approved_hard_deadline = datetime.fromisoformat(env["MOCK_CREATED"]).timestamp() + 7200
+        deletes = [
+            stamp for stamp, call in records if "api -X DELETE" in call
+        ]
+        assert len(deletes) == 1
+        assert deletes[0] < approved_hard_deadline
+        assert not any("api -X POST" in call for _, call in records)
+        assert "EXTERNAL_SUPERVISOR_HOST_DELETION_REST_VERIFIED" in result.stdout
     if hang in {"wrong_identity", "swap_before_stop", "expired_121"}:
         assert "api -X POST" not in actions
         assert "api -X DELETE" not in actions
@@ -149,12 +171,22 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         assert "api -X POST" in actions
         assert "api -X DELETE" not in actions
     else:
-        assert "api -X POST" in actions
+        if hang != "near_deadline_hung_stop":
+            assert "api -X POST" in actions
         assert "api -X DELETE" in actions
         assert "api -i" in actions
-    if hang in {"cleanup_116", "unsafe_remote", "shell_metacharacters", "expired_121"}:
+    if hang in {
+        "cleanup_116",
+        "near_deadline_hung_stop",
+        "unsafe_remote",
+        "shell_metacharacters",
+        "expired_121",
+    }:
         assert "codespace ssh" not in actions
         assert "codespace cp" not in actions
+    if hang == "expired_121":
+        assert "TOTAL_DEADLINE_EXPIRED" in result.stderr
+        assert "WRONG_HOST_IDENTITY" not in result.stderr
     if hang in {"unsafe_remote", "shell_metacharacters"}:
         assert "DO_NOT_EXECUTE" not in result.stdout
         assert not (tmp_path / "DO_NOT_EXECUTE").exists()
