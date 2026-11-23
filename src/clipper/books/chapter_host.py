@@ -657,9 +657,10 @@ def execute(
                     or not isinstance(record.get("progress_path"), str)
                 ):
                     raise PrivateHostStop("chapter has no immutable prior private brief phase")
-                if not isinstance(record["brief_identity"], str) or DIGEST.fullmatch(
-                    record["brief_identity"]
-                ) is None:
+                if (
+                    not isinstance(record["brief_identity"], str)
+                    or DIGEST.fullmatch(record["brief_identity"]) is None
+                ):
                     raise PrivateHostStop("journaled chapter brief identity invalid")
                 journaled_brief_identity = record["brief_identity"]
                 progress_path = _private_path(record["progress_path"], root, must_exist=True)
@@ -841,10 +842,14 @@ def recovery_report(artifact_root: Path) -> dict[str, object]:
                 if key not in identities and isinstance(value, str) and DIGEST.fullmatch(value):
                     identities[key] = value
         category = (
-            "READY" if phase == "PREPRODUCTION_READY"
-            else "NEVER_STARTED" if phase == "NOT_STARTED"
-            else "IN_FLIGHT" if phase.endswith("_IN_FLIGHT")
-            else "AWAITING_REVIEW" if phase == "AWAITING_HUMAN_REVIEW"
+            "READY"
+            if phase == "PREPRODUCTION_READY"
+            else "NEVER_STARTED"
+            if phase == "NOT_STARTED"
+            else "IN_FLIGHT"
+            if phase.endswith("_IN_FLIGHT")
+            else "AWAITING_REVIEW"
+            if phase == "AWAITING_HUMAN_REVIEW"
             else "INTERRUPTED"
         )
         chapters[str(number)] = {
