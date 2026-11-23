@@ -161,10 +161,7 @@ def _full_source_scope(
     progress = (
         ledger["progress"]
         if ledger is not None
-        else [
-            {"status": "DIRECT_SOURCE_NO_MINING", "candidate_count": 0}
-            for _ in scoped.units
-        ]
+        else [{"status": "DIRECT_SOURCE_NO_MINING", "candidate_count": 0} for _ in scoped.units]
     )
     for work, record in zip(scoped.units, progress, strict=True):
         source_id = f"unit-{work.fingerprint}"
@@ -1403,9 +1400,7 @@ def _stage(
             },
             "provenance": provenance,
             **(
-                {"hybrid_safe_context": safe_context_tokens}
-                if contract_version is not None
-                else {}
+                {"hybrid_safe_context": safe_context_tokens} if contract_version is not None else {}
             ),
         }
     )
