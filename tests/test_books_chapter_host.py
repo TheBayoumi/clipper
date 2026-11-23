@@ -1486,8 +1486,6 @@ def test_scoped_recovery_text_stage_rejects_unverifiable_artifacts(
     tmp_path: Path, fault: str
 ) -> None:
     """Only canonical stage evidence may be copied, never guessed text."""
-    from clipper.stage_contracts import content_fingerprint
-
     root = tmp_path / "private"
     base = root / "book-candidates"
     stage = "adaptation"
