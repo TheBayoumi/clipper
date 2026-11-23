@@ -707,7 +707,9 @@ def _local_script_completion(request: dict[str, object]) -> str:
     return value
 
 
-def _local_book_completion(request: dict[str, object]) -> PinnedQwenRawReceipt:
+def _local_book_generate(
+    request: dict[str, object], *, capture_receipt: bool
+) -> str | PinnedQwenRawReceipt:
     """Opt-in only: validate source choices before pinned CPU-only inference."""
     from . import constrained
 
@@ -719,9 +721,28 @@ def _local_book_completion(request: dict[str, object]) -> PinnedQwenRawReceipt:
     model, _tokenizer = _script_pipeline()
     if str(model.device) != "cpu":
         raise NicheVideoError("local book completion requires CPU-resident pinned Qwen weights")
-    value = _run_pinned_qwen(request, normalize_script=False, capture_receipt=True)
+    return _run_pinned_qwen(
+        request, normalize_script=False, capture_receipt=capture_receipt
+    )
+
+
+def _local_book_completion(request: dict[str, object]) -> str:
+    """Preserve existing plain-text book miner API for existing callers."""
+    value = _local_book_generate(request, capture_receipt=False)
+    if not isinstance(value, str):
+        raise NicheVideoError("book miner expected original plain text")
+    return value
+
+
+# Private selected/real miner uses authenticated token IDs from this exact
+# unmodified provider path, not an injected callable's claimed metadata.
+_ORIGINAL_LOCAL_BOOK_COMPLETION = _local_book_completion
+
+
+def _local_book_completion_with_receipt(request: dict[str, object]) -> PinnedQwenRawReceipt:
+    value = _local_book_generate(request, capture_receipt=True)
     if not isinstance(value, PinnedQwenRawReceipt):
-        raise NicheVideoError("real book miner requires generated token/EOS receipt")
+        raise NicheVideoError("real book miner expected generated token/EOS receipt")
     return value
 
 

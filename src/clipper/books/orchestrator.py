@@ -750,7 +750,7 @@ class BookOrchestrator:
             or receipt["raw_sha256"] != digest
             or type(receipt["generated_token_count"]) is not int
             or not 1
-            <= cast(int, receipt["generated_token_count"])
+            <= receipt["generated_token_count"]
             <= cast(int, request["max_new_tokens"])
             or type(receipt["terminal_token_id"]) is not int
             or cast(int, receipt["terminal_token_id"]) < 0
@@ -918,10 +918,15 @@ class BookOrchestrator:
         selected_scope_path: Path | None = None,
     ) -> dict[str, Any]:
         """Process original units from locally verified parent or selected host bundle."""
+        actual_provider = (
+            local_cpu
+            and local_completion is None
+            and scripting._local_book_completion is scripting._ORIGINAL_LOCAL_BOOK_COMPLETION
+        )
         producer_provenance = (
-            "INJECTED_TEST_PRODUCER"
-            if local_cpu and local_completion is not None
-            else "ACTUAL_CPU_QWEN"
+            "ACTUAL_CPU_QWEN"
+            if actual_provider
+            else "INJECTED_TEST_PRODUCER"
             if local_cpu
             else "RECORDED_RESPONSE_UNVERIFIED"
         )
@@ -960,7 +965,9 @@ class BookOrchestrator:
                 "execution_provenance": producer_provenance,
                 **(
                     {
-                        "source_boundary": book.source_boundary,
+                        "source_boundary": cast(
+                            selected_scope.SelectedSource, book
+                        ).source_boundary,
                         "selected_scope_bundle_sha256": chosen.bundle_sha256,
                     }
                     if selected_scope_path is not None
@@ -968,7 +975,11 @@ class BookOrchestrator:
                 ),
             }
             producer_fingerprint = content_fingerprint(producer_material)
-            producer = local_completion or scripting._local_book_completion
+            producer = (
+                scripting._local_book_completion_with_receipt
+                if actual_provider
+                else local_completion or scripting._local_book_completion
+            )
             generation_contract = StageContract(
                 "books.mining.local-completion.v1", producer_material
             )
@@ -1003,7 +1014,9 @@ class BookOrchestrator:
                 unit_fingerprint = unit.fingerprint
                 request = whole_book._request_for_identity(book, unit, book_fingerprint)
                 if selected_scope_path is not None:
-                    request["source_boundary"] = book.source_boundary
+                    request["source_boundary"] = cast(
+                        selected_scope.SelectedSource, book
+                    ).source_boundary
                     request["selected_scope_bundle_sha256"] = chosen.bundle_sha256
                 request_key = content_fingerprint(request)
                 status = "unresolved"
@@ -1051,22 +1064,29 @@ class BookOrchestrator:
                             unit=current_unit,
                             producer_fingerprint=producer_fingerprint,
                             completion=producer,
-                            actual_provider=local_completion is None,
+                            actual_provider=actual_provider,
                         )
 
                     try:
-                        cached_pass, cached_value = self.dag._cache_hit(identity_local)
-                        prior_attempts = self.dag.attempt_count(identity_local)
-                        if not cached_pass and prior_attempts:
-                            # DAG attempt history is persistent across fresh runners and
-                            # reclaimed failed claims. Never rerun a consumed request.
-                            failure_category = "prior_attempt_interrupted_or_failed"
-                            status = "failed"
-                            hit, stored_local = False, None
-                        elif cached_pass:
-                            hit, stored_local = True, cached_value
+                        prior_attempts = 0
+                        if selected_scope_path is not None:
+                            cached_pass, cached_value = self.dag._cache_hit(identity_local)
+                            prior_attempts = self.dag.attempt_count(identity_local)
+                            if not cached_pass and prior_attempts:
+                                # Selected attempts are consumed permanently;
+                                # full-book incremental mining retains retries.
+                                failure_category = "prior_attempt_interrupted_or_failed"
+                                status = "failed"
+                                hit, stored_local = False, None
+                            elif cached_pass:
+                                hit, stored_local = True, cached_value
+                            elif local_attempts >= budget:
+                                hit, stored_local = False, None
+                            else:
+                                stored_local, _reused = self.dag.execute(identity_local, generate)
+                                hit = True
                         elif local_attempts >= budget:
-                            hit, stored_local = False, None
+                            hit, stored_local = self.dag._cache_hit(identity_local)
                         else:
                             stored_local, _reused = self.dag.execute(identity_local, generate)
                             hit = True
@@ -1079,7 +1099,7 @@ class BookOrchestrator:
                                 unit=unit,
                                 producer_fingerprint=producer_fingerprint,
                                 stored=stored_local,
-                                actual_provider=local_completion is None,
+                                actual_provider=actual_provider,
                             )
                             response_digest = content_fingerprint(answer)
                             has_answer = True
@@ -1098,7 +1118,9 @@ class BookOrchestrator:
                         # Budget is per immutable mining request, NOT per Python
                         # invocation. Count already-consumed DAG attempts and
                         # new attempts even when they failed or were reclaimed.
-                        local_attempts += prior_attempts + tried
+                        local_attempts += (
+                            prior_attempts if selected_scope_path is not None else 0
+                        ) + tried
                 else:
                     if responses is None:
                         raise BookRunError("recorded response mapping missing")
