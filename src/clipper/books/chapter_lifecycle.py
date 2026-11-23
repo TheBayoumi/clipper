@@ -182,3 +182,31 @@ def verify_lifecycle(
         code_id, codespace_name, created, expected_sha,
         created + timedelta(seconds=TOTAL_SECONDS),
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Preflight BEFORE setup: no model dependencies, no private source logging."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Verify external lifecycle before chapter setup")
+    parser.add_argument("--artifact-root", required=True, type=Path)
+    parser.add_argument("--codespace-created-at", required=True)
+    args = parser.parse_args(argv)
+    try:
+        name = os.environ.get("CODESPACE_NAME", "")
+        if not args.artifact_root.is_absolute() or args.artifact_root.is_symlink():
+            raise LifecycleStop("private artifact root is not absolute or is redirected")
+        verify_lifecycle(
+            args.artifact_root / "book-candidates",
+            caller_created_at=args.codespace_created_at,
+            codespace_name=name,
+        )
+    except (LifecycleStop, ValueError, OSError):
+        print("PRIVATE_CHAPTER_EXTERNAL_SUPERVISOR_UNVERIFIED")
+        return 2
+    print("PRIVATE_CHAPTER_EXTERNAL_SUPERVISOR_VERIFIED_CHECKPOINT_ONLY")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
