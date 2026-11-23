@@ -1216,7 +1216,7 @@ def test_concurrent_chapter_stage_exclusive_owner_and_legacy_cache_rejection(
     monkeypatch.setattr(chapter, "_claim", original_claim)
     assert run()[3] == 0
     (stage_dir / "started-1.json").unlink()
-    with pytest.raises(chapter.ChapterStop, match="ambiguous reservation"):
+    with pytest.raises(chapter.ChapterStop, match="artifact cannot be verified"):
         run()
     provider.assert_called_once()
 
@@ -1477,7 +1477,7 @@ def test_cached_chapter_stage_owner_tamper_is_not_silently_replayed(tmp_path: Pa
     marker = json.loads(started.read_bytes())
     marker["owner"] = "synthetic-other-owner"
     started.write_text(json.dumps(marker), encoding="utf-8")
-    with pytest.raises(chapter.ChapterStop, match="owner mismatch"):
+    with pytest.raises(chapter.ChapterStop, match="artifact cannot be verified"):
         chapter._stage(*args, lambda item: item, producer)
     producer.assert_called_once()
 
@@ -1561,16 +1561,16 @@ def test_text_artifact_replay_verifies_exact_raw_and_validated_output(
         saved["payload"]["value"] = "changed synthetic response"
     elif tamper == "raw":
         raw["raw"] = '{"value":"changed synthetic response"}'
-        raw_path.write_text(json.dumps(raw), encoding="utf-8")
+        raw_path.write_bytes(evaluation._json_bytes(raw))
     elif tamper == "missing_raw":
         raw_path.unlink()
     elif tamper == "raw_digest":
         raw["sha256"] = "f" * 64
-        raw_path.write_text(json.dumps(raw), encoding="utf-8")
+        raw_path.write_bytes(evaluation._json_bytes(raw))
     else:
         saved["artifact_identity"] = "f" * 64
     if tamper in {"payload", "artifact_digest"}:
-        complete.write_text(json.dumps(saved), encoding="utf-8")
+        complete.write_bytes(evaluation._json_bytes(saved))
     with pytest.raises(chapter.ChapterStop, match="artifact cannot be verified"):
         chapter._stage(*args, lambda x: x, callback)
     callback.assert_called_once()
