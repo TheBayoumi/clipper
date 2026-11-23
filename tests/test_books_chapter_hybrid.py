@@ -323,6 +323,99 @@ def test_pinned_context_capacity_and_cache_identity_changes() -> None:
         )
 
 
+def test_actual_pinned_public_tokenizer_template_and_same_count_tokens_bind_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Public-only CPU preflight: no tokenizer downloads or model weights."""
+    from clipper.books import constrained
+
+    home = tmp_path / "local-huggingface"
+    snapshot = (
+        home / "hub" / "models--Qwen--Qwen3-1.7B"
+        / "snapshots" / scripting.SCRIPT_REVISION
+    )
+    snapshot.mkdir(parents=True)
+    tokenizer_json = b"synthetic pinned public tokenizer JSON (not production weights)"
+    (snapshot / "tokenizer.json").write_bytes(tokenizer_json)
+    config = snapshot / "tokenizer_config.json"
+    config.write_bytes(b'{"chat_template":"synthetic template A"}')
+    monkeypatch.setattr(
+        constrained,
+        "PINNED_TOKENIZER_SHA256",
+        hashlib.sha256(tokenizer_json).hexdigest(),
+    )
+    monkeypatch.setenv("HF_HOME", str(home))
+
+    class PublicTokenizer:
+        name_or_path = str(snapshot)
+        chat_template = "synthetic template A"
+        ids = [71, 72, 73, 74]
+
+        def apply_chat_template(self, *_args: object, **kwargs: object) -> list[int]:
+            assert kwargs["enable_thinking"] is False
+            assert kwargs["tokenize"] is True
+            return list(self.ids)
+
+    fake = PublicTokenizer()
+    monkeypatch.setattr(scripting, "_public_book_context", lambda: (fake, 40960))
+    producer_a = whole_book.local_producer_material()
+    material_a = scripting._cached_chapter_tokenizer_material()
+    assert material_a["status"] == "PINNED_PUBLIC_TOKENIZER"
+    assert material_a["tokenizer_config_sha256"] == hashlib.sha256(config.read_bytes()).hexdigest()
+    payload = {"source": hybrid.projection(hybrid.validate_ledger(_ledger(1)))}
+    identity = {"schema": "synthetic", "runtime": producer_a}
+    request_a, key_a, count = hybrid.request(
+        "argument",
+        payload,
+        output_tokens=1024,
+        token_count=scripting._chapter_prompt_encoding,
+        producer_identity=identity,
+    )
+    assert count == 4
+    assert request_a["verified_input_encoding"] == scripting._chapter_encoding_receipt(
+        scripting._chapter_prompt_encoding(request_a["messages"])
+    )
+    assert scripting._chapter_context_tokens(request_a) == 4
+    assert hybrid.request(
+        "argument",
+        payload,
+        output_tokens=1024,
+        token_count=scripting._chapter_prompt_encoding,
+        producer_identity=identity,
+    )[1] == key_a
+
+    for change in ("tokens_same_count", "effective_template", "tokenizer_config"):
+        if change == "tokens_same_count":
+            fake.ids = [71, 72, 73, 75]
+        elif change == "effective_template":
+            fake.chat_template = "synthetic template B"
+        else:
+            config.write_bytes(b'{"chat_template":"synthetic template B"}')
+        request_b, key_b, next_count = hybrid.request(
+            "argument",
+            payload,
+            output_tokens=1024,
+            token_count=scripting._chapter_prompt_encoding,
+            producer_identity=identity,
+        )
+        assert next_count == count
+        assert key_b != key_a
+        assert request_b["verified_input_encoding"] != request_a["verified_input_encoding"]
+        with pytest.raises(scripting.NicheVideoError, match="tokens or template"):
+            scripting._chapter_context_tokens(request_a)
+        if change == "tokenizer_config":
+            producer_b = whole_book.local_producer_material()
+            assert producer_b != producer_a
+            assert material_a != scripting._cached_chapter_tokenizer_material()
+        request_a, key_a = request_b, key_b
+
+    (snapshot / "tokenizer.json").write_bytes(b"wrong pinned tokenizer")
+    assert scripting._cached_chapter_tokenizer_material()["status"] == "TOKENIZER_JSON_UNVERIFIED"
+    with pytest.raises(scripting.PinnedQwenSnapshotError, match="tokenizer JSON"):
+        scripting._chapter_prompt_encoding(request_a["messages"])
+
+
 def test_exact_quotes_cannot_prove_meaning_or_keyword_faithfulness() -> None:
     ledger = _ledger()
     audits = _audit_outputs(ledger)
