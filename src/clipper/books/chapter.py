@@ -2361,6 +2361,7 @@ def evaluate_hybrid_chapter(
         audit_attempts += attempts
         if origin != argument_origin:
             raise ChapterStop("hybrid argument/audit producer provenance changed")
+
     def validated_brief(raw: object) -> dict[str, Any]:
         result = chapter_hybrid.reconcile(raw, ledger, argument, audits)
         if len(result["beats"]) > limits.max_beats:
