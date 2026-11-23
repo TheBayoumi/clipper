@@ -2068,7 +2068,7 @@ def test_cached_second_text_attempt_requires_full_first_rejection_history(
             record["raw"] = "["
         target.write_bytes(evaluation._json_bytes(record))
     no_provider = Mock(side_effect=AssertionError("missing prior attempt cannot replay"))
-    with pytest.raises(chapter.ChapterStop, match="prior attempt history"):
+    with pytest.raises(chapter.ChapterStop, match="artifact cannot be verified"):
         chapter._stage(*args, lambda x: x, no_provider)
     no_provider.assert_not_called()
     assert producer.call_count == 2
