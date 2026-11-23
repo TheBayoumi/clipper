@@ -1496,6 +1496,10 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         "missing_prior_rejection_before_manifest",
         "valid_prior_rejection_before_manifest",
     }:
+        # Reconstruct an alternative synthetic *original* retry history.
+        # Immutable production records are never overwritten in place.
+        (stage_directory / "started-1.json").unlink()
+        (stage_directory / "raw-1.json").unlink()
         first_raw = json.dumps({"not": "valid-adaptation"}, sort_keys=True)
         first_digest = hashlib.sha256(first_raw.encode()).hexdigest()
         prior_owner = "8" * 32
@@ -1557,6 +1561,7 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
             },
         )
         validated = json.loads((stage_directory / "validated.json").read_bytes())
+        (stage_directory / "validated.json").unlink()
         validated.update({"attempt": 2, "owner": winning_owner})
         evaluation._store(base, stage_directory / "validated.json", validated)
         if damage == "missing_prior_rejection_before_manifest":
@@ -1953,14 +1958,24 @@ def test_private_recovery_public_cli_normalizes_corrupt_journal_without_leaking_
     with pytest.raises(chapter_host.PrivateHostStop):
         chapter_host.recovery_report(root)
     if mode == "recover":
-        with pytest.raises(chapter_host.PrivateHostStop):
-            chapter_host.private_recovery_archive(root)
-    assert chapter_host.main([mode, "--artifact-root", str(root)]) == 2
-    visible = capsys.readouterr()
-    assert visible.out == ""
-    assert "PRIVATE_CHAPTER_HOST_FAILED_CLOSED" in visible.err
+        checkpoint = chapter_host.private_recovery_archive(root)
+        assert checkpoint["file_count"] == 0
+        with tarfile.open(
+            root / "book-candidates/private-host/chapter-recovery.tar", "r:"
+        ) as archive:
+            record = json.load(archive.extractfile("private-recovery-manifest.json"))
+            assert record["chapters"][0]["inventory_status"] == "INCOMPLETE"
+            assert record["chapters"][0]["files"] == []
+        assert chapter_host.main([mode, "--artifact-root", str(root)]) == 0
+        visible = capsys.readouterr()
+        assert json.loads(visible.out)["files_retrieved"] is False
+    else:
+        assert chapter_host.main([mode, "--artifact-root", str(root)]) == 2
+        visible = capsys.readouterr()
+        assert visible.out == ""
+        assert "PRIVATE_CHAPTER_HOST_FAILED_CLOSED" in visible.err
     assert "Traceback" not in visible.err
-    assert "PRIVATE_SYNTHETIC_SHOULD_NOT_LEAK" not in visible.err
+    assert "PRIVATE_SYNTHETIC_SHOULD_NOT_LEAK" not in visible.out + visible.err
 
 
 @pytest.mark.parametrize("damage", ["outside", "missing", "symlink", "oversized"])
