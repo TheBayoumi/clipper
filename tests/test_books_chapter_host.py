@@ -1311,11 +1311,15 @@ def test_resumed_host_interruption_reports_precise_last_subphase_and_verified_pr
         "forged_narration",
         "forged_human_review",
         "invalid_brief_checkpoint",
+        "valid_brief_checkpoint",
+        "too_many_text_files",
+        "changed_between_inventory_and_archive",
     ],
 )
 def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
     tmp_path: Path,
     damage: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Synthetic outputs only; all archive members are independently content-bound."""
     import io
@@ -1507,6 +1511,37 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
                 root, 1, bundle, scope, final_result_identity="not-a-digest"
             )
         return
+    if damage == "valid_brief_checkpoint":
+        review_checkpoint = base / "private-host/chapter-1-brief-record.json"
+        evaluation._store(
+            base, review_checkpoint, {"brief_identity": identities["brief"]}
+        )
+        scoped = chapter_host._chapter_output_manifest(root, 1, bundle, scope)
+        assert any(
+            entry["relative_path"] == "book-candidates/private-host/chapter-1-brief-record.json"
+            for entry in scoped["files"]
+        )
+        return
+    if damage == "too_many_text_files":
+        key = hashlib.sha256("brief".encode("ascii")).hexdigest()
+        stage_dir = base / "brief" / key
+        for index in range(22):
+            (stage_dir / f"synthetic-foreign-{index:03}.json").write_bytes(b"{}")
+        with pytest.raises(chapter_host.PrivateHostStop, match="replay file inventory"):
+            chapter_host.private_recovery_archive(root)
+        return
+    if damage == "changed_between_inventory_and_archive":
+        original_inventory = chapter_host._chapter_output_manifest
+
+        def concurrent_change(*args: object, **kwargs: object) -> dict:
+            verified_manifest = original_inventory(*args, **kwargs)
+            wav_path.write_bytes(b"synthetic file changed after inventory")
+            return verified_manifest
+
+        monkeypatch.setattr(chapter_host, "_chapter_output_manifest", concurrent_change)
+        with pytest.raises(chapter_host.PrivateHostStop, match="changed during archive"):
+            chapter_host.private_recovery_archive(root)
+        return
     if damage == "invalid_brief_checkpoint":
         evaluation._store(
             base,
@@ -1588,6 +1623,7 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         "missing_raw_owner",
         "wrong_raw_digest",
         "missing_validated_fields",
+        "too_many_stage_directories",
     ],
 )
 def test_scoped_recovery_text_stage_rejects_unverifiable_artifacts(
@@ -1612,6 +1648,12 @@ def test_scoped_recovery_text_stage_rejects_unverifiable_artifacts(
             chapter_host._stage_output_entries(root, 1, stage, identity)
         return
     stage_root.mkdir(parents=True)
+    if fault == "too_many_stage_directories":
+        for index in range(129):
+            (stage_root / f"synthetic-{index:03}").mkdir()
+        with pytest.raises(chapter_host.PrivateHostStop, match="inventory exceeds"):
+            chapter_host._stage_output_entries(root, 1, stage, identity)
+        return
     if fault == "directory_symlink":
         retained = stage_root.with_name("retained-synthetic-text")
         stage_root.rename(retained)
@@ -1671,6 +1713,7 @@ def test_scoped_recovery_text_stage_rejects_unverifiable_artifacts(
         "invalid_report_json",
         "oversized_report",
         "symlink_report",
+        "non_object_wav_entry",
     ],
 )
 def test_scoped_recovery_narration_refuses_unverified_or_cross_scope_audio(
@@ -1703,6 +1746,8 @@ def test_scoped_recovery_narration_refuses_unverified_or_cross_scope_audio(
     }
     if fault == "bad_report_schema":
         report["schema"] = "different-synthetic-schema"
+    if fault == "non_object_wav_entry":
+        report["records"] = [None]
     key = content_fingerprint(report)
     if fault != "missing_report":
         evaluation._store(base, base / f"narration-report-{key}.json", report)
@@ -1775,3 +1820,33 @@ def test_private_recovery_member_read_is_bounded_and_never_trusts_retargeted_pat
         member.write_bytes(b"x" * 9)
     with pytest.raises(chapter_host.PrivateHostStop):
         chapter_host._private_output_entry(root, member, 1, "text", 8)
+
+
+def test_private_recovery_rejects_journal_that_rebinds_a_reviewed_brief(
+    tmp_path: Path,
+) -> None:
+    """A later journal event cannot silently replace an already reviewed brief."""
+    root = tmp_path / "private"
+    runner = BookOrchestrator(root)
+    bundle, scope = "a" * 64, "b" * 64
+    chapter_host._phase(runner, 1, bundle, scope, "NOT_STARTED")
+    chapter_host._phase(runner, 1, bundle, scope, "MINING_IN_FLIGHT")
+    chapter_host._phase(runner, 1, bundle, scope, "BRIEF_IN_FLIGHT")
+    chapter_host._phase(
+        runner,
+        1,
+        bundle,
+        scope,
+        "AWAITING_HUMAN_REVIEW",
+        {"brief_identity": "1" * 64},
+    )
+    chapter_host._phase(
+        runner,
+        1,
+        bundle,
+        scope,
+        "RESUME_IN_FLIGHT",
+        {"brief_identity": "2" * 64},
+    )
+    with pytest.raises(chapter_host.PrivateHostStop, match="identity changed within journal"):
+        chapter_host._chapter_output_manifest(root, 1, bundle, scope)
