@@ -675,6 +675,8 @@ terminate_host() {
   original_status=$?
   trap - EXIT INT TERM HUP
   set +e
+  # Bootstrap expiry must never block the independent original-clock cleanup.
+  bootstrap_epoch=0
   if [[ "$verified_identity" != 1 ]]; then
     rm -rf -- "$session"
     echo "EXTERNAL_SUPERVISOR_IDENTITY_UNVERIFIED_OWNER_MUST_CHECK_HOST" >&2
