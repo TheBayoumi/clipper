@@ -17,10 +17,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
-from . import acquisition, chapter, evaluation, narration, scripting, whole_book
+from . import acquisition, chapter, evaluation, narration, scripting, whole_book, selected_scope
 from .orchestrator import BookOrchestrator
 
-BATCH_SCHEMA = "clipper-two-private-chapter-codespace-v1"
+BATCH_SCHEMA = "clipper-two-private-chapter-codespace-v2"
 DEADLINE_SECONDS = 7200
 CLEANUP_RESERVE_SECONDS = 300
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
@@ -66,31 +66,29 @@ def _private_path(value: str, root: Path, *, must_exist: bool = False) -> Path:
 def _config(value: object) -> dict[str, Any]:
     if (
         not isinstance(value, dict)
-        or set(value) != {"schema", "candidate_ref", "chapter_1", "chapter_7", "plan"}
+        or set(value) != {"schema", "chapter_1", "chapter_7", "plan"}
         or value["schema"] != BATCH_SCHEMA
     ):
         raise PrivateHostStop("two-chapter private host manifest schema mismatch")
-    if not isinstance(value["candidate_ref"], str):
-        raise PrivateHostStop("candidate ref must be a private absolute path")
-    groups: set[str] = set()
+    bundles: set[str] = set()
     for number in (1, 7):
         block = value[f"chapter_{number}"]
         if not isinstance(block, dict) or set(block) != {
-            "section_ids",
+            "bundle_path",
+            "bundle_sha256",
             "scope_sha256",
             "review_file",
         }:
-            raise PrivateHostStop("chapter scope/independent review fields missing")
-        ids = block["section_ids"]
+            raise PrivateHostStop("chapter bundle/review fields missing")
         if (
-            not isinstance(ids, list)
-            or not 1 <= len(ids) <= 16
-            or any(not isinstance(x, str) or not x for x in ids)
-            or len(set(ids)) != len(ids)
-            or groups.intersection(ids)
+            not isinstance(block["bundle_path"], str)
+            or not block["bundle_path"]
+            or block["bundle_path"] in bundles
+            or not isinstance(block["bundle_sha256"], str)
+            or DIGEST.fullmatch(block["bundle_sha256"]) is None
         ):
-            raise PrivateHostStop("two chapter scopes must be distinct and source ordered")
-        groups.update(ids)
+            raise PrivateHostStop("two independent immutable chapter bundles required")
+        bundles.add(block["bundle_path"])
         if block["scope_sha256"] is not None and (
             not isinstance(block["scope_sha256"], str)
             or DIGEST.fullmatch(block["scope_sha256"]) is None
@@ -103,23 +101,14 @@ def _config(value: object) -> dict[str, Any]:
 
 
 def _section_manifest(
-    runner: BookOrchestrator, ref_path: Path, ids: list[str]
+    runner: BookOrchestrator, verified: selected_scope.SelectedEvidence
 ) -> tuple[Path, str, dict[str, object]]:
-    ref, book = runner.load_candidate_for_analysis(ref_path)
-    work = whole_book.plan_for(book, section_ids=tuple(ids))
-    expected = {
-        "schema": evaluation.SECTION_MANIFEST_SCHEMA,
-        "book_fingerprint": book.fingerprint,
-        "source_fingerprint": book.source_fingerprint,
-        "ingest_stage_key": ref.ingest_stage_key,
-        "parent_plan_fingerprint": work.parent_plan_fingerprint,
-        "section_ids": list(work.section_ids),
-        "parent_total_units": work.parent_total_units,
-        "included_units": len(work.units),
-        "excluded_units": work.excluded_units,
-    }
-    raw = evaluation._json_bytes(expected)
+    """Reissue only the original exporter-attested scoped manifest, never a full parent."""
+    manifest = selected_scope._section_manifest(verified.ref, verified.book, verified.work)
+    raw = evaluation._json_bytes(manifest)
     digest = hashlib.sha256(raw).hexdigest()
+    if digest != verified.section_manifest_sha256:
+        raise PrivateHostStop("selected chapter's parent-bound manifest changed")
     root = runner.root / "book-candidates"
     path = root / "section-scopes" / f"{digest}.json"
     acquisition._private_write(path, raw, private_root=root)
@@ -127,81 +116,115 @@ def _section_manifest(
         path,
         digest,
         {
-            "work_units": len(work.units),
-            "skipped_units": len(work.skipped),
-            "words": sum(len(unit.text.split()) for unit in work.units),
-            "source_bytes": sum(len(unit.text.encode("utf-8")) for unit in work.units),
-            "excluded_parent_units": work.excluded_units,
-            "workplan_sha256": work.fingerprint,
-            "skipped_markers": list(work.skipped),
+            "work_units": len(verified.work.units),
+            "skipped_units": len(verified.work.skipped),
+            "words": sum(len(unit.text.split()) for unit in verified.work.units),
+            "source_bytes": sum(len(unit.text.encode("utf-8")) for unit in verified.work.units),
+            "excluded_parent_units": verified.work.excluded_units,
+            "workplan_sha256": verified.work.fingerprint,
+            "skipped_markers": list(verified.work.skipped),
         },
     )
 
 
-def _inspection(
-    runner: BookOrchestrator, ref_path: Path, inputs: dict[str, Any]
-) -> dict[str, object]:
-    _ref, book = runner.load_candidate_for_analysis(ref_path)
-    root = runner.root / "book-candidates"
-    chapters: dict[str, dict[str, Any]] = {}
-    covered: set[str] = set()
+def _prepare(
+    runner: BookOrchestrator, inputs: dict[str, Any]
+) -> list[tuple[int, dict[str, Any], Path, selected_scope.SelectedEvidence, Path, str, dict[str, object]]]:
+    """Validate both bundles, independent chapter identities, and disjoint source BEFORE CPU."""
+    prepared: list[
+        tuple[int, dict[str, Any], Path, selected_scope.SelectedEvidence, Path, str, dict[str, object]]
+    ] = []
+    sections: set[str] = set()
+    parent: tuple[str, str, str] | None = None
     for number in (1, 7):
         block = inputs[f"chapter_{number}"]
-        path, digest, counts = _section_manifest(runner, ref_path, block["section_ids"])
-        covered.update(block["section_ids"])
+        bundle = _private_path(block["bundle_path"], runner.root, must_exist=True)
+        verified = selected_scope.import_chapter(runner.root, bundle)
+        identity = (verified.book.fingerprint, verified.ref.raw_sha256, verified.ref.ingest_stage_key)
+        if (
+            verified.chapter_number != number
+            or verified.bundle_sha256 != block["bundle_sha256"]
+            or (parent is not None and parent != identity)
+            or sections.intersection(verified.work.section_ids)
+        ):
+            raise PrivateHostStop("selected chapter number, parent edition or independent scope mismatch")
+        parent = identity
+        sections.update(verified.work.section_ids)
+        section_path, scope_sha, counts = _section_manifest(runner, verified)
+        if (
+            block["scope_sha256"] is not None
+            and block["scope_sha256"] != scope_sha
+        ):
+            raise PrivateHostStop("selected chapter scope identity mismatch")
+        if (
+            cast(int, counts["work_units"]) + cast(int, counts["skipped_units"])
+            > chapter.MAX_SOURCE_UNITS
+        ):
+            raise PrivateHostStop("selected full chapter exceeds original unit/gap budget")
+        prepared.append((number, block, bundle, verified, section_path, scope_sha, counts))
+    return prepared
+
+
+def _inspection(
+    runner: BookOrchestrator,
+    prepared: list[
+        tuple[int, dict[str, Any], Path, selected_scope.SelectedEvidence, Path, str, dict[str, object]]
+    ],
+) -> dict[str, object]:
+    root = runner.root / "book-candidates"
+    chapters: dict[str, dict[str, object]] = {}
+    for number, _block, _bundle, verified, section, digest, counts in prepared:
         chapters[str(number)] = {
-            "scope_manifest_sha256": digest,
-            "scope_manifest_relative_path": str(path.relative_to(root)),
-            "source_counts": counts,
+            "bundle_sha256": verified.bundle_sha256,
+            "scope_sha256": digest,
+            "parent_book_fingerprint": verified.book.fingerprint,
+            "parent_ingest_stage_key": verified.ref.ingest_stage_key,
+            "work_units": counts["work_units"],
+            "skipped_units": counts["skipped_units"],
+            "words": counts["words"],
+            "source_bytes": counts["source_bytes"],
+            "selected_sections": list(verified.work.section_ids),
+            "linked_section_ids": list(verified.linked_section_ids),
+            "selected_reading_blocks": [
+                {
+                    "anchor": block.anchor,
+                    "section_id": block.section_id,
+                    "source_path": block.source_path,
+                    "origin": block.origin,
+                    "asset_sha256": block.asset_sha256,
+                    "unrecovered": block.origin == "unrecovered_image" or not block.text.strip(),
+                }
+                for block in verified.book.selected_reading_blocks
+            ],
+            "gaps": list(verified.work.skipped),
+            "section_manifest_relative_path": str(section.relative_to(root)),
+            "linkage_completeness": "UNVERIFIED_REQUIRES_SOURCE_REVIEW",
+            "parent_original_bytes_reverified_on_host": False,
         }
-    # Expose source not selected, unresolved metadata, and gaps without falsely
-    # asserting linked footnotes/figure captions are inside a chapter scope.
     report = {
-        "schema": "clipper-private-chapter-scope-inspection-v1",
-        "parent_book_fingerprint": book.fingerprint,
-        "parent_full_book_complete": False,
+        "schema": "clipper-private-selected-chapter-inspection-v2",
+        "chapter_count": 2,
         "chapters": chapters,
-        "unselected_sections": [
-            {"section_id": section.chapter_id, "heading": section.heading}
-            for section in book.sections
-            if section.chapter_id not in covered
-        ],
-        "scoped_source_blocks": [
-            {
-                "anchor": item.anchor,
-                "section_id": item.section_id,
-                "source_path": item.source_path,
-                "kind": item.kind,
-                "asset_sha256": item.asset_sha256,
-                "empty": not item.text.strip(),
-            }
-            for item in book.blocks
-            if item.section_id in covered
-        ],
-        "warnings": list(book.warnings),
-        "excluded_pages": [
-            {"page_number": p.page_number, "reason": p.reason} for p in book.excluded_pages
-        ],
-        "recovery_status": book.recovery_status,
-        "footnote_caption_figure_completeness": "UNVERIFIED_REQUIRES_SOURCE_INSPECTION",
-        "semantic_scope_approval": "NOT_ATTESTED",
+        "parent_full_book_complete": False,
+        "parent_original_bytes_reverified_on_host": False,
+        "source_boundary": "HOST_VERIFIED_SELECTED_BUNDLES_EXPORTER_ATTESTED_PARENT",
+        "source_linkage_review": "REQUIRED",
+        "semantic_approval": "NOT_ATTESTED",
+        "publish_eligible": False,
     }
-    report_sha256 = hashlib.sha256(evaluation._json_bytes(report)).hexdigest()
-    evaluation._store(
-        root,
-        root / "private-host" / f"scope-inspection-{report_sha256}.json",
-        report,
-    )
+    digest = hashlib.sha256(evaluation._json_bytes(report)).hexdigest()
+    evaluation._store(root, root / "private-host" / f"scope-inspection-{digest}.json", report)
     return {
         "status": "SCOPE_INSPECTION_REQUIRES_HUMAN_SELECTION_LOCK",
-        "inspection_sha256": report_sha256,
+        "inspection_sha256": digest,
         "chapters": {
             key: {
-                "scope_sha256": item["scope_manifest_sha256"],
-                "work_units": item["source_counts"]["work_units"],
-                "skipped_units": item["source_counts"]["skipped_units"],
-                "words": item["source_counts"]["words"],
-                "source_bytes": item["source_counts"]["source_bytes"],
+                "scope_sha256": item["scope_sha256"],
+                "bundle_sha256": item["bundle_sha256"],
+                "work_units": item["work_units"],
+                "skipped_units": item["skipped_units"],
+                "words": item["words"],
+                "source_bytes": item["source_bytes"],
             }
             for key, item in chapters.items()
         },
@@ -303,12 +326,12 @@ def execute(
         raise PrivateHostStop("private artifacts must live outside repository checkout")
     path = _private_path(str(manifest_path), root, must_exist=True)
     inputs = _config(whole_book.load_strict_reply(evaluation._read(path, 32768)))
-    ref_path = _private_path(inputs["candidate_ref"], root, must_exist=True)
     plan = chapter.ChapterPlan.from_manifest(inputs["plan"])
     runner = BookOrchestrator(root)
     _check_deadline(created)
+    prepared = _prepare(runner, inputs)
     if mode == "inspect":
-        return _inspection(runner, ref_path, inputs)
+        return _inspection(runner, prepared)
     if mode not in {"brief", "resume"}:
         raise PrivateHostStop("unsupported private chapter host phase")
     if not all(
@@ -323,31 +346,21 @@ def execute(
         raise PrivateHostStop("real chapter phases require explicit full CPU permissions")
     # Lock BOTH scopes before making even the first irreversible mining call.
     # A mismatched chapter 7 must not waste chapter 1's shared host allowance.
-    prepared: list[tuple[int, dict[str, Any], Path, str, dict[str, object]]] = []
-    for number in (1, 7):
-        _check_deadline(created)
-        block = inputs[f"chapter_{number}"]
-        section_path, scope_sha, counts = _section_manifest(runner, ref_path, block["section_ids"])
-        if block["scope_sha256"] != scope_sha:
-            raise PrivateHostStop("chapter source scope not explicitly locked by operator")
-        if (
-            cast(int, counts["work_units"]) + cast(int, counts["skipped_units"])
-            > chapter.MAX_SOURCE_UNITS
-        ):
-            raise PrivateHostStop("chapter full source-unit budget exceeded")
-        prepared.append((number, block, section_path, scope_sha, counts))
+    if any(block["scope_sha256"] != scope_sha for _, block, _, _, _, scope_sha, _ in prepared):
+        raise PrivateHostStop("both original selected scopes must be explicitly operator-locked")
     outcomes: dict[str, object] = {}
-    for number, block, section_path, scope_sha, counts in prepared:
+    for number, block, bundle, verified, section_path, scope_sha, counts in prepared:
         _check_deadline(created)
         private_root = root / "book-candidates"
         state = private_root / "private-host" / f"chapter-{number}-brief-record.json"
         try:
             if mode == "brief":
                 mined = runner.mine_candidate(
-                    ref_path,
+                    bundle,
                     local_cpu=True,
-                    section_ids=tuple(block["section_ids"]),
+                    section_ids=verified.work.section_ids,
                     section_manifest_sha256=scope_sha,
+                    selected_scope_path=bundle,
                     max_new_units=cast(int, counts["work_units"]),
                 )
                 if mined["status"] != "complete":
@@ -362,6 +375,7 @@ def execute(
                 if (
                     not isinstance(record, dict)
                     or record.get("scope_sha256") != scope_sha
+                    or record.get("bundle_sha256") != verified.bundle_sha256
                     or record.get("chapter") != number
                     or record.get("phase") != "AWAITING_HUMAN_REVIEW"
                     or not isinstance(record.get("progress_path"), str)
@@ -379,9 +393,10 @@ def execute(
                 review_path = _private_path(block["review_file"], root, must_exist=True)
             output = chapter.evaluate_chapter(
                 runner,
-                ref_path,
+                bundle,
                 progress_path,
                 section_path,
+                selected_scope_path=bundle,
                 review_file=review_path,
                 plan=plan,
                 brief_completion=scripting._local_chapter_completion,
@@ -397,6 +412,7 @@ def execute(
                     "chapter": number,
                     "phase": "AWAITING_HUMAN_REVIEW",
                     "scope_sha256": scope_sha,
+                    "bundle_sha256": verified.bundle_sha256,
                     "progress_path": str(progress_path),
                     "progress_sha256": hashlib.sha256(
                         evaluation._read(progress_path, 20_000_000)
@@ -407,6 +423,7 @@ def execute(
                 _review_packet(runner, number, output)
             outcomes[str(number)] = {
                 "status": output["status"],
+                "bundle_sha256": verified.bundle_sha256,
                 "brief_identity": output.get("brief_identity"),
                 "final_result_identity": output.get("final_result_identity"),
                 "audio_provenance": output.get("audio_provenance"),
