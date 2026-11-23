@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import subprocess
@@ -323,3 +324,54 @@ def test_lifecycle_cli_success_and_invalid_root_never_approves_host_creation(
     )
     assert "UNVERIFIED" in capsys.readouterr().out
     verified.assert_called_once()
+
+
+def test_atomic_signed_envelope_contains_one_exact_verified_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, record, heartbeat, signature = _fixture(tmp_path, monkeypatch)
+    folder = heartbeat.parent
+    envelope = folder / "external-supervisor-heartbeat-envelope.json"
+    envelope.write_bytes(
+        json.dumps(
+            {
+                "schema": "clipper-external-supervisor-envelope-v1",
+                "payload_b64": base64.b64encode(heartbeat.read_bytes()).decode("ascii"),
+                "signature_b64": base64.b64encode(signature.read_bytes()).decode("ascii"),
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+    heartbeat.unlink()
+    signature.unlink()
+    assert _check(root, record).codespace_id == 12
+    tampered = json.loads(envelope.read_bytes())
+    tampered["payload_b64"] = base64.b64encode(b"not signed").decode("ascii")
+    envelope.write_bytes(json.dumps(tampered).encode("utf-8"))
+    with pytest.raises(chapter_lifecycle.LifecycleStop):
+        _check(root, record)
+
+
+def test_replaced_legacy_files_cannot_change_verified_payload_after_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, record, heartbeat, signature = _fixture(tmp_path, monkeypatch)
+    original = chapter_lifecycle._command
+    did_swap = False
+
+    def replace_between_snapshot_and_openssl(
+        argv: list[str], *, input_bytes: bytes | None = None
+    ) -> bytes:
+        nonlocal did_swap
+        if argv[:2] == ["openssl", "dgst"] and not did_swap:
+            assert input_bytes is not None
+            did_swap = True
+            heartbeat.write_bytes(b'{"unverified":true}')
+            signature.write_bytes(b"forged")
+        return original(argv, input_bytes=input_bytes)
+
+    monkeypatch.setattr(chapter_lifecycle, "_command", replace_between_snapshot_and_openssl)
+    assert _check(root, record).codespace_id == 12
+    assert did_swap
+    with pytest.raises(chapter_lifecycle.LifecycleStop):
+        _check(root, record)
