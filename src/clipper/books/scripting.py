@@ -663,8 +663,10 @@ def _local_chapter_completion(request: dict[str, object]) -> str:
     configured = getattr(getattr(model, "generation_config", None), "eos_token_id", None)
     if configured is None:
         configured = tokenizer.eos_token_id
-    eos = {configured} if type(configured) is int else (
-        set(configured) if isinstance(configured, (list, tuple)) else set()
+    eos = (
+        {configured}
+        if type(configured) is int
+        else (set(configured) if isinstance(configured, (list, tuple)) else set())
     )
     if len(ids) == 0 or int(ids[-1]) not in eos:
         raise IncompleteConstrainedResponse(raw)

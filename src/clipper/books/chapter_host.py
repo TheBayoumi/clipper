@@ -47,9 +47,7 @@ def _created_at(value: str, now: datetime | None = None) -> datetime:
 
 
 def _check_deadline(created: datetime) -> None:
-    if datetime.now(UTC) >= created + timedelta(
-        seconds=DEADLINE_SECONDS - CLEANUP_RESERVE_SECONDS
-    ):
+    if datetime.now(UTC) >= created + timedelta(seconds=DEADLINE_SECONDS - CLEANUP_RESERVE_SECONDS):
         raise PrivateHostStop("one-host shared execution budget exhausted")
 
 
@@ -66,9 +64,11 @@ def _private_path(value: str, root: Path, *, must_exist: bool = False) -> Path:
 
 
 def _config(value: object) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != {
-        "schema", "candidate_ref", "chapter_1", "chapter_7", "plan"
-    } or value["schema"] != BATCH_SCHEMA:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema", "candidate_ref", "chapter_1", "chapter_7", "plan"}
+        or value["schema"] != BATCH_SCHEMA
+    ):
         raise PrivateHostStop("two-chapter private host manifest schema mismatch")
     if not isinstance(value["candidate_ref"], str):
         raise PrivateHostStop("candidate ref must be a private absolute path")
@@ -76,7 +76,9 @@ def _config(value: object) -> dict[str, Any]:
     for number in (1, 7):
         block = value[f"chapter_{number}"]
         if not isinstance(block, dict) or set(block) != {
-            "section_ids", "scope_sha256", "review_file"
+            "section_ids",
+            "scope_sha256",
+            "review_file",
         }:
             raise PrivateHostStop("chapter scope/independent review fields missing")
         ids = block["section_ids"]
@@ -121,15 +123,19 @@ def _section_manifest(
     root = runner.root / "book-candidates"
     path = root / "section-scopes" / f"{digest}.json"
     acquisition._private_write(path, raw, private_root=root)
-    return path, digest, {
-        "work_units": len(work.units),
-        "skipped_units": len(work.skipped),
-        "words": sum(len(unit.text.split()) for unit in work.units),
-        "source_bytes": sum(len(unit.text.encode("utf-8")) for unit in work.units),
-        "excluded_parent_units": work.excluded_units,
-        "workplan_sha256": work.fingerprint,
-        "skipped_markers": list(work.skipped),
-    }
+    return (
+        path,
+        digest,
+        {
+            "work_units": len(work.units),
+            "skipped_units": len(work.skipped),
+            "words": sum(len(unit.text.split()) for unit in work.units),
+            "source_bytes": sum(len(unit.text.encode("utf-8")) for unit in work.units),
+            "excluded_parent_units": work.excluded_units,
+            "workplan_sha256": work.fingerprint,
+            "skipped_markers": list(work.skipped),
+        },
+    )
 
 
 def _inspection(
@@ -174,8 +180,7 @@ def _inspection(
         ],
         "warnings": list(book.warnings),
         "excluded_pages": [
-            {"page_number": p.page_number, "reason": p.reason}
-            for p in book.excluded_pages
+            {"page_number": p.page_number, "reason": p.reason} for p in book.excluded_pages
         ],
         "recovery_status": book.recovery_status,
         "footnote_caption_figure_completeness": "UNVERIFIED_REQUIRES_SOURCE_INSPECTION",
@@ -208,9 +213,10 @@ def _review_packet(
     for path in source_paths:
         raw = evaluation._read(path)
         source: object = whole_book.load_strict_reply(raw)
-        if isinstance(source, dict) and source.get("section_manifest_sha256") == summary[
-            "section_scope_sha256"
-        ]:
+        if (
+            isinstance(source, dict)
+            and source.get("section_manifest_sha256") == summary["section_scope_sha256"]
+        ):
             matching.append(source)
     if len(matching) != 1:
         raise PrivateHostStop("private source ledger for reviewed brief is ambiguous")
@@ -313,9 +319,7 @@ def execute(
     for number in (1, 7):
         _check_deadline(created)
         block = inputs[f"chapter_{number}"]
-        section_path, scope_sha, counts = _section_manifest(
-            runner, ref_path, block["section_ids"]
-        )
+        section_path, scope_sha, counts = _section_manifest(runner, ref_path, block["section_ids"])
         if block["scope_sha256"] != scope_sha:
             raise PrivateHostStop("chapter source scope not explicitly locked by operator")
         if int(counts["work_units"]) + int(counts["skipped_units"]) > chapter.MAX_SOURCE_UNITS:
@@ -422,12 +426,16 @@ def main(argv: list[str] | None = None) -> int:
             created_at=args.codespace_created_at,
         )
         print(json.dumps(result, sort_keys=True))
-        return 0 if args.mode == "inspect" or all(
-            item["status"] in {
-                "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW", "CHAPTER_PREPRODUCTION_READY_UNREVIEWED"
-            }
-            for item in result["chapters"].values()
-        ) else 2
+        return (
+            0
+            if args.mode == "inspect"
+            or all(
+                item["status"]
+                in {"AWAITING_HUMAN_CHAPTER_BEAT_REVIEW", "CHAPTER_PREPRODUCTION_READY_UNREVIEWED"}
+                for item in result["chapters"].values()
+            )
+            else 2
+        )
     except Exception:
         print(json.dumps({"status": "PRIVATE_CHAPTER_HOST_FAILED_CLOSED"}), file=sys.stderr)
         return 2

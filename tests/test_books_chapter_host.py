@@ -63,16 +63,14 @@ def _call(
     )
 
 
-def _locked(
-    runner: BookOrchestrator, path: Path, config: dict
-) -> dict[str, object]:
+def _locked(runner: BookOrchestrator, path: Path, config: dict) -> dict[str, object]:
     inspection = _call(runner, path, "inspect")
     assert inspection["status"] == "SCOPE_INSPECTION_REQUIRES_HUMAN_SELECTION_LOCK"
     assert inspection["publish_eligible"] is False
     for number in (1, 7):
-        config[f"chapter_{number}"]["scope_sha256"] = inspection["chapters"][
-            str(number)
-        ]["scope_sha256"]
+        config[f"chapter_{number}"]["scope_sha256"] = inspection["chapters"][str(number)][
+            "scope_sha256"
+        ]
     path.write_bytes(evaluation._json_bytes(config))
     return inspection
 
@@ -183,7 +181,10 @@ def test_two_chapters_brief_stops_for_independent_review_and_resume(
         }
 
     def fake_evaluate(
-        _runner: BookOrchestrator, _ref: Path, _progress: Path, section: Path,
+        _runner: BookOrchestrator,
+        _ref: Path,
+        _progress: Path,
+        section: Path,
         **kwargs: object,
     ) -> dict[str, object]:
         callbacks.append((kwargs["brief_completion"], kwargs["narration_producer"]))
@@ -197,9 +198,7 @@ def test_two_chapters_brief_stops_for_independent_review_and_resume(
             # The phase is deliberately non-semantic and yields no approval.
             return {
                 "status": "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW",
-                "brief_identity": hashlib.sha256(
-                    evaluation._json_bytes(scope)
-                ).hexdigest(),
+                "brief_identity": hashlib.sha256(evaluation._json_bytes(scope)).hexdigest(),
                 "section_scope_sha256": hashlib.sha256(section.read_bytes()).hexdigest(),
             }
         assert isinstance(kwargs["review_file"], Path)
@@ -227,7 +226,9 @@ def test_two_chapters_brief_stops_for_independent_review_and_resume(
     assert len(callbacks) == 2
     for number in (1, 7):
         record = json.loads(
-            (runner.root / f"book-candidates/private-host/chapter-{number}-brief-record.json").read_bytes()
+            (
+                runner.root / f"book-candidates/private-host/chapter-{number}-brief-record.json"
+            ).read_bytes()
         )
         assert record["phase"] == "AWAITING_HUMAN_REVIEW"
         review_path = runner.root / f"human-review-{number}.json"
@@ -278,8 +279,12 @@ def test_pinned_real_chapter_preflight_occurs_before_claim(
     root = tmp_path / "private"
     with pytest.raises(chapter.ChapterStop, match="token context"):
         chapter._stage(
-            root, "brief", {"fixture": "real-adapter-bound"}, chapter.ChapterPlan(),
-            lambda item: item, callback,
+            root,
+            "brief",
+            {"fixture": "real-adapter-bound"},
+            chapter.ChapterPlan(),
+            lambda item: item,
+            callback,
         )
     callback.assert_not_called()
     verify.assert_called_once()
@@ -339,9 +344,7 @@ def test_chapter_incomplete_real_generation_retains_exact_raw(
     stored = json.loads(next(root.rglob("raw-1.json")).read_bytes())
     assert stored["raw"] == raw
     assert stored["sha256"] == hashlib.sha256(raw.encode()).hexdigest()
-    assert json.loads(next(root.rglob("failed-1.json")).read_bytes())["status"] == (
-        "MISSING_EOS"
-    )
+    assert json.loads(next(root.rglob("failed-1.json")).read_bytes())["status"] == ("MISSING_EOS")
     with pytest.raises(chapter.ChapterStop, match="prior unresolved"):
         chapter._stage(*args, lambda x: x, producer)
     producer.assert_called_once()
@@ -353,14 +356,19 @@ def test_real_chapter_allows_full_large_request_only_after_exact_context_preflig
 ) -> None:
     # >25 KiB of synthetic source: conservative offline preflight rejects it;
     # verified CPU mode may accept only with pinned-tokenizer exact counting.
-    payload = {"schema": chapter.BRIEF_SCHEMA, "source": {"units": [
-        {"source_id": "unit-synthetic", "text": "invented " * 4200}
-    ]}}
+    payload = {
+        "schema": chapter.BRIEF_SCHEMA,
+        "source": {"units": [{"source_id": "unit-synthetic", "text": "invented " * 4200}]},
+    }
     plan = chapter.ChapterPlan(max_new_tokens=8192)
     with pytest.raises(chapter.ChapterStop, match="context"):
         chapter._stage(
-            tmp_path / "conservative", "brief", payload, plan,
-            lambda value: value, Mock(side_effect=AssertionError("must not call")),
+            tmp_path / "conservative",
+            "brief",
+            payload,
+            plan,
+            lambda value: value,
+            Mock(side_effect=AssertionError("must not call")),
         )
     observed: list[dict[str, object]] = []
 
@@ -373,8 +381,12 @@ def test_real_chapter_allows_full_large_request_only_after_exact_context_preflig
     real = Mock(return_value='{"value":"synthetic"}')
     monkeypatch.setattr(scripting, "_local_chapter_completion", real)
     result = chapter._stage(
-        tmp_path / "exact", "brief", payload, plan,
-        lambda value: value, real,
+        tmp_path / "exact",
+        "brief",
+        payload,
+        plan,
+        lambda value: value,
+        real,
     )
     assert result[0] == {"value": "synthetic"}
     assert result[2] == "ACTUAL_CPU_QWEN"
@@ -389,8 +401,9 @@ def test_actual_kokoro_provenance_requires_exact_real_adapter_identity(
 
     real = Mock(side_effect=_wav)
     monkeypatch.setattr(chapter.narration, "_kokoro_wav", real)
-    script = {"scenes": [{"scene_id": "scene-01", "narration": "Invented narration.",
-                          "dialogue": []}]}
+    script = {
+        "scenes": [{"scene_id": "scene-01", "narration": "Invented narration.", "dialogue": []}]
+    }
     records, origin, digest = chapter._narrate(
         tmp_path / "private", script, chapter.ChapterPlan(), real
     )

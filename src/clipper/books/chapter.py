@@ -1639,9 +1639,7 @@ def evaluate_chapter(
             "brief_attempts": brief_attempts,
             "status": "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW",
             "automation_claim": (
-                "ACTUAL_CPU"
-                if brief_origin == "ACTUAL_CPU_QWEN"
-                else "INJECTED_TEST"
+                "ACTUAL_CPU" if brief_origin == "ACTUAL_CPU_QWEN" else "INJECTED_TEST"
             ),
         }
     )
