@@ -1050,6 +1050,17 @@ def _stage_output_entries(
     if len(files) > 24:
         raise PrivateHostStop("reviewed chapter replay file inventory exceeds finite limit")
     allowed = re.compile(r"(?:validated|started-[12]|raw-[12]|failed-[12])\.json\Z")
+    # Only the exact winning claim and every preceding rejected attempt may
+    # appear as trusted stage evidence. Future/extra failed attempts cannot
+    # become recovered source or a retroactive new retry.
+    winning_attempt = selected_record["attempt"]
+    expected_history = {"validated.json"}
+    for index in range(1, winning_attempt + 1):
+        expected_history.update({f"started-{index}.json", f"raw-{index}.json"})
+        if index < winning_attempt:
+            expected_history.add(f"failed-{index}.json")
+    if {file.name for file in files if allowed.fullmatch(file.name)} != expected_history:
+        raise PrivateHostStop("reviewed chapter replay file history mismatch")
     collected = [
         _private_output_entry(root, file, number, "text", 250_000)
         for file in files
