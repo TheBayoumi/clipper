@@ -1338,3 +1338,125 @@ def test_human_semantic_review_rejects_omission_or_unattested_meaning(
         review["beat_decisions"][0]["review"] = "reject"
     with pytest.raises(hybrid.HybridStop):
         hybrid.validate_human_review(review, brief, ledger)
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "missing_argument",
+        "missing_audit",
+        "amend_same_decision",
+        "amend_no_evidence",
+        "unknown_resolution",
+        "no_beats",
+        "wrong_beat_id",
+        "bad_beat_qualification",
+        "empty_beat_evidence",
+        "single_beat",
+        "missing_source_link",
+    ),
+)
+def test_reconciliation_refuses_nonexistent_decisions_and_broken_grounding(
+    case: str,
+) -> None:
+    ledger = _ledger(25)
+    audits = _audit_outputs(ledger)
+    argument: object = _argument(ledger)
+    raw = _reconciliation(ledger)
+    if case == "missing_argument":
+        argument = None
+    elif case == "missing_audit":
+        audits.pop()
+    elif case.startswith("amend_"):
+        raw["amendments"] = [
+            {
+                "id": "s0001",
+                "from": "keep",
+                "to": "keep" if case == "amend_same_decision" else "omit",
+                "reason": "Human must assess a grounded editorial change",
+                "evidence": []
+                if case == "amend_no_evidence"
+                else [{"id": "s0001", "start": 0, "end": 10, "role": "ASSERTION"}],
+            }
+        ]
+    elif case == "unknown_resolution":
+        raw["resolutions"] = [
+            {
+                "id": "a001-d01",
+                "resolution": "qualified",
+                "reason": "No matching local disagreement exists",
+                "evidence": [{"id": "s0001", "start": 0, "end": 10, "role": "ASSERTION"}],
+            }
+        ]
+    elif case == "no_beats":
+        raw["beats"] = []
+    elif case == "wrong_beat_id":
+        raw["beats"][0]["beat_id"] = "invented"
+    elif case == "bad_beat_qualification":
+        raw["beats"][0]["qualification"] = None
+    elif case == "empty_beat_evidence":
+        raw["beats"][0]["spans"] = []
+    elif case == "single_beat":
+        raw["beats"] = [raw["beats"][0]]
+    else:
+        raw["beats"][0]["spans"].pop(0)
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.reconcile(raw, ledger, argument, audits)
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "malformed_core",
+        "wrong_audit_identity",
+        "outside_core",
+        "wrong_disagreement_id",
+        "unsupported_disagreement",
+        "empty_argument_links",
+    ),
+)
+def test_audits_refuse_unlinked_qualifications_and_invalid_core(
+    case: str,
+) -> None:
+    ledger = _ledger(25)
+    window = copy.deepcopy(hybrid.audit_windows(ledger)[0])
+    audit = copy.deepcopy(_audit_outputs(ledger)[0])
+    if case == "malformed_core":
+        window["core_ids"] = None
+    elif case == "wrong_audit_identity":
+        audit["audit_id"] = "a999"
+    elif case == "outside_core":
+        audit["decisions"][0]["evidence"][0]["id"] = "s0013"
+    elif case.startswith("wrong_disagreement") or case == "unsupported_disagreement":
+        audit["disagreements"] = [
+            {
+                "id": "wrong" if case == "wrong_disagreement_id" else "a001-d01",
+                "issue": "A contrary case must qualify the main claim",
+                "proposed_change": "Change the interpretation before final synthesis",
+                "evidence": []
+                if case == "unsupported_disagreement"
+                else [{"id": "s0001", "start": 0, "end": 10, "role": "COUNTEREXAMPLE"}],
+            }
+        ]
+    elif case == "empty_argument_links":
+        argument = _argument(ledger)
+        argument["source_links"] = []
+        with pytest.raises(hybrid.HybridStop, match="no source-linked"):
+            hybrid.validate_argument(argument, ledger)
+        return
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_audit(audit, ledger, window)
+
+
+def test_invalid_creative_replies_still_fail_despite_source_span_metadata() -> None:
+    ledger = _ledger(25)
+    brief = hybrid.reconcile(
+        _reconciliation(ledger), ledger, _argument(ledger), _audit_outputs(ledger)
+    )
+    plan = chapter.ChapterPlan()
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_adaptation({}, brief, plan)
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_adaptation({}, {"beats": []}, plan)
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_script({}, {"beats": []}, brief, plan)
