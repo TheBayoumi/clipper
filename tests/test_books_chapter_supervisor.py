@@ -202,13 +202,15 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     source = tmp_path / "synthetic-private-outputs.tar"
     relative = "book-candidates/brief/synthetic/validated.json"
     text_bytes = b'{"only":"fabricated fixture text"}'
-    file_entry = {
+    chapter_file = {
         "chapter": 1,
         "kind": "text",
         "relative_path": relative,
         "sha256": hashlib.sha256(text_bytes).hexdigest(),
         "bytes": len(text_bytes),
     }
+    file_entry = {key: value for key, value in chapter_file.items() if key != "chapter"}
+    file_entry["chapters"] = [1]
     safe = {
         "schema": "clipper-private-chapter-safe-recovery-v1",
         "status": "PRIVATE_CHAPTER_RECOVERY_CHECKPOINT_ONLY",
@@ -217,7 +219,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
                 "recovery_state": "IN_FLIGHT",
                 "last_subphase": "NARRATION_IN_FLIGHT",
                 "runtime_journal_status": "NARRATION_IN_FLIGHT",
-                "retrieval_status": "NOT_ATTEMPTED",
+                "retrieval_status": "INVENTORY_VERIFIED_NOT_RETRIEVED",
                 "last_verified_artifact_identities": {"brief_identity": "a" * 64},
             },
             "7": {
@@ -234,7 +236,10 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     safe_bytes = json.dumps(safe, sort_keys=True).encode("utf-8")
     listing = {
         "schema": "clipper-chapter-private-recovery-archive-manifest-v1",
-        "chapters": [],
+        "chapters": [
+            {"chapter": 1, "inventory_status": "VERIFIED", "files": [chapter_file]},
+            {"chapter": 7, "inventory_status": "NOT_STARTED", "files": []},
+        ],
         "files": [file_entry],
         "runtime_status_sha256": hashlib.sha256(safe_bytes).hexdigest(),
     }
@@ -326,7 +331,12 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     assert cleanup["host_stop_verified"] is True
     assert cleanup["host_deletion_verified"] is True
     assert verification["retrieval_status"] == (
-        "INCOMPLETE" if tamper_archive else "VERIFIED_PRIVATE_ARCHIVE"
+        "INCOMPLETE" if tamper_archive else "VERIFIED_PRIVATE_ARCHIVE_PARTIAL"
     )
+    if not tamper_archive:
+        assert verification["chapters"] == {
+            "1": "VERIFIED_PRIVATE_ARCHIVE",
+            "7": "NOT_STARTED",
+        }
     assert (folder / "chapter-recovery.tar").exists() is not tamper_archive
     assert "fabricated fixture text" not in result.stdout + result.stderr
