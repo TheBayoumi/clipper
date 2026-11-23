@@ -897,6 +897,12 @@ def test_runtime_only_change_invalidates_actual_hybrid_stage_artifacts_and_revie
     runner, selected, section = _selected_hybrid_source(tmp_path)
     original = whole_book.local_producer_material()
     runtime = {"probe": "runtime-A"}
+    encoding = {
+        "token_ids": [11] * 1200,
+        "tokenizer_config_sha256": "c" * 64,
+        "chat_template_sha256": "d" * 64,
+        "tokenizer_json_sha256": hybrid.constrained.PINNED_TOKENIZER_SHA256,
+    }
     monkeypatch.setattr(
         whole_book,
         "local_producer_material",
@@ -938,7 +944,7 @@ def test_runtime_only_change_invalidates_actual_hybrid_stage_artifacts_and_revie
         "script_completion": completion("chapter_script"),
         "direction_completion": completion("chapter_direction"),
         "narration_producer": _hybrid_wav,
-        "token_counter": lambda _messages: 1200,
+        "token_counter": lambda _messages: {**encoding, "token_ids": list(encoding["token_ids"])},
     }
     base = runner.root / "book-candidates"
     ledger: dict[str, object] | None = None
@@ -1069,6 +1075,44 @@ def test_runtime_only_change_invalidates_actual_hybrid_stage_artifacts_and_revie
         )
         == pending_a["producer_identity_sha256"]
     )
+
+    # Same effective encoding is a zero-producer-call replay. Neither the same
+    # count with different IDs nor a changed effective template/config can
+    # authorize the prior raw, approval, or post-review creative artifacts.
+    before_encoding_change = dict(calls)
+    same_encoding = chapter.evaluate_hybrid_chapter(
+        runner,
+        selected,
+        section,
+        review_file=approval_a,
+        expected_brief_identity=pending_a["brief_identity"],
+        **args,
+    )
+    assert same_encoding["final_result_identity"] == result_a["final_result_identity"]
+    assert calls == before_encoding_change
+    former = pending_a
+    for mutated_field, mutated_value in (
+        ("token_ids", [12] * 1200),
+        ("chat_template_sha256", "e" * 64),
+        ("tokenizer_config_sha256", "f" * 64),
+    ):
+        encoding[mutated_field] = mutated_value
+        with pytest.raises(chapter.ChapterStop, match="cache missing or changed"):
+            chapter.evaluate_hybrid_chapter(
+                runner,
+                selected,
+                section,
+                review_file=approval_a,
+                expected_brief_identity=former["brief_identity"],
+                **args,
+            )
+        assert calls == before_encoding_change
+        pending_next = chapter.evaluate_hybrid_chapter(runner, selected, section, **args)
+        assert pending_next["brief_identity"] != former["brief_identity"]
+        assert pending_next["argument_identity"] != former["argument_identity"]
+        assert pending_next["audit_identities"] != former["audit_identities"]
+        former = pending_next
+        before_encoding_change = dict(calls)
 
 
 def test_hybrid_private_host_journal_recovery_is_runtime_bound_and_mining_free(
