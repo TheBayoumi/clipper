@@ -32,10 +32,15 @@ CHAT_TOKEN_RESERVE = 512
 MAX_SOURCE_BYTES = 25_000
 ENTITY_ID = re.compile(r"[a-z][a-z0-9-]{1,60}\Z")
 TEXT_STAGES = ("brief", "adaptation", "chapter_script", "chapter_direction")
+TEXT_ARTIFACT_CONTRACT = "clipper-chapter-validated-text-artifact-v3"
 
 
 class ChapterStop(ValueError):
     """Fail closed without exposing source or model output in public errors."""
+
+
+class ChapterHostBlocked(ChapterStop):
+    """Known unavailable bounded private host; CLI may report a fixed status."""
 
 
 @dataclass(frozen=True)
@@ -54,14 +59,13 @@ class ChapterPlan:
     max_runtime_seconds: int = 900
     voice: str = "af_heart"
 
-    @classmethod
-    def from_manifest(cls, raw: object) -> ChapterPlan:
-        defaults = cls()
-        expected = {"schema", *defaults.__dataclass_fields__}
-        if not isinstance(raw, dict) or set(raw) != expected or raw["schema"] != PLAN_SCHEMA:
-            raise ChapterStop("invalid chapter plan schema")
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Apply identical finite limits to manifest and direct Python plans."""
         flags = ("brief_cpu", "adaptation_cpu", "script_cpu", "direction_cpu", "kokoro_cpu")
-        if any(type(raw[key]) is not bool for key in flags):
+        if any(type(getattr(self, name)) is not bool for name in flags):
             raise ChapterStop("chapter permissions must be explicit booleans")
         ranges = {
             "max_scenes": (2, 20),
@@ -73,12 +77,20 @@ class ChapterPlan:
             "max_runtime_seconds": (60, 900),
         }
         if any(
-            type(raw[name]) is not int or not low <= raw[name] <= high
+            type(getattr(self, name)) is not int
+            or not low <= getattr(self, name) <= high
             for name, (low, high) in ranges.items()
         ):
             raise ChapterStop("chapter plan exceeds explicit finite limits")
-        if raw["voice"] not in scripting.VOICES:
+        if type(self.voice) is not str or self.voice not in scripting.VOICES:
             raise ChapterStop("chapter plan voice is unsupported")
+
+    @classmethod
+    def from_manifest(cls, raw: object) -> ChapterPlan:
+        defaults = cls()
+        expected = {"schema", *defaults.__dataclass_fields__}
+        if not isinstance(raw, dict) or set(raw) != expected or raw["schema"] != PLAN_SCHEMA:
+            raise ChapterStop("invalid chapter plan schema")
         return cls(**{key: raw[key] for key in defaults.__dataclass_fields__})
 
     @property
@@ -380,7 +392,11 @@ def _review_validate(
 
 
 def _adapt_validate(
-    raw: object, brief: dict[str, Any], decisions: dict[str, dict[str, Any]], plan: ChapterPlan
+    raw: object,
+    brief: dict[str, Any],
+    decisions: dict[str, dict[str, Any]],
+    plan: ChapterPlan,
+    human_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     obj = _shape(
         raw,
@@ -450,6 +466,45 @@ def _adapt_validate(
         or sum(decision in {"keep", "compress"} for decision in coverage.values()) < 2
     ):
         raise ChapterStop("chapter adaptation silently omitted its source throughline")
+    # A reviewed KEEP/COMPRESS source unit may not vanish when its last
+    # nonessential beat is dropped. That needs a revised brief and new review.
+    if "coverage" in brief:
+        if human_review is None:
+            raise ChapterStop("chapter adaptation requires reviewed original-unit coverage")
+        unit_reviews = _items(
+            human_review["unit_decisions"],
+            len(brief["coverage"]),
+            "chapter adaptation review missing original source units",
+        )
+        by_unit: dict[str, dict[str, Any]] = {}
+        for item in unit_reviews:
+            sid = item["source_id"]
+            if sid in by_unit:
+                raise ChapterStop("chapter adaptation duplicated original-unit review")
+            by_unit[sid] = item
+        for entry in brief["coverage"]:
+            sid = entry["source_id"]
+            decision = by_unit.get(sid)
+            if (
+                decision is None
+                or decision["review"] != "accept_coverage"
+                or decision["decision"] != entry["decision"]
+            ):
+                raise ChapterStop("chapter adaptation contradicts reviewed source-unit treatment")
+            source_beats_for_unit = [
+                beat["beat_id"] for beat in brief["beats"] if beat["unit_id"] == sid
+            ]
+            retained = any(
+                coverage[bid] in {"keep", "compress"} for bid in source_beats_for_unit
+            )
+            if entry["decision"] in {"keep", "compress"} and not retained:
+                raise ChapterStop(
+                    "chapter adaptation dropped last beat of human-retained source unit"
+                )
+            if entry["decision"] == "omit" and retained:
+                raise ChapterStop("chapter adaptation revived omitted source unit")
+        if set(by_unit) != {entry["source_id"] for entry in brief["coverage"]}:
+            raise ChapterStop("chapter adaptation review omitted original source units")
     identities: set[str] = set()
     for key, ceiling in (("characters", 12), ("locations", 12), ("props", 16)):
         entries = _items(obj[key], ceiling, "chapter continuity registry size exceeded")
@@ -911,6 +966,106 @@ def _verified_owner(root: Path, marker: Path, key: str, attempt: int, owner: str
         raise ChapterStop("chapter cached attempt owner mismatch")
 
 
+def _text_artifact_identity(
+    stage: str,
+    request_key: str,
+    provenance: str,
+    raw_sha256: str,
+    payload_sha256: str,
+) -> str:
+    return content_fingerprint(
+        {
+            "validator_contract": TEXT_ARTIFACT_CONTRACT,
+            "stage": stage,
+            "request_key": request_key,
+            "provenance": provenance,
+            "raw_sha256": raw_sha256,
+            "payload_sha256": payload_sha256,
+        }
+    )
+
+
+def _verified_text_artifact(
+    root: Path,
+    directory: Path,
+    stage: str,
+    request_key: str,
+    provenance: str,
+    validate: Callable[[object], dict[str, Any]],
+) -> tuple[dict[str, Any], str]:
+    """Require exact raw, validated bytes, schema and exclusive owner on replay."""
+    try:
+        saved = _shape(
+            whole_book.load_strict_reply(evaluation._read(directory / "validated.json")),
+            {
+                "request_key",
+                "provenance",
+                "contract",
+                "validator_contract",
+                "payload",
+                "owner",
+                "attempt",
+                "raw_sha256",
+                "payload_sha256",
+                "artifact_identity",
+            },
+            "chapter cached text artifact schema mismatch",
+        )
+        attempt = saved["attempt"]
+        if (
+            saved["request_key"] != request_key
+            or saved["contract"] != stage
+            or saved["validator_contract"] != TEXT_ARTIFACT_CONTRACT
+            or saved["provenance"] != provenance
+            or type(attempt) is not int
+            or attempt not in (1, 2)
+            or not isinstance(saved["owner"], str)
+            or re.fullmatch(r"[0-9a-f]{32}", saved["owner"]) is None
+            or not isinstance(saved["raw_sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", saved["raw_sha256"]) is None
+            or not isinstance(saved["payload_sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", saved["payload_sha256"]) is None
+        ):
+            raise ChapterStop("chapter cached text artifact identity mismatch")
+        _verified_owner(
+            root,
+            directory / f"started-{attempt}.json",
+            request_key,
+            attempt,
+            saved["owner"],
+        )
+        raw_record = _shape(
+            whole_book.load_strict_reply(evaluation._read(directory / f"raw-{attempt}.json")),
+            {"attempt", "owner", "raw", "sha256"},
+            "chapter raw attempt schema mismatch",
+        )
+        response = raw_record["raw"]
+        if (
+            raw_record["attempt"] != attempt
+            or raw_record["owner"] != saved["owner"]
+            or not isinstance(response, str)
+            or len(response.encode("utf-8")) > MAX_RAW_BYTES
+            or raw_record["sha256"] != saved["raw_sha256"]
+            or hashlib.sha256(response.encode("utf-8")).hexdigest() != saved["raw_sha256"]
+        ):
+            raise ChapterStop("chapter raw attempt differs from validated artifact")
+        result = validate(whole_book.load_strict_reply(response))
+        payload_bytes = evaluation._json_bytes(result)
+        if (
+            evaluation._json_bytes(saved["payload"]) != payload_bytes
+            or hashlib.sha256(payload_bytes).hexdigest() != saved["payload_sha256"]
+        ):
+            raise ChapterStop("chapter validated payload differs from exact raw response")
+        identity = _text_artifact_identity(
+            stage, request_key, provenance, saved["raw_sha256"], saved["payload_sha256"]
+        )
+        if saved["artifact_identity"] != identity:
+            raise ChapterStop("chapter cached text artifact digest mismatch")
+        return result, identity
+    except (TypeError, ValueError, KeyError, OSError, RecursionError, OverflowError):
+        raise ChapterStop("chapter text artifact cannot be verified; manual review required") from None
+
+
 def _stage(
     root: Path,
     stage: str,
@@ -920,8 +1075,9 @@ def _stage(
     completion: Callable[[dict[str, object]], str] | None,
 ) -> tuple[dict[str, Any], str, str, int]:
     """Reserve each irreversible provider attempt before calling any producer."""
+    plan.validate()
     if completion is None:
-        raise ChapterStop(
+        raise ChapterHostBlocked(
             "actual chapter CPU route blocked pending a verified bounded private host"
         )
     request = _request(stage, payload, plan)
@@ -952,28 +1108,10 @@ def _stage(
     directory = root / stage / stage_key
     complete = directory / "validated.json"
     if complete.is_file():
-        saved = _shape(
-            whole_book.load_strict_reply(evaluation._read(complete)),
-            {"request_key", "provenance", "contract", "payload", "owner", "attempt"},
-            "chapter stage cache schema/owner mismatch; legacy execution requires reconciliation",
+        validated, artifact_key = _verified_text_artifact(
+            root, directory, stage, stage_key, provenance, validate
         )
-        if (
-            saved["request_key"] != stage_key
-            or saved["provenance"] != provenance
-            or saved["contract"] != stage
-            or not isinstance(saved["owner"], str)
-            or type(saved["attempt"]) is not int
-            or not 1 <= saved["attempt"] <= plan.max_attempts_per_stage
-        ):
-            raise ChapterStop("chapter stage cache identity changed")
-        _verified_owner(
-            root,
-            directory / f"started-{saved['attempt']}.json",
-            stage_key,
-            saved["attempt"],
-            saved["owner"],
-        )
-        return validate(saved["payload"]), stage_key, provenance, 0
+        return validated, artifact_key, provenance, 0
     if directory.is_dir() and any(directory.glob("started-*.json")):
         raise ChapterStop("chapter stage has prior unresolved/failed attempts")
     for index in range(1, plan.max_attempts_per_stage + 1):
@@ -1018,6 +1156,12 @@ def _stage(
             if index == plan.max_attempts_per_stage:
                 raise ChapterStop("chapter stage exhausted all recorded attempts") from None
             continue
+        _verified_owner(root, marker, stage_key, index, owner)
+        raw_sha256 = hashlib.sha256(response.encode("utf-8")).hexdigest()
+        payload_sha256 = hashlib.sha256(evaluation._json_bytes(result)).hexdigest()
+        artifact_key = _text_artifact_identity(
+            stage, stage_key, provenance, raw_sha256, payload_sha256
+        )
         evaluation._store(
             root,
             complete,
@@ -1025,12 +1169,19 @@ def _stage(
                 "request_key": stage_key,
                 "provenance": provenance,
                 "contract": stage,
+                "validator_contract": TEXT_ARTIFACT_CONTRACT,
                 "owner": owner,
                 "attempt": index,
+                "raw_sha256": raw_sha256,
+                "payload_sha256": payload_sha256,
+                "artifact_identity": artifact_key,
                 "payload": result,
             },
         )
-        return result, stage_key, provenance, index
+        verified, verified_key = _verified_text_artifact(
+            root, directory, stage, stage_key, provenance, validate
+        )
+        return verified, verified_key, provenance, index
     raise ChapterStop("chapter stage exhausted bounded attempts")
 
 
@@ -1043,8 +1194,9 @@ def _narrate(
     """One exclusive audio owner; record reproducible sample-accurate utterance offsets."""
     from .scripting import NicheConfig, Scene
 
+    plan.validate()
     if producer is None:
-        raise ChapterStop(
+        raise ChapterHostBlocked(
             "actual chapter Kokoro route blocked pending a verified bounded private host"
         )
     config = NicheConfig(
@@ -1183,7 +1335,10 @@ def evaluate_chapter(
     narration_producer: Callable[[str, str], bytes] | None = None,
 ) -> dict[str, object]:
     """Finite, source-bound chapter preproduction; no legacy catalog, short or render."""
-    limits = plan or ChapterPlan()
+    limits = plan if plan is not None else ChapterPlan()
+    if type(limits) is not ChapterPlan:
+        raise ChapterStop("chapter plan must use the validated ChapterPlan type")
+    limits.validate()
     scoped, manifest_sha = evaluation._section_scope(runner, ref_path, section_manifest)
     ledger, candidates, book = evaluation._mined_export(
         runner,
@@ -1347,7 +1502,7 @@ def evaluate_chapter(
             "human_review": reviewer,
         },
         limits,
-        lambda x: _adapt_validate(x, brief, decisions, limits),
+        lambda x: _adapt_validate(x, brief, decisions, limits, human_review=reviewer),
         adaptation_completion,
     )
     summary.update({"adaptation_identity": adapt_key, "adaptation_attempts": adapt_attempts})
