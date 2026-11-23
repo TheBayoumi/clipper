@@ -959,8 +959,12 @@ def test_immutable_mining_ledger_and_candidate_tampering_fail_closed(
         outside.write_bytes(progress_path.read_bytes())
         progress_path = outside
     elif mutation in {
-        "unbound-section-scope", "progress-status", "progress-count",
-        "missing-unit", "altered-unit", "bad-skipped-count",
+        "unbound-section-scope",
+        "progress-status",
+        "progress-count",
+        "missing-unit",
+        "altered-unit",
+        "bad-skipped-count",
     }:
         ledger = json.loads(progress_path.read_bytes())
         if mutation == "unbound-section-scope":
@@ -1006,9 +1010,7 @@ def test_immutable_mining_ledger_and_candidate_tampering_fail_closed(
     assert "untrusted-generated-string" not in str(caught.value)
 
 
-def test_cached_text_shot_timing_tamper_rejected_without_new_model_call(
-    tmp_path: Path
-) -> None:
+def test_cached_text_shot_timing_tamper_rejected_without_new_model_call(tmp_path: Path) -> None:
     runner, ref, progress, candidates = _mined(tmp_path)
     review = _review(tmp_path, progress, candidates)
     script = Mock(return_value=json.dumps(_episode()))
@@ -1022,15 +1024,15 @@ def test_cached_text_shot_timing_tamper_rejected_without_new_model_call(
     }
     first = runner.evaluate_candidate(ref, **kwargs)
     assert first["status"] == "PREVISUAL_TEXT_READY_UNREVIEWED"
-    path = next(
-        (runner.root / "book-candidates/evaluations").rglob("validated-text-shots.json")
-    )
+    path = next((runner.root / "book-candidates/evaluations").rglob("validated-text-shots.json"))
     saved = json.loads(path.read_bytes())
     saved["shots"][0]["timing"]["duration_seconds"] = 0.01
     path.write_text(json.dumps(saved), encoding="utf-8")
     with pytest.raises(evaluation.EvaluationStop, match="shot timing or content changed"):
         runner.evaluate_candidate(
-            ref, progress_path=progress, review_file=review,
+            ref,
+            progress_path=progress,
+            review_file=review,
             options=kwargs["options"],
             script_completion=Mock(side_effect=AssertionError("repeated script")),
             direction_completion=Mock(side_effect=AssertionError("repeated direction")),
