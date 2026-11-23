@@ -1189,8 +1189,12 @@ def _verified_text_artifact(
         elif receipt is not None:
             raise ChapterStop("injected chapter producer cannot attest real token IDs")
         identity = _text_artifact_identity(
-            stage, request_key, provenance, saved["raw_sha256"],
-            saved["payload_sha256"], receipt,
+            stage,
+            request_key,
+            provenance,
+            saved["raw_sha256"],
+            saved["payload_sha256"],
+            receipt,
         )
         if saved["artifact_identity"] != identity:
             raise ChapterStop("chapter cached text artifact digest mismatch")
@@ -1207,9 +1211,7 @@ def _stage(
     payload: dict[str, Any],
     plan: ChapterPlan,
     validate: Callable[[object], dict[str, Any]],
-    completion: Callable[
-        [dict[str, object]], str | scripting.PinnedQwenRawReceipt
-    ] | None,
+    completion: Callable[[dict[str, object]], str | scripting.PinnedQwenRawReceipt] | None,
     *,
     replay_only: bool = False,
 ) -> tuple[dict[str, Any], str, str, int]:
@@ -1360,7 +1362,8 @@ def _stage(
             or token_receipt["eos_decision"] != "EOS_VERIFIED"
         ):
             evaluation._store(
-                root, directory / f"failed-{index}.json",
+                root,
+                directory / f"failed-{index}.json",
                 {"attempt": index, "owner": owner, "status": "INVALID_ACTUAL_TOKEN_RECEIPT"},
             )
             raise ChapterStop("actual chapter generation token/EOS receipt unavailable")
@@ -1564,18 +1567,14 @@ def evaluate_chapter(
     *,
     review_file: Path | None = None,
     plan: ChapterPlan | None = None,
-    brief_completion: Callable[
-        [dict[str, object]], str | scripting.PinnedQwenRawReceipt
-    ] | None = None,
-    adaptation_completion: Callable[
-        [dict[str, object]], str | scripting.PinnedQwenRawReceipt
-    ] | None = None,
-    script_completion: Callable[
-        [dict[str, object]], str | scripting.PinnedQwenRawReceipt
-    ] | None = None,
-    direction_completion: Callable[
-        [dict[str, object]], str | scripting.PinnedQwenRawReceipt
-    ] | None = None,
+    brief_completion: Callable[[dict[str, object]], str | scripting.PinnedQwenRawReceipt]
+    | None = None,
+    adaptation_completion: Callable[[dict[str, object]], str | scripting.PinnedQwenRawReceipt]
+    | None = None,
+    script_completion: Callable[[dict[str, object]], str | scripting.PinnedQwenRawReceipt]
+    | None = None,
+    direction_completion: Callable[[dict[str, object]], str | scripting.PinnedQwenRawReceipt]
+    | None = None,
     narration_producer: Callable[[str, str], bytes] | None = None,
     selected_scope_path: Path | None = None,
     expected_brief_identity: str | None = None,
