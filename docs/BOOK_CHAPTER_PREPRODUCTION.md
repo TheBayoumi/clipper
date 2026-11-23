@@ -120,9 +120,14 @@ explicit stages for the **later** privately authorized real run; they are
 }
 ```
 
-Omit `--run-manifest` to perform **zero inference**. With the manifest,
-`brief_cpu=true` only produces a brief and stops for a *separate*
-human beat review. The review file is:
+Omit `--run-manifest` for a zero-inference source-scope checkpoint. **Today,
+even with a manifest and `brief_cpu=true`, real chapter execution makes zero
+provider calls** and reports exit code 2 and fixed stderr status
+`PRIVATE_CHAPTER_BOUNDED_HOST_UNVERIFIED`. This applies specifically to the
+known missing free, private, memory/timeout-bounded host; unexpected provider
+failures retain the generic `PRIVATE_EVALUATION_FAILED_CLOSED` status.
+No manifest flag overrides the host guard. The following review file is
+a **future** artifact after an authorized real brief is produced:
 
 ```json
 {
@@ -188,14 +193,22 @@ runtime benchmark. With example plan: max **8 Qwen generation calls** +
 **24 Kokoro utterance calls** (8 scenes × narration plus up to 2 dialogue).
 These are upper bounds, not guarantees of adequate context or timely finish.
 An external private host must enforce CPU, offline snapshot cache, memory,
-timeout and disk caps; these cannot be inferred from a model label.
+timeout and disk caps; these cannot be inferred from a model label. Direct
+Python `ChapterPlan` construction enforces the same finite limits, attempts,
+types and output timeline budgets as a strict JSON manifest before callbacks.
 
 Every model attempt creates an **immutable pre-call marker**, preserves the
 actual raw output (including rejected output), records failure reason codes
 and blocks silent restart after interrupted/failed attempts. Validated
-stage outputs are independently rechecked on cache replay. Script and
-direction cache identities are input+model+stage+limit+provenance bound;
-fake test-producer output is isolated from actual model caches. Fake and
+stage outputs are independently rechecked on cache replay. Stage request directories are input+model+stage+limit+provenance bound,
+while the returned **text artifact identities** also bind exact raw and
+validated output digests and an explicit validator contract. Replay rechecks
+both artifacts and the exclusive attempt owner; changed raw, changed validated
+payload or absent/partial records fail closed. Human review binds the exact
+verified brief artifact, and the final result binds all four verified text
+artifact identities. This does not protect a root controlled by a hostile
+actor who can rewrite every artifact and its independent anchors. Fake test
+producer output remains isolated from actual model caches. Fake and
 actual WAVs also have separate caches. Repeated narration/dialogue text
 is synthesized once per identical voice/text request and reused; every
 utterance separately records scene ID, sequence, narrator/character ID,
@@ -231,3 +244,7 @@ human-review digest, exact measured WAV hashes, narration report reference and
 per-utterance PCM sample offsets. An output marked `MEASURED_WAV` requires
 validated readable PCM frames. Editorial truth and character continuity still
 require human review; no images/video are generated here.
+
+Reviewed KEEP/COMPRESS source units retain at least one beat through adaptation
+and script coverage, regardless of whether their last beat was designated
+essential; changing that disposition requires a new brief and human review.
