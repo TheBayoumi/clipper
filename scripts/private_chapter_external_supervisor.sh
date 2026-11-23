@@ -32,6 +32,7 @@ OP_LIMIT=8
 KILL_GRACE=2
 deadline_epoch=0
 recovery_epoch=0
+bootstrap_epoch=0
 bounded() {
   local limit="$OP_LIMIT" remaining
   if (( deadline_epoch > 0 )); then
@@ -41,6 +42,11 @@ bounded() {
   fi
   if (( recovery_epoch > 0 )); then
     remaining="$(( recovery_epoch - $(date -u +%s) ))"
+    if (( remaining <= 0 )); then return 124; fi
+    if (( remaining < limit )); then limit="$remaining"; fi
+  fi
+  if (( bootstrap_epoch > 0 )); then
+    remaining="$(( bootstrap_epoch - $(date -u +%s) ))"
     if (( remaining <= 0 )); then return 124; fi
     if (( remaining < limit )); then limit="$remaining"; fi
   fi
@@ -849,14 +855,95 @@ if [[ ! -f "$PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY" ||
   echo "EXTERNAL_SUPERVISOR_EXECUTION_SIGNER_UNAVAILABLE_CLEANUP_ONLY" >&2
   exit 2
 fi
+# Bootstrap consumes the ORIGINAL creation clock, never an additional allowance.
+# Ten minutes at most for provisioning and transient SSH readiness; do not
+# start dependencies or issue a signed heartbeat until BOTH remote steps pass.
+bootstrap_epoch="$(( $(date -u -d "$created_at" +%s) + 600 ))"
+execution_epoch="$(( $(date -u -d "$created_at" +%s) + 6900 ))"
+if (( bootstrap_epoch > execution_epoch - 60 )); then
+  bootstrap_epoch="$(( execution_epoch - 60 ))"
+fi
+bootstrap_budget() {
+  (( $(date -u +%s) < bootstrap_epoch && $(date -u +%s) < execution_epoch - 60 ))
+}
+bootstrap_identity() {
+  if ! bootstrap_budget || ! identity_matches; then
+    echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_CLOCK_OR_IDENTITY_INVALID" >&2
+    return 2
+  fi
+}
+# State is checked only AFTER fresh numeric identity verification. A lost REST
+# response, unexpected state, shutdown or replacement fails closed immediately.
+bootstrap_state() {
+  bootstrap_identity || return 2
+  local metadata state
+  metadata="$(bounded gh api "user/codespaces/$CODESPACE_NAME")" || return 2
+  state="$(printf '%s' "$metadata" | bounded python3 -c '
+import json, sys
+try:
+    obj=json.load(sys.stdin)
+    state=obj["state"]
+    if state not in {"Available","Created","Starting","Provisioning","Queued","Rebuilding"}:
+        sys.exit(2)
+    print(state)
+except (ValueError, TypeError, KeyError):
+    sys.exit(2)
+')" || return 2
+  bootstrap_identity || return 2
+  printf '%s\\n' "$state"
+}
 remote="$PRIVATE_CHAPTER_ROOT/book-candidates/private-host"
-identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_CHANGED" >&2; exit 2; }
-bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
-  "mkdir -p '$remote' && chmod 700 '$remote'" >/dev/null
-identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_CHANGED" >&2; exit 2; }
-bounded gh codespace cp -c "$CODESPACE_NAME" \
-  "$PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY" \
-  "remote:$remote/external-supervisor-public.pem" >/dev/null
+while true; do
+  state="$(bootstrap_state)" || {
+    echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_REST_UNAVAILABLE_OR_TERMINAL" >&2
+    exit 2
+  }
+  if [[ "$state" == "Available" ]]; then break; fi
+  bootstrap_budget || { echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_EXPIRED" >&2; exit 2; }
+  bounded sleep 2 || { echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_EXPIRED" >&2; exit 2; }
+done
+# SSH may lag behind REST Available. Retry only within the same finite window,
+# with fresh exact REST identity/state before every attempt. A hung operation
+# (GNU timeout 124/137) is terminal, never a reason to start another host.
+for stage in ssh cp; do
+  ready=0
+  while bootstrap_budget; do
+    state="$(bootstrap_state)" || {
+      echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_REST_UNAVAILABLE_OR_TERMINAL" >&2
+      exit 2
+    }
+    if [[ "$state" != "Available" ]]; then
+      echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_READY_STATE_LOST" >&2
+      exit 2
+    fi
+    rc=0
+    if [[ "$stage" == "ssh" ]]; then
+      bounded gh codespace ssh -c "$CODESPACE_NAME" -- \\
+        "mkdir -p '$remote' && chmod 700 '$remote'" >/dev/null || rc=$?
+    else
+      bounded gh codespace cp -c "$CODESPACE_NAME" \\
+        "$PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY" \\
+        "remote:$remote/external-supervisor-public.pem" >/dev/null || rc=$?
+    fi
+    if (( rc == 0 )); then
+      bootstrap_identity || exit 2
+      ready=1
+      break
+    fi
+    if (( rc == 124 || rc == 137 )); then
+      echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_REMOTE_HUNG" >&2
+      exit "$rc"
+    fi
+    bootstrap_budget || break
+    bounded sleep 2 || break
+  done
+  if (( ready != 1 )); then
+    echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_EXPIRED_NO_HEARTBEAT" >&2
+    exit 2
+  fi
+done
+bootstrap_identity || exit 2
+bootstrap_epoch=0
 recovery_allowed=1
 
 # Every iteration bounds both the individual operation and the time remaining.
