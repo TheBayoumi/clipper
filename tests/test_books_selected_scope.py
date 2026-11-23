@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from test_books_whole_book import ingested
 
-from clipper.books import chapter, evaluation, selected_scope, whole_book
+from clipper.books import chapter, evaluation, scripting, selected_scope, whole_book
 from clipper.books.orchestrator import BookOrchestrator
 
 
@@ -882,3 +882,85 @@ def test_internal_real_token_receipt_is_bound_to_raw_and_replay_checked(
             completion=lambda _: wrong_digest,
             actual_provider=True,
         )
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure"])
+def test_selected_legacy_mining_preserves_attempt_identity_across_cold_to_warm_loader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """REAL selected-source mining DAG: loader warms tokenizer after reservation.
+
+    A failed selected-source attempt remains consumed, and a successful one
+    replays with zero additional provider calls. No real tokenizer or weights.
+    """
+    runner, bundle, _data = _bundle(tmp_path, with_image=False)
+    verified = selected_scope.import_chapter(runner.root, bundle)
+    assert verified.work.units
+    warmed = {"status": "TOKENIZER_NOT_CACHED"}
+    observations: list[str] = []
+
+    def observed_cache() -> dict[str, str]:
+        return {"status": warmed["status"]}
+
+    monkeypatch.setattr(scripting, "_cached_chapter_tokenizer_material", observed_cache)
+    frozen_producer = whole_book.local_producer_material()
+
+    def synthetic_loader_and_provider(request: dict[str, object]) -> str:
+        assert request["model"] == scripting.SCRIPT_MODEL
+        assert warmed["status"] == "TOKENIZER_NOT_CACHED"
+        observations.append(warmed["status"])
+        # Simulate provider's pinned public tokenizer installation/loading
+        # AFTER the true DAG identity and attempt reservation.
+        warmed["status"] = "PINNED_PUBLIC_TOKENIZER"
+        if outcome == "failure":
+            raise RuntimeError("synthetic load succeeded but provider failed")
+        return '{"lessons": []}'
+
+    arguments = {
+        "ref_path": bundle,
+        "local_cpu": True,
+        "max_new_units": 1,
+        "local_completion": synthetic_loader_and_provider,
+        "selected_scope_path": bundle,
+        "section_ids": verified.work.section_ids,
+        "section_manifest_sha256": verified.section_manifest_sha256,
+    }
+    first = runner.mine_candidate(**arguments)
+    assert observations == ["TOKENIZER_NOT_CACHED"]
+    assert warmed["status"] == "PINNED_PUBLIC_TOKENIZER"
+    assert whole_book.local_producer_material() == frozen_producer
+    first_progress = json.loads(Path(first["progress_path"]).read_bytes())
+    first_entry = first_progress["progress"][0]
+    first_key = first_entry["generation_stage_key"]
+    assert first_key
+    assert first_progress["producer_fingerprint"] == first["producer_fingerprint"]
+    assert first_entry["status"] == (
+        "zero_candidate" if outcome == "success" else "failed"
+    )
+    if outcome == "failure":
+        assert first_entry["failure_category"] == "runtime_error"
+
+    def must_not_call(_request: dict[str, object]) -> str:
+        pytest.fail("cold-to-warm loader must NEVER create another selected mining attempt")
+
+    arguments["local_completion"] = must_not_call
+    for _ in range(2):
+        rerun = runner.mine_candidate(**arguments)
+        assert observations == ["TOKENIZER_NOT_CACHED"]
+        rerun_progress = json.loads(Path(rerun["progress_path"]).read_bytes())
+        rerun_first = rerun_progress["progress"][0]
+        assert rerun["producer_fingerprint"] == first["producer_fingerprint"]
+        assert rerun_first["generation_stage_key"] == first_key
+        if outcome == "success":
+            assert rerun_first["status"] == "zero_candidate"
+            assert rerun_first["raw_completion_sha256"] == first_entry["raw_completion_sha256"]
+        else:
+            assert rerun_first["status"] == "failed"
+            assert rerun_first["failure_category"] == "prior_attempt_interrupted_or_failed"
+        stage_path = (
+            runner.root / "book-dag" / "books-mining-local-completion-v1"
+            / first_key / "stage.json"
+        )
+        persisted = json.loads(stage_path.read_bytes())
+        assert persisted["attempt_count"] == 1
+    assert Path(first["progress_path"]).is_file()
