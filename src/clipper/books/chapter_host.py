@@ -321,9 +321,7 @@ def _release_models() -> None:
     gc.collect()
 
 
-def _phase_records(
-    root: Path, number: int, bundle: str, scope: str
-) -> list[dict[str, Any]]:
+def _phase_records(root: Path, number: int, bundle: str, scope: str) -> list[dict[str, Any]]:
     """Verify every exact, append-only private transition before trusting resume."""
     folder = root / "book-candidates/private-host" / f"chapter-{number}-phase-events"
     if not folder.exists():
@@ -339,9 +337,16 @@ def _phase_records(
         index = len(records) + 1
         if (
             not isinstance(record, dict)
-            or set(record) != {
-                "schema", "sequence", "chapter", "bundle_sha256",
-                "scope_sha256", "phase", "artifacts", "publish_eligible",
+            or set(record)
+            != {
+                "schema",
+                "sequence",
+                "chapter",
+                "bundle_sha256",
+                "scope_sha256",
+                "phase",
+                "artifacts",
+                "publish_eligible",
             }
             or record["schema"] != "clipper-private-chapter-phase-event-v1"
             or type(record["sequence"]) is not int
@@ -383,7 +388,9 @@ def _phase(
     raw = evaluation._json_bytes(record)
     base = root / "book-candidates"
     path = (
-        base / "private-host" / f"chapter-{number}-phase-events"
+        base
+        / "private-host"
+        / f"chapter-{number}-phase-events"
         / f"{len(records) + 1:05d}-{hashlib.sha256(raw).hexdigest()}.json"
     )
     acquisition._private_write(path, raw, private_root=base)
@@ -496,7 +503,11 @@ def execute(
                 )
                 if mined["status"] != "complete":
                     last = _phase(
-                        runner, number, digest, scope_sha, "SCOPED_MINING_INCOMPLETE",
+                        runner,
+                        number,
+                        digest,
+                        scope_sha,
+                        "SCOPED_MINING_INCOMPLETE",
                         {
                             "progress_path": mined.get("progress_path"),
                             "units": mined.get("total_work_units"),
@@ -527,12 +538,20 @@ def execute(
                     raise PrivateHostStop("independent human review file required per chapter")
                 review_path = _private_path(block["review_file"], root, must_exist=True)
                 _phase(
-                    runner, number, digest, scope_sha, "RESUME_IN_FLIGHT",
+                    runner,
+                    number,
+                    digest,
+                    scope_sha,
+                    "RESUME_IN_FLIGHT",
                     {"progress_path": str(progress_path)},
                 )
             else:
                 _phase(
-                    runner, number, digest, scope_sha, "BRIEF_IN_FLIGHT",
+                    runner,
+                    number,
+                    digest,
+                    scope_sha,
+                    "BRIEF_IN_FLIGHT",
                     {"progress_path": str(progress_path)},
                 )
             output = chapter.evaluate_chapter(
@@ -566,7 +585,11 @@ def execute(
                 evaluation._store(private_root, saved, evidence)
                 _review_packet(runner, number, output)
                 last = _phase(
-                    runner, number, digest, scope_sha, "AWAITING_HUMAN_REVIEW",
+                    runner,
+                    number,
+                    digest,
+                    scope_sha,
+                    "AWAITING_HUMAN_REVIEW",
                     {
                         "brief_identity": output["brief_identity"],
                         "progress_path": str(progress_path),
@@ -576,7 +599,11 @@ def execute(
                 if output["status"] != "CHAPTER_PREPRODUCTION_READY_UNREVIEWED":
                     raise PrivateHostStop("chapter resume did not produce real complete audio")
                 last = _phase(
-                    runner, number, digest, scope_sha, "PREPRODUCTION_READY",
+                    runner,
+                    number,
+                    digest,
+                    scope_sha,
+                    "PREPRODUCTION_READY",
                     {
                         "final_result_identity": output.get("final_result_identity"),
                         "audio_provenance": output.get("audio_provenance"),
@@ -593,7 +620,6 @@ def execute(
         "chapters": outcomes,
         "publish_eligible": False,
     }
-
 
 
 def main(argv: list[str] | None = None) -> int:

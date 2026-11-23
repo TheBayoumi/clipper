@@ -40,8 +40,7 @@ def _private_setup(
             codespace_name,
             datetime.fromisoformat(caller_created_at).astimezone(UTC),
             "a" * 40,
-            datetime.fromisoformat(caller_created_at).astimezone(UTC)
-            + timedelta(seconds=7200),
+            datetime.fromisoformat(caller_created_at).astimezone(UTC) + timedelta(seconds=7200),
         ),
     )
     sections = [item.chapter_id for item in acquired.book.sections]

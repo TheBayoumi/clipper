@@ -689,9 +689,7 @@ class BookOrchestrator:
         request_sha256: str,
         unit: whole_book.WorkUnit,
         producer_fingerprint: str,
-        completion: Callable[
-            [dict[str, object]], str | scripting.PinnedQwenRawReceipt
-        ],
+        completion: Callable[[dict[str, object]], str | scripting.PinnedQwenRawReceipt],
         actual_provider: bool = False,
     ) -> dict[str, object]:
         """Preserve model token receipt and exact original raw, never synthetic claims."""
@@ -751,9 +749,9 @@ class BookOrchestrator:
             not isinstance(receipt, dict)
             or receipt["raw_sha256"] != digest
             or type(receipt["generated_token_count"]) is not int
-            or not 1 <= cast(int, receipt["generated_token_count"]) <= cast(
-                int, request["max_new_tokens"]
-            )
+            or not 1
+            <= cast(int, receipt["generated_token_count"])
+            <= cast(int, request["max_new_tokens"])
             or type(receipt["terminal_token_id"]) is not int
             or cast(int, receipt["terminal_token_id"]) < 0
             or receipt["eos_decision"] != "EOS_VERIFIED"
@@ -807,14 +805,11 @@ class BookOrchestrator:
             receipt = stored.get("provider_receipt")
             if (
                 not isinstance(receipt, dict)
-                or set(receipt) != {
-                    "raw_sha256", "generated_token_count", "terminal_token_id", "eos_decision"
-                }
+                or set(receipt)
+                != {"raw_sha256", "generated_token_count", "terminal_token_id", "eos_decision"}
                 or receipt["raw_sha256"] != digest
                 or type(receipt["generated_token_count"]) is not int
-                or not 1 <= receipt["generated_token_count"] <= cast(
-                    int, request["max_new_tokens"]
-                )
+                or not 1 <= receipt["generated_token_count"] <= cast(int, request["max_new_tokens"])
                 or type(receipt["terminal_token_id"]) is not int
                 or receipt["terminal_token_id"] < 0
                 or receipt["eos_decision"] != "EOS_VERIFIED"

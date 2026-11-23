@@ -25,8 +25,14 @@ def _fixture(
     key = folder / "external-supervisor-public.pem"
     subprocess.run(
         [
-            "openssl", "genpkey", "-algorithm", "RSA",
-            "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(secret),
+            "openssl",
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+            "-out",
+            str(secret),
         ],
         check=True,
         stdout=subprocess.DEVNULL,
@@ -74,8 +80,14 @@ def _fixture(
         heartbeat.write_bytes((json.dumps(signed, sort_keys=True) + "\n").encode())
         subprocess.run(
             [
-                "openssl", "dgst", "-sha256", "-sign", str(secret),
-                "-out", str(signature), str(heartbeat),
+                "openssl",
+                "dgst",
+                "-sha256",
+                "-sign",
+                str(secret),
+                "-out",
+                str(signature),
+                str(heartbeat),
             ],
             check=True,
             stdout=subprocess.DEVNULL,
@@ -87,11 +99,7 @@ def _fixture(
 
     def simulated_commands(argv: list[str], *, input_bytes: bytes | None = None) -> bytes:
         if argv[:2] == ["git", "rev-parse"]:
-            return (
-                b"review/unified-tts-cleanup"
-                if "--abbrev-ref" in argv
-                else b"a" * 40
-            )
+            return b"review/unified-tts-cleanup" if "--abbrev-ref" in argv else b"a" * 40
         if argv[:2] == ["git", "status"]:
             return b""
         if argv[:2] == ["gh", "api"]:
@@ -130,10 +138,19 @@ def test_signed_external_supervisor_and_authoritative_rest_all_required(
 @pytest.mark.parametrize(
     "fault",
     [
-        "missing_signature", "stale_signature", "missing_public_pin",
-        "wrong_public_pin", "missing_approved_sha", "wrong_shape",
-        "wrong_codespace", "wrong_id", "wrong_repo", "wrong_state",
-        "wrong_created", "wrong_client_created", "not_a_codespace",
+        "missing_signature",
+        "stale_signature",
+        "missing_public_pin",
+        "wrong_public_pin",
+        "missing_approved_sha",
+        "wrong_shape",
+        "wrong_codespace",
+        "wrong_id",
+        "wrong_repo",
+        "wrong_state",
+        "wrong_created",
+        "wrong_client_created",
+        "not_a_codespace",
     ],
 )
 def test_live_external_identity_and_signing_fail_closed(
@@ -194,8 +211,10 @@ def test_cli_without_external_watchdog_never_launches_model(
     monkeypatch.setenv("CODESPACE_NAME", "synthetic")
     result = chapter_lifecycle.main(
         [
-            "--artifact-root", str(tmp_path),
-            "--codespace-created-at", datetime.now(UTC).isoformat(),
+            "--artifact-root",
+            str(tmp_path),
+            "--codespace-created-at",
+            datetime.now(UTC).isoformat(),
         ]
     )
     assert result == 2

@@ -103,16 +103,10 @@ def verify_lifecycle(
     checked = _command(["git", "rev-parse", "--verify", "HEAD"]).decode("ascii", "strict")
     branch = _command(["git", "rev-parse", "--abbrev-ref", "HEAD"]).decode("ascii", "strict")
     dirty = _command(["git", "status", "--porcelain", "--untracked-files=no"])
-    if (
-        checked != expected_sha
-        or branch != "review/unified-tts-cleanup"
-        or dirty
-    ):
+    if checked != expected_sha or branch != "review/unified-tts-cleanup" or dirty:
         raise LifecycleStop("Codespace checkout does not match authorized exact SHA")
     try:
-        record: Any = json.loads(
-            _command(["gh", "api", f"user/codespaces/{codespace_name}"])
-        )
+        record: Any = json.loads(_command(["gh", "api", f"user/codespaces/{codespace_name}"]))
     except (ValueError, TypeError):
         raise LifecycleStop("Codespace REST identity could not be verified") from None
     if not isinstance(record, dict):
@@ -151,8 +145,14 @@ def verify_lifecycle(
     # Verification is by OpenSSL's public-key verifier; no secret may be on host.
     _command(
         [
-            "openssl", "dgst", "-sha256", "-verify", str(key),
-            "-signature", str(signature), str(heartbeat),
+            "openssl",
+            "dgst",
+            "-sha256",
+            "-verify",
+            str(key),
+            "-signature",
+            str(signature),
+            str(heartbeat),
         ]
     )
     raw = heartbeat.read_bytes()
@@ -162,9 +162,15 @@ def verify_lifecycle(
         raise LifecycleStop("signed supervisor heartbeat is malformed") from None
     if (
         not isinstance(evidence, dict)
-        or set(evidence) != {
-            "schema", "codespace_id", "codespace_name", "created_at",
-            "approved_sha", "observed_at", "hard_deadline_at",
+        or set(evidence)
+        != {
+            "schema",
+            "codespace_id",
+            "codespace_name",
+            "created_at",
+            "approved_sha",
+            "observed_at",
+            "hard_deadline_at",
             "external_watchdog_required",
         }
         or evidence["schema"] != SUPERVISOR_SCHEMA
@@ -181,7 +187,10 @@ def verify_lifecycle(
     if age < -5 or age > MAX_HEARTBEAT_AGE_SECONDS:
         raise LifecycleStop("external supervisor heartbeat is stale or future-dated")
     return VerifiedLifecycle(
-        code_id, codespace_name, created, expected_sha,
+        code_id,
+        codespace_name,
+        created,
+        expected_sha,
         created + timedelta(seconds=TOTAL_SECONDS),
     )
 
