@@ -238,7 +238,7 @@ def test_gap_cannot_be_cited_or_retained() -> None:
     audits = _audit_outputs(ledger)
     response = _reconciliation(ledger)
     response["beats"][0]["spans"][0]["id"] = "s0102"
-    with pytest.raises(hybrid.HybridStop, match="omitted source"):
+    with pytest.raises(hybrid.HybridStop, match="character span"):
         hybrid.reconcile(response, ledger, _argument(ledger), audits)
 
 
@@ -321,7 +321,7 @@ def test_exact_quotes_cannot_prove_meaning_or_keyword_faithfulness() -> None:
 
 
 def test_human_review_requires_exact_brief_and_each_unit_and_beat() -> None:
-    ledger = _ledger(3)
+    ledger = _ledger(25)
     audits = _audit_outputs(ledger)
     response = _reconciliation(ledger)
     brief = hybrid.reconcile(response, ledger, _argument(ledger), audits)
