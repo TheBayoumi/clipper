@@ -1781,6 +1781,10 @@ def test_scoped_private_recovery_archive_contains_and_hashes_wavs_reports_text(
         "missing_winning_claim",
         "missing_first_rejection",
         "changed_original_rejection_receipt",
+        "changed_original_rejection_type",
+        "missing_original_rejection_receipt",
+        "missing_winning_rejection_binding",
+        "too_many_untrusted_history_files",
         "changed_first_raw",
     ],
 )
@@ -1851,6 +1855,38 @@ def test_same_shape_semantically_invalid_source_retries_and_recovers_with_origin
     elif tamper == "changed_original_rejection_receipt":
         first_failure["validation_evidence"]["failure_sha256"] = "f" * 64
         (stage_dir / "failed-1.json").write_bytes(evaluation._json_bytes(first_failure))
+        # Ordinary replay independently checks the ORIGINAL source validator
+        # in addition to the digest-bound recovery commitment.
+        with pytest.raises(chapter.ChapterStop, match="rejection differs"):
+            chapter._stage(
+                *arguments, Mock(side_effect=AssertionError("no new model invocation"))
+            )
+    elif tamper == "changed_original_rejection_type":
+        first_failure["validation_evidence"]["failure_type"] = "UNRECOGNIZED_FAILURE"
+        (stage_dir / "failed-1.json").write_bytes(evaluation._json_bytes(first_failure))
+    elif tamper == "missing_original_rejection_receipt":
+        del first_failure["validation_evidence"]
+        (stage_dir / "failed-1.json").write_bytes(evaluation._json_bytes(first_failure))
+    elif tamper == "missing_winning_rejection_binding":
+        validated_path = stage_dir / "validated.json"
+        validated = json.loads(validated_path.read_bytes())
+        del validated["prior_rejection_sha256"]
+        validated_path.write_bytes(evaluation._json_bytes(validated))
+        with pytest.raises(chapter.ChapterStop, match="missing bound original rejection"):
+            chapter._verified_text_artifact(
+                base,
+                stage_dir,
+                "brief",
+                stage_dir.name,
+                provenance,
+                real_source_bound_validator,
+                plan.max_attempts_per_stage,
+                plan.max_new_tokens,
+                recovery_evidence_only=True,
+            )
+    elif tamper == "too_many_untrusted_history_files":
+        for index in range(25):
+            (stage_dir / f"untrusted-{index}.txt").write_text("synthetic")
     elif tamper == "changed_first_raw":
         path = stage_dir / "raw-1.json"
         changed = json.loads(path.read_bytes())
@@ -1858,6 +1894,11 @@ def test_same_shape_semantically_invalid_source_retries_and_recovers_with_origin
         path.write_bytes(evaluation._json_bytes(changed))
 
     if tamper == "none":
+        with pytest.raises(chapter.ChapterStop, match="outside active retry budget"):
+            chapter._verified_rejected_attempt(
+                base, stage_dir, stage_dir.name, 0, plan.max_attempts_per_stage,
+                real_source_bound_validator,
+            )
         entries = chapter_host._stage_output_entries(root, 1, "brief", identity)
         assert len(entries) == 6
         manifest = chapter_host._chapter_output_manifest(root, 1, bundle, scope)
