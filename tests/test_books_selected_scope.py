@@ -232,8 +232,8 @@ def test_selected_source_minable_chapter_brief_replays_without_parent_or_human_a
     runner, bundle, data = _bundle(tmp_path, with_image=True)
     chosen = selected_scope.import_chapter(runner.root, bundle)
     original = data["section_manifest"]
-    section = runner.root / "book-candidates/section-scopes" / (
-        data["section_manifest_sha256"] + ".json"
+    section = (
+        runner.root / "book-candidates/section-scopes" / (data["section_manifest_sha256"] + ".json")
     )
     section.parent.mkdir(parents=True)
     section.write_bytes(selected_scope._json(original))
