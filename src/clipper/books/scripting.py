@@ -682,9 +682,9 @@ def _chapter_encoding_receipt(encoding: dict[str, object]) -> dict[str, str]:
     if not isinstance(ids, list) or not ids or any(type(x) is not int or x < 0 for x in ids):
         raise PinnedQwenSnapshotError("chapter verified token sequence malformed")
     digest = hashlib.sha256(
-        (
-            json.dumps(ids, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
-        ).encode("utf-8")
+        (json.dumps(ids, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode(
+            "utf-8"
+        )
     ).hexdigest()
     return {
         "input_token_ids_sha256": digest,
@@ -698,8 +698,11 @@ def _cached_chapter_tokenizer_material() -> dict[str, str]:
     """Model-free producer provenance, resolved from the pinned local HF cache."""
     home = Path(os.environ.get("HF_HOME", str(Path.home() / ".cache/huggingface")))
     snapshot = (
-        home / "hub" / ("models--" + SCRIPT_MODEL.replace("/", "--"))
-        / "snapshots" / SCRIPT_REVISION
+        home
+        / "hub"
+        / ("models--" + SCRIPT_MODEL.replace("/", "--"))
+        / "snapshots"
+        / SCRIPT_REVISION
     )
     config = snapshot / "tokenizer_config.json"
     tokenizer_file = snapshot / "tokenizer.json"
