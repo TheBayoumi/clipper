@@ -77,8 +77,7 @@ class ChapterPlan:
             "max_runtime_seconds": (60, 900),
         }
         if any(
-            type(getattr(self, name)) is not int
-            or not low <= getattr(self, name) <= high
+            type(getattr(self, name)) is not int or not low <= getattr(self, name) <= high
             for name, (low, high) in ranges.items()
         ):
             raise ChapterStop("chapter plan exceeds explicit finite limits")
@@ -494,9 +493,7 @@ def _adapt_validate(
             source_beats_for_unit = [
                 beat["beat_id"] for beat in brief["beats"] if beat["unit_id"] == sid
             ]
-            retained = any(
-                coverage[bid] in {"keep", "compress"} for bid in source_beats_for_unit
-            )
+            retained = any(coverage[bid] in {"keep", "compress"} for bid in source_beats_for_unit)
             if entry["decision"] in {"keep", "compress"} and not retained:
                 raise ChapterStop(
                     "chapter adaptation dropped last beat of human-retained source unit"
@@ -995,8 +992,9 @@ def _verified_text_artifact(
 ) -> tuple[dict[str, Any], str]:
     """Require exact raw, validated bytes, schema and exclusive owner on replay."""
     try:
+        validated_bytes = evaluation._read(directory / "validated.json")
         saved = _shape(
-            whole_book.load_strict_reply(evaluation._read(directory / "validated.json")),
+            whole_book.load_strict_reply(validated_bytes),
             {
                 "request_key",
                 "provenance",
@@ -1011,6 +1009,8 @@ def _verified_text_artifact(
             },
             "chapter cached text artifact schema mismatch",
         )
+        if validated_bytes != evaluation._json_bytes(saved):
+            raise ChapterStop("chapter validated artifact has noncanonical envelope bytes")
         attempt = saved["attempt"]
         if (
             saved["request_key"] != request_key
@@ -1034,11 +1034,14 @@ def _verified_text_artifact(
             attempt,
             saved["owner"],
         )
+        raw_bytes = evaluation._read(directory / f"raw-{attempt}.json")
         raw_record = _shape(
-            whole_book.load_strict_reply(evaluation._read(directory / f"raw-{attempt}.json")),
+            whole_book.load_strict_reply(raw_bytes),
             {"attempt", "owner", "raw", "sha256"},
             "chapter raw attempt schema mismatch",
         )
+        if raw_bytes != evaluation._json_bytes(raw_record):
+            raise ChapterStop("chapter raw attempt has noncanonical envelope bytes")
         response = raw_record["raw"]
         if (
             raw_record["attempt"] != attempt

@@ -1682,15 +1682,14 @@ def test_existing_human_review_rejects_changed_verified_brief_artifact(tmp_path:
     changed_brief = dict(brief, argument=brief["argument"] + " A distinct synthetic qualifier.")
     changed_raw = json.dumps(changed_brief)
     raw_digest = hashlib.sha256(changed_raw.encode()).hexdigest()
-    raw_path.write_text(
-        json.dumps(
+    raw_path.write_bytes(
+        evaluation._json_bytes(
             {
                 **original_raw,
                 "raw": changed_raw,
                 "sha256": raw_digest,
             }
-        ),
-        encoding="utf-8",
+        )
     )
     payload_digest = hashlib.sha256(evaluation._json_bytes(changed_brief)).hexdigest()
     saved.update(
@@ -1707,7 +1706,7 @@ def test_existing_human_review_rejects_changed_verified_brief_artifact(tmp_path:
             ),
         }
     )
-    saved_path.write_text(json.dumps(saved), encoding="utf-8")
+    saved_path.write_bytes(evaluation._json_bytes(saved))
     callback = Mock(side_effect=AssertionError("must reuse verified altered cache"))
     with pytest.raises(chapter.ChapterStop, match="review does not match generated brief"):
         chapter.evaluate_chapter(
@@ -1744,16 +1743,14 @@ def test_reviewed_qualified_retained_unit_cannot_lose_last_adapted_beat(
     brief_path = next((runner.root / "book-candidates/brief").rglob("validated.json"))
     brief = json.loads(brief_path.read_bytes())["payload"]
     review_path = _review(tmp_path, first["brief_identity"], brief)
-    source_path = next((runner.root / "book-candidates/chapter-evaluations").rglob(
-        "source-ledger.json"
-    ))
+    source_path = next(
+        (runner.root / "book-candidates/chapter-evaluations").rglob("source-ledger.json")
+    )
     source = json.loads(source_path.read_bytes())
     first_unit = brief["beats"][0]["unit_id"]
     unit = next(x for x in source["units"] if x["source_id"] == first_unit)
     review_data = json.loads(review_path.read_bytes())
-    review_row = next(
-        x for x in review_data["unit_decisions"] if x["source_id"] == first_unit
-    )
+    review_row = next(x for x in review_data["unit_decisions"] if x["source_id"] == first_unit)
     review_row["qualifier_quote"] = unit["text"][:40]
     review_path.write_text(json.dumps(review_data), encoding="utf-8")
 
@@ -1795,11 +1792,16 @@ def test_cli_unexpected_chapter_failure_stays_generic_and_private(
     cli.configure_books_parser(parser.add_subparsers(dest="command", required=True))
     args = parser.parse_args(
         [
-            "books", "chapter-evaluate",
-            "--artifact-root", str(runner.root),
-            "--candidate-ref", str(ref),
-            "--section-manifest", str(section),
-            "--progress", str(progress),
+            "books",
+            "chapter-evaluate",
+            "--artifact-root",
+            str(runner.root),
+            "--candidate-ref",
+            str(ref),
+            "--section-manifest",
+            str(section),
+            "--progress",
+            str(progress),
         ]
     )
     assert cli.dispatch_books(args) == 2
@@ -1807,3 +1809,16 @@ def test_cli_unexpected_chapter_failure_stays_generic_and_private(
     assert marker not in stdout + stderr
     assert "PRIVATE_EVALUATION_FAILED_CLOSED" in stderr
     assert "PRIVATE_CHAPTER_BOUNDED_HOST_UNVERIFIED" not in stderr
+
+
+
+def test_text_artifact_envelope_rejects_trailing_unbound_bytes(tmp_path: Path) -> None:
+    root = tmp_path / "private"
+    producer = Mock(return_value='{"value":"synthetic"}')
+    args = (root, "brief", {"fixture": "synthetic"}, _plan())
+    chapter._stage(*args, lambda x: x, producer)
+    raw_path = next((root / "brief").rglob("raw-1.json"))
+    raw_path.write_bytes(raw_path.read_bytes() + b" ")
+    with pytest.raises(chapter.ChapterStop, match="artifact cannot be verified"):
+        chapter._stage(*args, lambda x: x, producer)
+    producer.assert_called_once()
