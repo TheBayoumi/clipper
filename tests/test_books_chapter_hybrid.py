@@ -804,6 +804,8 @@ def test_export_import_101_plus_unresolved_gap_preserves_original_scoped_source(
     assert len(hybrid.validate_ledger(ledger)) == 102
     assert [item["source_id"] for item in ledger["entries"]] == ordered
     assert all(item["kind"] == "CANONICAL_WORK_UNIT" for item in ledger["entries"][:-1])
-    assert sum(item["kind"] == "UNRECOVERED_OR_EMPTY_SOURCE_MARKER" for item in ledger["entries"]) == 1
+    assert (
+        sum(item["kind"] == "UNRECOVERED_OR_EMPTY_SOURCE_MARKER" for item in ledger["entries"]) == 1
+    )
     assert not list(host_root.rglob("*.epub"))
     assert not list(host_root.rglob("analysis-refs"))
