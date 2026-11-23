@@ -33,6 +33,7 @@ KILL_GRACE=2
 deadline_epoch=0
 recovery_epoch=0
 bootstrap_epoch=0
+execution_epoch=0
 bounded() {
   local limit="$OP_LIMIT" remaining
   if (( deadline_epoch > 0 )); then
@@ -47,6 +48,11 @@ bounded() {
   fi
   if (( bootstrap_epoch > 0 )); then
     remaining="$(( bootstrap_epoch - $(date -u +%s) ))"
+    if (( remaining <= 0 )); then return 124; fi
+    if (( remaining < limit )); then limit="$remaining"; fi
+  fi
+  if (( execution_epoch > 0 )); then
+    remaining="$(( execution_epoch - $(date -u +%s) ))"
     if (( remaining <= 0 )); then return 124; fi
     if (( remaining < limit )); then limit="$remaining"; fi
   fi
@@ -675,8 +681,9 @@ terminate_host() {
   original_status=$?
   trap - EXIT INT TERM HUP
   set +e
-  # Bootstrap expiry must never block the independent original-clock cleanup.
+  # Execution/bootstrap expiry must never block original-clock cleanup.
   bootstrap_epoch=0
+  execution_epoch=0
   if [[ "$verified_identity" != 1 ]]; then
     rm -rf -- "$session"
     echo "EXTERNAL_SUPERVISOR_IDENTITY_UNVERIFIED_OWNER_MUST_CHECK_HOST" >&2
