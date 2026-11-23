@@ -831,7 +831,7 @@ def test_selected_chapter_rejects_overcap_export_and_rehashed_reading_blocks(
     host, _valid_path, data = _bundle(tmp_path)
     base = data["reading_blocks"]
     assert 0 < len(base) < selected_scope.MAX_CHAPTER_ENTRIES
-    forged = {**data, "reading_blocks": (base * 30)[: selected_scope.MAX_CHAPTER_ENTRIES + 1]}
+    forged = {**data, "reading_blocks": (base * (selected_scope.MAX_CHAPTER_ENTRIES + 1))[: selected_scope.MAX_CHAPTER_ENTRIES + 1]}
     encoded = selected_scope._json(forged)
     digest = hashlib.sha256(encoded).hexdigest()
     path = host.root / "book-candidates" / "selected-scopes" / f"{digest}.json"
