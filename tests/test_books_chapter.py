@@ -1820,3 +1820,53 @@ def test_text_artifact_envelope_rejects_trailing_unbound_bytes(tmp_path: Path) -
     with pytest.raises(chapter.ChapterStop, match="artifact cannot be verified"):
         chapter._stage(*args, lambda x: x, producer)
     producer.assert_called_once()
+
+
+
+def test_changed_verified_direction_text_rekeys_final_result_without_new_producer(
+    tmp_path: Path,
+) -> None:
+    runner, ref, progress, section, _ = _source(tmp_path)
+    initial, brief = _first_brief(runner, ref, progress, section, _plan())
+    review = _review(tmp_path, initial["brief_identity"], brief)
+    first = chapter.evaluate_chapter(runner, ref, progress, section, **_full_kwargs(review))
+    root = runner.root / "book-candidates"
+    direction_file = next((root / "chapter_direction").rglob("validated.json"))
+    raw_file = direction_file.parent / "raw-1.json"
+    validated = json.loads(direction_file.read_bytes())
+    raw_record = json.loads(raw_file.read_bytes())
+    changed = json.loads(json.dumps(validated["payload"]))
+    changed["shots"][0]["purpose"] += " Distinct synthetic evidence presentation."
+    new_raw = json.dumps(changed)
+    raw_record["raw"] = new_raw
+    raw_record["sha256"] = hashlib.sha256(new_raw.encode()).hexdigest()
+    raw_file.write_bytes(evaluation._json_bytes(raw_record))
+    validated["payload"] = changed
+    validated["raw_sha256"] = raw_record["sha256"]
+    validated["payload_sha256"] = hashlib.sha256(evaluation._json_bytes(changed)).hexdigest()
+    validated["artifact_identity"] = chapter._text_artifact_identity(
+        "chapter_direction",
+        validated["request_key"],
+        validated["provenance"],
+        validated["raw_sha256"],
+        validated["payload_sha256"],
+    )
+    direction_file.write_bytes(evaluation._json_bytes(validated))
+    no_provider = Mock(side_effect=AssertionError("text replay must not generate"))
+    replay = chapter.evaluate_chapter(
+        runner,
+        ref,
+        progress,
+        section,
+        review_file=review,
+        plan=_plan(),
+        brief_completion=no_provider,
+        adaptation_completion=no_provider,
+        script_completion=no_provider,
+        direction_completion=no_provider,
+    )
+    assert replay["direction_attempts"] == 0
+    assert replay["direction_identity"] != first["direction_identity"]
+    assert replay["final_result_identity"] != first["final_result_identity"]
+    assert len(list((root / "chapter-evaluations").rglob("chapter-result-*.json"))) == 2
+    no_provider.assert_not_called()
