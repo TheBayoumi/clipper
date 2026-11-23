@@ -726,7 +726,8 @@ def test_selected_chapter_final_record_repeats_bound_source_identity(
     assert outcome["selected_source_bundle_sha256"] == sha
     assert outcome["source_boundary"] == source["source_boundary"]
     assert outcome["parent_original_reverified_on_host"] is False
-    assert outcome["linked_section_completeness"] == "UNVERIFIED_REQUIRES_SOURCE_REVIEW"
+    assert outcome["linked_section_completeness"] == source["linked_section_completeness"]
+    assert source["linked_section_completeness"] == "UNVERIFIED_REQUIRES_SOURCE_REVIEW"
     assert outcome["publish_eligible"] is False
     assert not list(host.rglob("*.epub"))
 

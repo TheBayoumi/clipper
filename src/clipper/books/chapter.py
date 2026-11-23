@@ -1607,6 +1607,11 @@ def evaluate_chapter(
         "selected_source_bundle_sha256": (
             selected_scope_path.stem if selected_scope_path is not None else None
         ),
+        "linked_section_completeness": (
+            "UNVERIFIED_REQUIRES_SOURCE_REVIEW"
+            if selected_scope_path is not None
+            else "NOT_ATTESTED"
+        ),
         "parent_original_reverified_on_host": selected_scope_path is None,
         "parent_excluded_pages_not_transferred": (
             book.parent_excluded_page_count if selected_scope_path is not None else 0
@@ -1793,11 +1798,7 @@ def evaluate_chapter(
         "source_boundary": source["source_boundary"],
         "selected_source_bundle_sha256": source["selected_source_bundle_sha256"],
         "parent_original_reverified_on_host": source["parent_original_reverified_on_host"],
-        "linked_section_completeness": (
-            "UNVERIFIED_REQUIRES_SOURCE_REVIEW"
-            if selected_scope_path is not None
-            else "NOT_ATTESTED"
-        ),
+        "linked_section_completeness": source["linked_section_completeness"],
         "source_mining_provenance": source["mining_provenance"],
         "source_mining_producer_fingerprint": source["mining_producer_fingerprint"],
         "progress_sha256": source["progress_sha256"],
