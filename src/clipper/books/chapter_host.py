@@ -15,16 +15,16 @@ import re
 import sys
 import tarfile
 import tempfile
-from io import BytesIO
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from io import BytesIO
 from pathlib import Path
-
-from clipper.stage_contracts import content_fingerprint
 from typing import Any, cast
 from uuid import uuid4
+
+from clipper.stage_contracts import content_fingerprint
 
 from . import (
     acquisition,
@@ -665,11 +665,9 @@ def execute(
     # irreversible call. A terminated process leaves an IN_FLIGHT marker.
     for number, _block, _bundle, verified, _section, scope_sha, _counts in prepared:
         if not _phase_records(root, number, verified.bundle_sha256, scope_sha):
-            try:
+            # A concurrent initialization may already own this immutable phase.
+            with suppress(PhaseClaimContended):
                 _phase(runner, number, verified.bundle_sha256, scope_sha, "NOT_STARTED")
-            except PhaseClaimContended:
-                # Concurrent initialization already committed the same phase.
-                pass
 
     outcomes: dict[str, object] = {}
     for number, block, bundle, verified, section_path, scope_sha, counts in prepared:
@@ -1064,7 +1062,9 @@ def _chapter_output_manifest(
         if key in identities:
             entries.extend(_stage_output_entries(root, number, stage, identities[key]))
     if "narration_report_identity" in identities:
-        entries.extend(_narration_output_entries(root, number, identities["narration_report_identity"]))
+        entries.extend(
+            _narration_output_entries(root, number, identities["narration_report_identity"])
+        )
     if "brief_identity" in identities:
         folder = root / "book-candidates/private-host"
         for name in (f"chapter-{number}-brief-record.json", f"chapter-{number}-review-packet.json"):
@@ -1164,10 +1164,14 @@ def private_recovery_archive(artifact_root: Path) -> dict[str, object]:
             root, number, str(info["bundle_sha256"]), str(info["scope_sha256"])
         )
         if info["recovery_state"] == "READY":
-            saved_path = root / "book-candidates/private-host" / f"chapter-{number}-output-manifest.json"
+            saved_path = (
+                root / "book-candidates/private-host" / f"chapter-{number}-output-manifest.json"
+            )
             raw = evaluation._read(saved_path, 150_000)
             if raw != evaluation._json_bytes(manifest):
-                raise PrivateHostStop("chapter output inventory differs from final committed manifest")
+                raise PrivateHostStop(
+                    "chapter output inventory differs from final committed manifest"
+                )
             if hashlib.sha256(raw).hexdigest() != info["output_manifest_sha256"]:
                 raise PrivateHostStop("chapter output inventory digest changed")
         manifests.append(manifest)
