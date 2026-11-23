@@ -288,9 +288,13 @@ with tarfile.open(archive_path, mode="r:") as source:
             for stage in ("brief","adaptation","chapter_script","chapter_direction")
         )
         expected_kinds = {"text","narration_report","wav","final_result","source_ledger","human_review"}
-        report_path = "book-candidates/narration-report-"+verified_ids["narration_report_identity"]+".json"
+        narration_member_path = (
+            "book-candidates/narration-report-"
+            + verified_ids["narration_report_identity"]
+            + ".json"
+        )
         final_path_suffix = "/chapter-result-"+verified_ids["final_result_identity"]+".json"
-        report_row = paths.get(report_path)
+        report_row = paths.get(narration_member_path)
         if (not expected_text
             or not expected_kinds.issubset({r["kind"] for r in contents})
             or report_row is None or report_row["kind"] != "narration_report"
@@ -298,12 +302,22 @@ with tarfile.open(archive_path, mode="r:") as source:
                        for r in contents)):
             chapter_results[label] = "INCOMPLETE"
             continue
-        report_member = source.extractfile(report_path)
-        if report_member is None or report_member.size > 300_000:
+        narration_member_info = source.getmember(narration_member_path)
+        if narration_member_info.size > 300_000:
+            chapter_results[label] = "INCOMPLETE"
+            continue
+        narration_stream = source.extractfile(narration_member_info)
+        if narration_stream is None:
             chapter_results[label] = "INCOMPLETE"
             continue
         try:
-            report = json.loads(report_member.read(300_001))
+            narration_bytes = narration_stream.read(300_001)
+            if (
+                len(narration_bytes) > 300_000
+                or len(narration_bytes) != narration_member_info.size
+            ):
+                raise ValueError("narration TAR member size changed")
+            report = json.loads(narration_bytes)
             record_list = report["records"]
             if (report.get("schema") != "clipper-chapter-narration-v2"
                 or not isinstance(record_list,list) or not 1 <= len(record_list) <= 80):
