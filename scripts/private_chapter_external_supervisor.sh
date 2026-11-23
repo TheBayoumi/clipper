@@ -40,6 +40,7 @@ session="$(mktemp -d)"
 chmod 700 "$session"
 cleanup_verified=0
 terminate_host() {
+  original_status=$?
   trap - EXIT INT TERM HUP
   set +e
   stop_verified=0
@@ -49,7 +50,7 @@ terminate_host() {
   bounded gh api -X POST "user/codespaces/$CODESPACE_NAME/stop" >/dev/null 2>&1
   for _ in 1 2 3 4; do
     state="$(bounded gh api "user/codespaces/$CODESPACE_NAME" 2>/dev/null |
-      python3 -c 'import json,sys; print(json.load(sys.stdin).get("state",""))' 2>/dev/null || true)"
+      bounded python3 -c 'import json,sys; print(json.load(sys.stdin).get("state",""))' 2>/dev/null || true)"
     if [[ "$state" == "Shutdown" || "$state" == "Stopped" ]]; then
       stop_verified=1
       break
@@ -70,12 +71,15 @@ terminate_host() {
   if [[ "$stop_verified" == 1 && "$deletion_verified" == 1 ]]; then
     cleanup_verified=1
     echo "EXTERNAL_SUPERVISOR_HOST_STOP_AND_DELETION_REST_VERIFIED"
-  else
-    echo "EXTERNAL_SUPERVISOR_CLEANUP_NOT_VERIFIED_MANUAL_REST_CHECK_REQUIRED" >&2
-    return 2
+    exit "$original_status"
   fi
+  echo "EXTERNAL_SUPERVISOR_CLEANUP_NOT_VERIFIED_MANUAL_REST_CHECK_REQUIRED" >&2
+  exit 2
 }
-trap terminate_host EXIT INT TERM HUP
+# Signal handlers must TERMINATE; do not resume an interrupted sign/copy loop
+# with traps removed after a Ctrl+C or external TERM.
+trap 'exit 2' INT TERM HUP
+trap terminate_host EXIT
 
 metadata="$(bounded gh api "user/codespaces/$CODESPACE_NAME")" || {
   echo "EXTERNAL_SUPERVISOR_CODESPACE_REST_UNAVAILABLE" >&2
