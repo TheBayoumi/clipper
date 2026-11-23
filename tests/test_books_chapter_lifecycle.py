@@ -234,14 +234,13 @@ def test_rest_and_supervisor_evidence_are_finite_and_fail_closed(
     import sys
 
     with pytest.raises(chapter_lifecycle.LifecycleStop, match="bounded evidence"):
-        chapter_lifecycle._command(
-            [sys.executable, "-c", "print('x' * 40000)"]
-        )
+        chapter_lifecycle._command([sys.executable, "-c", "print('x' * 40000)"])
     root, record, heartbeat, _signature = _fixture(tmp_path, monkeypatch)
     with pytest.raises(chapter_lifecycle.LifecycleStop, match="finite limit"):
         chapter_lifecycle._trusted_file(root, heartbeat.name, 1)
     valid_command = chapter_lifecycle._command
     for payload in (b"not-json", b"[]"):
+
         def poisoned(
             argv: list[str], *, input_bytes: bytes | None = None, bad: bytes = payload
         ) -> bytes:
@@ -298,23 +297,29 @@ def test_lifecycle_cli_success_and_invalid_root_never_approves_host_creation(
     monkeypatch.setattr(chapter_lifecycle, "verify_lifecycle", verified)
     monkeypatch.setenv("CODESPACE_NAME", "synthetic")
     timestamp = datetime.now(UTC).isoformat()
-    assert chapter_lifecycle.main(
-        [
-            "--artifact-root",
-            str(tmp_path),
-            "--codespace-created-at",
-            timestamp,
-        ]
-    ) == 0
+    assert (
+        chapter_lifecycle.main(
+            [
+                "--artifact-root",
+                str(tmp_path),
+                "--codespace-created-at",
+                timestamp,
+            ]
+        )
+        == 0
+    )
     assert "VERIFIED_CHECKPOINT_ONLY" in capsys.readouterr().out
     verified.assert_called_once()
-    assert chapter_lifecycle.main(
-        [
-            "--artifact-root",
-            "relative-only",
-            "--codespace-created-at",
-            timestamp,
-        ]
-    ) == 2
+    assert (
+        chapter_lifecycle.main(
+            [
+                "--artifact-root",
+                "relative-only",
+                "--codespace-created-at",
+                timestamp,
+            ]
+        )
+        == 2
+    )
     assert "UNVERIFIED" in capsys.readouterr().out
     verified.assert_called_once()
