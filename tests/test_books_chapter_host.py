@@ -241,6 +241,9 @@ def test_two_chapters_brief_stops_for_independent_review_and_resume(
             }
         assert isinstance(kwargs["review_file"], Path)
         assert kwargs["review_file"].is_file()
+        assert kwargs["expected_brief_identity"] is not None
+        assert callable(kwargs["on_resume_verified"])
+        kwargs["on_resume_verified"]()
         return {
             "status": "CHAPTER_PREPRODUCTION_READY_UNREVIEWED",
             "brief_identity": "a" * 64,
@@ -313,6 +316,7 @@ def test_pinned_real_chapter_preflight_occurs_before_claim(
     callback = Mock(return_value='{"value":"private synthetic"}')
     verify = Mock(side_effect=scripting.NicheVideoError("token context full"))
     monkeypatch.setattr(scripting, "_local_chapter_completion", callback)
+    monkeypatch.setattr(scripting, "_ORIGINAL_LOCAL_CHAPTER_COMPLETION", callback)
     monkeypatch.setattr(scripting, "_chapter_context_tokens", verify)
     root = tmp_path / "private"
     with pytest.raises(chapter.ChapterStop, match="token context"):
@@ -333,8 +337,17 @@ def test_real_model_identity_is_separate_from_synthetic_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     reply = '{"value":"synthetic exact raw"}'
-    real = Mock(return_value=reply)
+    real = Mock(
+        return_value=scripting.PinnedQwenRawReceipt(
+            raw=reply,
+            raw_sha256=hashlib.sha256(reply.encode()).hexdigest(),
+            generated_token_count=17,
+            terminal_token_id=151645,
+            eos_decision="EOS_VERIFIED",
+        )
+    )
     monkeypatch.setattr(scripting, "_local_chapter_completion", real)
+    monkeypatch.setattr(scripting, "_ORIGINAL_LOCAL_CHAPTER_COMPLETION", real)
     monkeypatch.setattr(scripting, "_chapter_context_tokens", lambda _: 12)
     root = tmp_path / "private"
     args = (root, "brief", {"fixture": "provenance"}, chapter.ChapterPlan())
