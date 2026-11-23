@@ -179,16 +179,21 @@ def test_selected_chapter_mining_uses_real_canonical_validation_and_raw_cache(
         return '{"lessons": []}'
 
     result = runner.mine_candidate(
-        bundle, local_cpu=True, section_ids=verified.work.section_ids,
+        bundle,
+        local_cpu=True,
+        section_ids=verified.work.section_ids,
         section_manifest_sha256=verified.section_manifest_sha256,
-        selected_scope_path=bundle, max_new_units=len(verified.work.units),
+        selected_scope_path=bundle,
+        max_new_units=len(verified.work.units),
         local_completion=fake_miner,
     )
     assert result["status"] == "complete"
     assert result["candidate_count"] == 0
     progress = Path(result["progress_path"])
     ledger, candidates, book = evaluation._mined_export(
-        runner, bundle, progress,
+        runner,
+        bundle,
+        progress,
         section_plan=verified.work,
         section_manifest_sha256=verified.section_manifest_sha256,
         selected_scope_path=bundle,
@@ -201,8 +206,13 @@ def test_selected_chapter_mining_uses_real_canonical_validation_and_raw_cache(
     assert result["export_path"] is not None
     with pytest.raises(chapter.ChapterStop):
         chapter.evaluate_chapter(
-            runner, bundle, progress, section,
+            runner,
+            bundle,
+            progress,
+            section,
             selected_scope_path=bundle,
             plan=chapter.ChapterPlan(brief_cpu=True),
-            brief_completion=lambda _req: '{"argument":"cannot omit source","beats":[],"coverage":[]}',
+            brief_completion=lambda _req: (
+                '{"argument":"cannot omit source","beats":[],"coverage":[]}'
+            ),
         )
