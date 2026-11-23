@@ -2554,6 +2554,7 @@ def evaluate_hybrid_chapter(
         )
         if on_stage_progress is not None:
             on_stage_progress("NARRATION_VERIFIED", narration_report_key)
+    summary["narration_report_identity"] = narration_report_key
     times = _timings(script, limits, audio)
     if not limits.direction_cpu:
         return {**summary, "status": "AWAITING_EXPLICIT_CPU_CHAPTER_DIRECTION"}
