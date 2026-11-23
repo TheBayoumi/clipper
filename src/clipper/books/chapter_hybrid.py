@@ -326,10 +326,11 @@ def validate_audit(
         raise HybridStop("hybrid audit silently omitted original units")
     disagreements = _list(data["disagreements"], 24)
     for index, value in enumerate(disagreements, 1):
-        item = _object(value, {"id", "issue", "evidence"})
+        item = _object(value, {"id", "issue", "proposed_change", "evidence"})
         if item["id"] != f"{window['audit_id']}-d{index:02d}":
             raise HybridStop("hybrid disagreement identity changed")
         _text(item["issue"], 800)
+        _text(item["proposed_change"], 1000)
         if not _list(item["evidence"], 12):
             raise HybridStop("hybrid disagreement has no source support")
         for span in item["evidence"]:
@@ -409,6 +410,7 @@ def reconcile(
         raise HybridStop("hybrid global reconciliation left audit disagreements unresolved")
     beats: list[dict[str, Any]] = []
     linked: set[str] = set()
+    beat_links: dict[str, list[str]] = {sid: [] for sid in source}
     for index, value in enumerate(_list(data["beats"], MAX_BEATS), 1):
         beat = _object(
             value, {"beat_id", "spans", "meaning", "qualification", "causal_link", "essential"}
@@ -428,6 +430,8 @@ def reconcile(
             if decisions[span["id"]]["decision"] == "omit":
                 raise HybridStop("hybrid beat cites editorially omitted source")
             linked.add(span["id"])
+            if beat["beat_id"] not in beat_links[span["id"]]:
+                beat_links[span["id"]].append(beat["beat_id"])
             expanded.append(span)
         beats.append({**beat, "spans": expanded, "unit_id": expanded[0]["original_source_id"]})
     if len(beats) < 2:
@@ -448,6 +452,7 @@ def reconcile(
                 **decisions[entry["id"]],
                 "source_id": entry["source_id"],
                 "short_id": entry["id"],
+                "beat_ids": beat_links[entry["id"]],
             }
             for entry in entries
         ],
