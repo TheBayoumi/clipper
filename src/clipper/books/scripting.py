@@ -753,7 +753,9 @@ def _chapter_context_tokens(request: dict[str, object]) -> int:
                 enable_thinking=False,
             )
             count = len(tokens)
-    except (ValueError, TypeError, KeyError, RuntimeError, PinnedQwenSnapshotError) as exc:
+    except NicheVideoError:
+        raise
+    except (ValueError, TypeError, KeyError, RuntimeError) as exc:
         raise NicheVideoError("chapter pinned tokenizer preflight failed") from exc
     if count <= 0 or count + cast(int, request["max_new_tokens"]) > limit:
         raise NicheVideoError(
