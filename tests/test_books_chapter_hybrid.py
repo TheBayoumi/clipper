@@ -866,7 +866,7 @@ def test_selected_chapter_rejects_overcap_export_and_rehashed_reading_blocks(
             sys.settrace(guard_trace)
             with pytest.raises(
                 selected_scope.SelectedSourceStop,
-                match="^selected chapter evidence cannot be verified$",
+                match=r"^selected chapter evidence cannot be verified$",
             ):
                 selected_scope.import_chapter(host.root, path)
     finally:
@@ -2145,7 +2145,9 @@ def test_hybrid_host_rejects_partial_brief_and_never_retries_claimed_attempts(
             runner.root, number, block["bundle_sha256"], block["scope_sha256"]
         )
         assert [item["phase"] for item in phases] == [
-            "NOT_STARTED", "HYBRID_BRIEF_IN_FLIGHT", "STOPPED"
+            "NOT_STARTED",
+            "HYBRID_BRIEF_IN_FLIGHT",
+            "STOPPED",
         ]
     replay = _call(runner, manifest, "hybrid-brief")
     assert replay["chapters"] == stopped["chapters"]
@@ -2170,7 +2172,7 @@ def test_hybrid_private_host_finite_scope_preflight_precedes_any_attempt(
         prepared[0][1]["scope_sha256"] = "0" * 64
     no_producer = Mock(side_effect=AssertionError("preflight refuses before CPU"))
     monkeypatch.setattr(chapter, "evaluate_hybrid_chapter", no_producer)
-    with pytest.raises(chapter_host.PrivateHostStop, match="plan|scope"):
+    with pytest.raises(chapter_host.PrivateHostStop, match=r"plan|scope"):
         chapter_host._execute_hybrid(
             runner, prepared, plan, mode, runner.root, "unused-before-guard"
         )
