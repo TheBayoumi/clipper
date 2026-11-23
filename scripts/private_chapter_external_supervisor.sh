@@ -146,20 +146,40 @@ with tarfile.open(archive_path, mode="r:") as source:
         or safe.get("files_retrieved") is not False):
         sys.exit(2)
     rows = manifest.get("files")
-    if not isinstance(rows, list) or len(rows) > 512:
+    chapter_manifests = manifest.get("chapters")
+    if (not isinstance(rows, list) or len(rows) > 512
+        or not isinstance(chapter_manifests, list) or len(chapter_manifests) != 2):
         sys.exit(2)
+    by_chapter = {}
+    for chapter_manifest in chapter_manifests:
+        if (not isinstance(chapter_manifest, dict)
+            or chapter_manifest.get("chapter") not in (1, 7)
+            or chapter_manifest["chapter"] in by_chapter
+            or chapter_manifest.get("inventory_status") not in {"VERIFIED", "INCOMPLETE", "NOT_STARTED"}
+            or not isinstance(chapter_manifest.get("files"), list)
+            or len(chapter_manifest["files"]) > 256):
+            sys.exit(2)
+        by_chapter[chapter_manifest["chapter"]] = chapter_manifest
+        if chapter_manifest["inventory_status"] != "VERIFIED" and chapter_manifest["files"]:
+            sys.exit(2)
+    if set(by_chapter) != {1,7}: sys.exit(2)
     expected = {"private-recovery-manifest.json", "safe-recovery-status.json"}
+    by_path = {}
     for row in rows:
-        if not isinstance(row, dict) or set(row) != {"chapter", "kind", "relative_path", "sha256", "bytes"}:
+        if not isinstance(row, dict) or set(row) != {"chapters","kind","relative_path","sha256","bytes"}:
             sys.exit(2)
         path = row["relative_path"]
-        if (row["chapter"] not in (1, 7)
+        owners = row["chapters"]
+        if (not isinstance(owners, list) or not owners
+            or owners != sorted(set(owners)) or any(n not in (1,7) for n in owners)
             or row["kind"] not in {"text","wav","narration_report","review","final_result","source_ledger","human_review"}
             or not isinstance(path, str) or not path.startswith("book-candidates/")
             or any(x in ("", ".", "..") for x in pathlib.PurePosixPath(path).parts)
             or not isinstance(row["sha256"], str) or dig.fullmatch(row["sha256"]) is None
-            or type(row["bytes"]) is not int or not 0 <= row["bytes"] <= 300_000_000):
+            or type(row["bytes"]) is not int or not 0 <= row["bytes"] <= 300_000_000
+            or path in by_path):
             sys.exit(2)
+        by_path[path] = row
         expected.add(path)
         member = source.getmember(path)
         if member.size != row["bytes"]:
@@ -174,6 +194,31 @@ with tarfile.open(archive_path, mode="r:") as source:
             sys.exit(2)
     if set(names) != expected or len(names) != len(expected):
         sys.exit(2)
+    for number, chapter_manifest in by_chapter.items():
+        scoped_files = chapter_manifest["files"]
+        claimed = {path for path, row in by_path.items() if number in row["chapters"]}
+        if len({r.get("relative_path") for r in scoped_files if isinstance(r, dict)}) != len(scoped_files):
+            sys.exit(2)
+        if claimed != {r.get("relative_path") for r in scoped_files if isinstance(r, dict)}:
+            sys.exit(2)
+        for scoped in scoped_files:
+            if (not isinstance(scoped,dict) or set(scoped) !=
+                {"chapter","kind","relative_path","sha256","bytes"}
+                or scoped["chapter"] != number):
+                sys.exit(2)
+            canonical = by_path[scoped["relative_path"]]
+            if any(scoped[field] != canonical[field] for field in ("kind","sha256","bytes")):
+                sys.exit(2)
+        safe_row = safe["chapters"][str(number)]
+        expected_retrieval = (
+            "INVENTORY_VERIFIED_NOT_RETRIEVED"
+            if chapter_manifest["inventory_status"] == "VERIFIED"
+            else "INCOMPLETE"
+            if chapter_manifest["inventory_status"] == "INCOMPLETE"
+            else "NOT_ATTEMPTED"
+        )
+        if safe_row.get("retrieval_status") != expected_retrieval:
+            sys.exit(2)
     if set(safe) != {"schema","status","chapters","files_retrieved","publish_eligible"}:
         sys.exit(2)
     allowed = {"recovery_state","last_subphase","runtime_journal_status",
@@ -182,21 +227,32 @@ with tarfile.open(archive_path, mode="r:") as source:
                "output_manifest_sha256"}
     for chapter in safe["chapters"].values():
         if (not isinstance(chapter, dict) or not set(chapter).issubset(allowed)
-            or chapter.get("recovery_state") not in {"NEVER_STARTED","IN_FLIGHT","INTERRUPTED","AWAITING_REVIEW","READY"}
+            or chapter.get("recovery_state") not in {"NEVER_STARTED","IN_FLIGHT","INTERRUPTED","AWAITING_REVIEW","READY","INCOMPLETE"}
             or not isinstance(chapter.get("last_subphase"), str)
             or len(chapter["last_subphase"]) > 64
-            or chapter.get("retrieval_status") != "NOT_ATTEMPTED"
+            or chapter.get("retrieval_status") not in {"NOT_ATTEMPTED","INCOMPLETE","INVENTORY_VERIFIED_NOT_RETRIEVED"}
             or not isinstance(chapter.get("last_verified_artifact_identities"), dict)):
             sys.exit(2)
         if any(not isinstance(value, str) or dig.fullmatch(value) is None
                for value in chapter["last_verified_artifact_identities"].values()):
             sys.exit(2)
+    chapter_results = {
+        str(number): (
+            "VERIFIED_PRIVATE_ARCHIVE"
+            if row["inventory_status"] == "VERIFIED"
+            else "INCOMPLETE"
+            if row["inventory_status"] == "INCOMPLETE"
+            else "NOT_STARTED"
+        )
+        for number,row in by_chapter.items()
+    }
+    complete = all(value == "VERIFIED_PRIVATE_ARCHIVE" for value in chapter_results.values())
     summary = {
         "schema": "clipper-private-owner-recovery-verification-v1",
-        "retrieval_status": "VERIFIED_PRIVATE_ARCHIVE",
+        "retrieval_status": "VERIFIED_PRIVATE_ARCHIVE" if complete else "VERIFIED_PRIVATE_ARCHIVE_PARTIAL",
+        "chapters": chapter_results,
         "recovered_file_count": len(rows),
-        "output_scope": ("COMPLETE" if all(x["recovery_state"] == "READY"
-                                      for x in safe["chapters"].values()) else "PARTIAL"),
+        "output_scope": "COMPLETE" if complete else "PARTIAL",
         "host_cleanup_status": "NOT_YET_REST_VERIFIED",
     }
     report_path.write_text(json.dumps(summary, sort_keys=True) + "\n", encoding="utf-8")
