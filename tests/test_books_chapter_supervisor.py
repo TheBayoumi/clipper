@@ -802,9 +802,9 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
     host_calls = [call for call in actions.splitlines() if "clipper.books.chapter_host" in call]
     allowed_recovery = "python3 -m clipper.books.chapter_host recover --artifact-root "
     allowed_status = "python3 -m clipper.books.chapter_host status --artifact-root "
-    assert all(
-        allowed_recovery in call or allowed_status in call for call in host_calls
-    ), host_calls
+    assert all(allowed_recovery in call or allowed_status in call for call in host_calls), (
+        host_calls
+    )
     if scenario in ("provisioning_then_ready", "transient_ssh", "transient_cp"):
         assert any(allowed_recovery in call for call in host_calls), host_calls
     else:
