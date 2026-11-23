@@ -711,7 +711,9 @@ class BookOrchestrator:
         except Exception as exc:
             raise whole_book.LocalReplyFailure("runtime_error") from exc
         receipt: dict[str, object] | None = None
-        if actual_provider:
+        # Missing EOS has no success receipt, by definition. Persist the
+        # bounded original raw below BEFORE raising its original failure code.
+        if actual_provider and not truncated:
             if not isinstance(response, scripting.PinnedQwenRawReceipt):
                 raise whole_book.LocalReplyFailure("missing_real_token_receipt")
             receipt = {
