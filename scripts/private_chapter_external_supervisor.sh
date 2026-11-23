@@ -91,8 +91,8 @@ recover_private() (
   # ChatGPT; failure here must NEVER postpone STOP/DELETE.
   if ! identity_matches; then return 2; fi
   local destination="$PRIVATE_CHAPTER_RECOVERY_DIR/$CODESPACE_NAME"
-  mkdir -p -m 700 -- "$destination" || return 2
-  chmod 700 "$destination" || return 2
+  bounded mkdir -p -m 700 -- "$destination" || return 2
+  bounded chmod 700 "$destination" || return 2
   if bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
     "python3 -m clipper.books.chapter_host status --artifact-root '$PRIVATE_CHAPTER_ROOT'" \
     >"$session/recovery.json" 2>/dev/null; then
@@ -111,8 +111,8 @@ for item in x["chapters"].values():
         or not isinstance(item.get("last_subphase"), str)
         or len(item["last_subphase"]) > 64): sys.exit(2)
 ' "$session/recovery.json"; then
-      cp -- "$session/recovery.json" "$destination/safe-recovery-status.json"
-      chmod 600 "$destination/safe-recovery-status.json"
+      bounded cp -- "$session/recovery.json" "$destination/safe-recovery-status.json" || true
+      bounded chmod 600 "$destination/safe-recovery-status.json" || true
     fi
   fi
   local section
@@ -185,6 +185,18 @@ terminate_host() {
 # with traps removed after a Ctrl+C or external TERM.
 trap 'exit 2' INT TERM HUP
 trap terminate_host EXIT
+
+# Recovery is an owner-side private destination, never a git worktree even
+# when its requested path traverses symlinks or resolves through "..".
+if ! bounded python3 -c '
+import pathlib, sys
+target = pathlib.Path(sys.argv[1]).resolve()
+if any((part / ".git").exists() for part in (target, *target.parents)):
+    sys.exit(2)
+' "$PRIVATE_CHAPTER_RECOVERY_DIR"; then
+  echo "EXTERNAL_SUPERVISOR_RECOVERY_DESTINATION_UNSAFE" >&2
+  exit 2
+fi
 
 metadata="$(bounded gh api "user/codespaces/$CODESPACE_NAME")" || {
   echo "EXTERNAL_SUPERVISOR_CODESPACE_REST_UNAVAILABLE" >&2
