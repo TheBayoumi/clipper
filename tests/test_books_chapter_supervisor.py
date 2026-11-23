@@ -670,6 +670,8 @@ def test_actual_codespace_wrapper_dispatches_all_modes_through_shared_preflight(
         "lost_rest",
         "hung_rest",
         "hung_ssh",
+        "terminal_state",
+        "transient_cp",
         "bootstrap_over_execution_reserve",
     ],
 )
@@ -707,6 +709,7 @@ def test_external_supervisor_bootstrap_real_shell_consumer(
         "  state='Available'\\n"
         "  if mode in ('provisioning_then_ready','transient_ssh') and n<5: state='Created'\\n"
         "  if mode=='never_ready_original_clock': state='Created'\\n"
+        "  if mode=='terminal_state': state='Shutdown'\\n"
         "  host_id=999 if mode=='identity_swap' and n>=4 else 12\\n"
         "  print(json.dumps({'id':host_id,'name':os.environ['CODESPACE_NAME'],"
         "'created_at':os.environ['MOCK_CREATED'],'state':state,"
@@ -720,6 +723,10 @@ def test_external_supervisor_bootstrap_real_shell_consumer(
         "  if mode=='transient_ssh' and n<3: sys.exit(3)\\n"
         "  sys.exit(0)\\n"
         "if a[:2]==['codespace','cp']:\\n"
+        "  if mode=='transient_cp' and 'external-supervisor-public.pem' in ' '.join(a):\\n"
+        "    c=pathlib.Path(os.environ['MOCK_SSH_COUNTER']).with_suffix('.cp')\\n"
+        "    n=int(c.read_text())+1 if c.exists() else 1; c.write_text(str(n))\\n"
+        "    if n<3: sys.exit(3)\\n"
         "  if 'heartbeat-envelope.watchdog.pending' in ' '.join(a): sys.exit(3)\\n"
         "  sys.exit(0)\\n"
         "sys.exit(3)\\n",
@@ -775,11 +782,11 @@ def test_external_supervisor_bootstrap_real_shell_consumer(
     if scenario in ("never_ready_original_clock", "bootstrap_over_execution_reserve"):
         assert "codespace ssh" not in actions
         assert "codespace cp" not in actions
-    if scenario in ("lost_rest", "hung_rest", "identity_swap"):
+    if scenario in ("lost_rest", "hung_rest", "identity_swap", "terminal_state"):
         assert "codespace cp" not in actions
     if scenario == "hung_ssh":
         assert "BOOTSTRAP_REMOTE_HUNG" in result.stderr
-    if scenario in ("provisioning_then_ready", "transient_ssh"):
+    if scenario in ("provisioning_then_ready", "transient_ssh", "transient_cp"):
         assert "codespace ssh" in actions
         assert "external-supervisor-public.pem" in actions
         assert "external-supervisor-heartbeat-envelope.watchdog.pending" in actions
@@ -788,6 +795,8 @@ def test_external_supervisor_bootstrap_real_shell_consumer(
         )
         if scenario == "transient_ssh":
             assert actions.count("codespace ssh") >= 3
+        if scenario == "transient_cp":
+            assert actions.count("external-supervisor-public.pem") >= 3
     else:
         assert "external-supervisor-heartbeat-envelope.watchdog.pending" not in actions
     assert "chapter_host" not in actions
