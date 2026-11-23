@@ -1363,14 +1363,14 @@ def _stage(
         completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
         and scripting._local_chapter_completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
     )
-    if (
-        (prepared_request is None) != (contract_version is None)
-        or (prepared_request is None) != (hybrid_request_identity is None)
+    if (prepared_request is None) != (contract_version is None) or (prepared_request is None) != (
+        hybrid_request_identity is None
     ):
         raise ChapterStop("hybrid stage requires a complete bound request identity")
-    if hybrid_request_identity is not None and re.fullmatch(
-        r"[0-9a-f]{64}", hybrid_request_identity
-    ) is None:
+    if (
+        hybrid_request_identity is not None
+        and re.fullmatch(r"[0-9a-f]{64}", hybrid_request_identity) is None
+    ):
         raise ChapterStop("hybrid source/producer request identity malformed")
     request = (
         prepared_request
