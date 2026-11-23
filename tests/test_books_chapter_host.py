@@ -736,9 +736,19 @@ def test_in_flight_chapter_phase_reentry_stays_interrupted(
     scope = config["chapter_1"]["scope_sha256"]
     chapter_host._phase(runner, 1, bundle, scope, "NOT_STARTED")
     chapter_host._phase(runner, 1, bundle, scope, "MINING_IN_FLIGHT")
-    provider = Mock(side_effect=AssertionError("interrupted attempt was consumed"))
+    # The other selected chapter is independently NOT_STARTED. In order
+    # to assert zero calls, mark its own unrelated request interrupted too.
+    other = config["chapter_7"]
+    chapter_host._phase(
+        runner, 7, other["bundle_sha256"], other["scope_sha256"], "NOT_STARTED"
+    )
+    chapter_host._phase(
+        runner, 7, other["bundle_sha256"], other["scope_sha256"], "MINING_IN_FLIGHT"
+    )
+    provider = Mock(side_effect=AssertionError("interrupted attempts were consumed"))
     monkeypatch.setattr(BookOrchestrator, "mine_candidate", provider)
     monkeypatch.setattr(chapter_host, "_release_models", lambda: None)
     result = _call(runner, path, "brief")
     assert result["chapters"]["1"]["status"] == "INTERRUPTED_DURING_MINING"
+    assert result["chapters"]["7"]["status"] == "INTERRUPTED_DURING_MINING"
     provider.assert_not_called()

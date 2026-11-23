@@ -610,7 +610,7 @@ def test_gap_only_linked_section_preserved_in_source_order(
 ) -> None:
     from dataclasses import replace
 
-    from clipper.books.contracts import SourceBlock
+    from clipper.books.contracts import ImageEvidence, ImageOccurrence, SourceBlock
 
     owner = tmp_path / "original"
     owner.mkdir()
@@ -626,7 +626,18 @@ def test_gap_only_linked_section_preserved_in_source_order(
         "",
         "e" * 64,
     )
-    derived = replace(book, blocks=(*book.blocks, missing))
+    asset = ImageEvidence(
+        asset_sha256="e" * 64,
+        media_type="image/png",
+        byte_count=5,
+        occurrences=(
+            ImageOccurrence(
+                "note-figure-001", "notes/figure-001.png", ""
+            ),
+        ),
+        review_status="needs_review",
+    )
+    derived = replace(book, blocks=(*book.blocks, missing), images=(*book.images, asset))
     ordered = whole_book.plan_for(derived, section_ids=(selected_id, gap_id))
     assert ordered.section_ids == (selected_id, gap_id)
     assert ordered.units
@@ -639,9 +650,7 @@ def test_gap_only_linked_section_preserved_in_source_order(
 def test_selected_chapter_final_record_repeats_bound_source_identity(
     tmp_path: Path,
 ) -> None:
-    from test_books_chapter import (
-        _adapt, _brief, _direction, _full_kwargs, _plan, _review, _script
-    )
+    from test_books_chapter import _brief, _full_kwargs, _plan, _review
 
     owner = tmp_path / "parent-only"
     owner.mkdir()
