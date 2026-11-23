@@ -1466,7 +1466,6 @@ def test_omitted_qualified_unit_needs_human_disposition(tmp_path: Path) -> None:
     )
 
 
-
 def test_cached_chapter_stage_owner_tamper_is_not_silently_replayed(tmp_path: Path) -> None:
     root = tmp_path / "private"
     plan = _plan(max_attempts_per_stage=1)
