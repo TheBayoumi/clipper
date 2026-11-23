@@ -144,7 +144,7 @@ def _unique(values: list[str], code: str) -> None:
 def _full_source_scope(
     book: Any,
     scoped: whole_book.WorkPlan,
-    ledger: dict[str, Any],
+    ledger: dict[str, Any] | None,
     candidates: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     """Retain every original canonical work unit, including zero-candidate units.
@@ -158,7 +158,15 @@ def _full_source_scope(
         key = (anchor["anchor"], anchor["word_offset"], anchor["text_sha256"])
         by_unit.setdefault(key, []).append(candidate["id"])
     units: list[dict[str, Any]] = []
-    for work, record in zip(scoped.units, ledger["progress"], strict=True):
+    progress = (
+        ledger["progress"]
+        if ledger is not None
+        else [
+            {"status": "DIRECT_SOURCE_NO_MINING", "candidate_count": 0}
+            for _ in scoped.units
+        ]
+    )
+    for work, record in zip(scoped.units, progress, strict=True):
         source_id = f"unit-{work.fingerprint}"
         ids = by_unit.pop((work.anchor, work.word_offset, work.text_sha256), [])
         units.append(
@@ -1335,6 +1343,9 @@ def _stage(
     completion: Callable[[dict[str, object]], str | scripting.PinnedQwenRawReceipt] | None,
     *,
     replay_only: bool = False,
+    prepared_request: dict[str, object] | None = None,
+    contract_version: str | None = None,
+    safe_context_tokens: int | None = None,
 ) -> tuple[dict[str, Any], str, str, int]:
     """Reserve each irreversible provider attempt before calling any producer."""
     plan.validate()
@@ -1346,20 +1357,34 @@ def _stage(
         completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
         and scripting._local_chapter_completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
     )
-    request = _request(stage, payload, plan, exact_context=real_qwen)
+    if prepared_request is not None and not contract_version:
+        raise ChapterStop("hybrid custom stage requires an explicit contract identity")
+    request = (
+        prepared_request
+        if prepared_request is not None
+        else _request(stage, payload, plan, exact_context=real_qwen)
+    )
+    if request["max_new_tokens"] != plan.max_new_tokens:
+        raise ChapterStop("chapter stage reservation differs from plan output budget")
     if real_qwen:
         # Public tokenizer only, before the first irreversible owner reservation.
         try:
-            scripting._chapter_context_tokens(request)
+            prompt_tokens = scripting._chapter_context_tokens(request)
         except scripting.NicheVideoError:
             raise ChapterStop(
                 "full real chapter request does not fit pinned token context"
             ) from None
+        if safe_context_tokens is not None and (
+            prompt_tokens + plan.max_new_tokens > safe_context_tokens
+        ):
+            raise ChapterStop("hybrid complete prompt and reserved output exceed safe context")
     provenance = "ACTUAL_CPU_QWEN" if real_qwen else "INJECTED_TEST_PRODUCER"
     stage_key = content_fingerprint(
         {
             "contract": stage,
-            "stage_version": {
+            "stage_version": contract_version
+            if contract_version is not None
+            else {
                 "brief": BRIEF_SCHEMA,
                 "adaptation": ADAPT_SCHEMA,
                 "chapter_script": SCRIPT_SCHEMA,
@@ -1377,6 +1402,11 @@ def _stage(
                 "voice": plan.voice,
             },
             "provenance": provenance,
+            **(
+                {"hybrid_safe_context": safe_context_tokens}
+                if contract_version is not None
+                else {}
+            ),
         }
     )
     directory = root / stage / stage_key
