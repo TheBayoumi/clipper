@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
+import wave
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -543,3 +545,223 @@ def test_model_free_hybrid_argument_audits_reconciliation_review_gate_and_replay
     assert after_review["human_attested_beat_count"] == 2
     assert call_counts == frozen
     miner.assert_not_called()
+
+def _hybrid_creative_output(kind: str, request: dict[str, object]) -> str:
+    data = json.loads(request["messages"][1]["content"])
+    if kind == "adaptation":
+        return json.dumps(
+            {
+                "throughline": "An invented person tests, learns and changes a physical procedure.",
+                "narrative_form": "DRAMATIZED_ILLUSTRATION",
+                "choice_reason": "Fiction is never mistaken for a source-authenticated author example.",
+                "beats": [
+                    {
+                        "beat_id": beat["beat_id"],
+                        "decision": "keep",
+                        "reason": "Retain the source-grounded link to the whole argument.",
+                        "qualification": "A faithful paraphrase that omits literal source terms.",
+                        "illustration": "INVENTED_ILLUSTRATION",
+                    }
+                    for beat in data["brief"]["beats"]
+                ],
+                "characters": [
+                    {
+                        "id": "worker",
+                        "name": "Invented worker",
+                        "initial_state": "examining the unchanged instructions",
+                    }
+                ],
+                "locations": [
+                    {
+                        "id": "workroom",
+                        "name": "Imaginary workroom",
+                        "initial_state": "a bench containing unmodified tools",
+                    }
+                ],
+                "props": [
+                    {
+                        "id": "card",
+                        "name": "Paper checklist",
+                        "initial_state": "blank",
+                    }
+                ],
+            }
+        )
+    if kind == "chapter_script":
+        beat_ids = [beat["beat_id"] for beat in data["adaptation"]["beats"]]
+        narration = (
+            "A worker sees that the shared instruction assumes a result without a test. "
+            "She records the original observation before attempting a small change. "
+            "The next limited experiment produces a different observation, which narrows "
+            "the original claim instead of proving that every circumstance is identical. "
+            "The group can now revise its procedure while admitting that other conditions "
+            "might require additional verification."
+        )
+        scenes = []
+        for index in range(3):
+            scenes.append(
+                {
+                    "scene_id": f"scene-{index + 1:02d}",
+                    "previous_id": f"scene-{index:02d}" if index else None,
+                    "next_id": f"scene-{index + 2:02d}" if index < 2 else None,
+                    "purpose": "Show one limited example and connect it to the next claim.",
+                    "action": "The worker marks a revised step on the checklist.",
+                    "environment_id": "workroom",
+                    "narration": narration,
+                    "dialogue": [],
+                    "beat_ids": [beat_ids[index % len(beat_ids)]],
+                    "illustration_label": "INVENTED_ILLUSTRATION",
+                    "transition": "The prior observation motivates the next test.",
+                    "consequence": "The next step changes without asserting universal proof.",
+                }
+            )
+        return json.dumps({"title": "The revised checklist", "scenes": scenes})
+    if kind == "chapter_direction":
+        shots = []
+        before = "blank"
+        for index, timing in enumerate(data["timings"]):
+            after = f"marked step {index + 1}"
+            shots.append(
+                {
+                    "shot_id": f"shot-{index + 1:03d}",
+                    "scene_id": timing["scene_id"],
+                    "purpose": "Show a measured revision of the invented checklist.",
+                    "action": "The character marks a practical change.",
+                    "environment_id": "workroom",
+                    "camera": "Medium close shot on the same card and hand.",
+                    "transition": "Continue following the checklist into the next test.",
+                    "entity_ids": ["card"],
+                    "state_before": {"card": before},
+                    "state_after": {"card": after},
+                    "start_seconds": timing["start_seconds"],
+                    "end_seconds": timing["end_seconds"],
+                }
+            )
+            before = after
+        return json.dumps({"shots": shots})
+    raise AssertionError("unrecognized creative stage")
+
+
+def _hybrid_wav(_text: str, voice: str) -> bytes:
+    assert voice == "af_heart"
+    file = io.BytesIO()
+    with wave.open(file, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(24000)
+        writer.writeframes(b"\0\0" * 24000)
+    return file.getvalue()
+
+
+def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, selected, section = _selected_hybrid_source(tmp_path)
+    fake_miner = Mock(side_effect=AssertionError("no mandatory per-unit mining"))
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", fake_miner)
+    plan = chapter.ChapterPlan(
+        brief_cpu=True,
+        adaptation_cpu=True,
+        script_cpu=True,
+        direction_cpu=True,
+        kokoro_cpu=True,
+    )
+    calls: list[str] = []
+
+    def producer(kind: str):
+        def run(req: dict[str, object]) -> str:
+            calls.append(kind)
+            if kind in {"argument", "audit", "reconcile"}:
+                return _injected_hybrid_response(kind, req)
+            return _hybrid_creative_output(kind, req)
+        return run
+
+    args = {
+        "plan": plan,
+        "argument_completion": producer("argument"),
+        "audit_completion": producer("audit"),
+        "reconcile_completion": producer("reconcile"),
+        "adaptation_completion": producer("adaptation"),
+        "script_completion": producer("chapter_script"),
+        "direction_completion": producer("chapter_direction"),
+        "narration_producer": _hybrid_wav,
+        "token_counter": lambda _messages: 1200,
+    }
+    waiting = chapter.evaluate_hybrid_chapter(runner, selected, section, **args)
+    assert waiting["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
+    base = runner.root / "book-candidates"
+    ledger = json.loads(next((base / "chapter-evaluations").glob("*/source-ledger.json")).read_bytes())
+    brief = json.loads(next((base / "hybrid_reconcile").glob("*/validated.json")).read_bytes())[
+        "payload"
+    ]
+    review = {
+        "schema": hybrid.REVIEW_SCHEMA,
+        "brief_sha256": brief["brief_sha256"],
+        "brief_artifact_identity": waiting["brief_identity"],
+        "reviewer": "Synthetic test human",
+        "unit_decisions": [
+            {"id": entry["id"], "review": "accept", "reason": "Original source considered"}
+            for entry in ledger["entries"]
+        ],
+        "beat_decisions": [
+            {
+                "beat_id": beat["beat_id"],
+                "review": "support_attested",
+                "reason": "Synthetic source-support check only",
+            }
+            for beat in brief["beats"]
+        ],
+    }
+    review_file = tmp_path / "hybrid-human-test.json"
+    review_file.write_text(json.dumps(review), encoding="utf-8")
+    checkpoint = chapter.evaluate_hybrid_chapter(
+        runner,
+        selected,
+        section,
+        review_file=review_file,
+        expected_brief_identity=waiting["brief_identity"],
+        **args,
+    )
+    assert checkpoint["status"] == "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED"
+    assert checkpoint["script_scene_count"] == 3
+    assert checkpoint["direction_attempts"] == 1
+    assert checkpoint["narration_report_identity"]
+    script_path = next((base / "chapter_script").glob("*/validated.json"))
+    script = json.loads(script_path.read_bytes())["payload"]
+    assert all(scene["source_spans"] for scene in script["scenes"])
+    assert all(scene["reviewed_qualifications"] for scene in script["scenes"])
+    assert all(
+        scene["semantic_review"] == "NO_AUTOMATIC_SEMANTIC_CERTIFICATION"
+        for scene in script["scenes"]
+    )
+    assert len([name for name in calls if name == "argument"]) == 1
+    assert len([name for name in calls if name == "reconcile"]) == 1
+    fake_miner.assert_not_called()
+    assert not checkpoint["publish_eligible"]
+
+
+def test_hybrid_reconciliation_raw_tampering_refuses_fresh_replay(
+    tmp_path: Path,
+) -> None:
+    runner, selected, section = _selected_hybrid_source(tmp_path)
+    args = {
+        "plan": chapter.ChapterPlan(brief_cpu=True),
+        "argument_completion": lambda req: _injected_hybrid_response("argument", req),
+        "audit_completion": lambda req: _injected_hybrid_response("audit", req),
+        "reconcile_completion": lambda req: _injected_hybrid_response("reconcile", req),
+        "token_counter": lambda _messages: 1000,
+    }
+    waiting = chapter.evaluate_hybrid_chapter(runner, selected, section, **args)
+    root = runner.root / "book-candidates" / "hybrid_reconcile"
+    record_path = next(root.glob("*/raw-1.json"))
+    raw_record = json.loads(record_path.read_bytes())
+    raw_record["raw"] = raw_record["raw"].replace("editable", "uncertain")
+    record_path.write_text(json.dumps(raw_record), encoding="utf-8")
+    with pytest.raises(chapter.ChapterStop, match="cannot be verified"):
+        chapter.evaluate_hybrid_chapter(
+            runner,
+            selected,
+            section,
+            expected_brief_identity=waiting["brief_identity"],
+            **args,
+        )
