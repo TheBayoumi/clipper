@@ -368,6 +368,7 @@ def test_human_review_requires_exact_brief_and_each_unit_and_beat() -> None:
     with pytest.raises(hybrid.HybridStop, match="exact coherent brief"):
         hybrid.validate_human_review(approval, brief, ledger)
 
+
 def _selected_hybrid_source(tmp_path: Path) -> tuple[BookOrchestrator, Path, Path]:
     runner, selected, _data = _bundle(tmp_path, with_image=True)
     verified = selected_scope.import_chapter(runner.root, selected)
@@ -385,9 +386,7 @@ def _injected_hybrid_response(kind: str, request: dict[str, object]) -> str:
             {
                 "hypothesis": "The entire chapter remains an editable hypothesis.",
                 "questions": ["Does the local evidence narrow the claim?"],
-                "source_links": [
-                    {"id": source[0], "start": 0, "end": 10, "role": "ASSERTION"}
-                ],
+                "source_links": [{"id": source[0], "start": 0, "end": 10, "role": "ASSERTION"}],
             }
         )
     if kind == "audit":
@@ -401,9 +400,7 @@ def _injected_hybrid_response(kind: str, request: dict[str, object]) -> str:
                         "id": item[0],
                         "decision": "keep" if item[1] == "text" else "omit",
                         "reason": "Explicit model-free original source or gap decision.",
-                        "evidence": [
-                            {"id": item[0], "start": 0, "end": 10, "role": "ASSERTION"}
-                        ]
+                        "evidence": [{"id": item[0], "start": 0, "end": 10, "role": "ASSERTION"}]
                         if item[1] == "text"
                         else [],
                     }
@@ -475,6 +472,7 @@ def test_model_free_hybrid_argument_audits_reconciliation_review_gate_and_replay
         def run(request: dict[str, object]) -> str:
             call_counts[kind] += 1
             return _injected_hybrid_response(kind, request)
+
         return run
 
     plan = chapter.ChapterPlan(brief_cpu=True)
