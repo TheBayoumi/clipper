@@ -946,7 +946,14 @@ def _stage_output_entries(
         record = whole_book.load_strict_reply(evaluation._read(candidate, 250_000))
         if isinstance(record, dict) and record.get("artifact_identity") == identity:
             if (
-                record.get("contract") != stage
+                not {"payload", "provenance", "token_receipt", "attempt", "owner"}.issubset(
+                    record
+                )
+                or type(record["attempt"]) is not int
+                or not 1 <= record["attempt"] <= 2
+                or not isinstance(record["owner"], str)
+                or re.fullmatch(r"[0-9a-f]{32}", record["owner"]) is None
+                or record.get("contract") != stage
                 or record.get("request_key") != directory.name
                 or record.get("validator_contract") != chapter.TEXT_ARTIFACT_CONTRACT
                 or not isinstance(record.get("raw_sha256"), str)
