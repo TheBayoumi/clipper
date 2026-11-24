@@ -665,12 +665,12 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             "subprocess.Popen = delayed_popen\n"
         )
         raw = raw.replace(start, wrapper + start, 1)
-        boundary = 'critical recovery_copy python3 -c \''
+        boundary = "critical recovery_copy python3 -c '"
         assert boundary in raw
         kill_type = "KILL" if stream_fault == "startup_hard" else "TERM"
         raw = raw.replace(
             boundary,
-            f'critical recovery_copy timeout --signal={kill_type} --kill-after=2s 1s python3 -c \'',
+            f"critical recovery_copy timeout --signal={kill_type} --kill-after=2s 1s python3 -c '",
             1,
         )
         script.write_text(raw)
