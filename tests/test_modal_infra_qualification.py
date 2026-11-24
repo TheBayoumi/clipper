@@ -291,3 +291,170 @@ def test_ledger_preintent_fail_closed_and_private_permissions(tmp_path: Path) ->
     assert json.loads(ledger.path.read_text())["operation"] == "INTENT"
     with pytest.raises(ValueError):
         Intent("w", "e", "incorrect", "modal-cpu-synthetic-persistence").validate()
+
+
+def test_sdk_explicit_client_workspace_and_resource_wiring() -> None:
+    async def exercise() -> None:
+        from types import SimpleNamespace
+
+        calls: list[tuple[str, object]] = []
+        client = object()
+        ambient = object()
+
+        class Workspace:
+            @staticmethod
+            def from_context(*, client: object) -> object:
+                calls.append(("workspace_client", client))
+                return SimpleNamespace(
+                    hydrate=lambda: None,
+                    name=lambda: "approved-workspace",
+                )
+
+        class ModalApp:
+            def run(self, *, client: object, environment_name: str, detach: bool) -> object:
+                calls.append(("app_client", client))
+                calls.append(("app_environment", environment_name))
+                assert detach is False
+                return "app-context"
+
+        class ModalVolume:
+            @staticmethod
+            def ephemeral(*, client: object, environment_name: str) -> object:
+                calls.append(("volume_client", client))
+                calls.append(("volume_environment", environment_name))
+                return "volume-context"
+
+        class ModalImage:
+            @staticmethod
+            def debian_slim() -> str:
+                return "synthetic-image"
+
+        class ModalSandbox:
+            @staticmethod
+            def create(*args: object, **kwargs: object) -> object:
+                assert args[:2] == ("python3", "-c")
+                assert args[2] == WRITE_SCRIPT
+                assert kwargs["client"] is client
+                assert kwargs["app"] == "owned-app"
+                assert kwargs["volumes"] == {"/data": "owned-volume"}
+                assert kwargs["cpu"] == (0.25, 0.25)
+                assert kwargs["memory"] == (256, 256)
+                assert kwargs["gpu"] is None
+                assert kwargs["secrets"] == []
+                assert kwargs["encrypted_ports"] == []
+                assert kwargs["unencrypted_ports"] == []
+                assert kwargs["h2_ports"] == []
+                assert kwargs["block_network"] is True
+                assert kwargs["timeout"] == 60
+                assert "environment_name" not in kwargs
+                return "sandbox"
+
+        sdk = SimpleNamespace(
+            Workspace=Workspace,
+            App=ModalApp,
+            Volume=ModalVolume,
+            Image=ModalImage,
+            Sandbox=ModalSandbox,
+        )
+        backend = SDKBackend(sdk, client, "qualification")
+        assert await backend.verify("approved-workspace") == "approved-workspace"
+        # Ambient identity is deliberately mutated after client-bound verification.
+        ambient = object()
+        assert ambient is not client
+        assert backend.app_context() == "app-context"
+        assert backend.volume_context() == "volume-context"
+        assert await backend.create("owned-app", "owned-volume", WRITE_SCRIPT) == "sandbox"
+        assert [x[1] for x in calls if x[0].endswith("_client")] == [client, client, client]
+        assert [x[1] for x in calls if x[0].endswith("_environment")] == [
+            "qualification",
+            "qualification",
+        ]
+        with pytest.raises(ValueError, match="mismatch"):
+            await backend.verify("other-workspace")
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("failed_step", [
+    ("INTENT", "app_context_enter"),
+    ("RETURN", "app_context_enter"),
+    ("INTENT", "sandbox_1_create"),
+    ("RETURN", "sandbox_1_create"),
+])
+def test_journal_failure_does_not_skip_teardown(
+    tmp_path: Path, failed_step: tuple[str, str]
+) -> None:
+    class FlakyLedger(Ledger):
+        def __init__(self, path: Path) -> None:
+            super().__init__(path)
+            self.failed = False
+
+        def record(self, **fields: object) -> None:
+            if (
+                not self.failed
+                and fields.get("operation") == failed_step[0]
+                and fields.get("step") == failed_step[1]
+            ):
+                self.failed = True
+                raise OSError("synthetic fsync/write failure")
+            super().record(**fields)
+
+    async def exercise() -> None:
+        backend = FakeBackend()
+        owner = QualificationOwner(
+            backend,
+            Intent("explicit-workspace", "qualification", "a" * 40,
+                   "modal-cpu-synthetic-persistence"),
+            FlakyLedger(tmp_path / "private" / "ledger.jsonl"),
+        )
+        owner.start()
+        result = await owner.terminal()
+        assert result["primary_error"] == "OSError"
+        assert backend.events[-1:] == ["app_exit"] if failed_step[1] != "app_context_enter" or failed_step[0] == "RETURN" else backend.events == ["verify"]
+        assert len(backend.sandboxes) <= 1
+        if backend.sandboxes:
+            assert "poll_sb-synthetic-1" in backend.events
+        assert not any(x == "create" for x in backend.events[backend.events.index("create") + 1:]) if "create" in backend.events else True
+
+    asyncio.run(exercise())
+
+
+def test_unknown_create_no_retry_and_durable_intent(tmp_path: Path) -> None:
+    class UnknownBackend(FakeBackend):
+        async def create(self, _app: Any, _volume: Any, _script: str) -> Sandbox:
+            self.events.append("create")
+            raise OSError("ack lost; resource ID unknown")
+
+    async def exercise() -> None:
+        backend = UnknownBackend()
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        result = await owner.terminal()
+        assert result["primary_error"] == "OSError"
+        assert backend.events.count("create") == 1
+        assert backend.events[-2:] == ["volume_exit", "app_exit"]
+        assert any(x["operation"] == "INTENT" and x.get("step") == "sandbox_1_create"
+                   for x in _events(tmp_path))
+
+    asyncio.run(exercise())
+
+
+def test_decision_expiry_stops_late_create_before_second_allocation(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        backend = FakeBackend()
+        backend.hold_create = True
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        await backend.entered_create.wait()
+        result = await owner.observe()
+        assert result["status"] == "UNRESOLVED"
+        assert result["owner_task_alive"] is True
+        assert owner.task is not None and not owner.task.done()
+        backend.release_create.set()
+        final = await owner.terminal()
+        assert final["primary_error"] == "RuntimeError"
+        assert len(backend.sandboxes) == 1
+        assert "poll_sb-synthetic-1" in backend.events
+        assert backend.events[-2:] == ["volume_exit", "app_exit"]
+
+    asyncio.run(exercise())
