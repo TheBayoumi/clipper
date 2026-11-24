@@ -347,33 +347,65 @@ except (ValueError,TypeError,KeyError,AttributeError,UnicodeDecodeError,OSError)
 stream_recovery_archive() {
   local remote_archive="$PRIVATE_CHAPTER_ROOT/book-candidates/private-host/chapter-recovery.tar"
   local target="$1"
-  critical recovery_copy bash -c '
-    set -o pipefail
-    gh codespace ssh -c "$1" -- -T "exec cat -- '\''$2'\''" 2>/dev/null |
-      python3 -c '\''
-import json, os, sys
+  # One bounded parent owns and reaps its SSH child, including on timeout.
+  # A shell pipeline killed as a group can orphan unreaped zombie children.
+  critical recovery_copy python3 -c '
+import json, os, signal, subprocess, sys
+name, remote, target, receipt_path = sys.argv[1:]
 limit = 800_000_000
-receipt = json.loads(open(sys.argv[2], "rb").read(2049))
+with open(receipt_path, "rb") as source:
+    receipt = json.loads(source.read(2049))
 size = receipt.get("archive_bytes")
 if size is not None:
     if type(size) is not int or not 0 < size <= limit:
         sys.exit(2)
     limit = size
-used = 0
-fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-with os.fdopen(fd, "wb") as output:
-    while True:
-        block = sys.stdin.buffer.read(min(1024 * 1024, limit - used + 1))
-        if not block:
-            break
-        if used + len(block) > limit:
-            sys.exit(2)
-        output.write(block)
-        used += len(block)
-if used == 0 or (size is not None and used != size):
-    sys.exit(2)
-'\'' "$3" "$4"
-  ' _ "$CODESPACE_NAME" "$remote_archive" "$target" "$session/recovery-created.json"
+proc = None
+def end_child():
+    if proc is None:
+        return
+    if proc.poll() is None:
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+    try:
+        proc.wait(timeout=0.7)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=0.7)
+def interrupted(signum, _frame):
+    end_child()
+    sys.exit(128 + signum)
+signal.signal(signal.SIGTERM, interrupted)
+signal.signal(signal.SIGINT, interrupted)
+try:
+    proc = subprocess.Popen(
+        ["gh", "codespace", "ssh", "-c", name, "--", "-T",
+         "exec cat -- " + chr(39) + remote + chr(39)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, close_fds=True,
+    )
+    if proc.stdout is None:
+        sys.exit(2)
+    used = 0
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as output:
+        while True:
+            block = proc.stdout.read(min(1024 * 1024, limit - used + 1))
+            if not block:
+                break
+            if used + len(block) > limit:
+                sys.exit(2)
+            output.write(block)
+            used += len(block)
+    if used == 0 or (size is not None and used != size):
+        sys.exit(2)
+    if proc.wait() != 0:
+        sys.exit(2)
+finally:
+    end_child()
+' "$CODESPACE_NAME" "$remote_archive" "$target" "$session/recovery-created.json"
 }
 
 recover_private() (
