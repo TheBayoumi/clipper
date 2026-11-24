@@ -49,6 +49,9 @@ class Context:
     def __init__(self, backend: FakeBackend, name: str) -> None:
         self.backend = backend
         self.name = name
+        # Match Modal 1.5.5: App.app_id, Volume.object_id.
+        self.app_id = "ap-synthetic" if name == "app" else None
+        self.object_id = "vo-synthetic" if name == "volume" else None
 
     async def __aenter__(self) -> Context:
         self.backend.events.append(self.name + "_enter")
@@ -172,6 +175,13 @@ def test_offline_exact_bytes_sequential_termination_and_ledger(tmp_path: Path) -
             for x in entries
             if x["operation"] == "RETURN" and x["step"].endswith("_create")
         ] == ["sb-synthetic-1", "sb-synthetic-2"]
+        app_returns = [
+            x for x in entries
+            if x["operation"] == "RETURN" and x.get("step") == "app_context_enter"
+        ]
+        assert len(app_returns) == 1
+        assert app_returns[0]["app_id"] == "ap-synthetic"
+        assert "object_id" not in app_returns[0]
 
     asyncio.run(exercise())
 
@@ -310,7 +320,7 @@ def test_sdk_explicit_client_workspace_and_resource_wiring() -> None:
                 calls.append(("workspace_client", client))
                 return SimpleNamespace(
                     hydrate=lambda: None,
-                    name=lambda: "approved-workspace",
+                    name="approved-workspace",
                 )
 
         class ModalApp:
