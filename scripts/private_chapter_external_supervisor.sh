@@ -215,26 +215,114 @@ owner_recovery_safe=0
 # Initial identity alone is NOT permission to DELETE a name that has since
 # been replaced. Recheck numeric instance ID + repo + name + creation stamp
 # immediately before every destructive operation. Unavailable REST fails shut.
-identity_matches() {
-  critical rest_identity gh api "user/codespaces/$CODESPACE_NAME" 2>/dev/null |
-    bounded python3 -c '
-import json, os, sys
-try:
-    x = json.load(sys.stdin)
-    machine = x.get("machine") or {}
-    valid = (
-        x.get("id") == int(os.environ["SUPERVISED_CODESPACE_ID"])
-        and type(x.get("id")) is int
-        and x.get("name") == os.environ["CODESPACE_NAME"]
-        and x.get("repository", {}).get("full_name") == "TheBayoumi/clipper"
-        and x.get("created_at") == os.environ["SUPERVISED_CREATED_AT"]
-        and (machine.get("cpus"), machine.get("memory_in_bytes"), machine.get("storage_in_bytes"))
-            == (4, 17179869184, 34359738368)
-    )
-except (ValueError, TypeError, KeyError, AttributeError):
+# REST failures are categorized without retaining HTTP bodies, stderr or
+# untrusted identifiers. Only a verified exact instance permits host actions.
+rest_failure_category() {
+  if [[ -f "$session/rest-failure-category" ]]; then
+    case "$(cat "$session/rest-failure-category")" in
+      TRANSPORT|TIMEOUT|MALFORMED|CONFIRMED_MISMATCH)
+        cat "$session/rest-failure-category"; return ;;
+    esac
+  fi
+  printf 'TRANSPORT'
+}
+record_rest_failure() {
+  local category="$1" attempt="$2"
+  printf '%s' "$category" >"$session/rest-failure-category"
+  # Local sanitized evidence is best effort; never delay final DELETE reserve.
+  if [[ "$journal_ready" == 1 && "$verified_identity" == 1 &&
+        $(( deadline_epoch - $(date -u +%s) )) -gt 25 ]]; then
+    timeout --signal=TERM --kill-after=1s 2s python3 -c '
+import json,os,pathlib,sys
+root=pathlib.Path(sys.argv[1]); category=sys.argv[2]; attempt=int(sys.argv[3])
+if category not in {"TRANSPORT","TIMEOUT","MALFORMED","CONFIRMED_MISMATCH"}:
     sys.exit(2)
-sys.exit(0 if valid else 2)
-' 2>/dev/null
+out={"schema":"clipper-owner-rest-failure-v1","operation":"rest_identity",
+     "failure_class":category,"attempt":attempt,
+     "codespace_id":int(os.environ["SUPERVISED_CODESPACE_ID"]),
+     "created_at":os.environ["SUPERVISED_CREATED_AT"]}
+tmp=root/".rest-failure.tmp"
+tmp.write_text(json.dumps(out,sort_keys=True)+"\\n")
+os.chmod(tmp,0o600);os.replace(tmp,root/"owner-last-rest-failure.json")
+' "$journal_dir" "$category" "$attempt" >/dev/null 2>&1 || true
+  fi
+}
+# Keep retries inside a small shared read budget. During cleanup's last
+# seconds there is only one probe, reserving time for exact-ID DELETE.
+rest_read() {
+  local attempt rc category max_attempts start_epoch
+  max_attempts=2
+  if (( deadline_epoch > 0 && deadline_epoch - $(date -u +%s) <= 25 )); then
+    max_attempts=1
+  fi
+  start_epoch="$(date -u +%s)"
+  for (( attempt=1; attempt<=max_attempts; attempt++ )); do
+    # Never consume the remaining signed heartbeat freshness with retries.
+    if (( attempt > 1 )); then
+      if (( $(date -u +%s) - start_epoch >= 4 ||
+            (heartbeat_expiry_epoch > 0 &&
+             heartbeat_expiry_epoch - $(date -u +%s) <= 8) )); then
+        return 2
+      fi
+    fi
+    rc=0
+    # Each attempt is at most two seconds, still bounded by the shared
+    # absolute deadline and optional heartbeat caps in bounded().
+    local previous_limit="$OP_LIMIT"
+    if (( OP_LIMIT > 2 )); then OP_LIMIT=2; fi
+    critical rest_identity gh api "user/codespaces/$CODESPACE_NAME" \
+      >"$session/rest-identity-response" 2>/dev/null || rc=$?
+    OP_LIMIT="$previous_limit"
+    if (( rc == 0 )); then return 0; fi
+    category=TRANSPORT
+    if (( rc == 124 || rc == 137 )); then category=TIMEOUT; fi
+    record_rest_failure "$category" "$attempt"
+    if (( attempt >= max_attempts )); then return 2; fi
+  done
+  return 2
+}
+identity_matches() {
+  local category rc
+  rest_read || return 2
+  rc=0
+  bounded python3 -c '
+import json,os,sys
+try:
+    with open(sys.argv[1],"rb") as fd:
+        raw=fd.read(16385)
+    if len(raw)>16384: sys.exit(22)
+    x=json.loads(raw)
+    if not isinstance(x,dict): sys.exit(22)
+    machine=x.get("machine")
+    repo=x.get("repository")
+    if (not isinstance(machine,dict) or not isinstance(repo,dict)
+        or type(x.get("id")) is not int
+        or not isinstance(x.get("name"),str)
+        or not isinstance(x.get("created_at"),str)
+        or not all(type(machine.get(k)) is int for k in
+                   ("cpus","memory_in_bytes","storage_in_bytes"))
+        or not isinstance(repo.get("full_name"),str)):
+        sys.exit(22)
+    valid=(
+        x["id"]==int(os.environ["SUPERVISED_CODESPACE_ID"])
+        and x["name"]==os.environ["CODESPACE_NAME"]
+        and repo["full_name"]=="TheBayoumi/clipper"
+        and x["created_at"]==os.environ["SUPERVISED_CREATED_AT"]
+        and (machine["cpus"],machine["memory_in_bytes"],
+             machine["storage_in_bytes"])==(4,17179869184,34359738368))
+    sys.exit(0 if valid else 23)
+except (ValueError,TypeError,KeyError,AttributeError,UnicodeDecodeError,OSError):
+    sys.exit(22)
+' "$session/rest-identity-response" >/dev/null 2>&1 || rc=$?
+  if (( rc == 0 )); then
+    rm -f -- "$session/rest-failure-category"
+    return 0
+  fi
+  category=MALFORMED
+  if (( rc == 23 )); then category=CONFIRMED_MISMATCH; fi
+  if (( rc == 124 || rc == 137 )); then category=TIMEOUT; fi
+  record_rest_failure "$category" 1
+  return 2
 }
 
 recover_private() (
@@ -978,11 +1066,12 @@ os.replace(tmp,folder/"owner-exit-reason.json")
 }
 # Emit a distinct sanitized category for exhausted clock versus changed host.
 cleanup_identity_failure() {
-  local reason="$1"
+  local reason="$1" category
+  category="$(rest_failure_category)"
   if (( deadline_epoch - $(date -u +%s) <= 0 )); then
     echo "EXTERNAL_SUPERVISOR_TOTAL_DEADLINE_EXPIRED_MANUAL_REST_CHECK_REQUIRED" >&2
   else
-    echo "$reason" >&2
+    echo "${reason}_REST_${category}" >&2
   fi
 }
 
@@ -1415,10 +1504,10 @@ envelope = {
 with open(sys.argv[3], "wb") as f:
     f.write((json.dumps(envelope, sort_keys=True) + "\n").encode())
 ' "$session/heartbeat.json" "$session/heartbeat.sig" "$session/envelope.json"
-  identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_CHANGED" >&2; exit 2; }
+  identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_RECHECK_REST_$(rest_failure_category)" >&2; exit 2; }
   critical heartbeat_copy gh codespace cp -c "$CODESPACE_NAME" "$session/envelope.json" \
     "remote:$remote/external-supervisor-heartbeat-envelope.watchdog.pending" >/dev/null
-  identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_CHANGED" >&2; exit 2; }
+  identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_RECHECK_REST_$(rest_failure_category)" >&2; exit 2; }
   critical heartbeat_publish gh codespace ssh -c "$CODESPACE_NAME" -- \
     "mv -f -- '$remote/external-supervisor-heartbeat-envelope.watchdog.pending' '$remote/external-supervisor-heartbeat-envelope.json'" >/dev/null
   signed_issued_epoch="$(date -u -d "$now" +%s)"
