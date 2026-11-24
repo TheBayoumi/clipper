@@ -2103,7 +2103,7 @@ def test_exact_recovery_receiver_success_and_nonzero_producer(
     marker = "critical recovery_copy python3 -c '\n"
     assert content.count(marker) == 1
     receiver = content.split(marker, 1)[1].split(
-        "' \"$CODESPACE_NAME\" \"$remote_archive\" \"$target\" \"$session/recovery-created.json\"",
+        '\' "$CODESPACE_NAME" "$remote_archive" "$target" "$session/recovery-created.json"',
         1,
     )[0]
     fake_bin = tmp_path / "bin"
