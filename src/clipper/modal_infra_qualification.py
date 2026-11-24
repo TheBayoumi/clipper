@@ -24,12 +24,11 @@ SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 
 # No private payload is interpolated into either command.
 WRITE_SCRIPT = (
-    "import hashlib,os,pathlib,subprocess,time\n"
+    "import hashlib,os,pathlib,time\n"
     "b=bytes(range(256))*256\n"
     "p=pathlib.Path('/data/infra-check.bin')\n"
     "with p.open('wb') as f:\n"
     " f.write(b);f.flush();os.fsync(f.fileno())\n"
-    "subprocess.run(['sync','/data'],check=True,timeout=15)\n"
     "print('READY:'+hashlib.sha256(b).hexdigest(),flush=True)\n"
     "while True: time.sleep(10)\n"
 )
@@ -218,11 +217,10 @@ async def read_exact(iterator: Any, cap: int = SIZE) -> bytes:
 
 
 class QualificationOwner:
-    """A single retained in-loop owner; no detached tasks or provider retries.
+    """One in-loop owner; finite observation is NOT a hard provider deadline.
 
-    Decision/reconciliation deadlines bound observation, NOT remote calls.
-    A caller must await terminal() before closing its event loop. At deadline
-    owner records UNRESOLVED_MONITORING_ACTIVE and continues in this loop.
+    Pending operations and settled uncertain acquisitions are different state.
+    The caller must keep the loop alive and await terminal() before shutdown.
     """
 
     def __init__(
@@ -246,27 +244,88 @@ class QualificationOwner:
         self.stopped = asyncio.Event()
         self.task: asyncio.Task[dict[str, object]] | None = None
         self.unresolved: set[str] = set()
+        self.active_operations: set[str] = set()
+        self.unknown_outcomes: list[dict[str, str]] = []
+        self.evidence_errors: list[str] = []
+        self.cleanup_errors: list[str] = []
         self.live_sandboxes: list[Any] = []
+        self.sandbox_terminal: list[str] = []
         self._result: dict[str, object] = {
             "run_id": self.run_id,
-            "sandbox_terminal": [],
+            "status": "PENDING",
+            "sandbox_terminal": self.sandbox_terminal,
             "exact_bytes": False,
             "app_context_closed": False,
             "volume_context_closed": False,
             "provider_removal": "UNKNOWN",
             "primary_error": None,
-            "cleanup_errors": [],
+            "cleanup_errors": self.cleanup_errors,
+            "evidence_errors": self.evidence_errors,
+            "unknown_outcomes": self.unknown_outcomes,
+            "active_operations": [],
         }
 
     def _record(self, operation: str, **details: object) -> None:
-        self.ledger.record(
-            run_id=self.run_id,
-            source_sha=self.intent.source_sha,
-            workspace=self.intent.expected_workspace,
-            environment=self.intent.environment,
-            operation=operation,
-            **details,
-        )
+        """Journal errors latch STOP; callers explicitly decide if fatal."""
+        try:
+            self.ledger.record(
+                run_id=self.run_id,
+                source_sha=self.intent.source_sha,
+                workspace=self.intent.expected_workspace,
+                environment=self.intent.environment,
+                operation=operation,
+                **details,
+            )
+        except OSError as exc:
+            self.stopped.set()
+            self.evidence_errors.append(f"{operation}:{type(exc).__name__}")
+            # Never write an error about a journal error to the same sink.
+            raise
+
+    def _safe_record(self, operation: str, **details: object) -> None:
+        try:
+            self._record(operation, **details)
+        except OSError:
+            pass
+
+    def _first_error(self, exc: BaseException) -> None:
+        if self._result["primary_error"] is None:
+            self._result["primary_error"] = type(exc).__name__
+        self.stopped.set()
+
+    def _unknown(self, kind: str, step: str, identifier: str = "") -> None:
+        item = {
+            "kind": kind,
+            "operation": step,
+            "id": identifier,
+            "outcome": "UNRESOLVED",
+        }
+        self.unknown_outcomes.append(item)
+        self.unresolved.add(step)
+        self.stopped.set()
+        self._safe_record("UNKNOWN_ID_OUTCOME", **item)
+
+    async def _await_operation(self, step: str, action: Any) -> Any:
+        """Track every owned await, including streams and teardown."""
+        self.active_operations.add(step)
+        self._safe_record("OPERATION_BEGIN", step=step)
+        try:
+            return await action()
+        finally:
+            self.active_operations.discard(step)
+            self._safe_record("OPERATION_SETTLED", step=step)
+
+    async def _operation(self, name: str, action: Any, *, acquisition: bool = False) -> Any:
+        if acquisition and self.stopped.is_set():
+            raise RuntimeError("STOP_LATCHED")
+        # Cleanup still runs on journal failure, but resource entry must not.
+        if acquisition:
+            self._record("INTENT", step=name)
+        else:
+            self._safe_record("INTENT", step=name)
+        result = await self._await_operation(name, action)
+        self._safe_record("RETURN", step=name, object_id=str(getattr(result, "object_id", "")))
+        return result
 
     def start(self) -> None:
         if self.task is not None:
@@ -277,6 +336,16 @@ class QualificationOwner:
     def request_stop(self) -> None:
         self.stopped.set()
 
+    def _snapshot(self) -> dict[str, object]:
+        return {
+            **self._result,
+            "active_operations": sorted(self.active_operations),
+            "unknown_outcomes": [dict(entry) for entry in self.unknown_outcomes],
+            "unresolved_ids": sorted(self.unresolved),
+            "evidence_errors": list(self.evidence_errors),
+            "cleanup_errors": list(self.cleanup_errors),
+        }
+
     async def observe(self) -> dict[str, object]:
         if self.task is None:
             raise ValueError("Owner not started")
@@ -284,211 +353,216 @@ class QualificationOwner:
             done, _ = await asyncio.wait({self.task}, timeout=self.decision_seconds)
         except asyncio.CancelledError:
             self.request_stop()
-            self._record("CALLER_CANCELLED_OWNER_RETAINED")
+            self._safe_record("CALLER_CANCELLED_OWNER_RETAINED")
             raise
         if done:
             return self.task.result()
-        # Decision expiry stops *new* acquisitions, not the retained create
-        # task or its subsequent termination/reconciliation.
         self.request_stop()
-        self._record("DECISION_DEADLINE", disposition="OWNER_RETAINED_IN_LOOP")
+        self._safe_record("DECISION_DEADLINE", disposition="OWNER_RETAINED_IN_LOOP")
         try:
             done, _ = await asyncio.wait({self.task}, timeout=self.reconciliation_seconds)
         except asyncio.CancelledError:
             self.request_stop()
-            self._record("CALLER_CANCELLED_OWNER_RETAINED")
+            self._safe_record("CALLER_CANCELLED_OWNER_RETAINED")
             raise
         if done:
             return self.task.result()
-        self._record(
+        self._safe_record(
             "UNRESOLVED",
-            pending=sorted(self.unresolved),
+            active_operations=sorted(self.active_operations),
+            unknown_allocations=[dict(item) for item in self.unknown_outcomes],
             disposition="OWNER_MONITORING_CONTINUES_IN_ACTIVE_LOOP",
         )
-        return {"status": "UNRESOLVED", "run_id": self.run_id, "owner_task_alive": True}
+        return {
+            **self._snapshot(),
+            "status": "UNRESOLVED",
+            "owner_task_alive": True,
+        }
 
     async def terminal(self) -> dict[str, object]:
         if self.task is None:
             raise ValueError("Owner not started")
-        # No wait_for: cancellation of a waiter does not cancel owned work.
         return await asyncio.shield(self.task)
 
-    async def _operation(self, name: str, action: Any, *, acquisition: bool = False) -> Any:
-        if acquisition and self.stopped.is_set():
-            raise RuntimeError("STOP_LATCHED")
-        try:
-            self._record("INTENT", step=name)
-        except OSError:
-            if acquisition:
-                raise
-            # Cleanup is mandatory even if the evidence sink is unavailable.
-            cast(list[str], self._result["cleanup_errors"]).append("JournalIntentFailed")
-        self.unresolved.add(name)
-        try:
-            result = await action()
-            try:
-                self._record("RETURN", step=name, object_id=str(getattr(result, "object_id", "")))
-            except OSError:
-                if acquisition:
-                    raise
-                cast(list[str], self._result["cleanup_errors"]).append("JournalReturnFailed")
-            return result
-        finally:
-            self.unresolved.discard(name)
-
     async def _drain(self, name: str, iterator: Any, *, line: bool) -> bytes:
-        error: BaseException | None = None
+        primary: BaseException | None = None
         try:
-            return await (read_first_line(iterator) if line else read_exact(iterator))
+            return await self._await_operation(
+                name + "_consume",
+                lambda: read_first_line(iterator) if line else read_exact(iterator),
+            )
         except BaseException as exc:
-            error = exc
+            primary = exc
+            self._first_error(exc)
             raise
         finally:
             try:
                 await self._operation(name + "_iterator_close", lambda: _close_iterator(iterator))
             except BaseException as exc:
-                cast(list[str], self._result["cleanup_errors"]).append(type(exc).__name__)
-                self._record("ITERATOR_CLOSE_FAILED", step=name, error=type(exc).__name__)
-                if error is None:
+                self.cleanup_errors.append(f"{name}_iterator_close:{type(exc).__name__}")
+                self._first_error(exc)
+                self._safe_record("ITERATOR_CLOSE_FAILED", step=name, error=type(exc).__name__)
+                if primary is None:
                     raise
 
     async def _sandbox(
         self, app: Any, volume: Any, script: str, expected: bytes, index: int
     ) -> None:
+        step = f"sandbox_{index}_create"
         if self.stopped.is_set():
             raise RuntimeError("STOP_LATCHED")
-        step = f"sandbox_{index}_create"
         self._record("INTENT", step=step)
-        self.unresolved.add(step)
         try:
-            sb = await self.backend.create(app, volume, script)
+            sb = await self._await_operation(
+                step, lambda: self.backend.create(app, volume, script)
+            )
         except BaseException:
-            # The provider may have allocated a Sandbox without returning
-            # its ID. Never retry or falsely assert non-acquisition.
-            self._record("UNKNOWN_ID_OUTCOME", step=step, outcome="UNRESOLVED")
+            # Provider may have allocated without returning its ID.
+            self._unknown("sandbox", step)
             raise
-        finally:
-            self.unresolved.discard(step)
-        # Retain the returned handle BEFORE attempting a second journal write.
+        # Handle registration precedes every potentially failing evidence write.
         self.live_sandboxes.append(sb)
-        primary: BaseException | None = None
         try:
-            self._record("RETURN", step=step, object_id=str(getattr(sb, "object_id", "")))
-            if not getattr(sb, "object_id", None):
-                self._record("UNKNOWN_SANDBOX_ID", step=index)
+            sandbox_id = getattr(sb, "object_id", None)
+            if not isinstance(sandbox_id, str) or not sandbox_id:
+                self._unknown("sandbox", step)
+                raise ValueError("Sandbox missing object_id")
+            self._record("RETURN", step=step, object_id=sandbox_id)
             if self.stopped.is_set():
                 raise RuntimeError("STOP_LATCHED_AFTER_CREATE")
-            iterator = await self.backend.stdout_chunks(sb)
+            iterator = await self._await_operation(
+                f"sandbox_{index}_stdout_acquire",
+                lambda: self.backend.stdout_chunks(sb),
+            )
             first = await self._drain(f"sandbox_{index}_stdout", iterator, line=True)
             if first != expected:
                 raise ValueError("Invalid first readiness line")
             self._record("READINESS", step=index)
         except BaseException as exc:
-            primary = exc
-            raise
+            self._first_error(exc)
         finally:
+            # Attempt poll even when terminate fails: two separate observations.
             try:
                 await self._operation(
                     f"sandbox_{index}_terminate", lambda: self.backend.terminate(sb)
                 )
+            except BaseException as exc:
+                self.cleanup_errors.append(f"sandbox_{index}_terminate:{type(exc).__name__}")
+                self._first_error(exc)
+                self._safe_record("SANDBOX_CLEANUP_ERROR", step=index, error=type(exc).__name__)
+            try:
                 terminal = await self._operation(
                     f"sandbox_{index}_poll", lambda: self.backend.poll(sb)
                 )
                 if terminal is None:
                     raise ValueError("No terminal observation")
                 self._record("SANDBOX_TERMINAL", step=index, terminal=str(terminal))
-                cast(list[str], self._result["sandbox_terminal"]).append(str(terminal))
+                self.sandbox_terminal.append(str(terminal))
             except BaseException as exc:
-                self._record("SANDBOX_CLEANUP_ERROR", step=index, error=type(exc).__name__)
-                cast(list[str], self._result["cleanup_errors"]).append(type(exc).__name__)
-                if primary is None:
-                    raise
+                self.cleanup_errors.append(f"sandbox_{index}_poll:{type(exc).__name__}")
+                self._first_error(exc)
+                self._safe_record("SANDBOX_CLEANUP_ERROR", step=index, error=type(exc).__name__)
+        if self.stopped.is_set():
+            raise RuntimeError("STOP_LATCHED")
+
+    async def _enter_context(self, kind: str, context: Any) -> Any:
+        step = f"{kind}_context_enter"
+        if self.stopped.is_set():
+            raise RuntimeError("STOP_LATCHED")
+        self._record("INTENT", step=step)
+        try:
+            handle = await self._await_operation(step, context.__aenter__)
+        except BaseException:
+            self._unknown(kind, step)
+            raise
+        # Caller stores the returned handle before validating/journaling ID.
+        return handle
+
+    async def _exit_context(self, kind: str, context: Any) -> None:
+        step = f"{kind}_context_exit"
+        try:
+            await self._operation(step, lambda: context.__aexit__(None, None, None))
+            self._result[step.replace("_exit", "_closed")] = True
+        except BaseException as exc:
+            self.cleanup_errors.append(f"{step}:{type(exc).__name__}")
+            self._first_error(exc)
+            self._safe_record("CONTEXT_EXIT_FAILED", step=step, error=type(exc).__name__)
 
     async def _run(self) -> dict[str, object]:
+        app_context: Any = None
+        volume_context: Any = None
+        app_entered = False
+        volume_entered = False
         try:
-            verified = await self.backend.verify(self.intent.expected_workspace)
+            verified = await self._await_operation(
+                "workspace_verify",
+                lambda: self.backend.verify(self.intent.expected_workspace),
+            )
             if verified != self.intent.expected_workspace:
                 raise ValueError("Client-bound workspace mismatch")
             self._record("WORKSPACE_VERIFIED")
+            if self.stopped.is_set():
+                raise RuntimeError("STOP_LATCHED")
             app_context = self.backend.app_context()
-            volume_context: Any = None
-            app: Any = None
-            volume: Any = None
-            try:
-                if self.stopped.is_set():
-                    raise RuntimeError("STOP_LATCHED")
-                self._record("INTENT", step="app_context_enter")
-                try:
-                    app = await app_context.__aenter__()
-                except BaseException:
-                    self._record(
-                        "UNKNOWN_ID_OUTCOME", step="app_context_enter", outcome="UNRESOLVED"
-                    )
-                    raise
-                # Modal App has app_id, not object_id. The acquired context
-                # remains owned by the enclosing finally even on ID/journal
-                # failure; never treat an empty ID as useful correlation.
-                app_id = getattr(app, "app_id", None)
-                if not isinstance(app_id, str) or not app_id:
-                    self._record("UNKNOWN_APP_ID", step="app_context_enter")
-                    raise ValueError("Modal App returned without an app_id")
-                self._record("RETURN", step="app_context_enter", app_id=app_id)
-                volume_context = self.backend.volume_context()
-                try:
-                    if self.stopped.is_set():
-                        raise RuntimeError("STOP_LATCHED")
-                    self._record("INTENT", step="volume_context_enter")
-                    try:
-                        volume = await volume_context.__aenter__()
-                    except BaseException:
-                        self._record(
-                            "UNKNOWN_ID_OUTCOME", step="volume_context_enter", outcome="UNRESOLVED"
-                        )
-                        raise
-                    self._record(
-                        "RETURN",
-                        step="volume_context_enter",
-                        object_id=str(getattr(volume, "object_id", "")),
-                    )
-                    await self._sandbox(
-                        app,
-                        volume,
-                        WRITE_SCRIPT,
-                        ("READY:" + DIGEST).encode(),
-                        1,
-                    )
-                    if self.stopped.is_set():
-                        raise RuntimeError("STOP_LATCHED")
-                    await self._sandbox(
-                        app,
-                        volume,
-                        READ_SCRIPT,
-                        ("READ:" + str(SIZE) + ":" + DIGEST).encode(),
-                        2,
-                    )
-                    if self.stopped.is_set():
-                        raise RuntimeError("STOP_LATCHED")
-                    iterator = await self.backend.volume_chunks(volume)
-                    raw = await self._drain("volume", iterator, line=False)
-                    if raw != DATA or hashlib.sha256(raw).hexdigest() != DIGEST:
-                        raise ValueError("Volume byte/hash mismatch")
-                    self._result["exact_bytes"] = True
-                    self._record("EXACT_BYTES_VERIFIED", length=len(raw), sha256=DIGEST)
-                finally:
-                    if volume_context is not None:
-                        await self._operation(
-                            "volume_context_exit",
-                            lambda: volume_context.__aexit__(None, None, None),
-                        )
-                        self._result["volume_context_closed"] = True
-            finally:
-                if app is not None:
-                    await self._operation(
-                        "app_context_exit", lambda: app_context.__aexit__(None, None, None)
-                    )
-                    self._result["app_context_closed"] = True
+            app = await self._enter_context("app", app_context)
+            app_entered = True
+            app_id = getattr(app, "app_id", None)
+            if not isinstance(app_id, str) or not app_id:
+                self._unknown("app", "app_context_enter")
+                raise ValueError("Modal App returned without an app_id")
+            self._record("RETURN", step="app_context_enter", app_id=app_id)
+            if self.stopped.is_set():
+                raise RuntimeError("STOP_LATCHED")
+            volume_context = self.backend.volume_context()
+            volume = await self._enter_context("volume", volume_context)
+            volume_entered = True
+            volume_id = getattr(volume, "object_id", None)
+            if not isinstance(volume_id, str) or not volume_id:
+                self._unknown("volume", "volume_context_enter")
+                raise ValueError("Modal Volume returned without object_id")
+            self._record("RETURN", step="volume_context_enter", object_id=volume_id)
+            await self._sandbox(
+                app, volume, WRITE_SCRIPT, ("READY:" + DIGEST).encode(), 1
+            )
+            if self.stopped.is_set():
+                raise RuntimeError("STOP_LATCHED")
+            await self._sandbox(
+                app, volume, READ_SCRIPT, ("READ:" + str(SIZE) + ":" + DIGEST).encode(), 2
+            )
+            if self.stopped.is_set():
+                raise RuntimeError("STOP_LATCHED")
+            iterator = await self._await_operation(
+                "volume_iterator_acquire", lambda: self.backend.volume_chunks(volume)
+            )
+            raw = await self._drain("volume", iterator, line=False)
+            if raw != DATA or hashlib.sha256(raw).hexdigest() != DIGEST:
+                raise ValueError("Volume byte/hash mismatch")
+            self._record("EXACT_BYTES_VERIFIED", length=len(raw), sha256=DIGEST)
+            self._result["exact_bytes"] = True
         except BaseException as exc:
-            self._result["primary_error"] = type(exc).__name__
-            self._record("PRIMARY_ERROR", error=type(exc).__name__)
-        self._record("TERMINAL", result=self._result)
-        return dict(self._result)
+            self._first_error(exc)
+            self._safe_record("PRIMARY_ERROR", error=type(exc).__name__)
+        finally:
+            # Only successfully ENTERED contexts receive __aexit__.
+            # Always attempt app exit even when volume exit fails.
+            if volume_entered:
+                await self._exit_context("volume", volume_context)
+            if app_entered:
+                await self._exit_context("app", app_context)
+            complete = (
+                self._result["primary_error"] is None
+                and not self.evidence_errors
+                and not self.cleanup_errors
+                and not self.unknown_outcomes
+                and not self.active_operations
+                and len(self.sandbox_terminal) == 2
+                and self._result["exact_bytes"] is True
+                and self._result["app_context_closed"] is True
+                and self._result["volume_context_closed"] is True
+            )
+            self._result["status"] = "SUCCESS" if complete else "BLOCKED"
+            self._result["active_operations"] = sorted(self.active_operations)
+            self._safe_record("TERMINAL", result=self._snapshot())
+            if self.evidence_errors:
+                self._result["status"] = "BLOCKED"
+        return self._snapshot()
