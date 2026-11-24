@@ -550,7 +550,8 @@ class QualificationOwner:
             if app_entered:
                 await self._exit_context("app", app_context)
             complete = (
-                self._result["primary_error"] is None
+                not self.stopped.is_set()
+                and self._result["primary_error"] is None
                 and not self.evidence_errors
                 and not self.cleanup_errors
                 and not self.unknown_outcomes
