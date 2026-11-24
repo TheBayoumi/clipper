@@ -1541,3 +1541,220 @@ def test_signal_during_local_preflight_retains_exact_id_cleanup_clock(
     assert reason["codespace_id"] == 12
     assert reason["most_recent_recorded_failed_operation"] == "signal"
     assert "invalid-grant" not in json.dumps(first) + json.dumps(latest) + json.dumps(reason)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "disconnect",
+        "hung",
+        "slow_then_disconnect",
+        "healthy_then_disconnect",
+        "truncated_input",
+        "duplicate_input",
+        "duplicate_ack",
+        "out_of_order_ack",
+        "foreign_host",
+        "signal",
+        "near_deadline",
+    ],
+)
+def test_heartbeat_stream_shell_transport_atomic_ack_and_cleanup(
+    tmp_path: Path, mode: str
+) -> None:
+    """Real owner Bash + a subprocess-backed remote shell, never a Codespace."""
+    import signal
+
+    fake_bin = tmp_path / "mock-bin"
+    fake_bin.mkdir()
+    log = tmp_path / "mock-gh.log"
+    publish_counter = tmp_path / "publish-count"
+    remote_root = tmp_path / "remote-private"
+    first_ack = tmp_path / "first-ack"
+    entered = tmp_path / "publish-entered"
+    transport_pid = tmp_path / "publish-pid"
+    swapped = tmp_path / "id-swapped"
+    mock_gh = fake_bin / "gh"
+    mock_gh.write_text(
+        f"#!{sys.executable}\n"
+        "import hashlib,json,os,pathlib,subprocess,sys,time\n"
+        "args=sys.argv[1:]\n"
+        "root=pathlib.Path(os.environ['MOCK_REMOTE_ROOT'])\n"
+        "with open(os.environ['MOCK_LOG'],'a',encoding='utf-8') as f:\n"
+        "  f.write(' '.join(args)+'\\n')\n"
+        "mode=os.environ['MOCK_STREAM_MODE']\n"
+        "if args[:2]==['api','-X']:\n"
+        "  if args[2]=='POST': pathlib.Path(os.environ['MOCK_STOPPED']).touch()\n"
+        "  sys.exit(0)\n"
+        "if args[:2]==['api','-i']:\n"
+        "  print('HTTP/2 404 Not Found'); sys.exit(0)\n"
+        "if args[:1]==['api']:\n"
+        "  changed=mode=='foreign_host' and pathlib.Path(os.environ['MOCK_SWAPPED']).exists()\n"
+        "  state='Stopped' if pathlib.Path(os.environ['MOCK_STOPPED']).exists() else 'Available'\n"
+        "  print(json.dumps({'id':999 if changed else 12,'name':os.environ['CODESPACE_NAME'],"
+        "'created_at':os.environ['MOCK_CREATED'],'state':state,"
+        "'repository':{'full_name':'TheBayoumi/clipper'},"
+        "'machine':{'cpus':4,'memory_in_bytes':17179869184,"
+        "'storage_in_bytes':34359738368}})); sys.exit(0)\n"
+        "if args[:2]==['codespace','cp']:\n"
+        "  if mode=='foreign_host': pathlib.Path(os.environ['MOCK_SWAPPED']).touch()\n"
+        "  sys.exit(0)\n"
+        "if args[:2]==['codespace','ssh']:\n"
+        "  command=args[-1]\n"
+        "  if 'watchdog.pending' not in command:\n"
+        "    completed=subprocess.run(['bash','-c',command],capture_output=True,check=False)\n"
+        "    sys.exit(completed.returncode)\n"
+        "  assert args[-2]=='-T', args\n"
+        "  count_file=pathlib.Path(os.environ['MOCK_PUBLISH_COUNTER'])\n"
+        "  n=int(count_file.read_text())+1 if count_file.exists() else 1\n"
+        "  count_file.write_text(str(n))\n"
+        "  pathlib.Path(os.environ['MOCK_PID']).write_text(str(os.getpid()))\n"
+        "  pathlib.Path(os.environ['MOCK_ENTERED']).touch()\n"
+        "  if mode in ('hung','signal'): time.sleep(120)\n"
+        "  if mode in ('slow_then_disconnect','healthy_then_disconnect','out_of_order_ack') and n==2:\n"
+        "    if mode=='out_of_order_ack':\n"
+        "      print(pathlib.Path(os.environ['MOCK_FIRST_ACK']).read_text(),end='')\n"
+        "      sys.exit(0)\n"
+        "    sys.exit(3)\n"
+        "  if mode=='disconnect': sys.exit(3)\n"
+        "  if mode=='slow_then_disconnect': time.sleep(4)\n"
+        "  data=sys.stdin.buffer.read()\n"
+        "  if mode=='truncated_input': data=data[:-7]\n"
+        "  if mode=='duplicate_input': data=data+data\n"
+        "  completed=subprocess.run(['bash','-c',command],input=data,capture_output=True,check=False)\n"
+        "  if completed.returncode:\n"
+        "    sys.stderr.buffer.write(completed.stderr); sys.exit(completed.returncode)\n"
+        "  ack=completed.stdout.decode('ascii')\n"
+        "  if n==1: pathlib.Path(os.environ['MOCK_FIRST_ACK']).write_text(ack)\n"
+        "  if mode=='duplicate_ack': ack=ack+ack\n"
+        "  sys.stdout.write(ack); sys.exit(0)\n"
+        "sys.exit(3)\n",
+        encoding="utf-8",
+    )
+    mock_gh.chmod(0o700)
+    fake_openssl = fake_bin / "openssl"
+    fake_openssl.write_text(
+        f"#!{sys.executable}\n"
+        "import pathlib,sys\n"
+        "a=sys.argv[1:]; pathlib.Path(a[a.index('-out')+1]).write_bytes(b'SYNTHETIC_SIGNATURE')\n",
+        encoding="utf-8",
+    )
+    fake_openssl.chmod(0o700)
+    key = tmp_path / "owner.key"
+    pub = tmp_path / "owner.pub"
+    key.write_text("SYNTHETIC_PRIVATE_ONLY", encoding="utf-8")
+    pub.write_text("SYNTHETIC_PUBLIC_ONLY", encoding="utf-8")
+    created = (
+        datetime.now(UTC)
+        - timedelta(seconds=7196 if mode == "near_deadline" else 1)
+    ).isoformat()
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
+            "CODESPACE_NAME": "synthetic-stream-host",
+            "PRIVATE_CHAPTER_APPROVED_SHA": "b" * 40,
+            "PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY": str(key),
+            "PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY": str(pub),
+            "PRIVATE_CHAPTER_ROOT": str(remote_root),
+            "PRIVATE_CHAPTER_RECOVERY_DIR": str(tmp_path / "owner-private"),
+            "MOCK_REMOTE_ROOT": str(remote_root),
+            "MOCK_CREATED": created,
+            "MOCK_LOG": str(log),
+            "MOCK_PUBLISH_COUNTER": str(publish_counter),
+            "MOCK_ENTERED": str(entered),
+            "MOCK_FIRST_ACK": str(first_ack),
+            "MOCK_PID": str(transport_pid),
+            "MOCK_SWAPPED": str(swapped),
+            "MOCK_STOPPED": str(tmp_path / "stopped"),
+            "MOCK_STREAM_MODE": mode,
+        }
+    )
+    env.pop("CODESPACES", None)
+    started = time.monotonic()
+    if mode == "signal":
+        child = subprocess.Popen(
+            ["bash", str(_SCRIPT)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            until = time.monotonic() + 12
+            while time.monotonic() < until and child.poll() is None and not entered.exists():
+                time.sleep(0.025)
+            assert entered.exists() and child.poll() is None
+            child.send_signal(signal.SIGTERM)
+            stdout, stderr = child.communicate(timeout=30)
+            rc = child.returncode
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.communicate(timeout=5)
+    else:
+        finished = subprocess.run(
+            ["bash", str(_SCRIPT)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=32,
+        )
+        rc, stdout, stderr = finished.returncode, finished.stdout, finished.stderr
+    elapsed = time.monotonic() - started
+    assert elapsed < 30, (mode, elapsed, stderr)
+    actions = log.read_text(encoding="utf-8")
+    assert "api -X DELETE" not in actions if mode == "foreign_host" else "api -X DELETE" in actions
+    if mode == "foreign_host":
+        assert "api -X POST" not in actions
+        assert not entered.exists()
+        assert rc == 2
+        assert "IDENTITY_RECHECK_REST_CONFIRMED_MISMATCH" in stderr
+        return
+    if mode == "near_deadline":
+        assert "codespace ssh" not in actions and not entered.exists()
+        assert rc == 0
+        assert "CLEANUP_RESERVE" in stderr
+        return
+    assert "api -X POST" in actions
+    assert entered.exists()
+    assert "codespace cp" in actions  # Only bootstrap public-key transfer.
+    assert "remote:" in actions
+    assert "watchdog.pending" in actions
+    assert "codespace cp" not in "\n".join(
+        line for line in actions.splitlines() if "watchdog.pending" in line
+    )
+    assert "SYNTHETIC_PRIVATE_ONLY" not in actions
+    if mode in {"hung", "signal"}:
+        assert rc == (143 if mode == "signal" else 124), (rc, stderr)
+        assert "EXTERNAL_SUPERVISOR_HOST_" in stdout
+        assert "heartbeat-envelope.json" not in [
+            p.name for p in remote_root.rglob("*") if p.is_file()
+        ]
+    elif mode in {"duplicate_ack", "out_of_order_ack"}:
+        assert rc == 2, (rc, stderr)
+        assert "HEARTBEAT_PUBLICATION_ACK_INVALID" in stderr
+    elif mode in {"truncated_input", "duplicate_input"}:
+        assert rc != 0
+        assert "HEARTBEAT_PUBLICATION_ACK_INVALID" not in stderr
+        published = list(remote_root.rglob("external-supervisor-heartbeat-envelope.json"))
+        assert not published, published
+    elif mode in {"disconnect", "healthy_then_disconnect", "slow_then_disconnect"}:
+        assert rc == 3, (rc, stderr)
+    if mode in {"healthy_then_disconnect", "slow_then_disconnect", "out_of_order_ack"}:
+        assert int(publish_counter.read_text()) == 2
+        assert len(first_ack.read_text().strip()) == 68  # ACK: plus 64 hex.
+        published = list(remote_root.rglob("external-supervisor-heartbeat-envelope.json"))
+        assert len(published) == 1
+        body = published[0].read_bytes()
+        assert hashlib.sha256(body).hexdigest() == first_ack.read_text().strip()[4:]
+        assert b"SYNTHETIC_PRIVATE_ONLY" not in body
+    if transport_pid.exists():
+        pid = int(transport_pid.read_text())
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            pytest.fail(f"orphaned heartbeat transport process {pid}")
