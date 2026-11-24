@@ -7,12 +7,12 @@ A caller MUST keep the owner event loop alive until terminal() completes.
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 import hashlib
 import json
 import os
 import re
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
