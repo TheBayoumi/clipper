@@ -852,7 +852,8 @@ def test_sdk_cpu_transport_helpers_use_supplied_handles_only() -> None:
                 return [DATA[:4], DATA[4:]]
 
         class Sandbox:
-            stdout = ["READY:ok\n"]
+            def __init__(self) -> None:
+                self.stdout = ["READY:ok\n"]
 
             def terminate(self, *, wait: bool) -> None:
                 calls.append(("terminate_wait", wait))
