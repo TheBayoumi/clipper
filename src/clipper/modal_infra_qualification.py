@@ -3,6 +3,7 @@
 No Modal import, client creation, CLI entry point or implicit provider calls.
 A caller MUST keep the owner event loop alive until terminal() completes.
 """
+
 from __future__ import annotations
 
 import asyncio
