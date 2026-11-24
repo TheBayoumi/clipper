@@ -1235,7 +1235,10 @@ cleanup_identity_failure() {
 
 terminate_host() {
   original_status=$?
-  trap - EXIT INT TERM HUP
+  trap - EXIT
+  # An additional INT/TERM/HUP during bounded recovery must not abort the
+  # identity-checked DELETE. GNU timeout still bounds hung child processes.
+  trap '' INT TERM HUP
   set +e
   # At the hard cutoff, exact-identity DELETE outranks local journaling.
   if (( verified_identity == 1 && deadline_epoch - $(date -u +%s) > 25 )); then
