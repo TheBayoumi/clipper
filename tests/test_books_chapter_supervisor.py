@@ -760,9 +760,11 @@ def test_actual_codespace_wrapper_dispatches_all_modes_through_shared_preflight(
         env[mutation] = value
         blocked = invoke()
         assert blocked.returncode != 0
-        if mutation != "MOCK_LIFECYCLE_STATUS":
+        if mutation not in {"MOCK_LIFECYCLE_STATUS", "MOCK_CREATED"}:
             assert not operations.exists(), mutation
         else:
+            # REST creation timestamps are validated inside the signed
+            # lifecycle preflight; the wrapper must never dispatch host work.
             records = [json.loads(line) for line in operations.read_text().splitlines()]
             assert len(records) == 1
             assert records[0][:2] == ["-m", "clipper.books.chapter_lifecycle"]
