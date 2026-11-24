@@ -503,7 +503,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         response.write_text(json.dumps(receipt), encoding="utf-8")
     fake_gh.write_text(
         f"#!{sys.executable}\n"
-        "import datetime,json,os,pathlib,shutil,subprocess,sys,time\n"
+        "import datetime,hashlib,json,os,pathlib,shutil,subprocess,sys,time\n"
         "a=sys.argv[1:]\n"
         "with open(os.environ['MOCK_LOG'],'a') as f: f.write(' '.join(a)+'\\n')\n"
         "if a[:2]==['api','-X']:\n"
@@ -530,6 +530,9 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         "    if fault=='disconnect': sys.exit(3)\n"
         "    completed=subprocess.run(['bash','-c',a[-1]],capture_output=True,check=False)\n"
         "    data=completed.stdout\n"
+        "    if os.environ['MOCK_TAMPER']=='true':\n"
+        "      data+=b'CORRUPTED_SECOND_SSH_STREAM'\n"
+        "      pathlib.Path(os.environ['MOCK_TAMPERED_STREAM_SHA']).write_text(hashlib.sha256(data).hexdigest())\n"
         "    if fault=='truncated': data=data[:-17]\n"
         "    if fault=='partial_exit': sys.stdout.buffer.write(data[:137]); sys.exit(7)\n"
         "    if fault in ('extra','matched_junk'): data+=b'junk-after-tar'\n"
@@ -568,6 +571,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             "MOCK_CREATED": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
             "MOCK_STOP": str(tmp_path / "synthetic-stopped"),
             "MOCK_TAMPER": "true" if tamper_archive else "false",
+            "MOCK_TAMPERED_STREAM_SHA": str(tmp_path / "tampered-stream-sha"),
             "MOCK_STREAM_FAULT": stream_fault,
             "MOCK_FOREIGN_MARK": str(tmp_path / "foreign-host-id"),
             "MOCK_STREAM_ENTERED": str(tmp_path / "stream-entered"),
@@ -872,6 +876,9 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             check=False,
         )
         assert second.returncode != 0
+        tampered_hash = (tmp_path / "tampered-stream-sha").read_text().strip()
+        assert tampered_hash != receipt["archive_sha256"]
+        assert tampered_hash != hashlib.sha256(source.read_bytes()).hexdigest()
         assert json.loads(pointer_path.read_text()) == pointer
         assert (verified / "chapter-recovery.tar").read_bytes() == source.read_bytes()
         assert "api -X DELETE" in log.read_text()
