@@ -12,9 +12,9 @@ import pytest
 from clipper.modal_infra_qualification import (
     DATA,
     DIGEST,
+    READ_SCRIPT,
     SIZE,
     WRITE_SCRIPT,
-    READ_SCRIPT,
     Intent,
     Ledger,
     QualificationOwner,
