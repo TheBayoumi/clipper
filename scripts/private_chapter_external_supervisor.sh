@@ -832,7 +832,20 @@ archive=folder/"chapter-recovery.tar"
 report=folder/"retrieval-verification.json"
 if not archive.is_file() or archive.is_symlink() or not report.is_file(): sys.exit(2)
 verified=json.loads(report.read_bytes())
-if verified.get("retrieval_status") == "INCOMPLETE": sys.exit(2)
+# Only verified OUTPUT archives may replace a prior verified pointer.
+# A valid safe-status-only EMPTY TAR is not a recovered output snapshot.
+if (verified.get("schema") != "clipper-private-owner-recovery-verification-v1"
+    or verified.get("archive_integrity_status") != "VERIFIED"
+    or verified.get("retrieval_status") not in {
+        "VERIFIED_PRIVATE_ARCHIVE", "VERIFIED_PRIVATE_ARCHIVE_PARTIAL"}
+    or type(verified.get("recovered_file_count")) is not int
+    or verified["recovered_file_count"] <= 0
+    or verified.get("output_scope") not in {"PARTIAL", "COMPLETE"}
+    or (verified["output_scope"] == "PARTIAL"
+        and verified["retrieval_status"] != "VERIFIED_PRIVATE_ARCHIVE_PARTIAL")
+    or (verified["output_scope"] == "COMPLETE"
+        and verified["retrieval_status"] != "VERIFIED_PRIVATE_ARCHIVE")):
+    sys.exit(2)
 h=hashlib.sha256()
 with archive.open("rb") as stream:
     for block in iter(lambda:stream.read(1024*1024),b""):h.update(block)
