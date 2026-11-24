@@ -719,8 +719,10 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         "  created=os.environ['MOCK_CREATED']\n"
         "  cpus=4\n"
         "  if mode.startswith('foreign_available_'):\n"
-        "    state='Available' if n==3 else 'Created'\n"
-        "    if n==3:\n"
+        # Both readiness reads (n=3 and n=6) must disagree with the
+        # approved identity probes (n=1,2,4,5,7) to expose old parser.
+        "    state='Available' if n in (3,6) else 'Created'\n"
+        "    if n in (3,6):\n"
         "      if mode=='foreign_available_id': host_id=999\n"
         "      if mode=='foreign_available_name': name='foreign-host'\n"
         "      if mode=='foreign_available_repo': repo='foreign/repo'\n"
