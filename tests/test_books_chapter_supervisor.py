@@ -409,7 +409,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         # Exercise the owner's EXACT bounded Python TAR verifier in isolation;
         # the shell's fallback intentionally hides its private error details.
         content = _SCRIPT.read_text(encoding="utf-8")
-        core = content.split("if bounded python3 -c '\n", 1)[1].split(
+        core = content.split("if critical archive_verification python3 -c '\n", 1)[1].split(
             '\n\' "$session/recovery-created.json"', 1
         )[0]
         direct = subprocess.run(
