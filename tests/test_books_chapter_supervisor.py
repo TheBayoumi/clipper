@@ -655,14 +655,14 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         start = 'try:\n    proc = subprocess.Popen(\n        [sys.executable, "-c", launcher_code, name, remote],'
         assert start in raw
         wrapper = (
-            'original_popen = subprocess.Popen\n'
-            'def delayed_popen(*args, **kwargs):\n'
-            '    launched = original_popen(*args, **kwargs)\n'
-            '    if args[0][0] == sys.executable:\n'
+            "original_popen = subprocess.Popen\n"
+            "def delayed_popen(*args, **kwargs):\n"
+            "    launched = original_popen(*args, **kwargs)\n"
+            "    if args[0][0] == sys.executable:\n"
             '        open(os.environ["MOCK_STARTUP_LAUNCHER_PID"], "w").write(str(launched.pid))\n'
-            '        time.sleep(1.5)\n'
-            '    return launched\n'
-            'subprocess.Popen = delayed_popen\n'
+            "        time.sleep(1.5)\n"
+            "    return launched\n"
+            "subprocess.Popen = delayed_popen\n"
         )
         raw = raw.replace(start, wrapper + start, 1)
         boundary = 'critical recovery_copy python3 -c \''
