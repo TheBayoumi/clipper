@@ -174,7 +174,8 @@ async def _close_iterator(iterator: Any) -> None:
 async def _next_chunk(iterator: Any) -> bytes | str | None:
     if hasattr(iterator, "__anext__"):
         try:
-            return await iterator.__anext__()
+            async_piece: bytes | str | None = await iterator.__anext__()
+            return async_piece
         except StopAsyncIteration:
             return None
 
