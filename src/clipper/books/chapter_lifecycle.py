@@ -325,7 +325,9 @@ def main(argv: list[str] | None = None) -> int:
         print("PRIVATE_CHAPTER_EXTERNAL_SUPERVISOR_UNVERIFIED")
         return 2
     if args.remaining_seconds:
-        assert verified.execution_deadline is not None
+        if verified.execution_deadline is None:
+            print("PRIVATE_CHAPTER_EXTERNAL_SUPERVISOR_UNVERIFIED")
+            return 2
         remaining = int((verified.execution_deadline - datetime.now(UTC)).total_seconds())
         if remaining <= 0:
             print("PRIVATE_CHAPTER_EXTERNAL_SUPERVISOR_UNVERIFIED")
