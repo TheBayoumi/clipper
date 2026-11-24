@@ -1357,7 +1357,8 @@ def test_signal_during_local_preflight_retains_exact_id_cleanup_clock(
         "created_at": created,
         "approved_sha": "a" * 40,
         "machine": {
-            "cpus": 4, "memory_in_bytes": 17179869184,
+            "cpus": 4,
+            "memory_in_bytes": 17179869184,
             "storage_in_bytes": 34359738368,
         },
         "verified_at": created,
