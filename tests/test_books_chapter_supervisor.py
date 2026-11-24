@@ -238,6 +238,7 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         ("all_ready", False, "disconnect"),
         ("all_ready", False, "wrong_receipt"),
         ("all_ready", False, "extra"),
+        ("all_ready", False, "matched_junk"),
         ("all_ready", False, "oversize"),
         ("all_ready", False, "hung"),
         ("all_ready", False, "signal"),
@@ -486,6 +487,11 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     if stream_fault == "wrong_receipt":
         receipt["archive_sha256"] = "0" * 64
         response.write_text(json.dumps(receipt), encoding="utf-8")
+    if stream_fault == "matched_junk":
+        receipt["archive_sha256"] = hashlib.sha256(
+            source.read_bytes() + b"junk-after-tar"
+        ).hexdigest()
+        response.write_text(json.dumps(receipt), encoding="utf-8")
     fake_gh.write_text(
         f"#!{sys.executable}\n"
         "import datetime,json,os,pathlib,shutil,subprocess,sys,time\n"
@@ -516,7 +522,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         "    data=completed.stdout\n"
         "    if fault=='truncated': data=data[:-17]\n"
         "    if fault=='partial_exit': sys.stdout.buffer.write(data[:137]); sys.exit(7)\n"
-        "    if fault=='extra': data+=b'junk-after-tar'\n"
+        "    if fault in ('extra','matched_junk'): data+=b'junk-after-tar'\n"
         "    if fault=='oversize': data+=b'X'*10000\n"
         "    sys.stdout.buffer.write(data); sys.exit(completed.returncode)\n"
         "  if ' recover ' in (' '+ ' '.join(a)+' '):\n"
