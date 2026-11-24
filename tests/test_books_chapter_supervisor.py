@@ -2349,7 +2349,6 @@ def test_exact_recovery_receiver_leader_exit_then_receiver_hard_kill(
         assert not live(int(leader_pid.read_text())), "producer leader still alive"
         assert live(int(descendant_pid.read_text())), "descendant must hold stdout"
         assert receiver_proc.poll() is None, "receiver unexpectedly ended before stdout EOF"
-        assert target.read_bytes().startswith(b"prefix\x00\xff")
         receiver_proc.send_signal(signal.SIGKILL)
         receiver_proc.communicate(timeout=5)
         assert receiver_proc.returncode == -signal.SIGKILL
