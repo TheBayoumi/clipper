@@ -396,6 +396,7 @@ def test_driver_observer_cancellation_keeps_late_owner_cleanup(
             cancelled.set()
 
     monkeypatch.setattr(driver.QualificationOwner, "observe", cancel_observer)
+
     def release_after_cancellation() -> None:
         if cancelled.wait(2):
             time.sleep(0.03)
@@ -466,7 +467,12 @@ def test_driver_repeated_terminal_waiter_cancellation_waits_for_cleanup(
     worker.start()
     try:
         result = driver.run_infrastructure_experiment(
-            state.sdk, state.client, _intent(), tmp_path / "journal"
+            state.sdk,
+            state.client,
+            _intent(),
+            tmp_path / "journal",
+            decision_seconds=0.01,
+            reconciliation_seconds=0.01,
         )
     finally:
         state.release_terminate.set()
@@ -563,3 +569,37 @@ def test_driver_exit_code_requires_complete_noninterrupted_handoff() -> None:
         )
         == 0
     )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Driver requires POSIX signals")
+def test_driver_pending_cancel_when_owner_already_done_is_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = FakeSDKState()
+    original_terminal = driver.QualificationOwner.terminal
+    pending_cancel = threading.Event()
+
+    async def completed_then_cancel(owner: Any) -> dict[str, object]:
+        result = await original_terminal(owner)
+        if not pending_cancel.is_set():
+            assert owner.task is not None and owner.task.done()
+            current = asyncio.current_task()
+            assert current is not None
+            current.cancel()
+            pending_cancel.set()
+        return result
+
+    monkeypatch.setattr(driver.QualificationOwner, "terminal", completed_then_cancel)
+    original_handlers = (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+    result = driver.run_infrastructure_experiment(
+        state.sdk, state.client, _intent(), tmp_path / "journal"
+    )
+    assert pending_cancel.is_set()
+    assert result["owner_status"] == "SUCCESS"
+    assert result["status"] == "BLOCKED"
+    assert result["driver_cancelled"] is True
+    assert result["driver_interrupted"] is True
+    assert driver.result_exit_code(result) == 2
+    assert len(state.sandboxes) == 2
+    assert state.events[-2:] == ["volume_exit", "app_exit"]
+    assert original_handlers == (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))

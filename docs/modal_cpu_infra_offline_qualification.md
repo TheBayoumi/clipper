@@ -220,3 +220,20 @@ Completion handoff linearizes after ledger closure and restoration of previous
 signal handlers; signals after restoration are the caller's responsibility.
 This remains in-process only: SIGKILL, process death and noncooperative SDK
 calls have no recovery or deadline guarantee.
+
+
+## Candidate 0036: completed-await cancellation checkpoint (UNQUALIFIED)
+
+The driver terminal waiter now makes a scheduler checkpoint after receiving a
+terminal result, before breaking its reconciliation loop. This closes the case
+where cancellation was requested on the driver task but an already-completed
+owner await returned without delivering it. Such cancellation is latched as
+driver interruption, STOP is requested, and the driver continues through
+terminal reconciliation. An unexpectedly **cancelled owner task** raises an
+error instead of spinning forever on repeated `CancelledError`.
+
+Offline regression timing holds cleanup through both intended terminal-waiter
+cancellations, rather than relying on a fixed helper timeout to force release.
+A separate owner-already-completed fixture tests pending cancellation after
+local owner SUCCESS and requires driver BLOCKED/nonzero without altering the
+owner's journal evidence. The owner baseline remains untouched.

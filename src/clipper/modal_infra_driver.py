@@ -112,8 +112,13 @@ def run_infrastructure_experiment(
         while True:
             try:
                 result = await owner.terminal()
+                # A completed owner await may return without delivering a
+                # cancellation already pending on this driver task.
+                await asyncio.sleep(0)
                 break
             except asyncio.CancelledError:
+                if owner.task is not None and owner.task.cancelled():
+                    raise RuntimeError("Owner task cancelled unexpectedly") from None
                 observation_cancelled = True
                 owner.request_stop()
                 current = asyncio.current_task()
