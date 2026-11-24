@@ -467,9 +467,14 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     fake_bin = tmp_path / "commands"
     fake_bin.mkdir()
     fake_gh = fake_bin / "gh"
+    remote_archive = (
+        tmp_path / "synthetic-host-root"
+    ) / "book-candidates/private-host/chapter-recovery.tar"
+    remote_archive.parent.mkdir(parents=True)
+    remote_archive.write_bytes(source.read_bytes() + (b"corrupted" if tamper_archive else b""))
     fake_gh.write_text(
         f"#!{sys.executable}\n"
-        "import datetime,json,os,pathlib,shutil,sys\n"
+        "import datetime,json,os,pathlib,shutil,subprocess,sys\n"
         "a=sys.argv[1:]\n"
         "with open(os.environ['MOCK_LOG'],'a') as f: f.write(' '.join(a)+'\\n')\n"
         "if a[:2]==['api','-X']:\n"
@@ -485,14 +490,15 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         "'machine':{'cpus':4,'memory_in_bytes':17179869184,"
         "'storage_in_bytes':34359738368}})); sys.exit(0)\n"
         "if a[:2]==['codespace','ssh']:\n"
+        "  if 'exec cat -- ' in a[-1]:\n"
+        "    assert '-T' in a, a\n"
+        "    completed=subprocess.run(['bash','-c',a[-1]],capture_output=True,check=False)\n"
+        "    sys.stdout.buffer.write(completed.stdout); sys.exit(completed.returncode)\n"
         "  if ' recover ' in (' '+ ' '.join(a)+' '):\n"
         "    print(pathlib.Path(os.environ['MOCK_RECEIPT']).read_text())\n"
         "  sys.exit(0)\n"
         "if a[:2]==['codespace','cp']:\n"
-        "  if 'chapter-recovery.tar' in ' '.join(a):\n"
-        "    shutil.copyfile(os.environ['MOCK_ARCHIVE'],a[-1])\n"
-        "    if os.environ['MOCK_TAMPER']=='true':\n"
-        "      with open(a[-1],'ab') as f: f.write(b'corrupted')\n"
+        "  assert 'chapter-recovery.tar' not in ' '.join(a)\n"
         "  sys.exit(0)\n"
         "sys.exit(3)\n",
         encoding="utf-8",
@@ -528,6 +534,10 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     assert result.returncode != 0  # Invalid synthetic signer prevents host setup.
     actions = log.read_text(encoding="utf-8")
     assert "api -X POST" in actions and "api -X DELETE" in actions
+    assert "codespace cp" not in "\n".join(
+        call for call in actions.splitlines() if "chapter-recovery.tar" in call
+    )
+    assert " -T " in actions and "exec cat -- " in actions
     folder = tmp_path / "owner-private-recovery/synthetic-private-host"
     verification = json.loads((folder / "retrieval-verification.json").read_bytes())
     cleanup = json.loads((folder / "host-cleanup-verification.json").read_bytes())
