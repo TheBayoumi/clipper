@@ -1,4 +1,5 @@
 """Offline Modal qualification: fake backend only, no SDK import or provider calls."""
+
 from __future__ import annotations
 
 import asyncio
@@ -377,12 +378,15 @@ def test_sdk_explicit_client_workspace_and_resource_wiring() -> None:
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("failed_step", [
-    ("INTENT", "app_context_enter"),
-    ("RETURN", "app_context_enter"),
-    ("INTENT", "sandbox_1_create"),
-    ("RETURN", "sandbox_1_create"),
-])
+@pytest.mark.parametrize(
+    "failed_step",
+    [
+        ("INTENT", "app_context_enter"),
+        ("RETURN", "app_context_enter"),
+        ("INTENT", "sandbox_1_create"),
+        ("RETURN", "sandbox_1_create"),
+    ],
+)
 def test_journal_failure_does_not_skip_teardown(
     tmp_path: Path, failed_step: tuple[str, str]
 ) -> None:
@@ -405,18 +409,27 @@ def test_journal_failure_does_not_skip_teardown(
         backend = FakeBackend()
         owner = QualificationOwner(
             backend,
-            Intent("explicit-workspace", "qualification", "a" * 40,
-                   "modal-cpu-synthetic-persistence"),
+            Intent(
+                "explicit-workspace", "qualification", "a" * 40, "modal-cpu-synthetic-persistence"
+            ),
             FlakyLedger(tmp_path / "private" / "ledger.jsonl"),
         )
         owner.start()
         result = await owner.terminal()
         assert result["primary_error"] == "OSError"
-        assert backend.events[-1:] == ["app_exit"] if failed_step[1] != "app_context_enter" or failed_step[0] == "RETURN" else backend.events == ["verify"]
+        assert (
+            backend.events[-1:] == ["app_exit"]
+            if failed_step[1] != "app_context_enter" or failed_step[0] == "RETURN"
+            else backend.events == ["verify"]
+        )
         assert len(backend.sandboxes) <= 1
         if backend.sandboxes:
             assert "poll_sb-synthetic-1" in backend.events
-        assert not any(x == "create" for x in backend.events[backend.events.index("create") + 1:]) if "create" in backend.events else True
+        assert (
+            not any(x == "create" for x in backend.events[backend.events.index("create") + 1 :])
+            if "create" in backend.events
+            else True
+        )
 
     asyncio.run(exercise())
 
@@ -435,8 +448,10 @@ def test_unknown_create_no_retry_and_durable_intent(tmp_path: Path) -> None:
         assert result["primary_error"] == "OSError"
         assert backend.events.count("create") == 1
         assert backend.events[-2:] == ["volume_exit", "app_exit"]
-        assert any(x["operation"] == "INTENT" and x.get("step") == "sandbox_1_create"
-                   for x in _events(tmp_path))
+        assert any(
+            x["operation"] == "INTENT" and x.get("step") == "sandbox_1_create"
+            for x in _events(tmp_path)
+        )
 
     asyncio.run(exercise())
 
