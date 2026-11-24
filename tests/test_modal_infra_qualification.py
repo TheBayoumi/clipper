@@ -160,12 +160,15 @@ def test_offline_exact_bytes_sequential_termination_and_ledger(tmp_path: Path) -
         assert hashlib.sha256(backend.stored).hexdigest() == DIGEST
         entries = _events(tmp_path)
         assert [x["step"] for x in entries if x["operation"] == "INTENT"][:3] == [
-            "app_context_enter", "volume_context_enter", "sandbox_1_create"
+            "app_context_enter",
+            "volume_context_enter",
+            "sandbox_1_create",
         ]
-        assert [x["object_id"] for x in entries if x["operation"] == "RETURN"
-                and x["step"].endswith("_create")] == [
-                    "sb-synthetic-1", "sb-synthetic-2"
-                ]
+        assert [
+            x["object_id"]
+            for x in entries
+            if x["operation"] == "RETURN" and x["step"].endswith("_create")
+        ] == ["sb-synthetic-1", "sb-synthetic-2"]
     asyncio.run(exercise())
 
 
@@ -216,10 +219,13 @@ def test_repeated_caller_cancel_retains_owner_and_cleans_late_handle(
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("chunks", [
-    [b"READY:ok\n" + b"x" * 200000],
-    [b"RE", b"ADY:ok\n", b"x" * 200000],
-])
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        [b"READY:ok\n" + b"x" * 200000],
+        [b"RE", b"ADY:ok\n", b"x" * 200000],
+    ],
+)
 def test_readiness_ignores_suffix_and_closes_on_owner(tmp_path: Path, chunks: list[bytes]) -> None:
     async def exercise() -> None:
         iterator = Iterator(chunks)
