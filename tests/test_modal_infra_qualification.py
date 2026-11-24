@@ -838,3 +838,150 @@ def test_sdk_combined_async_contexts_use_single_explicit_client() -> None:
         assert events == ["app_enter", "volume_enter", "volume_exit", "app_exit"]
 
     asyncio.run(exercise())
+
+
+def test_sdk_cpu_transport_helpers_use_supplied_handles_only() -> None:
+    from types import SimpleNamespace
+
+    async def exercise() -> None:
+        calls: list[object] = []
+
+        class Volume:
+            def read_file(self, path: str) -> list[bytes]:
+                calls.append(("volume_path", path))
+                return [DATA[:4], DATA[4:]]
+
+        class Sandbox:
+            stdout = ["READY:ok\n"]
+
+            def terminate(self, *, wait: bool) -> None:
+                calls.append(("terminate_wait", wait))
+
+            def poll(self) -> int:
+                calls.append("poll")
+                return 137
+
+        backend = SDKBackend(SimpleNamespace(), object(), "qualification")
+        output = await backend.stdout_chunks(Sandbox())
+        assert list(output) == ["READY:ok\n"]
+        volume = await backend.volume_chunks(Volume())
+        assert b"".join(volume) == DATA
+        sandbox = Sandbox()
+        await backend.terminate(sandbox)
+        assert await backend.poll(sandbox) == 137
+        assert calls == [
+            ("volume_path", "infra-check.bin"),
+            ("terminate_wait", True),
+            "poll",
+        ]
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("missing", ["sdk", "client", "environment"])
+def test_sdk_backend_requires_explicit_injected_dependencies(missing: str) -> None:
+    sdk: object | None = None if missing == "sdk" else object()
+    client: object | None = None if missing == "client" else object()
+    env = "" if missing == "environment" else "qualification"
+    with pytest.raises(ValueError, match="Explicit SDK/client/environment"):
+        SDKBackend(sdk, client, env)
+
+
+def test_ledger_rejects_symlink_world_readable_and_partial_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    root = tmp_path / "private"
+    root.mkdir()
+    target = root / "target.jsonl"
+    target.write_text("{}\n")
+    target.chmod(0o600)
+    (root / "alias.jsonl").symlink_to(target)
+    with pytest.raises(ValueError, match="Symlink"):
+        Ledger(root / "alias.jsonl")
+    target.chmod(0o644)
+    with pytest.raises(ValueError, match="owner-private"):
+        Ledger(target)
+    target.chmod(0o600)
+    ledger = Ledger(target)
+    try:
+        original_write = os.write
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "write", lambda fd, data: len(data) - 1)
+            with pytest.raises(OSError, match="Incomplete journal record"):
+                ledger.record(operation="INTENT", step="synthetic")
+        assert callable(original_write)
+    finally:
+        ledger.close()
+
+
+def test_async_iterator_eof_and_invalid_readiness_type() -> None:
+    async def exercise() -> None:
+        async def chunks() -> Any:
+            yield b"ABC"
+            yield b"DEF"
+
+        assert await read_exact(chunks()) == b"ABCDEF"
+        with pytest.raises(ValueError, match="text or bytes"):
+            await read_first_line(Iterator([object()]))  # type: ignore[list-item]
+
+    asyncio.run(exercise())
+
+
+def test_owner_prestart_double_start_and_postterminal_observe(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        backend = FakeBackend()
+        owner = _owner(tmp_path, backend)
+        with pytest.raises(ValueError, match="not started"):
+            await owner.observe()
+        with pytest.raises(ValueError, match="not started"):
+            await owner.terminal()
+        owner.start()
+        with pytest.raises(ValueError, match="start twice"):
+            owner.start()
+        result = await owner.terminal()
+        assert result["exact_bytes"]
+        assert await owner.observe() == result
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("context_kind", ["app", "volume"])
+def test_context_enter_unknown_id_fail_closed_without_create(
+    tmp_path: Path, context_kind: str
+) -> None:
+    class FailedEntry(Context):
+        async def __aenter__(self) -> Context:
+            self.backend.events.append(self.name + "_enter")
+            raise OSError("Synthetic context entered without returned handle")
+
+    class BrokenBackend(FakeBackend):
+        def app_context(self) -> Context:
+            return FailedEntry(self, "app") if context_kind == "app" else super().app_context()
+
+        def volume_context(self) -> Context:
+            return (
+                FailedEntry(self, "volume")
+                if context_kind == "volume"
+                else super().volume_context()
+            )
+
+    async def exercise() -> None:
+        backend = BrokenBackend()
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        result = await owner.terminal()
+        assert result["primary_error"] == "OSError"
+        assert "create" not in backend.events
+        if context_kind == "app":
+            assert backend.events == ["verify", "app_enter"]
+        else:
+            assert backend.events == ["verify", "app_enter", "volume_enter", "app_exit"]
+        assert any(
+            entry["operation"] == "UNKNOWN_ID_OUTCOME"
+            and entry.get("step") == context_kind + "_context_enter"
+            for entry in _events(tmp_path)
+        )
+
+    asyncio.run(exercise())
