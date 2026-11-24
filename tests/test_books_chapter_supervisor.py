@@ -487,6 +487,11 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     if stream_fault == "wrong_receipt":
         receipt["archive_sha256"] = "0" * 64
         response.write_text(json.dumps(receipt), encoding="utf-8")
+    if stream_fault == "oversize":
+        # No declared size: exercise the receiver's unconditional 800MB cap
+        # through a scaled-down test-only threshold, not preflight rejection.
+        receipt.pop("archive_bytes")
+        response.write_text(json.dumps(receipt), encoding="utf-8")
     if stream_fault == "wrong_size":
         receipt["archive_bytes"] = source.stat().st_size - 100
         response.write_text(json.dumps(receipt), encoding="utf-8")
@@ -517,6 +522,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         "  if 'exec cat -- ' in a[-1]:\n"
         "    assert '-T' in a, a\n"
         "    fault=os.environ['MOCK_STREAM_FAULT']\n"
+        "    pathlib.Path(os.environ['MOCK_TRANSFER_PID']).write_text(str(os.getpid()))\n"
         "    if fault in ('hung','signal'):\n"
         "      pathlib.Path(os.environ['MOCK_STREAM_ENTERED']).touch()\n"
         "      time.sleep(120)\n"
@@ -564,6 +570,8 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             "MOCK_STREAM_FAULT": stream_fault,
             "MOCK_FOREIGN_MARK": str(tmp_path / "foreign-host-id"),
             "MOCK_STREAM_ENTERED": str(tmp_path / "stream-entered"),
+            "MOCK_MAX_STAGED_SIZE": str(tmp_path / "max-staged-size"),
+            "MOCK_TRANSFER_PID": str(tmp_path / "transfer-pid"),
         }
     )
     env.pop("CODESPACES", None)
@@ -577,6 +585,15 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         assert "1024 * 1024, limit - used + 1" in raw
         raw = raw.replace("limit = 800_000_000", "limit = 4096", 1)
         raw = raw.replace("1024 * 1024, limit - used + 1", "1024, limit - used + 1", 1)
+        bound_probe = "if used + len(block) > limit:\\n            sys.exit(2)"
+        assert bound_probe in raw
+        raw = raw.replace(
+            bound_probe,
+            'if used + len(block) > limit:\\n'
+            '            open(os.environ["MOCK_MAX_STAGED_SIZE"], "w").write(str(used))\\n'
+            '            sys.exit(2)',
+            1,
+        )
         script.write_text(raw)
     if stream_fault == "signal":
         import signal
@@ -666,6 +683,17 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         not tamper_archive and stream_fault == "none"
     )
     assert not list(folder.glob(".recovery-stage.*"))
+    if stream_fault == "oversize":
+        assert int((tmp_path / "max-staged-size").read_text()) == 4096
+    if stream_fault in {"hung", "signal", "oversize", "partial_exit"}:
+        transport_pid = tmp_path / "transfer-pid"
+        if transport_pid.exists():
+            try:
+                os.kill(int(transport_pid.read_text()), 0)
+            except ProcessLookupError:
+                pass
+            else:
+                pytest.fail("recovery stream left a live gh subprocess")
     assert "fabricated fixture text" not in result.stdout + result.stderr
     assert "PRIVATE_SYNTHETIC_CANARY" not in result.stdout + result.stderr
     assert (folder.stat().st_mode & 0o077) == 0
@@ -699,16 +727,18 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         stopped = Path(env["MOCK_STOP"])
         stopped.unlink(missing_ok=True)
         failed_promotion = subprocess.run(
-            ["bash", str(injected)], env=env, capture_output=True, text=True,
-            timeout=30, check=False,
+            ["bash", str(injected)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
         assert failed_promotion.returncode != 0
         assert "api -X DELETE" in log.read_text()
         assert os.readlink(folder / "recovery-current") == previous_pointer
         assert all((folder / name).read_bytes() == body for name, body in baseline.items())
-        assert "PRIVATE_SYNTHETIC_CANARY" not in (
-            failed_promotion.stdout + failed_promotion.stderr
-        )
+        assert "PRIVATE_SYNTHETIC_CANARY" not in (failed_promotion.stdout + failed_promotion.stderr)
         # Drive the REAL supervisor loop through one successful heartbeat,
         # a verified owner-private partial archive, then a later failed
         # heartbeat. Accelerate only checkpoint schedule in a temp shell copy.
