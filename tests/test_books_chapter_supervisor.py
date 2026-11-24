@@ -7,6 +7,7 @@ import io
 import json
 import os
 import subprocess
+from contextlib import suppress
 import sys
 import tarfile
 import time
@@ -2259,7 +2260,5 @@ def test_exact_recovery_receiver_inner_popen_startup_interruption(
             child.communicate(timeout=5)
         # Cleanup only the synthetic process group established for this test.
         if producer_pgid.exists():
-            try:
+            with suppress(ProcessLookupError):
                 os.killpg(int(producer_pgid.read_text()), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
