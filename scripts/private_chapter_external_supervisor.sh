@@ -350,7 +350,7 @@ stream_recovery_archive() {
   # One bounded parent owns and reaps its SSH child, including on timeout.
   # A shell pipeline killed as a group can orphan unreaped zombie children.
   critical recovery_copy python3 -c '
-import json, os, signal, subprocess, sys
+import json, os, signal, subprocess, sys, time
 name, remote, target, receipt_path = sys.argv[1:]
 limit = 800_000_000
 with open(receipt_path, "rb") as source:
@@ -364,16 +364,26 @@ proc = None
 def end_child():
     if proc is None:
         return
-    if proc.poll() is None:
-        try:
-            proc.terminate()
-        except ProcessLookupError:
-            pass
+    # The SSH CLI can exit while a subprocess still holds stdout open.
+    # Signal its separate process group regardless of leader state.
     try:
-        proc.wait(timeout=0.7)
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=0.2)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=0.7)
+        pass
+    # Always escalate to the whole group, not just the direct CLI process.
+    # This also catches a TERM-resistant descendant after its leader exited.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=0.4)
+    except subprocess.TimeoutExpired:
+        pass
 def interrupted(signum, _frame):
     end_child()
     sys.exit(128 + signum)
@@ -384,7 +394,7 @@ try:
         ["gh", "codespace", "ssh", "-c", name, "--", "-T",
          "exec cat -- " + chr(39) + remote + chr(39)],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL, close_fds=True,
+        stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
     )
     if proc.stdout is None:
         sys.exit(2)
@@ -454,12 +464,13 @@ if h.hexdigest() != created["archive_sha256"]:
     sys.exit(2)
 with tarfile.open(archive_path, mode="r:") as source:
     members = source.getmembers()
-    # tarfile accepts non-TAR bytes after EOF. This recovery format is created
-    # with standard 10 KiB tarfile records; require only zero-filled padding
-    # after the last member, including the two mandatory zero EOF blocks.
-    trailer_size = archive_path.stat().st_size - source.offset
-    if (archive_path.stat().st_size % 10240 != 0
-        or not 1024 <= trailer_size <= 10240):
+    # tarfile mode="w" writes two 512-byte EOF blocks and then pads to
+    # its 10 KiB record boundary. Padding can exceed 10 KiB when the last
+    # member ends near a record boundary; derive the exact legal length.
+    end_of_members = source.offset
+    expected_total = ((end_of_members + 1024 + 10239) // 10240) * 10240
+    trailer_size = expected_total - end_of_members
+    if archive_path.stat().st_size != expected_total:
         sys.exit(2)
     with archive_path.open("rb") as raw_archive:
         raw_archive.seek(source.offset)
@@ -1040,8 +1051,12 @@ with open(sys.argv[1], "w", encoding="utf-8") as f:
                "host_cleanup_status":"NOT_YET_REST_VERIFIED"}, f)
 ' "$destination/retrieval-verification.json" || true
   fi
-  # Fallback safe phase-only checkpoint, still within the same retrieval cap.
-  if [[ ! -e "$destination/retrieval-verification.json" ]] && identity_matches; then
+  # A new INCOMPLETE report must not suppress the independent phase-only
+  # fallback. Never modify the status of an existing verified archive/bundle.
+  # In particular, an earlier verified archive keeps its exact report/status.
+  if [[ ! -e "$destination/chapter-recovery.tar" &&
+        ! -L "$destination/chapter-recovery.tar" &&
+        ! -L "$destination/recovery-current" ]] && identity_matches; then
     bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
       "cd /workspaces/clipper && if [ -x .venv/bin/python ]; then .venv/bin/python -m clipper.books.chapter_host status --artifact-root '$PRIVATE_CHAPTER_ROOT'; else PYTHONPATH=/workspaces/clipper/src python -m clipper.books.chapter_host status --artifact-root '$PRIVATE_CHAPTER_ROOT'; fi" \
       >"$session/safe-status.json" 2>/dev/null || true
