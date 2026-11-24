@@ -829,6 +829,31 @@ checkpoint_private() (
     return 2
   fi
   identity_matches || { rm -rf -- "$stage"; return 2; }
+  # Do not assign a VERIFIED directory name to a valid empty/status-only TAR.
+  # Reject before rename; a prior pointer and its archive remain unchanged.
+  if ! critical archive_verification python3 -c '
+import json,pathlib,sys
+folder=pathlib.Path(sys.argv[1])
+report=folder/"retrieval-verification.json"
+archive=folder/"chapter-recovery.tar"
+if not report.is_file() or not archive.is_file() or archive.is_symlink():
+    sys.exit(2)
+data=json.loads(report.read_bytes())
+count=data.get("recovered_file_count")
+status=data.get("retrieval_status")
+scope=data.get("output_scope")
+if (data.get("schema")!="clipper-private-owner-recovery-verification-v1"
+    or data.get("archive_integrity_status")!="VERIFIED"
+    or type(count) is not int or count<=0
+    or (scope,status) not in {
+        ("COMPLETE","VERIFIED_PRIVATE_ARCHIVE"),
+        ("PARTIAL","VERIFIED_PRIVATE_ARCHIVE_PARTIAL"),
+    }):
+    sys.exit(2)
+' "$stage" >/dev/null 2>&1; then
+    rm -rf -- "$stage"
+    return 2
+  fi
   now="$(date -u +%s)"
   final="$journal_dir/verified-snapshot-$now"
   if [[ -e "$final" ]] || ! mv -T -- "$stage" "$final"; then
