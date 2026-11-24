@@ -303,11 +303,22 @@ class QualificationOwner:
     async def _operation(self, name: str, action: Any, *, acquisition: bool = False) -> Any:
         if acquisition and self.stopped.is_set():
             raise RuntimeError("STOP_LATCHED")
-        self._record("INTENT", step=name)
+        try:
+            self._record("INTENT", step=name)
+        except OSError:
+            if acquisition:
+                raise
+            # Cleanup is mandatory even if the evidence sink is unavailable.
+            self._result["cleanup_errors"].append("JournalIntentFailed")  # type: ignore[union-attr]
         self.unresolved.add(name)
         try:
             result = await action()
-            self._record("RETURN", step=name, object_id=str(getattr(result, "object_id", "")))
+            try:
+                self._record("RETURN", step=name, object_id=str(getattr(result, "object_id", "")))
+            except OSError:
+                if acquisition:
+                    raise
+                self._result["cleanup_errors"].append("JournalReturnFailed")  # type: ignore[union-attr]
             return result
         finally:
             self.unresolved.discard(name)
