@@ -304,9 +304,7 @@ class QualificationOwner:
         self.stopped.set()
         self._safe_record("UNKNOWN_ID_OUTCOME", **item)
 
-    async def _await_operation(
-        self, step: str, action: Any, *, acquisition: bool = False
-    ) -> Any:
+    async def _await_operation(self, step: str, action: Any, *, acquisition: bool = False) -> Any:
         """Track every owned await, including streams and teardown."""
         self.active_operations.add(step)
         try:
@@ -481,9 +479,7 @@ class QualificationOwner:
             raise RuntimeError("STOP_LATCHED")
         self._record("INTENT", step=step)
         try:
-            handle = await self._await_operation(
-                step, context.__aenter__, acquisition=True
-            )
+            handle = await self._await_operation(step, context.__aenter__, acquisition=True)
         except BaseException:
             self._unknown(kind, step)
             raise
@@ -541,9 +537,7 @@ class QualificationOwner:
             except OSError:
                 self._unknown("volume", "volume_context_enter", volume_id)
                 raise
-            await self._sandbox(
-                app, volume, WRITE_SCRIPT, ("READY:" + DIGEST).encode(), 1
-            )
+            await self._sandbox(app, volume, WRITE_SCRIPT, ("READY:" + DIGEST).encode(), 1)
             if self.stopped.is_set():
                 raise RuntimeError("STOP_LATCHED")
             await self._sandbox(
