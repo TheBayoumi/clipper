@@ -220,7 +220,7 @@ owner_recovery_safe=0
 rest_failure_category() {
   if [[ -f "$session/rest-failure-category" ]]; then
     case "$(cat "$session/rest-failure-category")" in
-      TRANSPORT|TIMEOUT|MALFORMED|CONFIRMED_MISMATCH)
+      TRANSPORT|TIMEOUT|MALFORMED|CONFIRMED_MISMATCH|DISALLOWED_STATE)
         cat "$session/rest-failure-category"; return ;;
     esac
   fi
@@ -245,7 +245,7 @@ record_rest_failure() {
     timeout --signal=TERM --kill-after=1s 2s python3 -c '
 import json,os,pathlib,sys
 root=pathlib.Path(sys.argv[1]); category=sys.argv[2]; attempt=int(sys.argv[3])
-if category not in {"TRANSPORT","TIMEOUT","MALFORMED","CONFIRMED_MISMATCH"}:
+if category not in {"TRANSPORT","TIMEOUT","MALFORMED","CONFIRMED_MISMATCH","DISALLOWED_STATE"}:
     sys.exit(2)
 verified=sys.argv[4]=="1"
 out={"schema":"clipper-owner-rest-failure-v1",
@@ -1425,9 +1425,11 @@ try:
         or repo["full_name"]!="TheBayoumi/clipper"
         or obj["created_at"]!=os.environ["SUPERVISED_CREATED_AT"]
         or (machine["cpus"],machine["memory_in_bytes"],machine["storage_in_bytes"])
-            !=(4,17179869184,34359738368)
-        or state not in {"Available","Created","Starting","Provisioning","Queued","Rebuilding"}):
+            !=(4,17179869184,34359738368)):
         sys.exit(23)
+    # A correctly pinned host in Shutdown is not a foreign host.
+    if state not in {"Available","Created","Starting","Provisioning","Queued","Rebuilding"}:
+        sys.exit(24)
     print(state)
 except (ValueError,TypeError,KeyError,AttributeError,UnicodeDecodeError,OSError):
     sys.exit(22)
@@ -1435,6 +1437,7 @@ except (ValueError,TypeError,KeyError,AttributeError,UnicodeDecodeError,OSError)
   if (( rc != 0 )); then
     category=MALFORMED
     if (( rc == 23 )); then category=CONFIRMED_MISMATCH; fi
+    if (( rc == 24 )); then category=DISALLOWED_STATE; fi
     if (( rc == 124 || rc == 137 )); then category=TIMEOUT; fi
     record_rest_failure "$category" 1
     echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_STATE_REST_$category" >&2
