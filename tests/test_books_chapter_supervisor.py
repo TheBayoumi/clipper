@@ -782,22 +782,22 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         counter.unlink(missing_ok=True)
         timed = fake_gh.read_text(encoding="utf-8")
         timed = timed.replace(
-            "import datetime,json,os,pathlib,shutil,sys\\n",
-            "import datetime,json,os,pathlib,shutil,sys,time\\n",
+            "import datetime,json,os,pathlib,shutil,sys\n",
+            "import datetime,json,os,pathlib,shutil,sys,time\n",
         )
         timed = timed.replace(
-            "if 'clipper.books.chapter_host status' in ' '.join(a):\\n",
-            "if 'clipper.books.chapter_host status' in ' '.join(a):\\n    time.sleep(7)\\n",
+            "if 'clipper.books.chapter_host status' in ' '.join(a):\n",
+            "if 'clipper.books.chapter_host status' in ' '.join(a):\n    time.sleep(7)\n",
         )
         timed = timed.replace(
-            "  if 'chapter-recovery.tar' in ' '.join(a):\\n",
-            "  if 'chapter-recovery.tar' in ' '.join(a):\\n    time.sleep(7)\\n",
+            "  if 'chapter-recovery.tar' in ' '.join(a):\n",
+            "  if 'chapter-recovery.tar' in ' '.join(a):\n    time.sleep(7)\n",
         )
         timed = timed.replace(
-            "    path.write_text(str(count))\\n",
-            "    path.write_text(str(count))\\n"
-            "    with open(os.environ['MOCK_HEARTBEAT_STAMPS'],'a') as stamp:\\n"
-            "      stamp.write(str(time.time())+'\\\\n')\\n",
+            "    path.write_text(str(count))\n",
+            "    path.write_text(str(count))\n"
+            "    with open(os.environ['MOCK_HEARTBEAT_STAMPS'],'a') as stamp:\n"
+            "      stamp.write(str(time.time())+'\\\n')\n",
         )
         fake_gh.write_text(timed, encoding="utf-8")
         stamps = tmp_path / "heartbeat-copy-monotonic-stamps"
