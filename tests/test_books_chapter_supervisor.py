@@ -578,17 +578,20 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         original = _SCRIPT.read_text(encoding="utf-8")
         assert 'last_checkpoint_epoch="$last_phase_poll_epoch"' in original
         controlled.write_text(
-            original.replace('last_checkpoint_epoch="$last_phase_poll_epoch"',
-                             "last_checkpoint_epoch=0", 1).replace(
-                                 'last_phase_poll_epoch="$(date -u +%s)"',
-                                 'last_phase_poll_epoch=0', 1),
+            original.replace(
+                'last_checkpoint_epoch="$last_phase_poll_epoch"', "last_checkpoint_epoch=0", 1
+            ).replace('last_phase_poll_epoch="$(date -u +%s)"', "last_phase_poll_epoch=0", 1),
             encoding="utf-8",
         )
         stopped = Path(env["MOCK_STOP"])
         stopped.unlink(missing_ok=True)
         first = subprocess.run(
-            ["bash", str(controlled)], env=env, capture_output=True, text=True,
-            timeout=35, check=False,
+            ["bash", str(controlled)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=35,
+            check=False,
         )
         assert first.returncode != 0
         pointer_path = folder / "latest-verified-snapshot.json"
@@ -600,7 +603,8 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         assert (verified / "retrieval-verification.json").is_file()
         safe_phase = json.loads((folder / "owner-safe-phase.json").read_text())
         assert safe_phase["chapters"] == {
-            "1": "AWAITING_HUMAN_REVIEW", "7": "NOT_STARTED",
+            "1": "AWAITING_HUMAN_REVIEW",
+            "7": "NOT_STARTED",
         }
         assert safe_phase["codespace_id"] == 12
         exit_reason = json.loads((folder / "owner-exit-reason.json").read_text())
@@ -613,8 +617,12 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         counter.unlink(missing_ok=True)
         env["MOCK_TAMPER"] = "true"
         second = subprocess.run(
-            ["bash", str(controlled)], env=env, capture_output=True, text=True,
-            timeout=35, check=False,
+            ["bash", str(controlled)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=35,
+            check=False,
         )
         assert second.returncode != 0
         assert json.loads(pointer_path.read_text()) == pointer
