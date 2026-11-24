@@ -495,10 +495,7 @@ def test_real_local_synthetic_child_scripts_byte_exact(tmp_path: Path) -> None:
     # path redirected to a temporary directory; no Modal or /data writes.
     source = tmp_path / "infra-check.bin"
     writer = WRITE_SCRIPT.replace("/data/infra-check.bin", str(source))
-    writer = writer.replace(
-        "subprocess.run(['sync','/data'],check=True,timeout=15)",
-        "os.sync()",
-    ).replace("while True: time.sleep(10)", "time.sleep(0)")
+    writer = writer.replace("while True: time.sleep(10)", "time.sleep(0)")
     reader = READ_SCRIPT.replace("/data/infra-check.bin", str(source))
     reader = reader.replace("while True: time.sleep(10)", "time.sleep(0)")
     written = subprocess.run(
@@ -978,13 +975,8 @@ def test_context_enter_unknown_id_fail_closed_without_create(
         if context_kind == "app":
             assert backend.events == ["verify", "app_enter"]
         else:
-            assert backend.events == [
-                "verify",
-                "app_enter",
-                "volume_enter",
-                "volume_exit",
-                "app_exit",
-            ]
+            # An unsuccessful __aenter__ must NOT receive __aexit__.
+            assert backend.events == ["verify", "app_enter", "volume_enter", "app_exit"]
         assert any(
             entry["operation"] == "UNKNOWN_ID_OUTCOME"
             and entry.get("step") == context_kind + "_context_enter"
