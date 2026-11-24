@@ -598,13 +598,15 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             "    print(pathlib.Path(os.environ['MOCK_SAFE_STATUS']).read_text()); sys.exit(0)\n",
         )
         gh_body = gh_body.replace(
-            "if a[:2]==['codespace','cp']:\n",
-            "if a[:2]==['codespace','cp']:\n"
+            "if a[:2]==['codespace','ssh']:\n",
+            "if a[:2]==['codespace','ssh']:\n"
             "  if 'heartbeat-envelope.watchdog.pending' in ' '.join(a):\n"
             "    path=pathlib.Path(os.environ['MOCK_HEARTBEAT_COUNT'])\n"
             "    count=int(path.read_text())+1 if path.exists() else 1\n"
             "    path.write_text(str(count))\n"
-            "    if count>=2: sys.exit(3)\n",
+            "    if count>=2: sys.exit(3)\n"
+            "    import hashlib\n"
+            "    print('ACK:'+hashlib.sha256(sys.stdin.buffer.read()).hexdigest()); sys.exit(0)\n",
         )
         fake_gh.write_text(gh_body, encoding="utf-8")
         env["MOCK_SAFE_STATUS"] = str(safe_path)
@@ -647,7 +649,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         assert exit_reason["codespace_id"] == 12
         # The initial synthetic run deliberately used an invalid signer
         # before this run; its persistent last-failure record may be older.
-        # Prove the exact heartbeat-copy failure in a fresh isolated attempt
+        # Prove the exact heartbeat-publication failure in a fresh isolated attempt
         # below rather than attributing the previous failure to this run.
         assert "fabricated fixture text" not in first.stdout + first.stderr
         # A failed *next* checkpoint must not replace or damage the verified
@@ -680,7 +682,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         transport_before = log.read_text(encoding="utf-8").count(
             "heartbeat-envelope.watchdog.pending"
         )
-        copy_failed = subprocess.run(
+        transport_failed = subprocess.run(
             ["bash", str(controlled)],
             env=env,
             capture_output=True,
@@ -688,24 +690,24 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             timeout=35,
             check=False,
         )
-        assert copy_failed.returncode != 0
+        assert transport_failed.returncode != 0
         assert (
             log.read_text(encoding="utf-8").count("heartbeat-envelope.watchdog.pending")
             > transport_before
         )
         latest_failure = json.loads((folder / "owner-last-failure.json").read_text())
-        assert latest_failure["operation"] == "heartbeat_copy", (
-            copy_failed.stderr,
+        assert latest_failure["operation"] == "heartbeat_publish", (
+            transport_failed.stderr,
             latest_failure,
         )
         assert latest_failure["exit_code"] == 3
         copy_exit = json.loads((folder / "owner-exit-reason.json").read_text())
-        assert copy_exit["most_recent_recorded_failed_operation"] == "heartbeat_copy"
-        assert copy_exit["original_exit_code"] == copy_failed.returncode
+        assert copy_exit["most_recent_recorded_failed_operation"] == "heartbeat_publish"
+        assert copy_exit["original_exit_code"] == transport_failed.returncode
         assert json.loads(pointer_path.read_text()) == pointer
         assert (verified / "chapter-recovery.tar").read_bytes() == source.read_bytes()
         assert "api -X DELETE" in log.read_text()
-        assert "fabricated fixture text" not in copy_failed.stdout + copy_failed.stderr
+        assert "fabricated fixture text" not in transport_failed.stdout + transport_failed.stderr
 
         # A legitimate, integrity-verified status-only EMPTY TAR is not an
         # output checkpoint. It must not supersede the earlier real brief.
@@ -1707,7 +1709,7 @@ def test_heartbeat_stream_shell_transport_atomic_ack_and_cleanup(tmp_path: Path,
         assert "api -X POST" not in actions
         assert not entered.exists()
         assert rc == 2
-        assert "IDENTITY_RECHECK_REST_CONFIRMED_MISMATCH" in stderr
+        assert "BOOTSTRAP_REST_CONFIRMED_MISMATCH" in stderr
         return
     if mode == "near_deadline":
         assert "codespace ssh" not in actions and not entered.exists()
