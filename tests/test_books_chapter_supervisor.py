@@ -1039,7 +1039,7 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         age = 1
     elif scenario == "free_grant_reserve_cleanup":
         age = 4 * 3600 - 240
-    elif scenario == "free_grant_invalid_past_legacy":
+    elif scenario in {"free_grant_invalid_past_legacy", "free_grant_unsigned_override"}:
         age = 2 * 3600 + 600
     elif scenario.startswith("free_grant_"):
         # Invalid execution grants must still clean up a young verified host.
@@ -1110,10 +1110,17 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         "free_grant_paid_block_missing",
         "free_grant_invalid_past_legacy",
     }
-    expired_invalid_grant = scenario == "free_grant_invalid_past_legacy"
+    expired_invalid_grant = scenario in {
+        "free_grant_invalid_past_legacy",
+        "free_grant_unsigned_override",
+    }
     assert "api -X DELETE" in actions or scenario == "identity_swap" or expired_invalid_grant, (
         result.stderr
     )
+    if scenario == "free_grant_unsigned_override":
+        assert "EXTERNAL_SUPERVISOR_TOTAL_DEADLINE_EXPIRED_NO_AUTOMATED_DELETE" in result.stderr
+        assert "codespace ssh" not in actions
+        assert "codespace cp" not in actions
     if preflight_rejected_grant:
         assert "EXTERNAL_SUPERVISOR_FREE_GRANT_REJECTED_NO_EXECUTION" in result.stderr
         assert "codespace ssh" not in actions
