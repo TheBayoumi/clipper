@@ -972,9 +972,9 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         "free_grant_paid_block_missing",
         "free_grant_unsigned_override",
     }
-    assert (
-        "api -X DELETE" in actions or scenario == "identity_swap" or preflight_rejected_grant
-    ), result.stderr
+    assert "api -X DELETE" in actions or scenario == "identity_swap" or preflight_rejected_grant, (
+        result.stderr
+    )
     if preflight_rejected_grant:
         assert "api -X DELETE" not in actions
         assert "codespace ssh" not in actions
