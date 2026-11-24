@@ -1555,8 +1555,8 @@ with open(sys.argv[7],"wb") as output:
     -out "$session/heartbeat.sig" "$session/heartbeat.json" >/dev/null
   # The signature and exact payload are a single bounded envelope. Copy to
   # a staging path, then atomically rename it on the SAME remote filesystem.
-  critical envelope_build python3 -c '
-import base64, json, sys
+  envelope_sha="$(critical envelope_build python3 -c '
+import base64, hashlib, json, sys
 payload = open(sys.argv[1], "rb").read()
 signature = open(sys.argv[2], "rb").read()
 assert len(payload) <= 8192 and len(signature) <= 8192
@@ -1565,15 +1565,31 @@ envelope = {
   "payload_b64": base64.b64encode(payload).decode("ascii"),
   "signature_b64": base64.b64encode(signature).decode("ascii"),
 }
+raw = (json.dumps(envelope, sort_keys=True) + "\n").encode()
 with open(sys.argv[3], "wb") as f:
-    f.write((json.dumps(envelope, sort_keys=True) + "\n").encode())
-' "$session/heartbeat.json" "$session/heartbeat.sig" "$session/envelope.json"
+    f.write(raw)
+print(hashlib.sha256(raw).hexdigest())
+' "$session/heartbeat.json" "$session/heartbeat.sig" "$session/envelope.json")"
+  [[ "$envelope_sha" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "EXTERNAL_SUPERVISOR_HEARTBEAT_ENVELOPE_HASH_INVALID" >&2
+    exit 2
+  }
   identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_RECHECK_REST_$(rest_failure_category)" >&2; exit 2; }
-  critical heartbeat_copy gh codespace cp -c "$CODESPACE_NAME" "$session/envelope.json" \
-    "remote:$remote/external-supervisor-heartbeat-envelope.watchdog.pending" >/dev/null
+  # One authenticated CLI SSH connection transports the entire signed envelope
+  # over stdin, verifies exact bytes on the host, atomically promotes and
+  # returns ONE content-bound ACK. No private signing key leaves the owner.
+  # On partial/duplicate input, no promotion or ACK is possible.
+  remote_pending="$remote/external-supervisor-heartbeat-envelope.watchdog.pending"
+  remote_published="$remote/external-supervisor-heartbeat-envelope.json"
+  publish_command="set -eu; umask 077; cat > '$remote_pending'; test \"\$(sha256sum '$remote_pending' | cut -d ' ' -f1)\" = '$envelope_sha'; mv -f -- '$remote_pending' '$remote_published'; test \"\$(sha256sum '$remote_published' | cut -d ' ' -f1)\" = '$envelope_sha'; printf 'ACK:%s\\n' '$envelope_sha'"
+  transport_ack="$(critical heartbeat_publish gh codespace ssh -c "$CODESPACE_NAME" -- \
+    -T "$publish_command" < "$session/envelope.json")"
+  if [[ "$transport_ack" != "ACK:$envelope_sha" ]]; then
+    record_operation heartbeat_publish "$now" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 2
+    echo "EXTERNAL_SUPERVISOR_HEARTBEAT_PUBLICATION_ACK_INVALID" >&2
+    exit 2
+  fi
   identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_RECHECK_REST_$(rest_failure_category)" >&2; exit 2; }
-  critical heartbeat_publish gh codespace ssh -c "$CODESPACE_NAME" -- \
-    "mv -f -- '$remote/external-supervisor-heartbeat-envelope.watchdog.pending' '$remote/external-supervisor-heartbeat-envelope.json'" >/dev/null
   signed_issued_epoch="$(date -u -d "$now" +%s)"
   # The signed observed_at timestamp, not local loop start or publish finish,
   # is the freshness authority. Fail closed if transport already consumed it.
