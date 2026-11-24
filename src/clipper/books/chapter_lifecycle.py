@@ -139,10 +139,18 @@ def _verified_free_allowance(
 ) -> int:
     """Validate the finite owner attestation INSIDE the verified signed payload."""
     if not isinstance(value, dict) or set(value) != {
-        "schema", "codespace_id", "codespace_name", "repository",
-        "created_at", "approved_sha", "machine", "verified_at",
-        "remaining_included_core_seconds", "total_seconds",
-        "storage_included_verified", "paid_overage_block_verified",
+        "schema",
+        "codespace_id",
+        "codespace_name",
+        "repository",
+        "created_at",
+        "approved_sha",
+        "machine",
+        "verified_at",
+        "remaining_included_core_seconds",
+        "total_seconds",
+        "storage_included_verified",
+        "paid_overage_block_verified",
     }:
         raise LifecycleStop("signed free allowance grant missing or malformed")
     machine = value.get("machine")
@@ -152,7 +160,8 @@ def _verified_free_allowance(
     now = datetime.now(UTC)
     if (
         value["schema"] != "clipper-owner-free-allowance-v1"
-        or type(value["codespace_id"]) is not int or value["codespace_id"] != code_id
+        or type(value["codespace_id"]) is not int
+        or value["codespace_id"] != code_id
         or value["codespace_name"] != name
         or value["repository"] != "TheBayoumi/clipper"
         or _utc(value["created_at"]) != created
@@ -160,9 +169,11 @@ def _verified_free_allowance(
         or not isinstance(machine, dict)
         or set(machine) != {"cpus", "memory_in_bytes", "storage_in_bytes"}
         or (machine["cpus"], machine["memory_in_bytes"], machine["storage_in_bytes"])
-            != (4, 17179869184, 34359738368)
-        or type(total) is not int or not (TOTAL_SECONDS < total <= MAX_GRANT_SECONDS)
-        or type(remaining) is not int or remaining < total * 4
+        != (4, 17179869184, 34359738368)
+        or type(total) is not int
+        or not (TOTAL_SECONDS < total <= MAX_GRANT_SECONDS)
+        or type(remaining) is not int
+        or remaining < total * 4
         or value["storage_included_verified"] is not True
         or value["paid_overage_block_verified"] is not True
         or verified_at > now + timedelta(seconds=5)
@@ -259,8 +270,14 @@ def verify_lifecycle(
     except ValueError:
         raise LifecycleStop("signed supervisor heartbeat is malformed") from None
     basic_fields = {
-        "schema", "codespace_id", "codespace_name", "created_at", "approved_sha",
-        "observed_at", "hard_deadline_at", "external_watchdog_required",
+        "schema",
+        "codespace_id",
+        "codespace_name",
+        "created_at",
+        "approved_sha",
+        "observed_at",
+        "hard_deadline_at",
+        "external_watchdog_required",
     }
     if (
         not isinstance(evidence, dict)
@@ -276,9 +293,13 @@ def verify_lifecycle(
     total_seconds = (
         _verified_free_allowance(
             evidence["free_allowance"],
-            code_id=code_id, name=codespace_name, created=created, sha=expected_sha,
+            code_id=code_id,
+            name=codespace_name,
+            created=created,
+            sha=expected_sha,
         )
-        if "free_allowance" in evidence else TOTAL_SECONDS
+        if "free_allowance" in evidence
+        else TOTAL_SECONDS
     )
     hard_deadline = created + timedelta(seconds=total_seconds)
     if _utc(evidence["hard_deadline_at"]) != hard_deadline:
