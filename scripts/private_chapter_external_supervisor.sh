@@ -250,6 +250,7 @@ os.chmod(tmp,0o600);os.replace(tmp,root/"owner-last-rest-failure.json")
 # Keep retries inside a small shared read budget. During cleanup's last
 # seconds there is only one probe, reserving time for exact-ID DELETE.
 rest_read() {
+  local operation="$1"
   local attempt rc category max_attempts start_epoch
   max_attempts=2
   if (( deadline_epoch > 0 && deadline_epoch - $(date -u +%s) <= 25 )); then
@@ -270,7 +271,7 @@ rest_read() {
     # absolute deadline and optional heartbeat caps in bounded().
     local previous_limit="$OP_LIMIT"
     if (( OP_LIMIT > 2 )); then OP_LIMIT=2; fi
-    critical rest_identity gh api "user/codespaces/$CODESPACE_NAME" \
+    critical "$operation" gh api "user/codespaces/$CODESPACE_NAME" \
       >"$session/rest-identity-response" 2>/dev/null || rc=$?
     OP_LIMIT="$previous_limit"
     if (( rc == 0 )); then return 0; fi
@@ -283,7 +284,7 @@ rest_read() {
 }
 identity_matches() {
   local category rc
-  rest_read || return 2
+  rest_read rest_identity || return 2
   rc=0
   bounded python3 -c '
 import json,os,sys
@@ -1201,31 +1202,51 @@ if any((part / ".git").exists() for part in (target, *target.parents)):
   owner_recovery_safe=1
 fi
 
-metadata="$(critical rest_metadata gh api "user/codespaces/$CODESPACE_NAME")" || {
-  echo "EXTERNAL_SUPERVISOR_CODESPACE_REST_UNAVAILABLE" >&2
+if ! rest_read rest_metadata; then
+  echo "EXTERNAL_SUPERVISOR_CODESPACE_REST_$(rest_failure_category)" >&2
   exit 2
-}
+fi
+metadata="$(cat "$session/rest-identity-response")"
 # Verify REST numeric identity and original creation clock independently of
 # ANY optional execution allowance. An invalid grant must never suppress the
 # already-approved host's identity-checked STOP/DELETE in the legacy safe clock.
+initial_rc=0
 validated="$(printf '%s' "$metadata" | bounded python3 -c '
-import datetime, json, os, sys
-x=json.load(sys.stdin)
-machine=x.get("machine") or {}
-if (x.get("name") != os.environ["CODESPACE_NAME"]
-    or type(x.get("id")) is not int or x["id"] < 1
-    or x.get("repository", {}).get("full_name") != "TheBayoumi/clipper"
-    or (machine.get("cpus"),machine.get("memory_in_bytes"),machine.get("storage_in_bytes"))
-       != (4,17179869184,34359738368)):
-    sys.exit(2)
-created=datetime.datetime.fromisoformat(x["created_at"].replace("Z","+00:00"))
-if created.tzinfo is None or created>datetime.datetime.now(datetime.timezone.utc):
-    sys.exit(2)
-print(x["id"],x["created_at"])
-')" || {
-  echo "EXTERNAL_SUPERVISOR_WRONG_HOST_IDENTITY" >&2
+import datetime,json,os,sys
+try:
+    x=json.load(sys.stdin)
+    if not isinstance(x,dict): sys.exit(22)
+    repo=x.get("repository")
+    machine=x.get("machine")
+    if (not isinstance(repo,dict) or not isinstance(machine,dict)
+        or type(x.get("id")) is not int or x["id"]<1
+        or not isinstance(x.get("name"),str)
+        or not isinstance(x.get("created_at"),str)
+        or not isinstance(repo.get("full_name"),str)
+        or not all(type(machine.get(k)) is int for k in
+                   ("cpus","memory_in_bytes","storage_in_bytes"))):
+        sys.exit(22)
+    created=datetime.datetime.fromisoformat(x["created_at"].replace("Z","+00:00"))
+    if created.tzinfo is None: sys.exit(22)
+    if created>datetime.datetime.now(datetime.timezone.utc):
+        sys.exit(23)
+    if (x["name"]!=os.environ["CODESPACE_NAME"]
+        or repo["full_name"]!="TheBayoumi/clipper"
+        or (machine["cpus"],machine["memory_in_bytes"],machine["storage_in_bytes"])
+           !=(4,17179869184,34359738368)):
+        sys.exit(23)
+    print(x["id"],x["created_at"])
+except (ValueError,TypeError,KeyError,AttributeError,UnicodeDecodeError):
+    sys.exit(22)
+')" || initial_rc=$?
+if (( initial_rc != 0 )); then
+  initial_category=MALFORMED
+  if (( initial_rc == 23 )); then initial_category=CONFIRMED_MISMATCH; fi
+  if (( initial_rc == 124 || initial_rc == 137 )); then initial_category=TIMEOUT; fi
+  record_rest_failure "$initial_category" 1
+  echo "EXTERNAL_SUPERVISOR_CODESPACE_REST_$initial_category" >&2
   exit 2
-}
+fi
 read -r codespace_id created_at <<< "$validated"
 export SUPERVISED_CODESPACE_ID="$codespace_id"
 export SUPERVISED_CREATED_AT="$created_at"
