@@ -360,42 +360,85 @@ if size is not None:
     if type(size) is not int or not 0 < size <= limit:
         sys.exit(2)
     limit = size
+# A short-lived launcher is registered BEFORE it is permitted to start gh.
+# Its stdin remains a parent-death pipe. If the receiver is SIGKILLed while
+# Popen is returning, EOF makes the launcher exit without starting gh.
+# After the handshake the launcher owns the SSH process group and kills it
+# on either parent death or normal completion, including orphan descendants.
+launcher_code = """
+import os, signal, subprocess, sys, threading
+name, remote = sys.argv[1:]
+if sys.stdin.buffer.read(1) != b"1":
+    sys.exit(2)
+child = None
+lock = threading.Lock()
+def stop_group():
+    with lock:
+        if child is not None:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                child.wait(timeout=0.4)
+            except subprocess.TimeoutExpired:
+                pass
+def parent_gone():
+    sys.stdin.buffer.read()
+    stop_group()
+    os._exit(2)
+threading.Thread(target=parent_gone, daemon=True).start()
+try:
+    with lock:
+        child = subprocess.Popen(
+            ["gh", "codespace", "ssh", "-c", name, "--", "-T",
+             "exec cat -- " + chr(39) + remote + chr(39)],
+            stdin=subprocess.DEVNULL, stdout=sys.stdout.buffer,
+            stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+        )
+    result = child.wait()
+finally:
+    stop_group()
+sys.exit(result)
+"""
 proc = None
 def end_child():
     if proc is None:
         return
-    # The SSH CLI can exit while a subprocess still holds stdout open.
-    # Signal its separate process group regardless of leader state.
+    if proc.stdin is not None and not proc.stdin.closed:
+        proc.stdin.close()
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        proc.wait(timeout=0.2)
+        proc.wait(timeout=0.8)
     except subprocess.TimeoutExpired:
-        pass
-    # Always escalate to the whole group, not just the direct CLI process.
-    # This also catches a TERM-resistant descendant after its leader exited.
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    try:
-        proc.wait(timeout=0.4)
-    except subprocess.TimeoutExpired:
-        pass
+        # The launcher has a separate session; its parent-death pipe is
+        # already closed. A stuck launcher is killed only after EOF teardown.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=0.3)
+        except subprocess.TimeoutExpired:
+            pass
 def interrupted(signum, _frame):
+    # Do not exit during Popen registration. The launcher cannot start gh
+    # before the one-byte gate, so an early interruption is safe.
+    if proc is None:
+        return
     end_child()
     sys.exit(128 + signum)
 signal.signal(signal.SIGTERM, interrupted)
 signal.signal(signal.SIGINT, interrupted)
 try:
     proc = subprocess.Popen(
-        ["gh", "codespace", "ssh", "-c", name, "--", "-T",
-         "exec cat -- " + chr(39) + remote + chr(39)],
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        [sys.executable, "-c", launcher_code, name, remote],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
     )
+    if proc.stdin is None:
+        sys.exit(2)
+    proc.stdin.write(b"1")
+    proc.stdin.flush()
     if proc.stdout is None:
         sys.exit(2)
     used = 0
