@@ -689,8 +689,8 @@ def test_actual_codespace_wrapper_dispatches_all_modes_through_shared_preflight(
             "  if int(os.environ['MOCK_LIFECYCLE_STATUS']): sys.exit(2)\n"
             "  import datetime\n"
             "  created=datetime.datetime.fromisoformat(os.environ['MOCK_CREATED'])\n"
-            "  if (datetime.datetime.now(datetime.timezone.utc)-created).total_seconds()>6900:\n"
-            "    sys.exit(2)\n"
+            "  age=(datetime.datetime.now(datetime.timezone.utc)-created).total_seconds()\n"
+            "  if age>6900 and os.environ.get('MOCK_SIGNED_GRANT')!='true': sys.exit(2)\n"
             "  print('6800'); sys.exit(0)\n"
             "if args[:3]==['-m','clipper.books.chapter_host',os.environ['MOCK_MODE']]:\n"
             "  sys.exit(int(os.environ['MOCK_HOST_STATUS']))\n"
@@ -766,6 +766,24 @@ def test_actual_codespace_wrapper_dispatches_all_modes_through_shared_preflight(
             assert records[0][:2] == ["-m", "clipper.books.chapter_lifecycle"]
             operations.unlink()
         env[mutation] = original
+    # The wrapper has no independent legacy 2-hour cutoff; for an
+    # over-two-hour host it must consume a positive result from the signed
+    # lifecycle verifier. The verifier's REAL OpenSSL acceptance is tested
+    # separately in test_real_signed_owner_free_allowance_host_lifecycle.
+    env["MOCK_CREATED"] = (datetime.now(UTC) - timedelta(hours=2, minutes=10)).isoformat()
+    env["MOCK_SIGNED_GRANT"] = "true"
+    extended = invoke()
+    assert extended.returncode == 0, extended.stderr
+    extended_ops = [json.loads(line) for line in operations.read_text().splitlines()]
+    assert len(extended_ops) == 2
+    assert "--remaining-seconds" in extended_ops[0]
+    operations.unlink()
+    env["MOCK_SIGNED_GRANT"] = "false"
+    blocked = invoke()
+    assert blocked.returncode == 2
+    assert len([json.loads(line) for line in operations.read_text().splitlines()]) == 1
+    operations.unlink()
+    env["MOCK_CREATED"] = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
     env["MOCK_HOST_STATUS"] = "124"
     timed_out = invoke()
     assert timed_out.returncode == 2
