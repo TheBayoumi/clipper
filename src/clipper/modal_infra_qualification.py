@@ -9,10 +9,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 import re
 import uuid
 from contextlib import suppress
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, TypedDict
@@ -252,7 +254,12 @@ class QualificationOwner:
         # before workspace verification or any provider context is entered.
         if isinstance(backend, SDKBackend) and backend.environment != intent.environment:
             raise ValueError("SDK environment differs from immutable run intent")
-        if decision_seconds <= 0 or reconciliation_seconds <= 0:
+        if (
+            not math.isfinite(decision_seconds)
+            or not math.isfinite(reconciliation_seconds)
+            or decision_seconds <= 0
+            or reconciliation_seconds <= 0
+        ):
             raise ValueError("Finite positive observation budgets required")
         self.backend = backend
         self.intent = intent
@@ -367,7 +374,8 @@ class QualificationOwner:
         self.stopped.set()
 
     def _snapshot(self) -> dict[str, object]:
-        return {
+        # Isolate nested owner state before giving snapshots to the journal/task.
+        return deepcopy({
             **self._result,
             "active_operations": sorted(self.active_operations),
             "unknown_outcomes": [dict(entry) for entry in self.unknown_outcomes],
@@ -377,7 +385,7 @@ class QualificationOwner:
             ],
             "evidence_errors": list(self.evidence_errors),
             "cleanup_errors": list(self.cleanup_errors),
-        }
+        })
 
     async def observe(self) -> dict[str, object]:
         if self.task is None:
@@ -389,7 +397,7 @@ class QualificationOwner:
             self._safe_record("CALLER_CANCELLED_OWNER_RETAINED")
             raise
         if done:
-            return self.task.result()
+            return deepcopy(self.task.result())
         self.request_stop()
         self._safe_record("DECISION_DEADLINE", disposition="OWNER_RETAINED_IN_LOOP")
         try:
@@ -399,7 +407,7 @@ class QualificationOwner:
             self._safe_record("CALLER_CANCELLED_OWNER_RETAINED")
             raise
         if done:
-            return self.task.result()
+            return deepcopy(self.task.result())
         self._safe_record(
             "UNRESOLVED",
             active_operations=sorted(self.active_operations),
@@ -416,7 +424,7 @@ class QualificationOwner:
         if self.task is None:
             raise ValueError("Owner not started")
         try:
-            return await asyncio.shield(self.task)
+            return deepcopy(await asyncio.shield(self.task))
         except asyncio.CancelledError:
             self.request_stop()
             self._safe_record("CALLER_CANCELLED_OWNER_RETAINED", waiter="terminal")

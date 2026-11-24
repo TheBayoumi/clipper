@@ -1508,3 +1508,138 @@ def test_success_requires_live_owner_evidence_ack_not_recovery_json(
         assert result["provider_removal"] == "UNKNOWN"
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("budget", ["decision_seconds", "reconciliation_seconds"])
+@pytest.mark.parametrize("value", [float("inf"), -float("inf"), float("nan"), 0.0, -1.0])
+def test_observation_budget_rejects_nonfinite_and_nonpositive_before_start(
+    tmp_path: Path, budget: str, value: float
+) -> None:
+    backend = FakeBackend()
+    ledger = Ledger(tmp_path / "private" / "ledger.jsonl")
+    try:
+        with pytest.raises(ValueError, match="Finite positive"):
+            QualificationOwner(
+                backend,
+                Intent(
+                    "explicit-workspace",
+                    "qualification",
+                    "a" * 40,
+                    "modal-cpu-synthetic-persistence",
+                ),
+                ledger,
+                **{budget: value},
+            )
+        assert backend.events == []
+        assert _events(tmp_path) == []
+    finally:
+        ledger.close()
+
+
+def test_pending_snapshot_mutation_cannot_modify_owner_or_later_result(tmp_path: Path) -> None:
+    class HoldSecond(FakeBackend):
+        async def create(self, app: Any, volume: Any, script: str) -> Sandbox:
+            if script == READ_SCRIPT:
+                self.hold_create = True
+            return await super().create(app, volume, script)
+
+    async def exercise() -> None:
+        backend = HoldSecond()
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        pending = await owner.observe()
+        assert pending["status"] == "UNRESOLVED"
+        assert pending["sandbox_terminal"] == ["137"]
+        pending["sandbox_terminal"].clear()
+        pending["cleanup_errors"].append("injected")
+        pending["evidence_errors"].append("injected")
+        pending["unknown_outcomes"].append({"kind": "injected"})
+        pending["active_operations"].clear()
+        pending["unresolved_ids"].append("injected")
+        pending["known_unconfirmed_sandboxes"].append({"id": "injected"})
+        pending["status"] = "SUCCESS"
+        pending["evidence_durability"] = "OWNER_ACKNOWLEDGED"
+        assert owner.sandbox_terminal == ["137"]
+        assert owner.cleanup_errors == []
+        assert owner.evidence_errors == []
+        assert owner.unknown_outcomes == []
+        assert owner.known_unconfirmed_sandboxes == {}
+        assert owner.active_operations
+        backend.release_create.set()
+        terminal = await owner.terminal()
+        assert terminal["status"] == "BLOCKED"
+        assert terminal["sandbox_terminal"] == ["137", "137"]
+        assert terminal["evidence_errors"] == []
+        assert terminal["cleanup_errors"] == []
+        assert terminal["known_unconfirmed_sandboxes"] == []
+        assert "injected" not in terminal["unresolved_ids"]
+
+    asyncio.run(exercise())
+
+
+def test_completed_public_waiters_isolate_nested_cached_result(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        owner = _owner(tmp_path, FakeBackend())
+        owner.start()
+        first = await owner.terminal()
+        assert first["status"] == "SUCCESS"
+        first["status"] = "BLOCKED"
+        first["evidence_durability"] = "UNKNOWN"
+        for field in (
+            "sandbox_terminal",
+            "cleanup_errors",
+            "evidence_errors",
+            "unknown_outcomes",
+            "active_operations",
+            "unresolved_ids",
+            "known_unconfirmed_sandboxes",
+        ):
+            first[field].append("injected")
+        second = await owner.observe()
+        third = await owner.terminal()
+        assert second["status"] == third["status"] == "SUCCESS"
+        assert second["evidence_durability"] == third["evidence_durability"] == "OWNER_ACKNOWLEDGED"
+        assert second["sandbox_terminal"] == third["sandbox_terminal"] == ["137", "137"]
+        assert second["cleanup_errors"] == third["cleanup_errors"] == []
+        assert second["evidence_errors"] == third["evidence_errors"] == []
+        assert second["unknown_outcomes"] == third["unknown_outcomes"] == []
+        second["sandbox_terminal"].clear()
+        second["status"] = "BLOCKED"
+        fourth = await owner.observe()
+        assert fourth["status"] == "SUCCESS"
+        assert fourth["sandbox_terminal"] == ["137", "137"]
+        assert owner.task is not None
+        assert owner.task.result()["status"] == "SUCCESS"
+        terminal_rows = [row for row in _events(tmp_path) if row["operation"] == "TERMINAL"]
+        assert terminal_rows[-1]["result"]["status"] == "UNCONFIRMED"
+
+    asyncio.run(exercise())
+
+
+def test_known_resource_nested_cleanup_evidence_isolated(tmp_path: Path) -> None:
+    class UnknownPoll(FakeBackend):
+        async def poll(self, sandbox: Sandbox) -> None:
+            self.events.append(f"poll_{sandbox.object_id}")
+            return None
+
+    async def exercise() -> None:
+        owner = _owner(tmp_path, UnknownPoll())
+        owner.start()
+        first = await owner.terminal()
+        assert first["status"] == "BLOCKED"
+        assert first["known_unconfirmed_sandboxes"][0]["id"] == "sb-synthetic-1"
+        first["known_unconfirmed_sandboxes"][0]["cleanup_errors"].clear()
+        first["known_unconfirmed_sandboxes"][0]["id"] = "tampered"
+        first["unknown_outcomes"].append({"kind": "tampered"})
+        first["cleanup_errors"].clear()
+        first["unresolved_ids"].clear()
+        second = await owner.observe()
+        assert second["status"] == "BLOCKED"
+        assert second["known_unconfirmed_sandboxes"][0]["id"] == "sb-synthetic-1"
+        assert second["known_unconfirmed_sandboxes"][0]["cleanup_errors"]
+        assert second["unknown_outcomes"] == []
+        assert second["cleanup_errors"]
+        assert "sb-synthetic-1" in second["unresolved_ids"]
+        assert owner.known_unconfirmed_sandboxes["sb-synthetic-1"]["cleanup_errors"]
+
+    asyncio.run(exercise())

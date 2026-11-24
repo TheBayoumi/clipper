@@ -122,3 +122,19 @@ is BLOCKED with evidence durability UNKNOWN. A restarted process or file-only
 reader cannot reconstruct fsync acknowledgement or elevate visible bytes to
 SUCCESS. No persistent external receipt, crash-recovery guarantee, resource
 removal, cost, image readiness or provider qualification is implied.
+
+
+## Candidate 2305: result isolation and finite observation
+
+**UNQUALIFIED pending exact-SHA tests, CI and independent review.**
+Every owner snapshot isolates nested evidence collections, and each public
+`observe()` / `terminal()` return is independent of cached task results.
+Mutating a returned verdict, sandbox terminal history, known-resource cleanup
+errors or unknown outcomes cannot mutate owner state, journal evidence,
+other callers, or a later terminal verdict. Pending and completed observations
+are both covered.
+
+Both observation budgets must be finite and strictly positive: NaN,
+positive/negative infinity, zero and negative durations are rejected at owner
+construction, before any provider entry. The windows remain observations only,
+not provider deadlines, cross-process supervision or removal guarantees.
