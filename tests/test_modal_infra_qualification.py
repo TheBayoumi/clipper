@@ -1276,9 +1276,7 @@ def test_pre_entry_operation_begin_journal_failure_blocks_allocation(
         assert result["primary_error"] == "OSError"
         assert result["unknown_outcomes"] == []
         assert result["active_operations"] == []
-        assert not any(
-            entry["operation"] == "UNKNOWN_ID_OUTCOME" for entry in _events(tmp_path)
-        )
+        assert not any(entry["operation"] == "UNKNOWN_ID_OUTCOME" for entry in _events(tmp_path))
         if target == "app_context_enter":
             assert backend.events == ["verify"]
         elif target == "volume_context_enter":
