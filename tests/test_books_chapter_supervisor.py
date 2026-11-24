@@ -439,6 +439,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         "runtime_status_sha256": hashlib.sha256(safe_bytes).hexdigest(),
     }
     listing_bytes = json.dumps(listing, sort_keys=True).encode()
+
     def write_fixture_tar() -> None:
         with tarfile.open(source, "w") as archive:
             for name, data in (
