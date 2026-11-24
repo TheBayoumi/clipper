@@ -304,11 +304,18 @@ class QualificationOwner:
         self.stopped.set()
         self._safe_record("UNKNOWN_ID_OUTCOME", **item)
 
-    async def _await_operation(self, step: str, action: Any) -> Any:
+    async def _await_operation(
+        self, step: str, action: Any, *, acquisition: bool = False
+    ) -> Any:
         """Track every owned await, including streams and teardown."""
         self.active_operations.add(step)
-        self._safe_record("OPERATION_BEGIN", step=step)
         try:
+            if acquisition:
+                self._record("OPERATION_BEGIN", step=step)
+                if self.stopped.is_set():
+                    raise RuntimeError("STOP_LATCHED")
+            else:
+                self._safe_record("OPERATION_BEGIN", step=step)
             return await action()
         finally:
             self.active_operations.discard(step)
@@ -413,7 +420,7 @@ class QualificationOwner:
         self._record("INTENT", step=step)
         try:
             sb = await self._await_operation(
-                step, lambda: self.backend.create(app, volume, script)
+                step, lambda: self.backend.create(app, volume, script), acquisition=True
             )
         except BaseException:
             # Provider may have allocated without returning its ID.
@@ -426,7 +433,11 @@ class QualificationOwner:
             if not isinstance(sandbox_id, str) or not sandbox_id:
                 self._unknown("sandbox", step)
                 raise ValueError("Sandbox missing object_id")
-            self._record("RETURN", step=step, object_id=sandbox_id)
+            try:
+                self._record("RETURN", step=step, object_id=sandbox_id)
+            except OSError:
+                self._unknown("sandbox", step, sandbox_id)
+                raise
             if self.stopped.is_set():
                 raise RuntimeError("STOP_LATCHED_AFTER_CREATE")
             iterator = await self._await_operation(
@@ -470,7 +481,9 @@ class QualificationOwner:
             raise RuntimeError("STOP_LATCHED")
         self._record("INTENT", step=step)
         try:
-            handle = await self._await_operation(step, context.__aenter__)
+            handle = await self._await_operation(
+                step, context.__aenter__, acquisition=True
+            )
         except BaseException:
             self._unknown(kind, step)
             raise
@@ -509,7 +522,11 @@ class QualificationOwner:
             if not isinstance(app_id, str) or not app_id:
                 self._unknown("app", "app_context_enter")
                 raise ValueError("Modal App returned without an app_id")
-            self._record("RETURN", step="app_context_enter", app_id=app_id)
+            try:
+                self._record("RETURN", step="app_context_enter", app_id=app_id)
+            except OSError:
+                self._unknown("app", "app_context_enter", app_id)
+                raise
             if self.stopped.is_set():
                 raise RuntimeError("STOP_LATCHED")
             volume_context = self.backend.volume_context()
@@ -519,7 +536,11 @@ class QualificationOwner:
             if not isinstance(volume_id, str) or not volume_id:
                 self._unknown("volume", "volume_context_enter")
                 raise ValueError("Modal Volume returned without object_id")
-            self._record("RETURN", step="volume_context_enter", object_id=volume_id)
+            try:
+                self._record("RETURN", step="volume_context_enter", object_id=volume_id)
+            except OSError:
+                self._unknown("volume", "volume_context_enter", volume_id)
+                raise
             await self._sandbox(
                 app, volume, WRITE_SCRIPT, ("READY:" + DIGEST).encode(), 1
             )
