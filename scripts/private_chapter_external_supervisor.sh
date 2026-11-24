@@ -1381,8 +1381,12 @@ bootstrap_budget() {
   (( $(date -u +%s) < bootstrap_epoch && $(date -u +%s) < execution_epoch - 60 ))
 }
 bootstrap_identity() {
-  if ! bootstrap_budget || ! identity_matches; then
-    echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_CLOCK_OR_IDENTITY_INVALID" >&2
+  if ! bootstrap_budget; then
+    echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_CLOCK_EXPIRED" >&2
+    return 2
+  fi
+  if ! identity_matches; then
+    echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_REST_$(rest_failure_category)" >&2
     return 2
   fi
 }
@@ -1391,30 +1395,51 @@ bootstrap_identity() {
 # a replaced ID could supply Available between two matching identity reads.
 bootstrap_state() {
   bootstrap_identity || return 2
-  local metadata state
-  metadata="$(bounded gh api "user/codespaces/$CODESPACE_NAME")" || return 2
-  state="$(printf '%s' "$metadata" | bounded python3 -c '
-import json, os, sys
+  local state rc category
+  rest_read rest_state || {
+    echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_STATE_REST_$(rest_failure_category)" >&2
+    return 2
+  }
+  rc=0
+  state="$(bounded python3 -c '
+import json,os,sys
 try:
-    obj = json.load(sys.stdin)
-    machine = obj.get("machine") or {}
-    state = obj["state"]
-    valid = (
-        type(obj.get("id")) is int
-        and obj["id"] == int(os.environ["SUPERVISED_CODESPACE_ID"])
-        and obj.get("name") == os.environ["CODESPACE_NAME"]
-        and obj.get("repository", {}).get("full_name") == "TheBayoumi/clipper"
-        and obj.get("created_at") == os.environ["SUPERVISED_CREATED_AT"]
-        and (machine.get("cpus"), machine.get("memory_in_bytes"),
-             machine.get("storage_in_bytes")) == (4, 17179869184, 34359738368)
-        and state in {"Available", "Created", "Starting", "Provisioning", "Queued", "Rebuilding"}
-    )
-    if not valid:
-        sys.exit(2)
+    with open(sys.argv[1],"rb") as f: raw=f.read(16385)
+    if len(raw)>16384: sys.exit(22)
+    obj=json.loads(raw)
+    if not isinstance(obj,dict): sys.exit(22)
+    machine=obj.get("machine")
+    repo=obj.get("repository")
+    state=obj.get("state")
+    if (not isinstance(machine,dict) or not isinstance(repo,dict)
+        or type(obj.get("id")) is not int
+        or not isinstance(obj.get("name"),str)
+        or not isinstance(obj.get("created_at"),str)
+        or not isinstance(repo.get("full_name"),str)
+        or not all(type(machine.get(k)) is int for k in
+                   ("cpus","memory_in_bytes","storage_in_bytes"))
+        or not isinstance(state,str)):
+        sys.exit(22)
+    if (obj["id"]!=int(os.environ["SUPERVISED_CODESPACE_ID"])
+        or obj["name"]!=os.environ["CODESPACE_NAME"]
+        or repo["full_name"]!="TheBayoumi/clipper"
+        or obj["created_at"]!=os.environ["SUPERVISED_CREATED_AT"]
+        or (machine["cpus"],machine["memory_in_bytes"],machine["storage_in_bytes"])
+            !=(4,17179869184,34359738368)
+        or state not in {"Available","Created","Starting","Provisioning","Queued","Rebuilding"}):
+        sys.exit(23)
     print(state)
-except (ValueError, TypeError, KeyError, AttributeError):
-    sys.exit(2)
-')" || return 2
+except (ValueError,TypeError,KeyError,AttributeError,UnicodeDecodeError,OSError):
+    sys.exit(22)
+' "$session/rest-identity-response")" || rc=$?
+  if (( rc != 0 )); then
+    category=MALFORMED
+    if (( rc == 23 )); then category=CONFIRMED_MISMATCH; fi
+    if (( rc == 124 || rc == 137 )); then category=TIMEOUT; fi
+    record_rest_failure "$category" 1
+    echo "EXTERNAL_SUPERVISOR_BOOTSTRAP_STATE_REST_$category" >&2
+    return 2
+  fi
   bootstrap_identity || return 2
   printf '%s\n' "$state"
 }
