@@ -79,12 +79,16 @@ data={"schema":"clipper-owner-supervisor-operation-v1","operation":op,
       "codespace_id":int(os.environ["SUPERVISED_CODESPACE_ID"]),
       "created_at":os.environ["SUPERVISED_CREATED_AT"],
       "last_verified_safe_phase":phase}
-target=root/("owner-first-failure.json" if rc else "owner-last-operation.json")
-if rc and target.exists(): sys.exit(0)
-tmp=root/(".operation-"+str(os.getpid())+".tmp")
-tmp.write_text(json.dumps(data,sort_keys=True)+"\n",encoding="utf-8")
-os.chmod(tmp,0o600)
-os.replace(tmp,target)
+targets=[root/"owner-last-operation.json"]
+if rc:
+    targets=[root/"owner-last-failure.json",root/"owner-first-failure.json"]
+for target in targets:
+    if target.name=="owner-first-failure.json" and target.exists():
+        continue
+    tmp=root/(".operation-"+str(os.getpid())+".tmp")
+    tmp.write_text(json.dumps(data,sort_keys=True)+"\n",encoding="utf-8")
+    os.chmod(tmp,0o600)
+    os.replace(tmp,target)
 ' "$journal_dir" "$operation" "$start" "$ended" "$rc" >/dev/null 2>&1 || true
 }
 operation_label() {
@@ -861,6 +865,44 @@ with open(sys.argv[1],"w",encoding="utf-8") as out:
   bounded chmod 600 "$destination/host-cleanup-verification.json" || true
 }
 
+# Capture the initiating process status BEFORE best-effort recovery and STOP.
+# The persistent first/last operation records are distinct from this exit
+# classification and must never be overwritten by later cleanup successes.
+write_owner_exit_reason() {
+  [[ "$journal_ready" == 1 ]] || return 0
+  timeout --signal=TERM --kill-after=1s 2s python3 -c '
+import json,os,pathlib,sys
+folder=pathlib.Path(sys.argv[1])
+rc=int(sys.argv[2])
+previous=folder/"owner-last-failure.json"
+allowed={"rest_metadata","rest_identity","rest_state","rest_stop","rest_delete",
+    "rest_deleted_check","key_setup","key_copy","sign_heartbeat",
+    "heartbeat_copy","heartbeat_publish","recovery_prepare","recovery_copy",
+    "safe_phase_poll","recovery_fallback","archive_verification","signal",
+    "heartbeat_build","envelope_build","bootstrap_wait"}
+operation="UNIDENTIFIED_EXIT"
+if previous.is_file() and previous.stat().st_size < 4096:
+    try:
+        last=json.loads(previous.read_bytes())
+        if (last.get("operation") in allowed
+            and last.get("codespace_id")==int(os.environ["SUPERVISED_CODESPACE_ID"])
+            and last.get("created_at")==os.environ["SUPERVISED_CREATED_AT"]):
+            operation=last["operation"]
+    except (ValueError,TypeError,OSError,KeyError): pass
+data={"schema":"clipper-owner-supervisor-exit-v1",
+      "original_exit_code":rc,
+      "exit_class":"TIMEOUT" if rc==124 else "KILLED" if rc==137
+         else "SIGNAL" if rc>=128 else "FAILURE" if rc else "NORMAL_EXIT",
+      "most_recent_recorded_failed_operation":operation,
+      "codespace_id":int(os.environ["SUPERVISED_CODESPACE_ID"]),
+      "created_at":os.environ["SUPERVISED_CREATED_AT"],
+      "retrieval_status":"NOT_YET_CONFIRMED"}
+tmp=folder/".owner-exit.tmp"
+tmp.write_text(json.dumps(data,sort_keys=True)+"\n",encoding="utf-8")
+os.chmod(tmp,0o600)
+os.replace(tmp,folder/"owner-exit-reason.json")
+' "$journal_dir" "$1" >/dev/null 2>&1 || true
+}
 # Emit a distinct sanitized category for exhausted clock versus changed host.
 cleanup_identity_failure() {
   local reason="$1"
@@ -875,6 +917,7 @@ terminate_host() {
   original_status=$?
   trap - EXIT INT TERM HUP
   set +e
+  write_owner_exit_reason "$original_status"
   # Execution/bootstrap expiry must never block original-clock cleanup.
   bootstrap_epoch=0
   execution_epoch=0
