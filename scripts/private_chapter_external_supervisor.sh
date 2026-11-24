@@ -371,38 +371,19 @@ import os, signal, subprocess, sys, threading
 name, remote = sys.argv[1:]
 if os.read(0, 1) != b"1":
     sys.exit(2)
-child = None
-lock = threading.Lock()
-def stop_group():
-    with lock:
-        if child is not None:
-            try:
-                os.killpg(child.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            try:
-                child.wait(timeout=0.4)
-            except subprocess.TimeoutExpired:
-                pass
 def parent_gone():
-    # os.read avoids a daemon thread holding BufferedReader internal locks
-    # during normal interpreter shutdown after a successful SSH exit.
+    # The SSH producer INHERITS this already-owned launcher process group.
+    # No separately-sessioned child may escape during Popen registration.
     os.read(0, 1)
-    stop_group()
-    os._exit(2)
+    os.killpg(os.getpgrp(), signal.SIGKILL)
 threading.Thread(target=parent_gone, daemon=True).start()
-try:
-    with lock:
-        child = subprocess.Popen(
-            ["gh", "codespace", "ssh", "-c", name, "--", "-T",
-             "exec cat -- " + chr(39) + remote + chr(39)],
-            stdin=subprocess.DEVNULL, stdout=sys.stdout.buffer,
-            stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
-        )
-    result = child.wait()
-finally:
-    stop_group()
-sys.exit(result)
+child = subprocess.Popen(
+    ["gh", "codespace", "ssh", "-c", name, "--", "-T",
+     "exec cat -- " + chr(39) + remote + chr(39)],
+    stdin=subprocess.DEVNULL, stdout=sys.stdout.buffer,
+    stderr=subprocess.DEVNULL, close_fds=True,
+)
+sys.exit(child.wait())
 """
 proc = None
 pending_signal = 0
@@ -414,16 +395,18 @@ def end_child():
     try:
         proc.wait(timeout=0.8)
     except subprocess.TimeoutExpired:
-        # The launcher has a separate session; its parent-death pipe is
-        # already closed. A stuck launcher is killed only after EOF teardown.
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        try:
-            proc.wait(timeout=0.3)
-        except subprocess.TimeoutExpired:
-            pass
+        pass
+    # One group owns launcher, gh, and all non-detached descendants from
+    # before inner Popen returns until final teardown. Kill the group even
+    # after the launcher exits, to reap any remaining SSH descendants.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=0.3)
+    except subprocess.TimeoutExpired:
+        pass
 def interrupted(signum, _frame):
     global pending_signal
     # Defer an interruption until Popen assigns the launcher handle.
