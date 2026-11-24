@@ -1242,8 +1242,7 @@ def test_pre_entry_operation_begin_journal_failure_blocks_allocation(
         owner = QualificationOwner(
             backend,
             Intent(
-                "explicit-workspace", "qualification", "a" * 40,
-                "modal-cpu-synthetic-persistence",
+                "explicit-workspace", "qualification", "a" * 40, "modal-cpu-synthetic-persistence"
             ),
             Journal(tmp_path / "private" / "ledger.jsonl"),
         )
