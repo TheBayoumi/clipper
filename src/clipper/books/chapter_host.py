@@ -16,8 +16,8 @@ import sys
 import tarfile
 import tempfile
 from collections.abc import Callable, Iterator
-from contextvars import ContextVar
 from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from io import BytesIO
@@ -1093,7 +1093,8 @@ def _execute_hybrid(
             _VERIFIED_CLOCK.set((
                 refreshed.created_at,
                 refreshed.execution_deadline
-                or refreshed.created_at + timedelta(seconds=DEADLINE_SECONDS-CLEANUP_RESERVE_SECONDS),
+                or refreshed.created_at
+                + timedelta(seconds=DEADLINE_SECONDS - CLEANUP_RESERVE_SECONDS),
             ))
             _check_deadline(_created_at(created_at))
             review = None
