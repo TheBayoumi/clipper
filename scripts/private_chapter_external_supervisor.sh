@@ -227,24 +227,38 @@ rest_failure_category() {
   printf 'TRANSPORT'
 }
 record_rest_failure() {
-  local category="$1" attempt="$2"
+  local category="$1" attempt="$2" evidence_dir=""
   printf '%s' "$category" >"$session/rest-failure-category"
-  # Local sanitized evidence is best effort; never delay final DELETE reserve.
+  # Persist owner-private classification even for the FIRST failed REST read:
+  # no numeric identity is asserted until the exact REST record is verified.
   if [[ "$journal_ready" == 1 && "$verified_identity" == 1 &&
         $(( deadline_epoch - $(date -u +%s) )) -gt 25 ]]; then
+    evidence_dir="$journal_dir"
+  elif [[ "$verified_identity" == 0 && "$owner_recovery_safe" == 1 ]]; then
+    evidence_dir="$PRIVATE_CHAPTER_RECOVERY_DIR/$CODESPACE_NAME"
+    if [[ -L "$evidence_dir" ]]; then return 0; fi
+    timeout --signal=TERM --kill-after=1s 2s mkdir -p -m 700 -- "$evidence_dir" \
+      >/dev/null 2>&1 || return 0
+    if [[ -L "$evidence_dir" ]]; then return 0; fi
+  fi
+  if [[ -n "$evidence_dir" ]]; then
     timeout --signal=TERM --kill-after=1s 2s python3 -c '
 import json,os,pathlib,sys
 root=pathlib.Path(sys.argv[1]); category=sys.argv[2]; attempt=int(sys.argv[3])
 if category not in {"TRANSPORT","TIMEOUT","MALFORMED","CONFIRMED_MISMATCH"}:
     sys.exit(2)
-out={"schema":"clipper-owner-rest-failure-v1","operation":"rest_identity",
+verified=sys.argv[4]=="1"
+out={"schema":"clipper-owner-rest-failure-v1",
+     "operation":sys.argv[5],
      "failure_class":category,"attempt":attempt,
-     "codespace_id":int(os.environ["SUPERVISED_CODESPACE_ID"]),
-     "created_at":os.environ["SUPERVISED_CREATED_AT"]}
+     "identity_verified":verified,
+     "codespace_id":int(os.environ["SUPERVISED_CODESPACE_ID"]) if verified else None,
+     "created_at":os.environ["SUPERVISED_CREATED_AT"] if verified else None}
 tmp=root/".rest-failure.tmp"
 tmp.write_text(json.dumps(out,sort_keys=True)+"\\n")
 os.chmod(tmp,0o600);os.replace(tmp,root/"owner-last-rest-failure.json")
-' "$journal_dir" "$category" "$attempt" >/dev/null 2>&1 || true
+' "$evidence_dir" "$category" "$attempt" "$verified_identity" \
+  "${rest_operation:-rest_identity}" >/dev/null 2>&1 || true
   fi
 }
 # Keep retries inside a small shared read budget. During cleanup's last
@@ -252,6 +266,7 @@ os.chmod(tmp,0o600);os.replace(tmp,root/"owner-last-rest-failure.json")
 rest_read() {
   local operation="$1"
   local attempt rc category max_attempts start_epoch
+  rest_operation="$operation"
   max_attempts=2
   if (( deadline_epoch > 0 && deadline_epoch - $(date -u +%s) <= 25 )); then
     max_attempts=1
