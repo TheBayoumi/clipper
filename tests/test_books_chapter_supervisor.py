@@ -241,6 +241,7 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         ("all_ready", False, "wrong_size"),
         ("all_ready", False, "extra"),
         ("all_ready", False, "matched_junk"),
+        ("all_ready", False, "padding_flip"),
         ("all_ready", False, "oversize"),
         ("all_ready", False, "hung"),
         ("all_ready", False, "fork_ignores_term"),
@@ -505,6 +506,13 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     )
     remote_archive.parent.mkdir(parents=True)
     remote_archive.write_bytes(source.read_bytes() + (b"corrupted" if tamper_archive else b""))
+    if stream_fault == "padding_flip":
+        damaged = bytearray(source.read_bytes())
+        assert damaged[-1] == 0
+        damaged[-1] = 0x81
+        remote_archive.write_bytes(damaged)
+        receipt["archive_sha256"] = hashlib.sha256(damaged).hexdigest()
+        response.write_text(json.dumps(receipt), encoding="utf-8")
     if stream_fault == "wrong_receipt":
         receipt["archive_sha256"] = "0" * 64
         response.write_text(json.dumps(receipt), encoding="utf-8")
