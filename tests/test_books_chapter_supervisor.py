@@ -957,7 +957,7 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
             grant_file.write_text(json.dumps(grant), encoding="utf-8")
             grant_file.chmod(0o600)
             env["PRIVATE_CHAPTER_FREE_GRANT_FILE"] = str(grant_file)
-    result = subprocess.run
+    result = subprocess.run(
         ["bash", str(_SCRIPT)],
         env=env,
         capture_output=True,
@@ -968,7 +968,8 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
     actions = log.read_text(encoding="utf-8")
     assert result.returncode != 0
     preflight_rejected_grant = scenario in {
-        "free_grant_wrong_id", "free_grant_paid_block_missing",
+        "free_grant_wrong_id",
+        "free_grant_paid_block_missing",
         "free_grant_unsigned_override",
     }
     assert (
@@ -994,7 +995,9 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
     if scenario == "hung_ssh":
         assert "BOOTSTRAP_REMOTE_HUNG" in result.stderr
     if scenario in (
-        "provisioning_then_ready", "transient_ssh", "transient_cp",
+        "provisioning_then_ready",
+        "transient_ssh",
+        "transient_cp",
         "free_grant_extended_deadline",
     ):
         assert "codespace ssh" in actions
@@ -1018,7 +1021,9 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         host_calls
     )
     if scenario in (
-        "provisioning_then_ready", "transient_ssh", "transient_cp",
+        "provisioning_then_ready",
+        "transient_ssh",
+        "transient_cp",
         "free_grant_extended_deadline",
     ):
         assert any(allowed_recovery in call for call in host_calls), host_calls
