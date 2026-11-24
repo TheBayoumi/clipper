@@ -42,6 +42,11 @@ execution_epoch=0
 journal_dir=""
 journal_ready=0
 signal_name=""
+last_verified_phase="UNOBSERVED"
+last_checkpoint_epoch=0
+last_phase_poll_epoch=0
+last_progress_epoch=0
+owner_stall_since=0
 record_operation() {
   local operation="$1" start="$2" ended="$3" rc="$4"
   [[ "$journal_ready" == 1 && -n "$journal_dir" ]] || return 0
@@ -77,7 +82,7 @@ data={"schema":"clipper-owner-supervisor-operation-v1","operation":op,
 target=root/("owner-first-failure.json" if rc else "owner-last-operation.json")
 if rc and target.exists(): sys.exit(0)
 tmp=root/(".operation-"+str(os.getpid())+".tmp")
-tmp.write_text(json.dumps(data,sort_keys=True)+"\\n",encoding="utf-8")
+tmp.write_text(json.dumps(data,sort_keys=True)+"\n",encoding="utf-8")
 os.chmod(tmp,0o600)
 os.replace(tmp,target)
 ' "$journal_dir" "$operation" "$start" "$ended" "$rc" >/dev/null 2>&1 || true
@@ -110,6 +115,18 @@ operation_label() {
   fi
 }
 
+critical() {
+  local current_operation="$1"
+  shift
+  bounded "$@"
+}
+signal_exit() {
+  local label="$1" status="$2" stamp
+  stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  record_operation signal "$stamp" "$stamp" "$status"
+  echo "EXTERNAL_SUPERVISOR_SIGNAL_${label}_CLEANUP_REQUIRED" >&2
+  exit "$status"
+}
 bounded() {
   local limit="$OP_LIMIT" remaining
   if (( deadline_epoch > 0 )); then
@@ -160,7 +177,7 @@ owner_recovery_safe=0
 # been replaced. Recheck numeric instance ID + repo + name + creation stamp
 # immediately before every destructive operation. Unavailable REST fails shut.
 identity_matches() {
-  bounded gh api "user/codespaces/$CODESPACE_NAME" 2>/dev/null |
+  critical rest_identity gh api "user/codespaces/$CODESPACE_NAME" 2>/dev/null |
     bounded python3 -c '
 import json, os, sys
 try:
@@ -862,7 +879,9 @@ terminate_host() {
 }
 # Signal handlers must TERMINATE; do not resume an interrupted sign/copy loop
 # with traps removed after a Ctrl+C or external TERM.
-trap 'exit 2' INT TERM HUP
+trap 'signal_exit INT 130' INT
+trap 'signal_exit TERM 143' TERM
+trap 'signal_exit HUP 129' HUP
 trap terminate_host EXIT
 
 # This is a retrieval capability check only. An invalid owner path must
@@ -878,7 +897,7 @@ if any((part / ".git").exists() for part in (target, *target.parents)):
   owner_recovery_safe=1
 fi
 
-metadata="$(bounded gh api "user/codespaces/$CODESPACE_NAME")" || {
+metadata="$(critical rest_metadata gh api "user/codespaces/$CODESPACE_NAME")" || {
   echo "EXTERNAL_SUPERVISOR_CODESPACE_REST_UNAVAILABLE" >&2
   exit 2
 }
@@ -1073,10 +1092,10 @@ for stage in ssh cp; do
     fi
     rc=0
     if [[ "$stage" == "ssh" ]]; then
-      bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
+      critical key_setup gh codespace ssh -c "$CODESPACE_NAME" -- \
         "mkdir -p '$remote' && chmod 700 '$remote'" >/dev/null || rc=$?
     else
-      bounded gh codespace cp -c "$CODESPACE_NAME" \
+      critical key_copy gh codespace cp -c "$CODESPACE_NAME" \
         "$PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY" \
         "remote:$remote/external-supervisor-public.pem" >/dev/null || rc=$?
     fi
@@ -1130,7 +1149,7 @@ import datetime,sys
 created=datetime.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00"))
 print((created+datetime.timedelta(seconds=int(sys.argv[2]))).isoformat())
 ' "$created_at" "$total_seconds")"
-  bounded python3 -c '
+  critical heartbeat_build python3 -c '
 import json,sys
 record=dict(
     schema="clipper-external-codespace-supervisor-v1",
@@ -1150,11 +1169,11 @@ with open(sys.argv[7],"wb") as output:
 ' "$codespace_id" "$CODESPACE_NAME" "$created_at" \
   "$PRIVATE_CHAPTER_APPROVED_SHA" "$now" "$deadline" "$session/heartbeat.json" \
   "$PRIVATE_CHAPTER_FREE_GRANT_FILE"
-  bounded openssl dgst -sha256 -sign "$PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY" \
+  critical sign_heartbeat openssl dgst -sha256 -sign "$PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY" \
     -out "$session/heartbeat.sig" "$session/heartbeat.json" >/dev/null
   # The signature and exact payload are a single bounded envelope. Copy to
   # a staging path, then atomically rename it on the SAME remote filesystem.
-  bounded python3 -c '
+  critical envelope_build python3 -c '
 import base64, json, sys
 payload = open(sys.argv[1], "rb").read()
 signature = open(sys.argv[2], "rb").read()
@@ -1168,10 +1187,10 @@ with open(sys.argv[3], "wb") as f:
     f.write((json.dumps(envelope, sort_keys=True) + "\n").encode())
 ' "$session/heartbeat.json" "$session/heartbeat.sig" "$session/envelope.json"
   identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_CHANGED" >&2; exit 2; }
-  bounded gh codespace cp -c "$CODESPACE_NAME" "$session/envelope.json" \
+  critical heartbeat_copy gh codespace cp -c "$CODESPACE_NAME" "$session/envelope.json" \
     "remote:$remote/external-supervisor-heartbeat-envelope.watchdog.pending" >/dev/null
   identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_CHANGED" >&2; exit 2; }
-  bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
+  critical heartbeat_publish gh codespace ssh -c "$CODESPACE_NAME" -- \
     "mv -f -- '$remote/external-supervisor-heartbeat-envelope.watchdog.pending' '$remote/external-supervisor-heartbeat-envelope.json'" >/dev/null
   sleep "$(( remaining < 10 ? remaining : 10 ))"
 done
