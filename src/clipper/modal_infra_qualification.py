@@ -375,17 +375,19 @@ class QualificationOwner:
 
     def _snapshot(self) -> dict[str, object]:
         # Isolate nested owner state before giving snapshots to the journal/task.
-        return deepcopy({
-            **self._result,
-            "active_operations": sorted(self.active_operations),
-            "unknown_outcomes": [dict(entry) for entry in self.unknown_outcomes],
-            "unresolved_ids": sorted(self.unresolved | set(self.known_unconfirmed_sandboxes)),
-            "known_unconfirmed_sandboxes": [
-                dict(entry) for entry in self.known_unconfirmed_sandboxes.values()
-            ],
-            "evidence_errors": list(self.evidence_errors),
-            "cleanup_errors": list(self.cleanup_errors),
-        })
+        return deepcopy(
+            {
+                **self._result,
+                "active_operations": sorted(self.active_operations),
+                "unknown_outcomes": [dict(entry) for entry in self.unknown_outcomes],
+                "unresolved_ids": sorted(self.unresolved | set(self.known_unconfirmed_sandboxes)),
+                "known_unconfirmed_sandboxes": [
+                    dict(entry) for entry in self.known_unconfirmed_sandboxes.values()
+                ],
+                "evidence_errors": list(self.evidence_errors),
+                "cleanup_errors": list(self.cleanup_errors),
+            }
+        )
 
     async def observe(self) -> dict[str, object]:
         if self.task is None:
