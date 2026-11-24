@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import os
+import subprocess
 import tarfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
@@ -2277,3 +2280,151 @@ def test_private_recovery_rejects_journal_that_rebinds_a_reviewed_brief(
     )
     with pytest.raises(chapter_host.PrivateHostStop, match="identity changed within journal"):
         chapter_host._chapter_output_manifest(root, 1, bundle, scope)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "valid", "wrong_id", "wrong_name", "wrong_repo", "wrong_shape",
+        "wrong_created", "wrong_sha", "wrong_deadline", "expired",
+        "tampered_unsigned", "paid_block_missing",
+    ],
+)
+def test_real_signed_owner_free_allowance_host_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    """An actual OpenSSL signature, REST fixture and host verifier, no inference."""
+    from clipper.books import chapter_lifecycle as lifecycle
+
+    key = tmp_path / "ephemeral-private.pem"
+    pub = tmp_path / "ephemeral-public.pem"
+    subprocess.run(
+        ["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048",
+         "-out", str(key)],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+    )
+    subprocess.run(
+        ["openssl", "pkey", "-in", str(key), "-pubout", "-out", str(pub)],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+    )
+    now = datetime.now(UTC)
+    created = now - timedelta(hours=2, minutes=10)
+    if mutation == "expired":
+        created = now - timedelta(hours=4, minutes=10)
+    stamp = created.isoformat()
+    total = 4 * 3600
+    sha = "a" * 40
+    name = "synthetic-free-approved"
+    machine = {"cpus": 4, "memory_in_bytes": 17179869184, "storage_in_bytes": 34359738368}
+    rest = {
+        "id": 12, "name": name, "created_at": stamp, "state": "Available",
+        "repository": {"full_name": "TheBayoumi/clipper"}, "machine": machine,
+    }
+    grant = {
+        "schema": "clipper-owner-free-allowance-v1",
+        "codespace_id": 12,
+        "codespace_name": name,
+        "repository": "TheBayoumi/clipper",
+        "created_at": stamp,
+        "approved_sha": sha,
+        "machine": machine.copy(),
+        "verified_at": stamp,
+        "remaining_included_core_seconds": total * 4,
+        "total_seconds": total,
+        "storage_included_verified": True,
+        "paid_overage_block_verified": True,
+    }
+    if mutation == "wrong_id":
+        grant["codespace_id"] = 999
+    elif mutation == "wrong_name":
+        grant["codespace_name"] = "foreign"
+    elif mutation == "wrong_repo":
+        grant["repository"] = "foreign/repo"
+    elif mutation == "wrong_shape":
+        grant["machine"] = {**machine, "cpus": 8}
+    elif mutation == "wrong_created":
+        grant["created_at"] = (created + timedelta(seconds=1)).isoformat()
+    elif mutation == "wrong_sha":
+        grant["approved_sha"] = "b" * 40
+    elif mutation == "paid_block_missing":
+        grant["paid_overage_block_verified"] = False
+    hard_deadline = created + timedelta(seconds=total)
+    if mutation == "wrong_deadline":
+        hard_deadline -= timedelta(seconds=1)
+    payload = {
+        "schema": lifecycle.SUPERVISOR_SCHEMA,
+        "codespace_id": 12,
+        "codespace_name": name,
+        "created_at": stamp,
+        "approved_sha": sha,
+        "observed_at": now.isoformat(),
+        "hard_deadline_at": hard_deadline.isoformat(),
+        "external_watchdog_required": True,
+        "free_allowance": grant,
+    }
+    raw = (json.dumps(payload, sort_keys=True) + "\n").encode()
+    msg = tmp_path / "payload.json"
+    signature = tmp_path / "payload.sig"
+    msg.write_bytes(raw)
+    subprocess.run(
+        ["openssl", "dgst", "-sha256", "-sign", str(key), "-out",
+         str(signature), str(msg)],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+    )
+    if mutation == "tampered_unsigned":
+        payload["free_allowance"]["total_seconds"] = total + 600
+        raw = (json.dumps(payload, sort_keys=True) + "\n").encode()
+    private = tmp_path / "book-candidates"
+    private_host = private / "private-host"
+    private_host.mkdir(parents=True)
+    (private_host / "external-supervisor-public.pem").write_bytes(pub.read_bytes())
+    (private_host / "external-supervisor-heartbeat-envelope.json").write_text(
+        json.dumps({
+            "schema": "clipper-external-supervisor-envelope-v1",
+            "payload_b64": base64.b64encode(raw).decode("ascii"),
+            "signature_b64": base64.b64encode(signature.read_bytes()).decode("ascii"),
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODESPACES", "true")
+    monkeypatch.setenv("CODESPACE_NAME", name)
+    monkeypatch.setenv("PRIVATE_CHAPTER_APPROVED_SHA", sha)
+    monkeypatch.setenv(
+        "PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY_SHA256",
+        hashlib.sha256(pub.read_bytes()).hexdigest(),
+    )
+    actual_command = lifecycle._command
+
+    def local_command(argv: list[str], *, input_bytes: bytes | None = None) -> bytes:
+        if argv[0] == "gh":
+            return json.dumps(rest).encode("utf-8")
+        if argv[0] == "git":
+            if "HEAD" in argv and "--abbrev-ref" in argv:
+                return b"review/unified-tts-cleanup"
+            if "HEAD" in argv:
+                return sha.encode("ascii")
+            return b""
+        return actual_command(argv, input_bytes=input_bytes)
+
+    monkeypatch.setattr(lifecycle, "_command", local_command)
+    if mutation != "valid":
+        with pytest.raises(lifecycle.LifecycleStop):
+            lifecycle.verify_lifecycle(
+                private, caller_created_at=stamp, codespace_name=name
+            )
+        return
+    verified = lifecycle.verify_lifecycle(
+        private, caller_created_at=stamp, codespace_name=name
+    )
+    assert verified.codespace_id == 12
+    assert verified.execution_deadline == hard_deadline - timedelta(seconds=300)
+    assert verified.expires_at == hard_deadline
+    # The direct driver must accept the signed cutoff, not an unsigned env.
+    token = chapter_host._VERIFIED_CLOCK.set((created, verified.execution_deadline))
+    try:
+        assert chapter_host._created_at(stamp) == created
+        chapter_host._check_deadline(created)
+    finally:
+        chapter_host._VERIFIED_CLOCK.reset(token)
+    with pytest.raises(chapter_host.PrivateHostStop):
+        chapter_host._created_at(stamp)
