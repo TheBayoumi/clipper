@@ -15,7 +15,7 @@ import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
 
 DATA = bytes(range(256)) * 256
 DIGEST = hashlib.sha256(DATA).hexdigest()
@@ -219,6 +219,18 @@ async def read_exact(iterator: Any, cap: int = SIZE) -> bytes:
         out.extend(piece)
 
 
+class KnownSandbox(TypedDict):
+    """Known sandbox ownership and separately observed cleanup state."""
+
+    id: str
+    step: str
+    terminate_attempted: bool
+    terminate_succeeded: bool
+    poll_attempted: bool
+    terminal_observed: bool
+    cleanup_errors: list[str]
+
+
 class QualificationOwner:
     """One in-loop owner; finite observation is NOT a hard provider deadline.
 
@@ -238,7 +250,10 @@ class QualificationOwner:
         intent.validate()
         # SDK environment is immutable and must agree with the sole journal intent
         # before workspace verification or any provider context is entered.
-        if isinstance(backend, SDKBackend) and backend.environment != intent.environment:
+        if (
+            isinstance(backend, SDKBackend)
+            and backend.environment != intent.environment
+        ):
             raise ValueError("SDK environment differs from immutable run intent")
         if decision_seconds <= 0 or reconciliation_seconds <= 0:
             raise ValueError("Finite positive observation budgets required")
@@ -257,8 +272,8 @@ class QualificationOwner:
         self.evidence_errors: list[str] = []
         self.cleanup_errors: list[str] = []
         self.live_sandboxes: list[Any] = []
-        # Returned, identified resources remain actionable until positively observed terminal.
-        self.known_unconfirmed_sandboxes: dict[str, dict[str, object]] = {}
+        # Returned identities remain actionable until terminal observation.
+        self.known_unconfirmed_sandboxes: dict[str, KnownSandbox] = {}
         self.sandbox_terminal: list[str] = []
         self._result: dict[str, object] = {
             "run_id": self.run_id,
@@ -359,7 +374,9 @@ class QualificationOwner:
             **self._result,
             "active_operations": sorted(self.active_operations),
             "unknown_outcomes": [dict(entry) for entry in self.unknown_outcomes],
-            "unresolved_ids": sorted(self.unresolved | set(self.known_unconfirmed_sandboxes)),
+            "unresolved_ids": sorted(
+                self.unresolved | set(self.known_unconfirmed_sandboxes)
+            ),
             "known_unconfirmed_sandboxes": [
                 dict(entry) for entry in self.known_unconfirmed_sandboxes.values()
             ],
@@ -455,8 +472,8 @@ class QualificationOwner:
             if not isinstance(sandbox_id, str) or not sandbox_id:
                 self._unknown("sandbox", step)
                 raise ValueError("Sandbox missing object_id")
-            # Register BEFORE the return journal can fail. Context exit is not termination.
-            resource = {
+            # Register before journal failure. Context exit is not termination.
+            resource: KnownSandbox = {
                 "id": sandbox_id,
                 "step": step,
                 "terminate_attempted": False,
@@ -485,26 +502,31 @@ class QualificationOwner:
             self._first_error(exc)
         finally:
             # Attempt poll even when terminate fails: two separate observations.
-            resource = self.known_unconfirmed_sandboxes.get(
-                getattr(sb, "object_id", None)
+            cleanup_id = getattr(sb, "object_id", None)
+            cleanup_resource = (
+                self.known_unconfirmed_sandboxes.get(cleanup_id)
+                if isinstance(cleanup_id, str)
+                else None
             )
             try:
-                if resource is not None:
-                    resource["terminate_attempted"] = True
+                if cleanup_resource is not None:
+                    cleanup_resource["terminate_attempted"] = True
                 await self._operation(
                     f"sandbox_{index}_terminate", lambda: self.backend.terminate(sb)
                 )
-                if resource is not None:
-                    resource["terminate_succeeded"] = True
+                if cleanup_resource is not None:
+                    cleanup_resource["terminate_succeeded"] = True
             except BaseException as exc:
-                if resource is not None:
-                    resource["cleanup_errors"].append(f"terminate:{type(exc).__name__}")
+                if cleanup_resource is not None:
+                    cleanup_resource["cleanup_errors"].append(
+                        f"terminate:{type(exc).__name__}"
+                    )
                 self.cleanup_errors.append(f"sandbox_{index}_terminate:{type(exc).__name__}")
                 self._first_error(exc)
                 self._safe_record("SANDBOX_CLEANUP_ERROR", step=index, error=type(exc).__name__)
             try:
-                if resource is not None:
-                    resource["poll_attempted"] = True
+                if cleanup_resource is not None:
+                    cleanup_resource["poll_attempted"] = True
                 terminal = await self._operation(
                     f"sandbox_{index}_poll", lambda: self.backend.poll(sb)
                 )
@@ -512,18 +534,20 @@ class QualificationOwner:
                     raise ValueError("No terminal observation")
                 self._record("SANDBOX_TERMINAL", step=index, terminal=str(terminal))
                 self.sandbox_terminal.append(str(terminal))
-                if resource is not None:
-                    resource["terminal_observed"] = True
-                    self.known_unconfirmed_sandboxes.pop(str(resource["id"]), None)
+                if cleanup_resource is not None:
+                    cleanup_resource["terminal_observed"] = True
+                    self.known_unconfirmed_sandboxes.pop(cleanup_resource["id"], None)
             except BaseException as exc:
-                if resource is not None:
-                    resource["cleanup_errors"].append(f"poll:{type(exc).__name__}")
+                if cleanup_resource is not None:
+                    cleanup_resource["cleanup_errors"].append(
+                        f"poll:{type(exc).__name__}"
+                    )
                 self.cleanup_errors.append(f"sandbox_{index}_poll:{type(exc).__name__}")
                 self._first_error(exc)
                 self._safe_record("SANDBOX_CLEANUP_ERROR", step=index, error=type(exc).__name__)
             finally:
-                if resource is not None and not resource["terminal_observed"]:
-                    self._safe_record("KNOWN_SANDBOX_UNCONFIRMED", **resource)
+                if cleanup_resource is not None and not cleanup_resource["terminal_observed"]:
+                    self._safe_record("KNOWN_SANDBOX_UNCONFIRMED", **cleanup_resource)
         if self.stopped.is_set():
             raise RuntimeError("STOP_LATCHED")
 
