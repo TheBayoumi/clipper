@@ -402,6 +402,7 @@ finally:
 sys.exit(result)
 """
 proc = None
+pending_signal = 0
 def end_child():
     if proc is None:
         return
@@ -421,12 +422,13 @@ def end_child():
         except subprocess.TimeoutExpired:
             pass
 def interrupted(signum, _frame):
-    # Do not exit during Popen registration. The launcher cannot start gh
-    # before the one-byte gate, so an early interruption is safe.
-    if proc is None:
-        return
-    end_child()
-    sys.exit(128 + signum)
+    global pending_signal
+    # Defer an interruption until Popen assigns the launcher handle.
+    # No gh process can exist until the gate is explicitly released.
+    pending_signal = signum
+    if proc is not None:
+        end_child()
+        sys.exit(128 + signum)
 signal.signal(signal.SIGTERM, interrupted)
 signal.signal(signal.SIGINT, interrupted)
 try:
@@ -437,6 +439,8 @@ try:
     )
     if proc.stdin is None:
         sys.exit(2)
+    if pending_signal:
+        sys.exit(128 + pending_signal)
     proc.stdin.write(b"1")
     proc.stdin.flush()
     if proc.stdout is None:
