@@ -1242,9 +1242,7 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
             "rest_metadata" if scenario.startswith("rest_initial_") else "rest_identity"
         )
         assert evidence["identity_verified"] is (not scenario.startswith("rest_initial_"))
-        assert evidence["codespace_id"] == (
-            None if scenario.startswith("rest_initial_") else 12
-        )
+        assert evidence["codespace_id"] == (None if scenario.startswith("rest_initial_") else 12)
         assert evidence["created_at"] == (
             None if scenario.startswith("rest_initial_") else env["MOCK_CREATED"]
         )
