@@ -95,3 +95,30 @@ hard timeout. No optional expiry case has run; commit-after-hard-timeout
 remains unknown. App and Volume context exit are reported separately and do
 not establish provider removal. Independent review and exact-SHA CI are
 required before any live evaluation or run authorization.
+
+## Candidate 2215: immutable identity, reconciliation, and evidence acceptance
+
+**UNQUALIFIED until executable regression checks, exact-SHA CI and independent
+review.** The SDK adapter is frozen and its environment must exactly match the
+owner's immutable intent before any resource context entry; all SDK operations
+still use the explicitly injected client, not ambient SDK identity.
+
+Cancellation of **either** `observe()` or `terminal()` sets STOP, preserves
+the retained owner task and prohibits the next acquisition. The caller must
+keep the event loop running, await a subsequent `terminal()`, and reconcile
+late handles. A returned sandbox ID is retained in
+`known_unconfirmed_sandboxes` and `unresolved_ids` until positively observed
+terminal, with terminate/poll attempts and errors. These are distinct from
+unknown allocations and currently active operations. Context closure never
+clears known unconfirmed sandbox identities.
+
+A journal `TERMINAL` record is deliberately **not a success certificate**.
+It contains `status=UNCONFIRMED` and
+`evidence_durability=UNCONFIRMED_FROM_FILE` even if its bytes are readable.
+A successful live owner `terminal()` returns `OWNER_ACKNOWLEDGED` only
+after that journal write's successful fsync. If terminal publication raises,
+including **after writing bytes but before confirming fsync**, the live result
+is BLOCKED with evidence durability UNKNOWN. A restarted process or file-only
+reader cannot reconstruct fsync acknowledgement or elevate visible bytes to
+SUCCESS. No persistent external receipt, crash-recovery guarantee, resource
+removal, cost, image readiness or provider qualification is implied.

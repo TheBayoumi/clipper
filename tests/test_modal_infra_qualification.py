@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from dataclasses import FrozenInstanceError
 import hashlib
 import json
 import subprocess
@@ -1285,4 +1287,204 @@ def test_pre_entry_operation_begin_journal_failure_blocks_allocation(
             assert "create" not in backend.events
             assert backend.events[-2:] == ["volume_exit", "app_exit"]
 
+    asyncio.run(exercise())
+
+
+def test_sdk_environment_owner_binding_and_ambient_mutation(tmp_path: Path) -> None:
+    """Actual SDKBackend wiring through owner, all SDK classes fake/inert."""
+    from types import SimpleNamespace
+
+    class Workspace:
+        @staticmethod
+        def from_context(*, client: object) -> object:
+            assert client is explicit_client
+            return SimpleNamespace(name="explicit-workspace", hydrate=lambda: None)
+
+    class App:
+        def run(self, *, client: object, environment_name: str, detach: bool) -> object:
+            assert client is explicit_client
+            assert environment_name == "qualification"
+            assert detach is False
+            return Context(FakeBackend(), "app")
+
+    class Volume:
+        @staticmethod
+        def ephemeral(*, client: object, environment_name: str) -> object:
+            assert client is explicit_client
+            assert environment_name == "qualification"
+            return Context(FakeBackend(), "volume")
+
+    explicit_client = object()
+    sdk = SimpleNamespace(Workspace=Workspace, App=App, Volume=Volume)
+    backend = SDKBackend(sdk, explicit_client, "different")
+    intent = Intent("explicit-workspace", "qualification", "a" * 40, "modal-cpu-synthetic-persistence")
+    ledger = Ledger(tmp_path / "private" / "ledger.jsonl")
+    with pytest.raises(ValueError, match="environment"):
+        QualificationOwner(backend, intent, ledger)
+    assert not _events(tmp_path)
+    ledger.close()
+
+    backend = SDKBackend(sdk, explicit_client, "qualification")
+    with pytest.raises(FrozenInstanceError):
+        backend.environment = "different"  # type: ignore[misc]
+    # Owner sees the original explicit environment even after ambient state changes.
+    ambient = {"environment": "qualification", "client": explicit_client}
+    async def exercise() -> None:
+        owner = QualificationOwner(
+            backend,
+            intent,
+            Ledger(tmp_path / "private" / "accepted.jsonl"),
+        )
+        ambient["environment"] = "other"
+        ambient["client"] = object()
+        owner.start()
+        result = await owner.terminal()
+        assert result["status"] == "BLOCKED"
+        assert result["primary_error"] is not None
+        assert owner.intent.environment == backend.environment == "qualification"
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("waiter", ["first", "second"])
+def test_terminal_waiter_cancel_stops_owner_without_cancelling_task(
+    tmp_path: Path, waiter: str
+) -> None:
+    async def exercise() -> None:
+        backend = FakeBackend()
+        backend.hold_create = True
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        await backend.entered_create.wait()
+        w1 = asyncio.create_task(owner.terminal())
+        w2 = asyncio.create_task(owner.terminal())
+        await asyncio.sleep(0)
+        (w1 if waiter == "first" else w2).cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await (w1 if waiter == "first" else w2)
+        assert owner.stopped.is_set()
+        assert owner.task is not None and not owner.task.cancelled()
+        backend.release_create.set()
+        result = await (w2 if waiter == "first" else w1)
+        assert result["status"] == "BLOCKED"
+        assert len(backend.sandboxes) == 1
+        assert "terminate_sb-synthetic-1" in backend.events
+        assert result["known_unconfirmed_sandboxes"] == []
+    asyncio.run(exercise())
+
+
+def test_terminal_waiter_cancel_during_cleanup_retains_owner_and_reconciles(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> None:
+        backend = FakeBackend()
+        backend.hold_terminate = True
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        await backend.entered_cleanup.wait()
+        first = asyncio.create_task(owner.terminal())
+        second = asyncio.create_task(owner.terminal())
+        await asyncio.sleep(0)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert not owner.task.done()  # type: ignore[union-attr]
+        backend.release_cleanup.set()
+        result = await second
+        assert result["status"] == "BLOCKED"
+        assert len(backend.sandboxes) == 1
+        assert result["known_unconfirmed_sandboxes"] == []
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("failure", ["poll_none", "terminate_error"])
+def test_known_sandbox_id_preserved_when_terminal_not_observed(
+    tmp_path: Path, failure: str
+) -> None:
+    class Broken(FakeBackend):
+        async def terminate(self, sb: Sandbox) -> None:
+            self.events.append("terminate_" + sb.object_id)
+            if failure == "terminate_error":
+                raise OSError("synthetic termination failure")
+
+        async def poll(self, sb: Sandbox) -> object:
+            self.events.append("poll_" + sb.object_id)
+            return None
+
+    async def exercise() -> None:
+        backend = Broken()
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        result = await owner.terminal()
+        assert result["status"] == "BLOCKED"
+        assert "sb-synthetic-1" in result["unresolved_ids"]
+        assert result["active_operations"] == []
+        assert result["unknown_outcomes"] == []
+        known = result["known_unconfirmed_sandboxes"]
+        assert len(known) == 1
+        assert known[0]["id"] == "sb-synthetic-1"
+        assert known[0]["terminate_attempted"]
+        assert known[0]["poll_attempted"]
+        assert known[0]["cleanup_errors"]
+        records = _events(tmp_path)
+        assert any(row["operation"] == "KNOWN_SANDBOX_UNCONFIRMED" and
+                   row["id"] == "sb-synthetic-1" for row in records)
+        assert result["app_context_closed"] and result["volume_context_closed"]
+        assert result["provider_removal"] == "UNKNOWN"
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("phase", ["terminal_before_write", "terminal_after_write_fsync"])
+def test_terminal_journal_never_publishes_file_only_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    class Broken(Ledger):
+        def record(self, **fields: object) -> None:
+            if fields.get("operation") != "TERMINAL":
+                super().record(**fields)
+                return
+            if phase == "terminal_before_write":
+                raise OSError("before terminal write")
+            original = os.fsync
+            def fail_fsync(fd: int) -> None:
+                if fd == self._fd:
+                    raise OSError("after terminal bytes written")
+                original(fd)
+            with monkeypatch.context() as patch:
+                patch.setattr(os, "fsync", fail_fsync)
+                super().record(**fields)
+
+    async def exercise() -> None:
+        backend = FakeBackend()
+        owner = QualificationOwner(
+            backend,
+            Intent("explicit-workspace", "qualification", "a" * 40,
+                   "modal-cpu-synthetic-persistence"),
+            Broken(tmp_path / "private" / "ledger.jsonl"),
+        )
+        owner.start()
+        result = await owner.terminal()
+        assert result["exact_bytes"] is True
+        assert result["status"] == "BLOCKED"
+        assert result["evidence_durability"] == "UNKNOWN"
+        assert any(x.startswith("TERMINAL") for x in result["evidence_errors"])
+        assert all(row.get("result", {}).get("status") != "SUCCESS"
+                   for row in _events(tmp_path))
+        assert all(row.get("result", {}).get("evidence_durability") != "OWNER_ACKNOWLEDGED"
+                   for row in _events(tmp_path))
+    asyncio.run(exercise())
+
+
+def test_success_requires_live_owner_evidence_ack_not_recovery_json(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        owner = _owner(tmp_path, FakeBackend())
+        owner.start()
+        result = await owner.terminal()
+        assert result["status"] == "SUCCESS"
+        assert result["evidence_durability"] == "OWNER_ACKNOWLEDGED"
+        terminal = [row for row in _events(tmp_path)
+                    if row["operation"] == "TERMINAL"]
+        assert len(terminal) == 1
+        assert terminal[0]["result"]["status"] == "UNCONFIRMED"
+        assert terminal[0]["result"]["evidence_durability"] == "UNCONFIRMED_FROM_FILE"
+        assert result["provider_removal"] == "UNKNOWN"
     asyncio.run(exercise())

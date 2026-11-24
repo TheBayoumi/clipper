@@ -390,3 +390,15 @@ This code is **not a live Modal/provider approval** and has no automatic CLI,
 model, deployment or chapter execution entry point. Codespace chapter recovery
 remains paused and blocked; it is not a prerequisite for this independent
 infrastructure experiment.
+
+
+## Offline Modal CPU infrastructure candidate (UNQUALIFIED)
+
+The isolated, model-free 64 KiB Modal SDK 1.5.5 infrastructure harness is
+documented in [offline qualification](docs/modal_cpu_infra_offline_qualification.md).
+It has no live driver or account authorization. Candidate 2215 binds SDK
+environment to intent, propagates public waiter cancellation to the owner STOP
+latch, retains identified but not terminally observed sandboxes for reconciliation,
+and treats terminal JSON as **unconfirmed file-only evidence**. Only a live
+owner-returned acknowledgement after fsync may report local SUCCESS; provider
+removal is always UNKNOWN. No CI or provider clearance is inferred.

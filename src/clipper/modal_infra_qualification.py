@@ -94,6 +94,7 @@ class Backend(Protocol):
     async def poll(self, sandbox: Any) -> Any: ...
 
 
+@dataclass(frozen=True)
 class SDKBackend:
     """1.5.5 adapter. Caller supplies one explicit client and SDK module.
 
@@ -101,12 +102,13 @@ class SDKBackend:
     invoked by importing this module or by the offline fake tests.
     """
 
-    def __init__(self, sdk: Any, client: Any, environment: str) -> None:
-        if sdk is None or client is None or not environment:
+    sdk: Any
+    client: Any
+    environment: str
+
+    def __post_init__(self) -> None:
+        if self.sdk is None or self.client is None or not self.environment:
             raise ValueError("Explicit SDK/client/environment required")
-        self.sdk = sdk
-        self.client = client
-        self.environment = environment
 
     async def verify(self, expected_workspace: str) -> str:
         def check() -> str:
@@ -234,6 +236,10 @@ class QualificationOwner:
         reconciliation_seconds: float = 16,
     ) -> None:
         intent.validate()
+        # SDK environment is immutable and must agree with the sole journal intent
+        # before workspace verification or any provider context is entered.
+        if isinstance(backend, SDKBackend) and backend.environment != intent.environment:
+            raise ValueError("SDK environment differs from immutable run intent")
         if decision_seconds <= 0 or reconciliation_seconds <= 0:
             raise ValueError("Finite positive observation budgets required")
         self.backend = backend
@@ -251,6 +257,8 @@ class QualificationOwner:
         self.evidence_errors: list[str] = []
         self.cleanup_errors: list[str] = []
         self.live_sandboxes: list[Any] = []
+        # Returned, identified resources remain actionable until positively observed terminal.
+        self.known_unconfirmed_sandboxes: dict[str, dict[str, object]] = {}
         self.sandbox_terminal: list[str] = []
         self._result: dict[str, object] = {
             "run_id": self.run_id,
@@ -265,6 +273,8 @@ class QualificationOwner:
             "evidence_errors": self.evidence_errors,
             "unknown_outcomes": self.unknown_outcomes,
             "active_operations": [],
+            "known_unconfirmed_sandboxes": [],
+            "evidence_durability": "UNCONFIRMED",
         }
 
     def _record(self, operation: str, **details: object) -> None:
@@ -349,7 +359,10 @@ class QualificationOwner:
             **self._result,
             "active_operations": sorted(self.active_operations),
             "unknown_outcomes": [dict(entry) for entry in self.unknown_outcomes],
-            "unresolved_ids": sorted(self.unresolved),
+            "unresolved_ids": sorted(self.unresolved | set(self.known_unconfirmed_sandboxes)),
+            "known_unconfirmed_sandboxes": [
+                dict(entry) for entry in self.known_unconfirmed_sandboxes.values()
+            ],
             "evidence_errors": list(self.evidence_errors),
             "cleanup_errors": list(self.cleanup_errors),
         }
@@ -390,7 +403,12 @@ class QualificationOwner:
     async def terminal(self) -> dict[str, object]:
         if self.task is None:
             raise ValueError("Owner not started")
-        return await asyncio.shield(self.task)
+        try:
+            return await asyncio.shield(self.task)
+        except asyncio.CancelledError:
+            self.request_stop()
+            self._safe_record("CALLER_CANCELLED_OWNER_RETAINED", waiter="terminal")
+            raise
 
     async def _drain(self, name: str, iterator: Any, *, line: bool) -> bytes:
         primary: BaseException | None = None
@@ -437,6 +455,17 @@ class QualificationOwner:
             if not isinstance(sandbox_id, str) or not sandbox_id:
                 self._unknown("sandbox", step)
                 raise ValueError("Sandbox missing object_id")
+            # Register BEFORE the return journal can fail. Context exit is not termination.
+            resource = {
+                "id": sandbox_id,
+                "step": step,
+                "terminate_attempted": False,
+                "terminate_succeeded": False,
+                "poll_attempted": False,
+                "terminal_observed": False,
+                "cleanup_errors": [],
+            }
+            self.known_unconfirmed_sandboxes[sandbox_id] = resource
             try:
                 self._record("RETURN", step=step, object_id=sandbox_id)
             except OSError:
@@ -456,15 +485,26 @@ class QualificationOwner:
             self._first_error(exc)
         finally:
             # Attempt poll even when terminate fails: two separate observations.
+            resource = self.known_unconfirmed_sandboxes.get(
+                getattr(sb, "object_id", None)
+            )
             try:
+                if resource is not None:
+                    resource["terminate_attempted"] = True
                 await self._operation(
                     f"sandbox_{index}_terminate", lambda: self.backend.terminate(sb)
                 )
+                if resource is not None:
+                    resource["terminate_succeeded"] = True
             except BaseException as exc:
+                if resource is not None:
+                    resource["cleanup_errors"].append(f"terminate:{type(exc).__name__}")
                 self.cleanup_errors.append(f"sandbox_{index}_terminate:{type(exc).__name__}")
                 self._first_error(exc)
                 self._safe_record("SANDBOX_CLEANUP_ERROR", step=index, error=type(exc).__name__)
             try:
+                if resource is not None:
+                    resource["poll_attempted"] = True
                 terminal = await self._operation(
                     f"sandbox_{index}_poll", lambda: self.backend.poll(sb)
                 )
@@ -472,10 +512,18 @@ class QualificationOwner:
                     raise ValueError("No terminal observation")
                 self._record("SANDBOX_TERMINAL", step=index, terminal=str(terminal))
                 self.sandbox_terminal.append(str(terminal))
+                if resource is not None:
+                    resource["terminal_observed"] = True
+                    self.known_unconfirmed_sandboxes.pop(str(resource["id"]), None)
             except BaseException as exc:
+                if resource is not None:
+                    resource["cleanup_errors"].append(f"poll:{type(exc).__name__}")
                 self.cleanup_errors.append(f"sandbox_{index}_poll:{type(exc).__name__}")
                 self._first_error(exc)
                 self._safe_record("SANDBOX_CLEANUP_ERROR", step=index, error=type(exc).__name__)
+            finally:
+                if resource is not None and not resource["terminal_observed"]:
+                    self._safe_record("KNOWN_SANDBOX_UNCONFIRMED", **resource)
         if self.stopped.is_set():
             raise RuntimeError("STOP_LATCHED")
 
@@ -576,6 +624,7 @@ class QualificationOwner:
                 and not self.evidence_errors
                 and not self.cleanup_errors
                 and not self.unknown_outcomes
+                and not self.known_unconfirmed_sandboxes
                 and not self.active_operations
                 and len(self.sandbox_terminal) == 2
                 and self._result["exact_bytes"] is True
@@ -584,7 +633,22 @@ class QualificationOwner:
             )
             self._result["status"] = "SUCCESS" if complete else "BLOCKED"
             self._result["active_operations"] = sorted(self.active_operations)
-            self._safe_record("TERMINAL", result=self._snapshot())
-            if self.evidence_errors:
+            # No file-only recovery reader may accept a terminal candidate as SUCCESS:
+            # post-write fsync failure leaves visible bytes with unknown durability.
+            candidate = self._snapshot()
+            candidate["status"] = "UNCONFIRMED"
+            candidate["evidence_durability"] = "UNCONFIRMED_FROM_FILE"
+            try:
+                self._record("TERMINAL", result=candidate)
+            except OSError:
                 self._result["status"] = "BLOCKED"
+                self._result["evidence_durability"] = "UNKNOWN"
+            else:
+                if self.evidence_errors:
+                    self._result["status"] = "BLOCKED"
+                    self._result["evidence_durability"] = "UNKNOWN"
+                else:
+                    # Only the live owner, after successful journal fsync, can
+                    # acknowledge the local outcome. Never provider removal.
+                    self._result["evidence_durability"] = "OWNER_ACKNOWLEDGED"
         return self._snapshot()
