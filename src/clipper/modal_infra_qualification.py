@@ -10,8 +10,6 @@ import hashlib
 import json
 import os
 import re
-import subprocess
-import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -151,7 +149,7 @@ class SDKBackend:
         return await asyncio.to_thread(lambda: iter(sandbox.stdout))
 
     async def volume_chunks(self, volume: Any) -> Any:
-        return await asyncio.to_thread(lambda: iter(volume.read_file(PATH)))
+        return await asyncio.to_thread(lambda: iter(volume.read_file('infra-check.bin')))
 
     async def terminate(self, sandbox: Any) -> None:
         await asyncio.to_thread(sandbox.terminate, wait=True)
