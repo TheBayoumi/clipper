@@ -16,6 +16,7 @@ import sys
 import tarfile
 import tempfile
 from collections.abc import Callable, Iterator
+from contextvars import ContextVar
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -42,6 +43,18 @@ from .orchestrator import BookOrchestrator
 BATCH_SCHEMA = "clipper-two-private-chapter-codespace-v2"
 DEADLINE_SECONDS = 7200
 CLEANUP_RESERVE_SECONDS = 300
+# Set only after a fresh REST + signature check. A caller's environment is not
+# a source of authority for longer runtimes.
+_VERIFIED_CLOCK: ContextVar[tuple[datetime, datetime] | None] = ContextVar(
+    "_private_chapter_signed_clock", default=None
+)
+
+
+def _execution_cutoff(created: datetime) -> datetime:
+    verified = _VERIFIED_CLOCK.get()
+    if verified is not None and verified[0] == created:
+        return verified[1]
+    return created + timedelta(seconds=DEADLINE_SECONDS - CLEANUP_RESERVE_SECONDS)
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -53,6 +66,16 @@ class PhaseClaimContended(PrivateHostStop):
     """A concurrent caller lost an immutable claim; observation only."""
 
 
+def _created_at_timestamp(value: str) -> datetime:
+    try:
+        date = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        raise PrivateHostStop("verified Codespace creation timestamp required") from None
+    if date.tzinfo is None:
+        raise PrivateHostStop("Codespace timestamp must include UTC offset")
+    return date.astimezone(UTC)
+
+
 def _created_at(value: str, now: datetime | None = None) -> datetime:
     try:
         date = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -62,15 +85,13 @@ def _created_at(value: str, now: datetime | None = None) -> datetime:
         raise PrivateHostStop("Codespace timestamp must include UTC offset")
     date = date.astimezone(UTC)
     current = now or datetime.now(UTC)
-    if date > current or current >= date + timedelta(
-        seconds=DEADLINE_SECONDS - CLEANUP_RESERVE_SECONDS
-    ):
+    if date > current or current >= _execution_cutoff(date):
         raise PrivateHostStop("one-host shared deadline expired or invalid")
     return date
 
 
 def _check_deadline(created: datetime) -> None:
-    if datetime.now(UTC) >= created + timedelta(seconds=DEADLINE_SECONDS - CLEANUP_RESERVE_SECONDS):
+    if datetime.now(UTC) >= _execution_cutoff(created):
         raise PrivateHostStop("one-host shared execution budget exhausted")
 
 
@@ -636,7 +657,8 @@ def execute(
     created_at: str,
 ) -> dict[str, object]:
     """Verify REST identity AND live external signer before even inspecting sources."""
-    created = _created_at(created_at)
+    # Clear any previous invocation's grant before touching the new input.
+    _VERIFIED_CLOCK.set(None)
     codespace_name = os.environ.get("CODESPACE_NAME")
     if not codespace_name:
         raise PrivateHostStop("single approved Codespace environment required")
@@ -655,8 +677,14 @@ def execute(
     context = chapter_lifecycle.verify_lifecycle(
         root / "book-candidates", caller_created_at=created_at, codespace_name=codespace_name
     )
-    if context.created_at != created:
+    supplied_created = _created_at_timestamp(created_at)
+    if context.created_at != supplied_created:
         raise PrivateHostStop("authoritative Codespace creation time mismatch")
+    execution_deadline = context.execution_deadline or (
+        context.created_at + timedelta(seconds=DEADLINE_SECONDS - CLEANUP_RESERVE_SECONDS)
+    )
+    _VERIFIED_CLOCK.set((context.created_at, execution_deadline))
+    created = _created_at(created_at)
     path = _private_path(str(manifest_path), root, must_exist=True)
     inputs = _config(whole_book.load_strict_reply(evaluation._read(path, 32768)))
     plan = chapter.ChapterPlan.from_manifest(inputs["plan"])
@@ -1057,9 +1085,16 @@ def _execute_hybrid(
         owner = uuid4().hex
         identity: str | None = None
         try:
-            chapter_lifecycle.verify_lifecycle(
+            refreshed = chapter_lifecycle.verify_lifecycle(
                 private, caller_created_at=created_at, codespace_name=os.environ["CODESPACE_NAME"]
             )
+            if refreshed.created_at != _created_at_timestamp(created_at):
+                raise PrivateHostStop("rest creation time mismatch")
+            _VERIFIED_CLOCK.set((
+                refreshed.created_at,
+                refreshed.execution_deadline
+                or refreshed.created_at + timedelta(seconds=DEADLINE_SECONDS-CLEANUP_RESERVE_SECONDS),
+            ))
             _check_deadline(_created_at(created_at))
             review = None
             if mode == "hybrid-brief":
