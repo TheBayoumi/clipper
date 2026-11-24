@@ -351,8 +351,14 @@ stream_recovery_archive() {
     set -o pipefail
     gh codespace ssh -c "$1" -- -T "exec cat -- '\''$2'\''" 2>/dev/null |
       python3 -c '\''
-import os, sys
+import json, os, sys
 limit = 800_000_000
+receipt = json.loads(open(sys.argv[2], "rb").read(2049))
+size = receipt.get("archive_bytes")
+if size is not None:
+    if type(size) is not int or not 0 < size <= limit:
+        sys.exit(2)
+    limit = size
 used = 0
 fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 with os.fdopen(fd, "wb") as output:
@@ -364,10 +370,10 @@ with os.fdopen(fd, "wb") as output:
             sys.exit(2)
         output.write(block)
         used += len(block)
-if used == 0:
+if used == 0 or (size is not None and used != size):
     sys.exit(2)
-'\'' "$3"
-  ' _ "$CODESPACE_NAME" "$remote_archive" "$target"
+'\'' "$3" "$4"
+  ' _ "$CODESPACE_NAME" "$remote_archive" "$target" "$session/recovery-created.json"
 }
 
 recover_private() (
@@ -398,9 +404,15 @@ if len(created_raw) > 2048:
 created = json.loads(created_raw)
 if (created.get("schema") != "clipper-private-chapter-recovery-created-v1"
     or not isinstance(created.get("archive_sha256"), str)
-    or dig.fullmatch(created["archive_sha256"]) is None):
+    or dig.fullmatch(created["archive_sha256"]) is None
+    or ("archive_bytes" in created
+        and (type(created["archive_bytes"]) is not int
+             or not 0 < created["archive_bytes"] <= 800_000_000))):
     sys.exit(2)
-if archive_path.is_symlink() or not archive_path.is_file() or archive_path.stat().st_size > 800_000_000:
+if (archive_path.is_symlink() or not archive_path.is_file()
+    or archive_path.stat().st_size > 800_000_000
+    or ("archive_bytes" in created
+        and archive_path.stat().st_size != created["archive_bytes"])):
     sys.exit(2)
 h = hashlib.sha256()
 with archive_path.open("rb") as source:
@@ -894,12 +906,70 @@ with tarfile.open(archive_path, mode="r:") as source:
   "$transfer_stage/retrieval-verification.json" "$transfer_stage/safe-recovery-status.json"; then
         if identity_matches && bounded chmod 600 "$transfer_stage/chapter-recovery.tar" \
           "$transfer_stage/retrieval-verification.json" \
-          "$transfer_stage/safe-recovery-status.json" &&
-          bounded mv -f -- "$transfer_stage/chapter-recovery.tar" "$destination/chapter-recovery.tar" &&
-          bounded mv -f -- "$transfer_stage/retrieval-verification.json" "$destination/retrieval-verification.json" &&
-          bounded mv -f -- "$transfer_stage/safe-recovery-status.json" "$destination/safe-recovery-status.json"; then
-          bounded rmdir -- "$transfer_stage" || true
-          return 0
+          "$transfer_stage/safe-recovery-status.json"; then
+          if [[ -n "${SNAPSHOT_STAGE_DIR:-}" ]]; then
+            # Checkpoint staging is a fresh unpublished directory. Its caller
+            # atomically renames the entire directory only after verification.
+            if bounded mv -- "$transfer_stage/chapter-recovery.tar" "$destination/chapter-recovery.tar" &&
+               bounded mv -- "$transfer_stage/retrieval-verification.json" "$destination/retrieval-verification.json" &&
+               bounded mv -- "$transfer_stage/safe-recovery-status.json" "$destination/safe-recovery-status.json"; then
+              bounded rmdir -- "$transfer_stage" || true
+              return 0
+            fi
+          elif critical archive_verification python3 -c '
+import json, os, pathlib, sys, uuid
+root, stage = map(pathlib.Path, sys.argv[1:])
+names = ("chapter-recovery.tar", "retrieval-verification.json", "safe-recovery-status.json")
+link = root / "recovery-current"
+def point(name, folder):
+    tmp = root / (".recovery-link-" + uuid.uuid4().hex)
+    os.symlink(folder, tmp)
+    os.replace(tmp, root / name)
+def pointer(folder):
+    tmp = root / (".recovery-pointer-" + uuid.uuid4().hex)
+    os.symlink(folder, tmp)
+    os.replace(tmp, link)
+# A previously verified direct-file trio is migrated to a hard-linked,
+# identical baseline before any reader-facing path changes. Interruptions
+# before the final pointer switch still resolve to the old coherent trio.
+legacy = [root / name for name in names]
+if all(p.is_symlink() for p in legacy):
+    if any(os.readlink(p) != "recovery-current/" + p.name for p in legacy):
+        sys.exit(2)
+    if not link.is_symlink():
+        sys.exit(2)
+elif any(p.is_symlink() for p in legacy):
+    sys.exit(2)
+elif (root / "retrieval-verification.json").is_file():
+    try:
+        report = json.loads(legacy[1].read_bytes())
+        verified = (report.get("archive_integrity_status") == "VERIFIED"
+                    and report.get("retrieval_status") in (
+                        "VERIFIED_PRIVATE_ARCHIVE", "VERIFIED_PRIVATE_ARCHIVE_PARTIAL"))
+    except (OSError, ValueError, TypeError):
+        verified = False
+    if verified:
+        if not all(p.is_file() and not p.is_symlink() for p in legacy):
+            sys.exit(2)
+        baseline = ".recovery-bundle-" + uuid.uuid4().hex
+        prior = root / baseline
+        prior.mkdir(mode=0o700)
+        for item in legacy:
+            os.link(item, prior / item.name)
+        pointer(baseline)
+# Prepare stable direct reader names. At this point the existing pointer,
+# when present, always resolves to the original verified bytes.
+for item in legacy:
+    if not item.is_symlink():
+        point(item.name, "recovery-current/" + item.name)
+# Stage becomes a complete immutable bundle with one atomic directory rename.
+bundle = ".recovery-bundle-" + uuid.uuid4().hex
+os.replace(stage, root / bundle)
+# This is the sole commit point for the three verified artifacts.
+pointer(bundle)
+' "$destination" "$transfer_stage" >/dev/null 2>&1; then
+            return 0
+          fi
         fi
       fi
     fi
