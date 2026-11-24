@@ -687,8 +687,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         empty_listing = {
             "schema": "clipper-chapter-private-recovery-archive-manifest-v1",
             "chapters": [
-                {"chapter": n, "inventory_status": "VERIFIED", "files": []}
-                for n in (1, 7)
+                {"chapter": n, "inventory_status": "VERIFIED", "files": []} for n in (1, 7)
             ],
             "files": [],
             "runtime_status_sha256": hashlib.sha256(empty_safe_bytes).hexdigest(),
@@ -748,13 +747,11 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         )
         timed = timed.replace(
             "if 'clipper.books.chapter_host status' in ' '.join(a):\\n",
-            "if 'clipper.books.chapter_host status' in ' '.join(a):\\n"
-            "    time.sleep(7)\\n",
+            "if 'clipper.books.chapter_host status' in ' '.join(a):\\n    time.sleep(7)\\n",
         )
         timed = timed.replace(
             "  if 'chapter-recovery.tar' in ' '.join(a):\\n",
-            "  if 'chapter-recovery.tar' in ' '.join(a):\\n"
-            "    time.sleep(7)\\n",
+            "  if 'chapter-recovery.tar' in ' '.join(a):\\n    time.sleep(7)\\n",
         )
         timed = timed.replace(
             "    path.write_text(str(count))\\n",
@@ -1083,9 +1080,8 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
                 "remaining_included_core_seconds": 4 * 4 * 3600,
                 "total_seconds": 4 * 3600,
                 "storage_included_verified": True,
-                "paid_overage_block_verified": scenario not in {
-                    "free_grant_paid_block_missing", "free_grant_invalid_past_legacy"
-                },
+                "paid_overage_block_verified": scenario
+                not in {"free_grant_paid_block_missing", "free_grant_invalid_past_legacy"},
             }
             grant_file = tmp_path / "owner-finite-free-grant.json"
             grant_file.write_text(json.dumps(grant), encoding="utf-8")
