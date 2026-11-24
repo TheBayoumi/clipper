@@ -1559,9 +1559,7 @@ def test_signal_during_local_preflight_retains_exact_id_cleanup_clock(
         "near_deadline",
     ],
 )
-def test_heartbeat_stream_shell_transport_atomic_ack_and_cleanup(
-    tmp_path: Path, mode: str
-) -> None:
+def test_heartbeat_stream_shell_transport_atomic_ack_and_cleanup(tmp_path: Path, mode: str) -> None:
     """Real owner Bash + a subprocess-backed remote shell, never a Codespace."""
     import signal
 
@@ -1645,8 +1643,7 @@ def test_heartbeat_stream_shell_transport_atomic_ack_and_cleanup(
     key.write_text("SYNTHETIC_PRIVATE_ONLY", encoding="utf-8")
     pub.write_text("SYNTHETIC_PUBLIC_ONLY", encoding="utf-8")
     created = (
-        datetime.now(UTC)
-        - timedelta(seconds=7196 if mode == "near_deadline" else 1)
+        datetime.now(UTC) - timedelta(seconds=7196 if mode == "near_deadline" else 1)
     ).isoformat()
     env = os.environ.copy()
     env.update(
