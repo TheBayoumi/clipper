@@ -246,6 +246,7 @@ class QualificationOwner:
         self.task: asyncio.Task[dict[str, object]] | None = None
         self.unresolved: set[str] = set()
         self.active_operations: set[str] = set()
+        self.provider_entry_started: set[str] = set()
         self.unknown_outcomes: list[dict[str, str]] = []
         self.evidence_errors: list[str] = []
         self.cleanup_errors: list[str] = []
@@ -314,6 +315,9 @@ class QualificationOwner:
                     raise RuntimeError("STOP_LATCHED")
             else:
                 self._safe_record("OPERATION_BEGIN", step=step)
+            if acquisition:
+                # Mark the exact boundary after the durable pre-entry barrier.
+                self.provider_entry_started.add(step)
             return await action()
         finally:
             self.active_operations.discard(step)
@@ -422,8 +426,9 @@ class QualificationOwner:
                 step, lambda: self.backend.create(app, volume, script), acquisition=True
             )
         except BaseException:
-            # Provider may have allocated without returning its ID.
-            self._unknown("sandbox", step)
+            # A rejected pre-entry evidence write cannot allocate remotely.
+            if step in self.provider_entry_started:
+                self._unknown("sandbox", step)
             raise
         # Handle registration precedes every potentially failing evidence write.
         self.live_sandboxes.append(sb)
@@ -482,7 +487,8 @@ class QualificationOwner:
         try:
             handle = await self._await_operation(step, context.__aenter__, acquisition=True)
         except BaseException:
-            self._unknown(kind, step)
+            if step in self.provider_entry_started:
+                self._unknown(kind, step)
             raise
         # Caller stores the returned handle before validating/journaling ID.
         return handle
