@@ -341,6 +341,35 @@ except (ValueError,TypeError,KeyError,AttributeError,UnicodeDecodeError,OSError)
   return 2
 }
 
+# Pipe archive bytes through the authenticated, non-PTY Codespace SSH command.
+# Both producer and bounded binary receiver belong to the same timed process
+# group; pipefail rejects a failed producer even if it emitted a valid prefix.
+stream_recovery_archive() {
+  local remote_archive="$PRIVATE_CHAPTER_ROOT/book-candidates/private-host/chapter-recovery.tar"
+  local target="$1"
+  critical recovery_copy bash -c '
+    set -o pipefail
+    gh codespace ssh -c "$1" -- -T "exec cat -- '\''$2'\''" 2>/dev/null |
+      python3 -c '\''
+import os, sys
+limit = 800_000_000
+used = 0
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, "wb") as output:
+    while True:
+        block = sys.stdin.buffer.read(min(1024 * 1024, limit - used + 1))
+        if not block:
+            break
+        if used + len(block) > limit:
+            sys.exit(2)
+        output.write(block)
+        used += len(block)
+if used == 0:
+    sys.exit(2)
+'\'' "$3"
+  ' _ "$CODESPACE_NAME" "$remote_archive" "$target"
+}
+
 recover_private() (
   # Recovery is always best-effort and bounded within original cleanup reserve.
   recovery_epoch="$(( $(date -u +%s) + 16 ))"
@@ -348,14 +377,15 @@ recover_private() (
   local destination="${SNAPSHOT_STAGE_DIR:-$PRIVATE_CHAPTER_RECOVERY_DIR/$CODESPACE_NAME}"
   bounded mkdir -p -m 700 -- "$destination" || return 2
   bounded chmod 700 "$destination" || return 2
+  local transfer_stage
+  transfer_stage="$(mktemp -d "$destination/.recovery-stage.XXXXXXXX")" || return 2
+  chmod 700 "$transfer_stage" || return 2
   # One scoped, allowlisted private output TAR includes final WAVs, text
   # validation records, narration reports and safe status; never a whole EPUB.
   if critical recovery_prepare gh codespace ssh -c "$CODESPACE_NAME" -- \
     "cd /workspaces/clipper && if [ -x .venv/bin/python ]; then .venv/bin/python -m clipper.books.chapter_host recover --artifact-root '$PRIVATE_CHAPTER_ROOT'; else PYTHONPATH=/workspaces/clipper/src python -m clipper.books.chapter_host recover --artifact-root '$PRIVATE_CHAPTER_ROOT'; fi" \
     >"$session/recovery-created.json" 2>/dev/null; then
-    if identity_matches && critical recovery_copy gh codespace cp -c "$CODESPACE_NAME" \
-      "remote:$PRIVATE_CHAPTER_ROOT/book-candidates/private-host/chapter-recovery.tar" \
-      "$destination/chapter-recovery.tar" >/dev/null 2>&1; then
+    if identity_matches && stream_recovery_archive "$transfer_stage/chapter-recovery.tar" >/dev/null 2>&1 && identity_matches; then
       if critical archive_verification python3 -c '
 import hashlib, json, pathlib, re, sys, tarfile
 created_path, archive_path, report_path, safe_path = map(pathlib.Path, sys.argv[1:])
@@ -848,17 +878,24 @@ with tarfile.open(archive_path, mode="r:") as source:
     }
     report_path.write_text(json.dumps(summary, sort_keys=True) + "\n", encoding="utf-8")
     safe_path.write_bytes(safe_bytes)
-' "$session/recovery-created.json" "$destination/chapter-recovery.tar" \
-  "$destination/retrieval-verification.json" "$destination/safe-recovery-status.json"; then
-        bounded chmod 600 "$destination/chapter-recovery.tar" \
-          "$destination/retrieval-verification.json" \
-          "$destination/safe-recovery-status.json" || true
-        return 0
+' "$session/recovery-created.json" "$transfer_stage/chapter-recovery.tar" \
+  "$transfer_stage/retrieval-verification.json" "$transfer_stage/safe-recovery-status.json"; then
+        if identity_matches && bounded chmod 600 "$transfer_stage/chapter-recovery.tar" \
+          "$transfer_stage/retrieval-verification.json" \
+          "$transfer_stage/safe-recovery-status.json" &&
+          bounded mv -f -- "$transfer_stage/chapter-recovery.tar" "$destination/chapter-recovery.tar" &&
+          bounded mv -f -- "$transfer_stage/retrieval-verification.json" "$destination/retrieval-verification.json" &&
+          bounded mv -f -- "$transfer_stage/safe-recovery-status.json" "$destination/safe-recovery-status.json"; then
+          bounded rmdir -- "$transfer_stage" || true
+          return 0
+        fi
       fi
     fi
   fi
   # Incomplete is distinct from REST cleanup; never report files recovered.
-  bounded rm -f -- "$destination/chapter-recovery.tar" || true
+  bounded rm -rf -- "$transfer_stage" || true
+  # An unsuccessful new transfer cannot overwrite an earlier verified report.
+  if [[ ! -e "$destination/retrieval-verification.json" ]]; then
   bounded python3 -c '
 import json, sys
 with open(sys.argv[1], "w", encoding="utf-8") as f:
@@ -866,6 +903,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as f:
                "retrieval_status":"INCOMPLETE",
                "host_cleanup_status":"NOT_YET_REST_VERIFIED"}, f)
 ' "$destination/retrieval-verification.json" || true
+  fi
   # Fallback safe phase-only checkpoint, still within the same retrieval cap.
   if identity_matches; then
     bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
