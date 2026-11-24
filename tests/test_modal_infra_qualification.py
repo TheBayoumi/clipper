@@ -692,3 +692,149 @@ def test_durable_intent_survives_synthetic_process_interruption(tmp_path: Path) 
         "run_id": "synthetic",
         "step": "sandbox_create",
     }
+
+
+@pytest.mark.parametrize("workspace_name", [None, "", "wrong-workspace"])
+def test_sdk_workspace_name_property_fails_before_any_resource_entry(
+    tmp_path: Path, workspace_name: str | None
+) -> None:
+    """Match the SDK's Optional[str] property, not a callable test double."""
+    from types import SimpleNamespace
+
+    async def exercise() -> None:
+        client = object()
+        observed: list[str] = []
+
+        class Workspace:
+            name = workspace_name
+
+            def hydrate(self) -> None:
+                observed.append("hydrate")
+
+        class WorkspaceAPI:
+            @staticmethod
+            def from_context(*, client: object) -> Workspace:
+                assert client is explicit_client
+                observed.append("workspace")
+                return Workspace()
+
+        explicit_client = client
+        sdk = SimpleNamespace(Workspace=WorkspaceAPI)
+
+        class NoResourceBackend(SDKBackend):
+            def app_context(self) -> Any:
+                observed.append("app_context")
+                pytest.fail("Invalid workspace must not acquire an App")
+
+            def volume_context(self) -> Any:
+                observed.append("volume_context")
+                pytest.fail("Invalid workspace must not acquire a Volume")
+
+        owner = QualificationOwner(
+            NoResourceBackend(sdk, explicit_client, "qualification"),
+            Intent(
+                "expected-workspace", "qualification", "a" * 40,
+                "modal-cpu-synthetic-persistence",
+            ),
+            Ledger(tmp_path / "private" / "ledger.jsonl"),
+        )
+        owner.start()
+        result = await owner.terminal()
+        assert result["primary_error"] == "ValueError"
+        assert observed == ["workspace", "hydrate"]
+        assert result["provider_removal"] == "UNKNOWN"
+        assert not any(
+            e["operation"] == "INTENT" for e in _events(tmp_path)
+            if e.get("step") in {"app_context_enter", "volume_context_enter"}
+        )
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("app_id", [None, ""])
+def test_missing_app_id_is_not_logged_as_success_and_context_still_exits(
+    tmp_path: Path, app_id: str | None
+) -> None:
+    class MissingAppIdBackend(FakeBackend):
+        def app_context(self) -> Context:
+            ctx = Context(self, "app")
+            ctx.app_id = app_id
+            return ctx
+
+    async def exercise() -> None:
+        backend = MissingAppIdBackend()
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        result = await owner.terminal()
+        assert result["primary_error"] == "ValueError"
+        assert backend.events == ["verify", "app_enter", "app_exit"]
+        assert result["app_context_closed"] is True
+        assert result["volume_context_closed"] is False
+        assert result["provider_removal"] == "UNKNOWN"
+        events = _events(tmp_path)
+        assert any(
+            e["operation"] == "UNKNOWN_APP_ID"
+            and e.get("step") == "app_context_enter"
+            for e in events
+        )
+        assert not any(
+            e["operation"] == "RETURN" and e.get("step") == "app_context_enter"
+            for e in events
+        )
+
+    asyncio.run(exercise())
+
+
+def test_sdk_combined_async_contexts_use_single_explicit_client() -> None:
+    """SDK-shaped App.run/Volume.ephemeral context managers, no Modal import."""
+    from types import SimpleNamespace
+
+    async def exercise() -> None:
+        client = object()
+        events: list[str] = []
+
+        class AsyncContext:
+            def __init__(self, kind: str, value: object) -> None:
+                self.kind, self.value = kind, value
+
+            async def __aenter__(self) -> object:
+                events.append(self.kind + "_enter")
+                return self.value
+
+            async def __aexit__(self, *_args: object) -> None:
+                events.append(self.kind + "_exit")
+
+        class App:
+            app_id = "ap-actual-shaped"
+
+            def run(
+                self, *, client: object, environment_name: str, detach: bool
+            ) -> AsyncContext:
+                assert client is explicit_client
+                assert environment_name == "qualification"
+                assert detach is False
+                return AsyncContext("app", self)
+
+        class Volume:
+            object_id = "vo-actual-shaped"
+
+            @classmethod
+            def ephemeral(
+                cls, *, client: object, environment_name: str
+            ) -> AsyncContext:
+                assert client is explicit_client
+                assert environment_name == "qualification"
+                return AsyncContext("volume", cls())
+
+        explicit_client = client
+        backend = SDKBackend(
+            SimpleNamespace(App=App, Volume=Volume), explicit_client, "qualification"
+        )
+        app_context = backend.app_context()
+        async with app_context as app:
+            assert app.app_id == "ap-actual-shaped"
+            async with backend.volume_context() as volume:
+                assert volume.object_id == "vo-actual-shaped"
+        assert events == ["app_enter", "volume_enter", "volume_exit", "app_exit"]
+
+    asyncio.run(exercise())
