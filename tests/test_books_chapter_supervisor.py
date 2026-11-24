@@ -1173,9 +1173,7 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         "rest_initial_unavailable",
         "rest_initial_malformed",
     }
-    assert "api -X DELETE" in actions or never_verified or expired_invalid_grant, (
-        result.stderr
-    )
+    assert "api -X DELETE" in actions or never_verified or expired_invalid_grant, result.stderr
     if never_verified:
         assert "api -X POST" not in actions
         assert "api -X DELETE" not in actions
