@@ -402,3 +402,14 @@ latch, retains identified but not terminally observed sandboxes for reconciliati
 and treats terminal JSON as **unconfirmed file-only evidence**. Only a live
 owner-returned acknowledgement after fsync may report local SUCCESS; provider
 removal is always UNKNOWN. No CI or provider clearance is inferred.
+
+## Explicit Modal CPU infrastructure driver (offline candidate)
+
+`clipper.modal_infra_driver.run_infrastructure_experiment` is the optional
+**synchronous Python injection boundary** for the model-free 64 KiB synthetic
+exercise. It accepts only a separately supplied SDK/client and explicit Intent,
+owns POSIX signal/ledger/event-loop cleanup, and has no CLI or account bootstrap.
+The qualified owner module is unchanged; this driver is **UNQUALIFIED** until
+independent fake-SDK E2E, interruptions, exact-SHA CI and final review.
+See [driver prerequisites and limits](docs/modal_cpu_infra_offline_qualification.md).
+No live provider invocation or cost authorization exists.

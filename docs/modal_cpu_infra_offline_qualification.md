@@ -138,3 +138,62 @@ Both observation budgets must be finite and strictly positive: NaN,
 positive/negative infinity, zero and negative durations are rejected at owner
 construction, before any provider entry. The windows remain observations only,
 not provider deadlines, cross-process supervision or removal guarantees.
+
+## Candidate 2337: explicit synchronous driver (UNQUALIFIED)
+
+New entrypoint: `clipper.modal_infra_driver.run_infrastructure_experiment`.
+The previously qualified owner module is unchanged. This *driver* has no CLI,
+implicit Modal import, credential setup, client discovery, model initialization,
+account selection or auto-execution. An independently approved and authenticated
+host wrapper would have to supply the **already-instantiated** pinned SDK 1.5.5
+module, explicit client, named workspace/environment, exact source SHA and
+explicit run intent. Passing strings and handles does **not** grant provider or
+spending authorization. Do not place tokens or book text in the journal or repo.
+
+Contract illustration, **not an executable credential/bootstrap recipe**:
+
+```python
+from pathlib import Path
+from clipper.modal_infra_driver import run_infrastructure_experiment, result_exit_code
+from clipper.modal_infra_qualification import Intent
+
+# sdk and client are existing, separately authorized objects from a host wrapper;
+# no SDK/client construction, network calls or provider activation is shown here.
+intent = Intent(
+    expected_workspace="APPROVED_WORKSPACE",
+    environment="APPROVED_ENVIRONMENT",
+    source_sha="EXACT_APPROVED_40_HEX_GIT_SHA",
+    explicit_run_intent="modal-cpu-synthetic-persistence",
+)
+result = run_infrastructure_experiment(
+    sdk, client, intent, Path("/PRIVATE_OWNER_PATH/modal-infra.jsonl")
+)
+code = result_exit_code(result)  # 0 only for live owner-acknowledged local SUCCESS
+```
+
+The actual call **can allocate provider resources** if a future independently
+authorized caller supplies real SDK/client and invokes it. None has been called
+during offline implementation. The driver is POSIX main-thread only and refuses
+nested asyncio loops or unsupported threads before entering provider contexts.
+It owns one persistent `asyncio.Runner` event loop and private Ledger, uses
+SDKBackend+QualificationOwner directly, calls `observe()` and always awaits
+`terminal()` before leaving that loop. SIGINT/SIGTERM temporarily request
+STOP (including repeated signals), never cancel the owner, and previous signal
+handlers are restored on return/failure. Ledger closure follows owner terminal;
+pre-start exceptions close the ledger and do not claim a provider result.
+A permanent or stalled remote operation can hold the caller indefinitely.
+No hard operation/cost deadline, process-crash, SIGKILL, or cross-process
+recovery guarantee is introduced.
+
+The returned structured result preserves status, OWNER_ACKNOWLEDGED vs UNKNOWN
+durability, known-unconfirmed IDs, unknown allocations, active operations and
+provider_removal=UNKNOWN. `result_exit_code` is pure: returns 0 only for
+locally SUCCESS + OWNER_ACKNOWLEDGED and 2 otherwise. No machine JSON or
+success receipt is published from file bytes.
+
+Offline E2E tests inject a test-only SDK-shaped object through the **real**
+SDKBackend and owner; POSIX signal fixtures may send signals to their own test
+process, never a provider host. The driver, unlike its owner baseline, requires
+new independent execution, exact-SHA CI + unchanged 95% coverage gate and
+separate final review before any claim of qualification. Live image preparation,
+cost/free eligibility, persistence/expiry and resource removal remain unknown.
