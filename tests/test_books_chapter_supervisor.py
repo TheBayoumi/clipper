@@ -686,12 +686,12 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         previous_pointer = os.readlink(folder / "recovery-current")
         injected = tmp_path / "promotion-fails-supervisor.sh"
         original_supervisor = _SCRIPT.read_text(encoding="utf-8")
-        injection_point = "os.replace(stage, root / bundle)\\n# This is the sole commit point"
+        injection_point = "os.replace(stage, root / bundle)\n# This is the sole commit point"
         assert injection_point in original_supervisor
         injected.write_text(
             original_supervisor.replace(
                 injection_point,
-                "os.replace(stage, root / bundle)\\nraise SystemExit(91)\\n# This is the sole commit point",
+                "os.replace(stage, root / bundle)\nraise SystemExit(91)\n# This is the sole commit point",
                 1,
             ),
             encoding="utf-8",
