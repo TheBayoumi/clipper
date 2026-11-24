@@ -243,6 +243,8 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         ("all_ready", False, "matched_junk"),
         ("all_ready", False, "oversize"),
         ("all_ready", False, "hung"),
+        ("all_ready", False, "fork_ignores_term"),
+        ("all_ready", False, "fork_signal"),
         ("all_ready", False, "signal"),
         ("all_ready", False, "foreign_identity"),
     ],
@@ -522,7 +524,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         response.write_text(json.dumps(receipt), encoding="utf-8")
     fake_gh.write_text(
         f"#!{sys.executable}\n"
-        "import datetime,hashlib,json,os,pathlib,shutil,subprocess,sys,time\n"
+        "import datetime,hashlib,json,os,pathlib,signal,shutil,subprocess,sys,time\n"
         "a=sys.argv[1:]\n"
         "with open(os.environ['MOCK_LOG'],'a') as f: f.write(' '.join(a)+'\\n')\n"
         "if a[:2]==['api','-X']:\n"
@@ -545,6 +547,14 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         "    assert '-T' in a, a\n"
         "    fault=os.environ['MOCK_STREAM_FAULT']\n"
         "    pathlib.Path(os.environ['MOCK_TRANSFER_PID']).write_text(str(os.getpid()))\n"
+        "    if fault in ('fork_ignores_term','fork_signal'):\n"
+        "      pid=os.fork()\n"
+        "      if pid==0:\n"
+        "        signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+        "        pathlib.Path(os.environ['MOCK_GRANDCHILD_PID']).write_text(str(os.getpid()))\n"
+        "        while True: time.sleep(1)\n"
+        "      pathlib.Path(os.environ['MOCK_STREAM_ENTERED']).touch()\n"
+        "      time.sleep(120)\n"
         "    if fault in ('hung','signal'):\n"
         "      pathlib.Path(os.environ['MOCK_STREAM_ENTERED']).touch()\n"
         "      time.sleep(120)\n"
@@ -601,6 +611,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             "MOCK_MAX_STAGED_SIZE": str(tmp_path / "max-staged-size"),
             "MOCK_TRANSFER_PID": str(tmp_path / "transfer-pid"),
             "MOCK_SAFE_STATUS": str(safe_fixture),
+            "MOCK_GRANDCHILD_PID": str(tmp_path / "grandchild-pid"),
         }
     )
     env.pop("CODESPACES", None)
@@ -624,7 +635,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             1,
         )
         script.write_text(raw)
-    if stream_fault == "signal":
+    if stream_fault in {"signal", "fork_signal"}:
         import signal
 
         child = subprocess.Popen(
@@ -652,6 +663,20 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             ["bash", str(script)], env=env, capture_output=True, text=True, timeout=30
         )
     assert result.returncode != 0  # Invalid synthetic signer prevents host setup.
+    if stream_fault in {"fork_ignores_term", "fork_signal"}:
+        grandchild = tmp_path / "grandchild-pid"
+        assert grandchild.is_file()
+        pid = int(grandchild.read_text())
+        # Linux runner may briefly retain a reparented zombie; that is not a
+        # live descendant. A TERM-ignoring running process is a failure.
+        def running() -> bool:
+            stat = Path(f"/proc/{pid}/stat")
+            return stat.exists() and stat.read_text().split(") ", 1)[1][0] != "Z"
+
+        until = time.monotonic() + 2
+        while running() and time.monotonic() < until:
+            time.sleep(0.02)
+        assert not running(), f"SSH descendant {pid} survived owner timeout/signal"
     actions = log.read_text(encoding="utf-8")
     if stream_fault == "foreign_identity":
         assert "exec cat -- " not in actions
@@ -670,7 +695,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     assert cleanup["host_deletion_verified"] is True
     assert verification["retrieval_status"] == (
         "INCOMPLETE"
-        if tamper_archive or stream_fault != "none"
+        if tamper_archive or stream_fault not in {"none", "boundary_padding"}
         else "VERIFIED_PRIVATE_ARCHIVE"
         if scenario == "all_ready"
         else "VERIFIED_PRIVATE_ARCHIVE_PARTIAL"
