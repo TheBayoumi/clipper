@@ -229,6 +229,7 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
     ("scenario", "tamper_archive", "stream_fault"),
     [
         ("brief_only", False, "none"),
+        ("brief_only", False, "boundary_padding"),
         ("brief_only", True, "none"),
         ("inflight_empty", False, "none"),
         ("one_complete_one_failed", False, "none"),
@@ -435,16 +436,34 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         "runtime_status_sha256": hashlib.sha256(safe_bytes).hexdigest(),
     }
     listing_bytes = json.dumps(listing, sort_keys=True).encode()
-    with tarfile.open(source, "w") as archive:
-        for name, data in (
-            *payloads.items(),
-            ("private-recovery-manifest.json", listing_bytes),
-            ("safe-recovery-status.json", safe_bytes),
-        ):
-            member = tarfile.TarInfo(name)
-            member.size = len(data)
-            member.mode = 0o600
-            archive.addfile(member, io.BytesIO(data))
+    def write_fixture_tar() -> None:
+        with tarfile.open(source, "w") as archive:
+            for name, data in (
+                *payloads.items(),
+                ("private-recovery-manifest.json", listing_bytes),
+                ("safe-recovery-status.json", safe_bytes),
+            ):
+                member = tarfile.TarInfo(name)
+                member.size = len(data)
+                member.mode = 0o600
+                archive.addfile(member, io.BytesIO(data))
+
+    write_fixture_tar()
+    if stream_fault == "boundary_padding":
+        # Force the last member to end at offset 9728 modulo 10240.
+        # Python tarfile writes two EOF blocks plus record padding: 10752 bytes.
+        with tarfile.open(source, "r:") as archive:
+            delta = (9728 - archive.offset % 10240) % 10240
+        relative = "book-candidates/brief/synthetic/validated.json"
+        payloads[relative] += b"Z" * delta
+        new_hash = hashlib.sha256(payloads[relative]).hexdigest()
+        for row in (scoped[1][0], aggregate[relative]):
+            row["bytes"] = len(payloads[relative])
+            row["sha256"] = new_hash
+        listing_bytes = json.dumps(listing, sort_keys=True).encode()
+        write_fixture_tar()
+        with tarfile.open(source, "r:") as archive:
+            assert source.stat().st_size - archive.offset == 10752
     receipt = {
         "schema": "clipper-private-chapter-recovery-created-v1",
         "archive_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -520,6 +539,8 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         "'machine':{'cpus':4,'memory_in_bytes':17179869184,"
         "'storage_in_bytes':34359738368}})); sys.exit(0)\n"
         "if a[:2]==['codespace','ssh']:\n"
+        "  if 'clipper.books.chapter_host status' in ' '.join(a):\n"
+        "    print(pathlib.Path(os.environ['MOCK_SAFE_STATUS']).read_text()); sys.exit(0)\n"
         "  if 'exec cat -- ' in a[-1]:\n"
         "    assert '-T' in a, a\n"
         "    fault=os.environ['MOCK_STREAM_FAULT']\n"
@@ -555,6 +576,8 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     key.write_text("INVALID_SIGNING_KEY_FOR_TEST", encoding="utf-8")
     public.write_text("PUBLIC_ONLY", encoding="utf-8")
     log = tmp_path / "synthetic-gh-ops.log"
+    safe_fixture = tmp_path / "synthetic-safe-phase-only.json"
+    safe_fixture.write_bytes(safe_bytes)
     env = os.environ.copy()
     env.update(
         {
@@ -577,6 +600,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             "MOCK_STREAM_ENTERED": str(tmp_path / "stream-entered"),
             "MOCK_MAX_STAGED_SIZE": str(tmp_path / "max-staged-size"),
             "MOCK_TRANSFER_PID": str(tmp_path / "transfer-pid"),
+            "MOCK_SAFE_STATUS": str(safe_fixture),
         }
     )
     env.pop("CODESPACES", None)
@@ -651,7 +675,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         if scenario == "all_ready"
         else "VERIFIED_PRIVATE_ARCHIVE_PARTIAL"
     ), (result.stderr, verification)
-    if not tamper_archive and stream_fault == "none":
+    if not tamper_archive and stream_fault in {"none", "boundary_padding"}:
         expected = {
             "brief_only": ({"1": "PARTIAL_OUTPUTS", "7": "NOT_STARTED"}, "PARTIAL"),
             "inflight_empty": ({"1": "CHECKPOINT_ONLY", "7": "CHECKPOINT_ONLY"}, "NONE"),
@@ -685,7 +709,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
                     == 1
                 )
     assert (folder / "chapter-recovery.tar").exists() is (
-        not tamper_archive and stream_fault == "none"
+        not tamper_archive and stream_fault in {"none", "boundary_padding"}
     )
     assert not list(folder.glob(".recovery-stage.*"))
     if stream_fault == "oversize":
@@ -699,6 +723,10 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
                 pass
             else:
                 pytest.fail("recovery stream left a live gh subprocess")
+    if stream_fault in {"truncated", "partial_exit", "wrong_receipt", "disconnect"}:
+        assert "clipper.books.chapter_host status" in actions
+        assert (folder / "safe-recovery-status.json").read_bytes() == safe_bytes
+        assert "api -X DELETE" in actions
     assert "fabricated fixture text" not in result.stdout + result.stderr
     assert "PRIVATE_SYNTHETIC_CANARY" not in result.stdout + result.stderr
     assert (folder.stat().st_mode & 0o077) == 0
