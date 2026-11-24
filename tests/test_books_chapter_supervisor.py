@@ -499,6 +499,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         receipt["archive_sha256"] = hashlib.sha256(
             source.read_bytes() + b"junk-after-tar"
         ).hexdigest()
+        receipt["archive_bytes"] = source.stat().st_size + len(b"junk-after-tar")
         response.write_text(json.dumps(receipt), encoding="utf-8")
     fake_gh.write_text(
         f"#!{sys.executable}\n"
