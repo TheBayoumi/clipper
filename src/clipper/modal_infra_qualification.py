@@ -14,7 +14,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 DATA = bytes(range(256)) * 256
 DIGEST = hashlib.sha256(DATA).hexdigest()
@@ -179,7 +179,8 @@ async def _next_chunk(iterator: Any) -> bytes | str | None:
             return None
 
     # Do not transfer StopIteration through an asyncio Future.
-    return await asyncio.to_thread(lambda: next(iterator, None))
+    piece: bytes | str | None = await asyncio.to_thread(lambda: next(iterator, None))
+    return piece
 
 
 async def read_first_line(iterator: Any, maximum: int = 128) -> bytes:
@@ -316,7 +317,7 @@ class QualificationOwner:
             if acquisition:
                 raise
             # Cleanup is mandatory even if the evidence sink is unavailable.
-            self._result["cleanup_errors"].append("JournalIntentFailed")  # type: ignore[union-attr]
+            cast(list[str], self._result["cleanup_errors"]).append("JournalIntentFailed")
         self.unresolved.add(name)
         try:
             result = await action()
@@ -325,7 +326,7 @@ class QualificationOwner:
             except OSError:
                 if acquisition:
                     raise
-                self._result["cleanup_errors"].append("JournalReturnFailed")  # type: ignore[union-attr]
+                cast(list[str], self._result["cleanup_errors"]).append("JournalReturnFailed")
             return result
         finally:
             self.unresolved.discard(name)
@@ -341,7 +342,7 @@ class QualificationOwner:
             try:
                 await self._operation(name + "_iterator_close", lambda: _close_iterator(iterator))
             except BaseException as exc:
-                self._result["cleanup_errors"].append(type(exc).__name__)  # type: ignore[union-attr]
+                cast(list[str], self._result["cleanup_errors"]).append(type(exc).__name__)
                 self._record("ITERATOR_CLOSE_FAILED", step=name, error=type(exc).__name__)
                 if error is None:
                     raise
@@ -391,10 +392,10 @@ class QualificationOwner:
                 if terminal is None:
                     raise ValueError("No terminal observation")
                 self._record("SANDBOX_TERMINAL", step=index, terminal=str(terminal))
-                self._result["sandbox_terminal"].append(str(terminal))  # type: ignore[union-attr]
+                cast(list[str], self._result["sandbox_terminal"]).append(str(terminal))
             except BaseException as exc:
                 self._record("SANDBOX_CLEANUP_ERROR", step=index, error=type(exc).__name__)
-                self._result["cleanup_errors"].append(type(exc).__name__)  # type: ignore[union-attr]
+                cast(list[str], self._result["cleanup_errors"]).append(type(exc).__name__)
                 if primary is None:
                     raise
 
