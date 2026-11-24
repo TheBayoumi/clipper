@@ -31,14 +31,14 @@ WRITE_SCRIPT = (
     " f.write(b);f.flush();os.fsync(f.fileno())\n"
     "subprocess.run(['sync','/data'],check=True,timeout=15)\n"
     "print('READY:'+hashlib.sha256(b).hexdigest(),flush=True)\n"
-    "time.sleep(55)\n"
+    "while True: time.sleep(10)\n"
 )
 READ_SCRIPT = (
     "import hashlib,pathlib,time\n"
     "p=pathlib.Path('/data/infra-check.bin')\n"
     "b=p.read_bytes()\n"
     "print('READ:'+str(len(b))+':'+hashlib.sha256(b).hexdigest(),flush=True)\n"
-    "time.sleep(55)\n"
+    "while True: time.sleep(10)\n"
 )
 
 
