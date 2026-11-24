@@ -1141,6 +1141,7 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
             grant_file.write_text(json.dumps(grant), encoding="utf-8")
             grant_file.chmod(0o600)
             env["PRIVATE_CHAPTER_FREE_GRANT_FILE"] = str(grant_file)
+    started = time.monotonic()
     result = subprocess.run(
         ["bash", str(_SCRIPT)],
         env=env,
@@ -1149,6 +1150,10 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         check=False,
         timeout=30,
     )
+    elapsed = time.monotonic() - started
+    if scenario.startswith("rest_"):
+        # No unbounded REST retry, even for persistent timeouts.
+        assert elapsed < 25, (scenario, elapsed, result.stderr)
     actions = log.read_text(encoding="utf-8")
     if scenario == "free_grant_reserve_cleanup":
         assert result.returncode == 0
