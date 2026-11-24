@@ -254,7 +254,7 @@ def test_rest_and_supervisor_evidence_are_finite_and_fail_closed(
             _check(root, record)
     monkeypatch.setattr(chapter_lifecycle, "_command", valid_command)
     record["created_at"] = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
-    with pytest.raises(chapter_lifecycle.LifecycleStop, match="deadline"):
+    with pytest.raises(chapter_lifecycle.LifecycleStop, match="does not attest"):
         _check(root, record)
 
 
