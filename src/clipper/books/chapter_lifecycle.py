@@ -24,6 +24,9 @@ SUPERVISOR_SCHEMA = "clipper-external-codespace-supervisor-v1"
 MAX_HEARTBEAT_AGE_SECONDS = 45
 EXECUTION_SECONDS = 7200 - 300
 TOTAL_SECONDS = 7200
+CLEANUP_RESERVE_SECONDS = 300
+# Independent Codespaces running-session ceiling is NOT a free allowance grant.
+MAX_GRANT_SECONDS = 12 * 3600 - 300
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -39,6 +42,7 @@ class VerifiedLifecycle:
     created_at: datetime
     approved_sha: str
     expires_at: datetime
+    execution_deadline: datetime | None = None
 
 
 def _utc(text: object) -> datetime:
@@ -130,6 +134,45 @@ def _signed_snapshot(private_root: Path) -> tuple[bytes, bytes]:
     )
 
 
+def _verified_free_allowance(
+    value: object, *, code_id: int, name: str, created: datetime, sha: str
+) -> int:
+    """Validate the finite owner attestation INSIDE the verified signed payload."""
+    if not isinstance(value, dict) or set(value) != {
+        "schema", "codespace_id", "codespace_name", "repository",
+        "created_at", "approved_sha", "machine", "verified_at",
+        "remaining_included_core_seconds", "total_seconds",
+        "storage_included_verified", "paid_overage_block_verified",
+    }:
+        raise LifecycleStop("signed free allowance grant missing or malformed")
+    machine = value.get("machine")
+    total = value.get("total_seconds")
+    remaining = value.get("remaining_included_core_seconds")
+    verified_at = _utc(value.get("verified_at"))
+    now = datetime.now(UTC)
+    if (
+        value["schema"] != "clipper-owner-free-allowance-v1"
+        or type(value["codespace_id"]) is not int or value["codespace_id"] != code_id
+        or value["codespace_name"] != name
+        or value["repository"] != "TheBayoumi/clipper"
+        or _utc(value["created_at"]) != created
+        or value["approved_sha"] != sha
+        or not isinstance(machine, dict)
+        or set(machine) != {"cpus", "memory_in_bytes", "storage_in_bytes"}
+        or (machine["cpus"], machine["memory_in_bytes"], machine["storage_in_bytes"])
+            != (4, 17179869184, 34359738368)
+        or type(total) is not int or not (TOTAL_SECONDS < total <= MAX_GRANT_SECONDS)
+        or type(remaining) is not int or remaining < total * 4
+        or value["storage_included_verified"] is not True
+        or value["paid_overage_block_verified"] is not True
+        or verified_at > now + timedelta(seconds=5)
+        or verified_at < created - timedelta(minutes=30)
+        or verified_at > created + timedelta(minutes=5)
+    ):
+        raise LifecycleStop("signed free allowance grant does not authorize this host")
+    return total
+
+
 def verify_lifecycle(
     private_root: Path,
     *,
@@ -186,8 +229,8 @@ def verify_lifecycle(
     if created != _utc(caller_created_at):
         raise LifecycleStop("caller Codespace timestamp contradicts REST creation time")
     now = datetime.now(UTC)
-    if created > now or now >= created + timedelta(seconds=EXECUTION_SECONDS):
-        raise LifecycleStop("shared creation-time execution deadline expired")
+    if created > now:
+        raise LifecycleStop("shared creation-time execution deadline invalid")
     key_bytes = _snapshot(private_root, "external-supervisor-public.pem", 8192)
     raw, signature_bytes = _signed_snapshot(private_root)
     if hashlib.sha256(key_bytes).hexdigest() != public_key_sha:
@@ -215,34 +258,38 @@ def verify_lifecycle(
         evidence: Any = json.loads(raw)
     except ValueError:
         raise LifecycleStop("signed supervisor heartbeat is malformed") from None
+    basic_fields = {
+        "schema", "codespace_id", "codespace_name", "created_at", "approved_sha",
+        "observed_at", "hard_deadline_at", "external_watchdog_required",
+    }
     if (
         not isinstance(evidence, dict)
-        or set(evidence)
-        != {
-            "schema",
-            "codespace_id",
-            "codespace_name",
-            "created_at",
-            "approved_sha",
-            "observed_at",
-            "hard_deadline_at",
-            "external_watchdog_required",
-        }
+        or set(evidence) not in (basic_fields, basic_fields | {"free_allowance"})
         or evidence["schema"] != SUPERVISOR_SCHEMA
         or evidence["codespace_id"] != code_id
         or evidence["codespace_name"] != codespace_name
         or evidence["approved_sha"] != expected_sha
         or evidence["external_watchdog_required"] is not True
         or _utc(evidence["created_at"]) != created
-        or _utc(evidence["hard_deadline_at"]) != created + timedelta(seconds=TOTAL_SECONDS)
     ):
         raise LifecycleStop("external supervisor does not attest this exact Codespace")
+    total_seconds = (
+        _verified_free_allowance(
+            evidence["free_allowance"],
+            code_id=code_id, name=codespace_name, created=created, sha=expected_sha,
+        )
+        if "free_allowance" in evidence else TOTAL_SECONDS
+    )
+    hard_deadline = created + timedelta(seconds=total_seconds)
+    if _utc(evidence["hard_deadline_at"]) != hard_deadline:
+        raise LifecycleStop("signed hard deadline contradicts free allowance grant")
     recent = _utc(evidence["observed_at"])
     # Freshness must be checked AFTER cryptographic verification, not before a
     # potentially slow external process.
     now = datetime.now(UTC)
-    if now >= created + timedelta(seconds=EXECUTION_SECONDS):
-        raise LifecycleStop("shared creation-time execution deadline expired")
+    execution_deadline = hard_deadline - timedelta(seconds=CLEANUP_RESERVE_SECONDS)
+    if now >= execution_deadline:
+        raise LifecycleStop("shared signed execution deadline expired")
     age = (now - recent).total_seconds()
     if age < -5 or age > MAX_HEARTBEAT_AGE_SECONDS:
         raise LifecycleStop("external supervisor heartbeat is stale or future-dated")
@@ -251,7 +298,8 @@ def verify_lifecycle(
         codespace_name,
         created,
         expected_sha,
-        created + timedelta(seconds=TOTAL_SECONDS),
+        hard_deadline,
+        execution_deadline,
     )
 
 
@@ -262,12 +310,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify external lifecycle before chapter setup")
     parser.add_argument("--artifact-root", required=True, type=Path)
     parser.add_argument("--codespace-created-at", required=True)
+    parser.add_argument("--remaining-seconds", action="store_true")
     args = parser.parse_args(argv)
     try:
         name = os.environ.get("CODESPACE_NAME", "")
         if not args.artifact_root.is_absolute() or args.artifact_root.is_symlink():
             raise LifecycleStop("private artifact root is not absolute or is redirected")
-        verify_lifecycle(
+        verified = verify_lifecycle(
             args.artifact_root / "book-candidates",
             caller_created_at=args.codespace_created_at,
             codespace_name=name,
@@ -275,7 +324,15 @@ def main(argv: list[str] | None = None) -> int:
     except (LifecycleStop, ValueError, OSError):
         print("PRIVATE_CHAPTER_EXTERNAL_SUPERVISOR_UNVERIFIED")
         return 2
-    print("PRIVATE_CHAPTER_EXTERNAL_SUPERVISOR_VERIFIED_CHECKPOINT_ONLY")
+    if args.remaining_seconds:
+        assert verified.execution_deadline is not None
+        remaining = int((verified.execution_deadline - datetime.now(UTC)).total_seconds())
+        if remaining <= 0:
+            print("PRIVATE_CHAPTER_EXTERNAL_SUPERVISOR_UNVERIFIED")
+            return 2
+        print(remaining)
+    else:
+        print("PRIVATE_CHAPTER_EXTERNAL_SUPERVISOR_VERIFIED_CHECKPOINT_ONLY")
     return 0
 
 
