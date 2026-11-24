@@ -827,6 +827,7 @@ def test_actual_codespace_wrapper_dispatches_all_modes_through_shared_preflight(
         "free_grant_reserve_cleanup",
         "free_grant_wrong_id",
         "free_grant_paid_block_missing",
+        "free_grant_invalid_past_legacy",
         "free_grant_unsigned_override",
         "foreign_available_id",
         "foreign_available_name",
@@ -922,8 +923,11 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         age = 1
     elif scenario == "free_grant_reserve_cleanup":
         age = 4 * 3600 - 240
-    elif scenario.startswith("free_grant_"):
+    elif scenario == "free_grant_invalid_past_legacy":
         age = 2 * 3600 + 600
+    elif scenario.startswith("free_grant_"):
+        # Invalid execution grants must still clean up a young verified host.
+        age = 1
     env = os.environ.copy()
     env.update(
         {
@@ -963,7 +967,9 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
                 "remaining_included_core_seconds": 4 * 4 * 3600,
                 "total_seconds": 4 * 3600,
                 "storage_included_verified": True,
-                "paid_overage_block_verified": scenario != "free_grant_paid_block_missing",
+                "paid_overage_block_verified": scenario not in {
+                    "free_grant_paid_block_missing", "free_grant_invalid_past_legacy"
+                },
             }
             grant_file = tmp_path / "owner-finite-free-grant.json"
             grant_file.write_text(json.dumps(grant), encoding="utf-8")
@@ -986,15 +992,22 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
     preflight_rejected_grant = scenario in {
         "free_grant_wrong_id",
         "free_grant_paid_block_missing",
-        "free_grant_unsigned_override",
+        "free_grant_invalid_past_legacy",
     }
-    assert "api -X DELETE" in actions or scenario == "identity_swap" or preflight_rejected_grant, (
+    expired_invalid_grant = scenario == "free_grant_invalid_past_legacy"
+    assert "api -X DELETE" in actions or scenario == "identity_swap" or expired_invalid_grant, (
         result.stderr
     )
     if preflight_rejected_grant:
-        assert "api -X DELETE" not in actions
+        assert "EXTERNAL_SUPERVISOR_FREE_GRANT_REJECTED_NO_EXECUTION" in result.stderr
         assert "codespace ssh" not in actions
         assert "codespace cp" not in actions
+        if expired_invalid_grant:
+            # No invalid-grant extension beyond the independently safe clock.
+            assert "api -X DELETE" not in actions
+        else:
+            assert "api -X DELETE" in actions
+            assert "api -X POST" in actions
     if scenario == "identity_swap":
         assert "api -X DELETE" not in actions
         assert "api -X POST" not in actions
