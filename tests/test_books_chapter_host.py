@@ -2284,9 +2284,17 @@ def test_private_recovery_rejects_journal_that_rebinds_a_reviewed_brief(
 @pytest.mark.parametrize(
     "mutation",
     [
-        "valid", "wrong_id", "wrong_name", "wrong_repo", "wrong_shape",
-        "wrong_created", "wrong_sha", "wrong_deadline", "expired",
-        "tampered_unsigned", "paid_block_missing",
+        "valid",
+        "wrong_id",
+        "wrong_name",
+        "wrong_repo",
+        "wrong_shape",
+        "wrong_created",
+        "wrong_sha",
+        "wrong_deadline",
+        "expired",
+        "tampered_unsigned",
+        "paid_block_missing",
     ],
 )
 def test_real_signed_owner_free_allowance_host_lifecycle(
@@ -2298,13 +2306,27 @@ def test_real_signed_owner_free_allowance_host_lifecycle(
     key = tmp_path / "ephemeral-private.pem"
     pub = tmp_path / "ephemeral-public.pem"
     subprocess.run(
-        ["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048",
-         "-out", str(key)],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+        [
+            "openssl",
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+            "-out",
+            str(key),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=15,
     )
     subprocess.run(
         ["openssl", "pkey", "-in", str(key), "-pubout", "-out", str(pub)],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=15,
     )
     now = datetime.now(UTC)
     created = now - timedelta(hours=2, minutes=10)
@@ -2316,8 +2338,12 @@ def test_real_signed_owner_free_allowance_host_lifecycle(
     name = "synthetic-free-approved"
     machine = {"cpus": 4, "memory_in_bytes": 17179869184, "storage_in_bytes": 34359738368}
     rest = {
-        "id": 12, "name": name, "created_at": stamp, "state": "Available",
-        "repository": {"full_name": "TheBayoumi/clipper"}, "machine": machine,
+        "id": 12,
+        "name": name,
+        "created_at": stamp,
+        "state": "Available",
+        "repository": {"full_name": "TheBayoumi/clipper"},
+        "machine": machine,
     }
     grant = {
         "schema": "clipper-owner-free-allowance-v1",
@@ -2366,9 +2392,11 @@ def test_real_signed_owner_free_allowance_host_lifecycle(
     signature = tmp_path / "payload.sig"
     msg.write_bytes(raw)
     subprocess.run(
-        ["openssl", "dgst", "-sha256", "-sign", str(key), "-out",
-         str(signature), str(msg)],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+        ["openssl", "dgst", "-sha256", "-sign", str(key), "-out", str(signature), str(msg)],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=15,
     )
     if mutation == "tampered_unsigned":
         payload["free_allowance"]["total_seconds"] = total + 600
@@ -2378,11 +2406,13 @@ def test_real_signed_owner_free_allowance_host_lifecycle(
     private_host.mkdir(parents=True)
     (private_host / "external-supervisor-public.pem").write_bytes(pub.read_bytes())
     (private_host / "external-supervisor-heartbeat-envelope.json").write_text(
-        json.dumps({
-            "schema": "clipper-external-supervisor-envelope-v1",
-            "payload_b64": base64.b64encode(raw).decode("ascii"),
-            "signature_b64": base64.b64encode(signature.read_bytes()).decode("ascii"),
-        }),
+        json.dumps(
+            {
+                "schema": "clipper-external-supervisor-envelope-v1",
+                "payload_b64": base64.b64encode(raw).decode("ascii"),
+                "signature_b64": base64.b64encode(signature.read_bytes()).decode("ascii"),
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setenv("CODESPACES", "true")
@@ -2408,13 +2438,9 @@ def test_real_signed_owner_free_allowance_host_lifecycle(
     monkeypatch.setattr(lifecycle, "_command", local_command)
     if mutation != "valid":
         with pytest.raises(lifecycle.LifecycleStop):
-            lifecycle.verify_lifecycle(
-                private, caller_created_at=stamp, codespace_name=name
-            )
+            lifecycle.verify_lifecycle(private, caller_created_at=stamp, codespace_name=name)
         return
-    verified = lifecycle.verify_lifecycle(
-        private, caller_created_at=stamp, codespace_name=name
-    )
+    verified = lifecycle.verify_lifecycle(private, caller_created_at=stamp, codespace_name=name)
     assert verified.codespace_id == 12
     assert verified.execution_deadline == hard_deadline - timedelta(seconds=300)
     assert verified.expires_at == hard_deadline
