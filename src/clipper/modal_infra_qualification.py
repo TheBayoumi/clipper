@@ -329,15 +329,22 @@ class QualificationOwner:
                     raise
 
     async def _sandbox(self, app: Any, volume: Any, script: str, expected: bytes, index: int) -> None:
-        sb = await self._operation(
-            f"sandbox_{index}_create", lambda: self.backend.create(app, volume, script),
-            acquisition=True,
-        )
+        if self.stopped.is_set():
+            raise RuntimeError("STOP_LATCHED")
+        step = f"sandbox_{index}_create"
+        self._record("INTENT", step=step)
+        self.unresolved.add(step)
+        try:
+            sb = await self.backend.create(app, volume, script)
+        finally:
+            self.unresolved.discard(step)
+        # Retain the returned handle BEFORE attempting a second journal write.
         self.live_sandboxes.append(sb)
-        if not getattr(sb, "object_id", None):
-            self._record("UNKNOWN_SANDBOX_ID", step=index)
         primary: BaseException | None = None
         try:
+            self._record("RETURN", step=step, object_id=str(getattr(sb, "object_id", "")))
+            if not getattr(sb, "object_id", None):
+                self._record("UNKNOWN_SANDBOX_ID", step=index)
             if self.stopped.is_set():
                 raise RuntimeError("STOP_LATCHED_AFTER_CREATE")
             iterator = await self.backend.stdout_chunks(sb)
@@ -377,14 +384,21 @@ class QualificationOwner:
             app: Any = None
             volume: Any = None
             try:
-                app = await self._operation(
-                    "app_context_enter", app_context.__aenter__, acquisition=True
-                )
+                if self.stopped.is_set():
+                    raise RuntimeError("STOP_LATCHED")
+                self._record("INTENT", step="app_context_enter")
+                app = await app_context.__aenter__()
+                # Context return is held locally before its durable ID record.
+                self._record("RETURN", step="app_context_enter",
+                             object_id=str(getattr(app, "object_id", "")))
                 volume_context = self.backend.volume_context()
                 try:
-                    volume = await self._operation(
-                        "volume_context_enter", volume_context.__aenter__, acquisition=True
-                    )
+                    if self.stopped.is_set():
+                        raise RuntimeError("STOP_LATCHED")
+                    self._record("INTENT", step="volume_context_enter")
+                    volume = await volume_context.__aenter__()
+                    self._record("RETURN", step="volume_context_enter",
+                                 object_id=str(getattr(volume, "object_id", "")))
                     await self._sandbox(
                         app, volume, WRITE_SCRIPT,
                         ("READY:" + DIGEST).encode(), 1,
