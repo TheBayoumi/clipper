@@ -644,7 +644,10 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         assert safe_phase["codespace_id"] == 12
         exit_reason = json.loads((folder / "owner-exit-reason.json").read_text())
         assert exit_reason["codespace_id"] == 12
-        assert exit_reason["most_recent_recorded_failed_operation"] == "heartbeat_copy"
+        # The initial synthetic run deliberately used an invalid signer
+        # before this run; its persistent last-failure record may be older.
+        # Prove the exact heartbeat-copy failure in a fresh isolated attempt
+        # below rather than attributing the previous failure to this run.
         assert "fabricated fixture text" not in first.stdout + first.stderr
         # A failed *next* checkpoint must not replace or damage the verified
         # owner-private first snapshot. REST DELETE remains independent.
@@ -664,6 +667,43 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         assert (verified / "chapter-recovery.tar").read_bytes() == source.read_bytes()
         assert "api -X DELETE" in log.read_text()
         assert "fabricated fixture text" not in second.stdout + second.stderr
+
+        # Distinguishing transport failure: start the GH heartbeat counter at
+        # one, so the first attempted heartbeat CP in THIS invocation fails.
+        # Remove only the previous synthetic attempt's last-failure record;
+        # this makes the named operation impossible to inherit accidentally.
+        counter.write_text("1", encoding="utf-8")
+        stopped.unlink(missing_ok=True)
+        (folder / "owner-last-failure.json").unlink(missing_ok=True)
+        env["MOCK_TAMPER"] = "false"
+        transport_before = log.read_text(encoding="utf-8").count(
+            "heartbeat-envelope.watchdog.pending"
+        )
+        copy_failed = subprocess.run(
+            ["bash", str(controlled)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=35,
+            check=False,
+        )
+        assert copy_failed.returncode != 0
+        assert log.read_text(encoding="utf-8").count(
+            "heartbeat-envelope.watchdog.pending"
+        ) > transport_before
+        latest_failure = json.loads((folder / "owner-last-failure.json").read_text())
+        assert latest_failure["operation"] == "heartbeat_copy", (
+            copy_failed.stderr,
+            latest_failure,
+        )
+        assert latest_failure["exit_code"] == 3
+        copy_exit = json.loads((folder / "owner-exit-reason.json").read_text())
+        assert copy_exit["most_recent_recorded_failed_operation"] == "heartbeat_copy"
+        assert copy_exit["original_exit_code"] == copy_failed.returncode
+        assert json.loads(pointer_path.read_text()) == pointer
+        assert (verified / "chapter-recovery.tar").read_bytes() == source.read_bytes()
+        assert "api -X DELETE" in log.read_text()
+        assert "fabricated fixture text" not in copy_failed.stdout + copy_failed.stderr
 
         # A legitimate, integrity-verified status-only EMPTY TAR is not an
         # output checkpoint. It must not supersede the earlier real brief.
