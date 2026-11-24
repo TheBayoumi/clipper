@@ -55,6 +55,8 @@ def _execution_cutoff(created: datetime) -> datetime:
     if verified is not None and verified[0] == created:
         return verified[1]
     return created + timedelta(seconds=DEADLINE_SECONDS - CLEANUP_RESERVE_SECONDS)
+
+
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -1090,12 +1092,14 @@ def _execute_hybrid(
             )
             if refreshed.created_at != _created_at_timestamp(created_at):
                 raise PrivateHostStop("rest creation time mismatch")
-            _VERIFIED_CLOCK.set((
-                refreshed.created_at,
-                refreshed.execution_deadline
-                or refreshed.created_at
-                + timedelta(seconds=DEADLINE_SECONDS - CLEANUP_RESERVE_SECONDS),
-            ))
+            _VERIFIED_CLOCK.set(
+                (
+                    refreshed.created_at,
+                    refreshed.execution_deadline
+                    or refreshed.created_at
+                    + timedelta(seconds=DEADLINE_SECONDS - CLEANUP_RESERVE_SECONDS),
+                )
+            )
             _check_deadline(_created_at(created_at))
             review = None
             if mode == "hybrid-brief":
