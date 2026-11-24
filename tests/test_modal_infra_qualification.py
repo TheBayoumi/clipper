@@ -706,7 +706,9 @@ def test_sdk_workspace_name_property_fails_before_any_resource_entry(
         observed: list[str] = []
 
         class Workspace:
-            name = workspace_name
+            @property
+            def name(self) -> str | None:
+                return workspace_name
 
             def hydrate(self) -> None:
                 observed.append("hydrate")
