@@ -738,8 +738,18 @@ def execute(
         try:
             # The independent heartbeat must remain current between chapter
             # phases; a previous invocation never extends the creation clock.
-            chapter_lifecycle.verify_lifecycle(
+            refreshed = chapter_lifecycle.verify_lifecycle(
                 private_root, caller_created_at=created_at, codespace_name=codespace_name
+            )
+            if refreshed.created_at != created:
+                raise PrivateHostStop("authoritative Codespace creation time mismatch")
+            _VERIFIED_CLOCK.set(
+                (
+                    refreshed.created_at,
+                    refreshed.execution_deadline
+                    or refreshed.created_at
+                    + timedelta(seconds=DEADLINE_SECONDS - CLEANUP_RESERVE_SECONDS),
+                )
             )
             _check_deadline(created)
             if mode == "brief":
