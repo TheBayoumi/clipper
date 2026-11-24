@@ -93,6 +93,18 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
     public = tmp_path / "synthetic-owner.pub"
     key.write_text("TEST_ONLY", encoding="utf-8")
     public.write_text("TEST_ONLY", encoding="utf-8")
+    if hang in {"heartbeat_copy_fail", "heartbeat_publish_fail"}:
+        # These cases must reach the heartbeat transport. The legacy
+        # invalid-key cases intentionally continue testing signing refusal.
+        fake_openssl = fake_bin / "openssl"
+        fake_openssl.write_text(
+            f"#!{sys.executable}\n"
+            "import pathlib,sys\n"
+            "args=sys.argv[1:]\n"
+            "pathlib.Path(args[args.index('-out')+1]).write_bytes(b'SYNTHETIC_SIGNATURE')\n",
+            encoding="utf-8",
+        )
+        fake_openssl.chmod(0o700)
     env = os.environ.copy()
     env.update(
         {
@@ -149,7 +161,7 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         else 124
         if hang in {"ssh", "copy"}
         else 3
-        if hang in {"stop", "heartbeat_copy_fail", "heartbeat_publish_fail"}
+        if hang in {"heartbeat_copy_fail", "heartbeat_publish_fail"}
         else 2
     )
     assert result.returncode == expected_status
@@ -966,7 +978,11 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         timeout=30,
     )
     actions = log.read_text(encoding="utf-8")
-    assert result.returncode != 0
+    if scenario == "free_grant_reserve_cleanup":
+        assert result.returncode == 0
+        assert "CLEANUP_RESERVE" in result.stderr
+    else:
+        assert result.returncode != 0
     preflight_rejected_grant = scenario in {
         "free_grant_wrong_id",
         "free_grant_paid_block_missing",
