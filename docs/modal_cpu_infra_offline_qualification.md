@@ -21,7 +21,15 @@ turn these inputs into spend authorization.
 
 Only one explicit client is used by Workspace.from_context, App.run,
 Volume.ephemeral, and Sandbox.create; no ambient workspace checks or external
-resource handles are accepted. Sandbox environment is inherited from App.run,
+resource handles are accepted. Pinned SDK 1.5.5 exposes Workspace.name as an
+Optional[str] property, not a method; missing or mismatched identity stops
+before any app/volume context entry. Its synchronous hydrate() is executed
+inside asyncio.to_thread, not in the event-loop thread. App.run() and
+Volume.ephemeral() expose async-capable context managers; app context return
+is correlated via nonempty App.app_id, whereas Volume and Sandbox use
+object_id. A missing app ID is a fail-closed evidence error; the acquired
+app context must still exit, and neither an empty ID nor source SHA
+constitutes provider recovery or remote identity proof. Sandbox environment is inherited from App.run,
 not passed via deprecated Sandbox.create environment_name.
 
 **Important runtime limitation:** The owner is a retained asyncio Task.
