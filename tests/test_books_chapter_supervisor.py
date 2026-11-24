@@ -585,12 +585,12 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         assert "1024 * 1024, limit - used + 1" in raw
         raw = raw.replace("limit = 800_000_000", "limit = 4096", 1)
         raw = raw.replace("1024 * 1024, limit - used + 1", "1024, limit - used + 1", 1)
-        bound_probe = "if used + len(block) > limit:\\n            sys.exit(2)"
+        bound_probe = "if used + len(block) > limit:\n            sys.exit(2)"
         assert bound_probe in raw
         raw = raw.replace(
             bound_probe,
-            'if used + len(block) > limit:\\n'
-            '            open(os.environ["MOCK_MAX_STAGED_SIZE"], "w").write(str(used))\\n'
+            'if used + len(block) > limit:\n'
+            '            open(os.environ["MOCK_MAX_STAGED_SIZE"], "w").write(str(used))\n'
             '            sys.exit(2)',
             1,
         )
@@ -739,6 +739,48 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         assert os.readlink(folder / "recovery-current") == previous_pointer
         assert all((folder / name).read_bytes() == body for name, body in baseline.items())
         assert "PRIVATE_SYNTHETIC_CANARY" not in (failed_promotion.stdout + failed_promotion.stderr)
+        # Interrupt the actual Bash supervisor with SIGTERM after the new
+        # immutable directory is renamed but before the atomic pointer swap.
+        promotion_signal = tmp_path / "promotion-signal-supervisor.sh"
+        mark = tmp_path / "promotion-renamed"
+        env["MOCK_PROMOTION_MARK"] = str(mark)
+        promotion_signal.write_text(
+            original_supervisor.replace(
+                injection_point,
+                "os.replace(stage, root / bundle)\n"
+                'pathlib.Path(os.environ["MOCK_PROMOTION_MARK"]).touch()\n'
+                "import time\ntime.sleep(120)\n"
+                "# This is the sole commit point",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        stopped.unlink(missing_ok=True)
+        import signal
+
+        interrupted = subprocess.Popen(
+            ["bash", str(promotion_signal)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            until = time.monotonic() + 15
+            while not mark.exists() and interrupted.poll() is None and time.monotonic() < until:
+                time.sleep(0.025)
+            assert mark.exists() and interrupted.poll() is None
+            interrupted.send_signal(signal.SIGTERM)
+            signal_out, signal_err = interrupted.communicate(timeout=30)
+            assert interrupted.returncode != 0
+        finally:
+            if interrupted.poll() is None:
+                interrupted.kill()
+                interrupted.communicate(timeout=5)
+        assert os.readlink(folder / "recovery-current") == previous_pointer
+        assert all((folder / name).read_bytes() == body for name, body in baseline.items())
+        assert "api -X DELETE" in log.read_text()
+        assert "PRIVATE_SYNTHETIC_CANARY" not in signal_out + signal_err
         # Drive the REAL supervisor loop through one successful heartbeat,
         # a verified owner-private partial archive, then a later failed
         # heartbeat. Accelerate only checkpoint schedule in a temp shell copy.
