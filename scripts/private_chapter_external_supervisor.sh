@@ -892,7 +892,7 @@ allowed={"rest_metadata","rest_identity","rest_state","rest_stop","rest_delete",
     "rest_deleted_check","key_setup","key_copy","sign_heartbeat",
     "heartbeat_copy","heartbeat_publish","recovery_prepare","recovery_copy",
     "safe_phase_poll","recovery_fallback","archive_verification","signal",
-    "heartbeat_build","envelope_build","bootstrap_wait"}
+    "heartbeat_build","envelope_build","bootstrap_wait","grant_validation"}
 operation="UNIDENTIFIED_EXIT"
 if previous.is_file() and previous.stat().st_size < 4096:
     try:
@@ -1054,84 +1054,35 @@ metadata="$(critical rest_metadata gh api "user/codespaces/$CODESPACE_NAME")" ||
   echo "EXTERNAL_SUPERVISOR_CODESPACE_REST_UNAVAILABLE" >&2
   exit 2
 }
+# Verify REST numeric identity and original creation clock independently of
+# ANY optional execution allowance. An invalid grant must never suppress the
+# already-approved host's identity-checked STOP/DELETE in the legacy safe clock.
 validated="$(printf '%s' "$metadata" | bounded python3 -c '
 import datetime, json, os, sys
-x = json.load(sys.stdin)
-machine = x.get("machine") or {}
-expected = (4, 17179869184, 34359738368)
-actual = (machine.get("cpus"), machine.get("memory_in_bytes"), machine.get("storage_in_bytes"))
+x=json.load(sys.stdin)
+machine=x.get("machine") or {}
 if (x.get("name") != os.environ["CODESPACE_NAME"]
     or type(x.get("id")) is not int or x["id"] < 1
     or x.get("repository", {}).get("full_name") != "TheBayoumi/clipper"
-    or actual != expected):
+    or (machine.get("cpus"),machine.get("memory_in_bytes"),machine.get("storage_in_bytes"))
+       != (4,17179869184,34359738368)):
     sys.exit(2)
-created = datetime.datetime.fromisoformat(x["created_at"].replace("Z", "+00:00"))
-if created.tzinfo is None:
+created=datetime.datetime.fromisoformat(x["created_at"].replace("Z","+00:00"))
+if created.tzinfo is None or created>datetime.datetime.now(datetime.timezone.utc):
     sys.exit(2)
-now = datetime.datetime.now(datetime.timezone.utc)
-# Identity verification and permission to execute are DISTINCT.
-# Even at 116 minutes, an exact approved Codespace must be cleaned up.
-if created > now:
-    sys.exit(2)
-total = 7200
-grant_path = os.environ.get("PRIVATE_CHAPTER_FREE_GRANT_FILE","")
-if grant_path:
-    import pathlib, stat
-    p = pathlib.Path(grant_path)
-    if not p.is_absolute() or p.is_symlink() or not p.is_file():
-        sys.exit(2)
-    if any((part / ".git").exists() for part in (p.parent, *p.parents)):
-        sys.exit(2)
-    if p.stat().st_size > 4096 or p.stat().st_mode & 0o077:
-        sys.exit(2)
-    try:
-        grant = json.loads(p.read_bytes())
-        machine_grant=grant.get("machine")
-        total=grant.get("total_seconds")
-        remaining=grant.get("remaining_included_core_seconds")
-        checked=datetime.datetime.fromisoformat(grant["verified_at"].replace("Z","+00:00"))
-        if (set(grant) != {
-              "schema","codespace_id","codespace_name","repository","created_at",
-              "approved_sha","machine","verified_at","remaining_included_core_seconds",
-              "total_seconds","storage_included_verified","paid_overage_block_verified"}
-            or grant["schema"] != "clipper-owner-free-allowance-v1"
-            or type(grant["codespace_id"]) is not int or grant["codespace_id"] != x["id"]
-            or grant["codespace_name"] != x["name"] or grant["repository"] != "TheBayoumi/clipper"
-            or grant["created_at"] != x["created_at"]
-            or grant["approved_sha"] != os.environ["PRIVATE_CHAPTER_APPROVED_SHA"]
-            or not isinstance(machine_grant,dict)
-            or machine_grant != {"cpus":4,"memory_in_bytes":17179869184,
-                                 "storage_in_bytes":34359738368}
-            or type(total) is not int or not 7200 < total <= 42900
-            or type(remaining) is not int or remaining < total * 4
-            or grant["storage_included_verified"] is not True
-            or grant["paid_overage_block_verified"] is not True
-            or checked.tzinfo is None or checked < created-datetime.timedelta(minutes=30)
-            or checked > created+datetime.timedelta(minutes=5)
-            or checked > now+datetime.timedelta(seconds=5)):
-            sys.exit(2)
-    except (ValueError,TypeError,KeyError,AttributeError,OSError):
-        sys.exit(2)
-if now >= created + datetime.timedelta(seconds=total):
-    sys.exit(3)
-execution_allowed = now < created + datetime.timedelta(seconds=total-300)
-print(x["id"], x["created_at"], "EXECUTION" if execution_allowed else "CLEANUP_ONLY", total)
+print(x["id"],x["created_at"])
 ')" || {
-  code=$?
-  if (( code == 3 )); then
-    echo "EXTERNAL_SUPERVISOR_TOTAL_DEADLINE_EXPIRED_NO_AUTOMATED_DELETE" >&2
-  else
-    echo "EXTERNAL_SUPERVISOR_WRONG_HOST_IDENTITY" >&2
-  fi
+  echo "EXTERNAL_SUPERVISOR_WRONG_HOST_IDENTITY" >&2
   exit 2
 }
-read -r codespace_id created_at lifecycle_mode total_seconds <<< "$validated"
+read -r codespace_id created_at <<< "$validated"
 export SUPERVISED_CODESPACE_ID="$codespace_id"
 export SUPERVISED_CREATED_AT="$created_at"
+total_seconds=7200
 deadline_epoch="$(( $(date -u -d "$created_at" +%s) + total_seconds ))"
 verified_identity=1
-# The owner recovery path was checked before REST. Persist locally before
-# remote setup and without depending on the temporary shell session.
+# Owner-safe journaling is prepared before grant validation, so a bad grant
+# itself is recorded but its failure cannot hide the identity-checked cleanup.
 if (( owner_recovery_safe == 1 )); then
   journal_dir="$PRIVATE_CHAPTER_RECOVERY_DIR/$CODESPACE_NAME"
   if [[ ! -L "$journal_dir" ]] &&
@@ -1139,6 +1090,63 @@ if (( owner_recovery_safe == 1 )); then
       bounded chmod 700 "$journal_dir"; then
     journal_ready=1
   fi
+fi
+if [[ -n "$PRIVATE_CHAPTER_FREE_GRANT_FILE" ]]; then
+  grant_seconds="$(printf '%s' "$metadata" | critical grant_validation python3 -c '
+import datetime,json,os,pathlib,sys
+x=json.load(sys.stdin)
+path=pathlib.Path(os.environ["PRIVATE_CHAPTER_FREE_GRANT_FILE"])
+if not path.is_absolute() or path.is_symlink() or not path.is_file():
+    sys.exit(2)
+if any((part/".git").exists() for part in (path.parent,*path.parents)):
+    sys.exit(2)
+if path.stat().st_size>4096 or path.stat().st_mode & 0o077:
+    sys.exit(2)
+try:
+    grant=json.loads(path.read_bytes())
+    created=datetime.datetime.fromisoformat(x["created_at"].replace("Z","+00:00"))
+    checked=datetime.datetime.fromisoformat(grant["verified_at"].replace("Z","+00:00"))
+    total=grant.get("total_seconds")
+    remaining=grant.get("remaining_included_core_seconds")
+    if (set(grant)!={"schema","codespace_id","codespace_name","repository",
+          "created_at","approved_sha","machine","verified_at",
+          "remaining_included_core_seconds","total_seconds",
+          "storage_included_verified","paid_overage_block_verified"}
+        or grant["schema"]!="clipper-owner-free-allowance-v1"
+        or type(grant["codespace_id"]) is not int or grant["codespace_id"]!=x["id"]
+        or grant["codespace_name"]!=x["name"]
+        or grant["repository"]!="TheBayoumi/clipper"
+        or grant["created_at"]!=x["created_at"]
+        or grant["approved_sha"]!=os.environ["PRIVATE_CHAPTER_APPROVED_SHA"]
+        or grant["machine"]!={"cpus":4,"memory_in_bytes":17179869184,
+                              "storage_in_bytes":34359738368}
+        or type(total) is not int or not 7200<total<=42900
+        or type(remaining) is not int or remaining<total*4
+        or grant["storage_included_verified"] is not True
+        or grant["paid_overage_block_verified"] is not True
+        or checked.tzinfo is None
+        or checked<created-datetime.timedelta(minutes=30)
+        or checked>created+datetime.timedelta(minutes=5)
+        or checked>datetime.datetime.now(datetime.timezone.utc)
+                   +datetime.timedelta(seconds=5)):
+        sys.exit(2)
+except (ValueError,TypeError,KeyError,AttributeError,OSError):
+    sys.exit(2)
+print(total)
+')" || {
+    echo "EXTERNAL_SUPERVISOR_FREE_GRANT_REJECTED_NO_EXECUTION" >&2
+    exit 2
+  }
+  total_seconds="$grant_seconds"
+  deadline_epoch="$(( $(date -u -d "$created_at" +%s) + total_seconds ))"
+fi
+if (( $(date -u +%s) >= deadline_epoch )); then
+  echo "EXTERNAL_SUPERVISOR_TOTAL_DEADLINE_EXPIRED_NO_AUTOMATED_DELETE" >&2
+  exit 2
+fi
+lifecycle_mode="EXECUTION"
+if (( $(date -u +%s) >= deadline_epoch - 300 )); then
+  lifecycle_mode="CLEANUP_ONLY"
 fi
 
 # BEFORE any recovery command or remote shell arguments, validate the path.
