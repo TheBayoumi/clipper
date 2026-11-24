@@ -977,7 +977,9 @@ def test_context_enter_unknown_id_fail_closed_without_create(
         if context_kind == "app":
             assert backend.events == ["verify", "app_enter"]
         else:
-            assert backend.events == ["verify", "app_enter", "volume_enter", "app_exit"]
+            assert backend.events == [
+                "verify", "app_enter", "volume_enter", "volume_exit", "app_exit"
+            ]
         assert any(
             entry["operation"] == "UNKNOWN_ID_OUTCOME"
             and entry.get("step") == context_kind + "_context_enter"
