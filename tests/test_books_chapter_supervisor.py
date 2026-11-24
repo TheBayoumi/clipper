@@ -2092,3 +2092,56 @@ def test_heartbeat_stream_shell_transport_atomic_ack_and_cleanup(tmp_path: Path,
             pass
         else:
             pytest.fail(f"orphaned heartbeat transport process {pid}")
+
+
+@pytest.mark.parametrize("producer_exit", [0, 7])
+def test_exact_recovery_receiver_success_and_nonzero_producer(
+    tmp_path: Path, producer_exit: int
+) -> None:
+    """Run the actual bounded receiver and subprocess, not the archive verifier."""
+    content = _SCRIPT.read_text(encoding="utf-8")
+    marker = "critical recovery_copy python3 -c '\n"
+    assert content.count(marker) == 1
+    receiver = content.split(marker, 1)[1].split(
+        "' \"$CODESPACE_NAME\" \"$remote_archive\" \"$target\" \"$session/recovery-created.json\"",
+        1,
+    )[0]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        f"#!{sys.executable}\n"
+        "import os,sys\n"
+        "assert sys.argv[1:7]==['codespace','ssh','-c','synthetic-pinned','--','-T']\n"
+        "sys.stdout.buffer.write(b'hello\\x00\\xff')\n"
+        "sys.stdout.buffer.flush()\n"
+        "sys.exit(int(os.environ['MOCK_PRODUCER_EXIT']))\n",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o700)
+    target = tmp_path / "received.tar"
+    receipt = tmp_path / "prepared.json"
+    receipt.write_text("{}", encoding="utf-8")
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    env["MOCK_PRODUCER_EXIT"] = str(producer_exit)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            receiver,
+            "synthetic-pinned",
+            "/synthetic-private/chapter-recovery.tar",
+            str(target),
+            str(receipt),
+        ],
+        env=env,
+        capture_output=True,
+        check=False,
+        timeout=8,
+    )
+    assert target.read_bytes() == b"hello\x00\xff"
+    assert result.stdout == b""
+    assert b"Fatal Python error" not in result.stderr
+    assert result.returncode == (0 if producer_exit == 0 else 2), result.stderr
+    assert target.stat().st_mode & 0o077 == 0
