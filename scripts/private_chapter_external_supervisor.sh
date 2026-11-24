@@ -1126,11 +1126,17 @@ verified_identity=1
 # itself is recorded but its failure cannot hide the identity-checked cleanup.
 if (( owner_recovery_safe == 1 )); then
   journal_dir="$PRIVATE_CHAPTER_RECOVERY_DIR/$CODESPACE_NAME"
+  # Only local owner-private journal setup temporarily ignores the legacy
+  # execution clock; every command still has its fixed eight-second cap.
+  # An older valid grant must not start execution with journaling disabled.
+  journal_deadline_epoch="$deadline_epoch"
+  deadline_epoch=0
   if [[ ! -L "$journal_dir" ]] &&
       bounded mkdir -p -m 700 -- "$journal_dir" &&
       bounded chmod 700 "$journal_dir"; then
     journal_ready=1
   fi
+  deadline_epoch="$journal_deadline_epoch"
 fi
 if [[ -n "$PRIVATE_CHAPTER_FREE_GRANT_FILE" ]]; then
   # Validation is read-only and bounded by OP_LIMIT, not by a legacy
