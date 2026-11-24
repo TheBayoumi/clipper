@@ -545,10 +545,10 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         # heartbeat. Accelerate only checkpoint schedule in a temp shell copy.
         fake_openssl = fake_bin / "openssl"
         fake_openssl.write_text(
-            f"#!{sys.executable}\\n"
-            "import pathlib,sys\\n"
-            "a=sys.argv[1:]\\n"
-            "pathlib.Path(a[a.index('-out')+1]).write_bytes(b'SYNTHETIC_TEST_SIGNATURE')\\n",
+            f"#!{sys.executable}\n"
+            "import pathlib,sys\n"
+            "a=sys.argv[1:]\n"
+            "pathlib.Path(a[a.index('-out')+1]).write_bytes(b'SYNTHETIC_TEST_SIGNATURE')\n",
             encoding="utf-8",
         )
         fake_openssl.chmod(0o700)
@@ -556,19 +556,19 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         safe_path.write_text(json.dumps(safe), encoding="utf-8")
         gh_body = fake_gh.read_text(encoding="utf-8")
         gh_body = gh_body.replace(
-            "if a[:2]==['codespace','ssh']:\\n",
-            "if a[:2]==['codespace','ssh']:\\n"
-            "  if ' chapter_host status ' in (' '+' '.join(a)+' '):\\n"
-            "    print(pathlib.Path(os.environ['MOCK_SAFE_STATUS']).read_text()); sys.exit(0)\\n",
+            "if a[:2]==['codespace','ssh']:\n",
+            "if a[:2]==['codespace','ssh']:\n"
+            "  if 'clipper.books.chapter_host status' in ' '.join(a):\n"
+            "    print(pathlib.Path(os.environ['MOCK_SAFE_STATUS']).read_text()); sys.exit(0)\n",
         )
         gh_body = gh_body.replace(
-            "if a[:2]==['codespace','cp']:\\n",
-            "if a[:2]==['codespace','cp']:\\n"
-            "  if 'heartbeat-envelope.watchdog.pending' in ' '.join(a):\\n"
-            "    path=pathlib.Path(os.environ['MOCK_HEARTBEAT_COUNT'])\\n"
-            "    count=int(path.read_text())+1 if path.exists() else 1\\n"
-            "    path.write_text(str(count))\\n"
-            "    if count>=2: sys.exit(3)\\n",
+            "if a[:2]==['codespace','cp']:\n",
+            "if a[:2]==['codespace','cp']:\n"
+            "  if 'heartbeat-envelope.watchdog.pending' in ' '.join(a):\n"
+            "    path=pathlib.Path(os.environ['MOCK_HEARTBEAT_COUNT'])\n"
+            "    count=int(path.read_text())+1 if path.exists() else 1\n"
+            "    path.write_text(str(count))\n"
+            "    if count>=2: sys.exit(3)\n",
         )
         fake_gh.write_text(gh_body, encoding="utf-8")
         env["MOCK_SAFE_STATUS"] = str(safe_path)
