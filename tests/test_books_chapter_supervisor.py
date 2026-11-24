@@ -676,6 +676,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         grandchild = tmp_path / "grandchild-pid"
         assert grandchild.is_file()
         pid = int(grandchild.read_text())
+
         # Linux runner may briefly retain a reparented zombie; that is not a
         # live descendant. A TERM-ignoring running process is a failure.
         def running() -> bool:
