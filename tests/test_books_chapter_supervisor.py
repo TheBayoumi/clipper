@@ -476,10 +476,12 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     fake_bin.mkdir()
     fake_gh = fake_bin / "gh"
     remote_archive = (
-        tmp_path / "synthetic-host-root"
-    ) / "book-candidates/private-host/chapter-recovery.tar"
+        tmp_path / "synthetic-host-root/book-candidates/private-host/chapter-recovery.tar"
+    )
     remote_archive.parent.mkdir(parents=True)
-    remote_archive.write_bytes(source.read_bytes() + (b"corrupted" if tamper_archive else b""))
+    remote_archive.write_bytes(
+        source.read_bytes() + (b"corrupted" if tamper_archive else b"")
+    )
     if stream_fault == "wrong_receipt":
         receipt["archive_sha256"] = "0" * 64
         response.write_text(json.dumps(receipt), encoding="utf-8")
