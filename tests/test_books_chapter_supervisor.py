@@ -1433,9 +1433,7 @@ def test_signal_during_local_preflight_retains_exact_id_cleanup_clock(
     assert first["operation"] == (
         "grant_validation" if held_operation == "grant_validation" else "signal"
     )
-    assert first["exit_code"] == (
-        2 if held_operation == "grant_validation" else 143
-    )
+    assert first["exit_code"] == (2 if held_operation == "grant_validation" else 143)
     assert first["codespace_id"] == 12
     assert latest["operation"] == "signal"
     assert latest["exit_code"] == 143
