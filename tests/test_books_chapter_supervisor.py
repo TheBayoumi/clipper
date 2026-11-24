@@ -665,6 +665,122 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         assert "api -X DELETE" in log.read_text()
         assert "fabricated fixture text" not in second.stdout + second.stderr
 
+        # A legitimate, integrity-verified status-only EMPTY TAR is not an
+        # output checkpoint. It must not supersede the earlier real brief.
+        empty_safe = {
+            "schema": "clipper-private-chapter-safe-recovery-v1",
+            "status": "PRIVATE_CHAPTER_RECOVERY_CHECKPOINT_ONLY",
+            "chapters": {
+                str(n): {
+                    "recovery_state": "IN_FLIGHT",
+                    "last_subphase": "MINING_IN_FLIGHT",
+                    "runtime_journal_status": "MINING_IN_FLIGHT",
+                    "retrieval_status": "INVENTORY_VERIFIED_NOT_RETRIEVED",
+                    "last_verified_artifact_identities": {},
+                }
+                for n in (1, 7)
+            },
+            "files_retrieved": False,
+            "publish_eligible": False,
+        }
+        empty_safe_bytes = json.dumps(empty_safe, sort_keys=True).encode()
+        empty_listing = {
+            "schema": "clipper-chapter-private-recovery-archive-manifest-v1",
+            "chapters": [
+                {"chapter": n, "inventory_status": "VERIFIED", "files": []}
+                for n in (1, 7)
+            ],
+            "files": [],
+            "runtime_status_sha256": hashlib.sha256(empty_safe_bytes).hexdigest(),
+        }
+        empty_listing_bytes = json.dumps(empty_listing, sort_keys=True).encode()
+        empty_tar = tmp_path / "synthetic-empty-status-only.tar"
+        with tarfile.open(empty_tar, "w") as archive:
+            for name, raw in (
+                ("private-recovery-manifest.json", empty_listing_bytes),
+                ("safe-recovery-status.json", empty_safe_bytes),
+            ):
+                member = tarfile.TarInfo(name)
+                member.size = len(raw)
+                member.mode = 0o600
+                archive.addfile(member, io.BytesIO(raw))
+        empty_receipt = tmp_path / "synthetic-empty-receipt.json"
+        empty_receipt.write_text(
+            json.dumps(
+                {
+                    "schema": "clipper-private-chapter-recovery-created-v1",
+                    "archive_sha256": hashlib.sha256(empty_tar.read_bytes()).hexdigest(),
+                    "manifest_sha256": hashlib.sha256(empty_listing_bytes).hexdigest(),
+                }
+            ),
+            encoding="utf-8",
+        )
+        env["MOCK_ARCHIVE"] = str(empty_tar)
+        env["MOCK_RECEIPT"] = str(empty_receipt)
+        env["MOCK_TAMPER"] = "false"
+        stopped.unlink(missing_ok=True)
+        counter.unlink(missing_ok=True)
+        empty_run = subprocess.run(
+            ["bash", str(controlled)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=35,
+            check=False,
+        )
+        assert empty_run.returncode != 0
+        assert json.loads(pointer_path.read_text()) == pointer
+        assert (verified / "chapter-recovery.tar").read_bytes() == source.read_bytes()
+        assert "api -X DELETE" in log.read_text()
+        assert "fabricated fixture text" not in empty_run.stdout + empty_run.stderr
+
+        # Two individually successful 7-second optional I/O calls previously
+        # compounded with a fixed 10-second sleep. The real shell must renew
+        # its signed heartbeat without allowing this work to consume freshness.
+        env["MOCK_ARCHIVE"] = str(source)
+        env["MOCK_RECEIPT"] = str(response)
+        stopped.unlink(missing_ok=True)
+        counter.unlink(missing_ok=True)
+        timed = fake_gh.read_text(encoding="utf-8")
+        timed = timed.replace(
+            "import datetime,json,os,pathlib,shutil,sys\\n",
+            "import datetime,json,os,pathlib,shutil,sys,time\\n",
+        )
+        timed = timed.replace(
+            "if 'clipper.books.chapter_host status' in ' '.join(a):\\n",
+            "if 'clipper.books.chapter_host status' in ' '.join(a):\\n"
+            "    time.sleep(7)\\n",
+        )
+        timed = timed.replace(
+            "  if 'chapter-recovery.tar' in ' '.join(a):\\n",
+            "  if 'chapter-recovery.tar' in ' '.join(a):\\n"
+            "    time.sleep(7)\\n",
+        )
+        timed = timed.replace(
+            "    path.write_text(str(count))\\n",
+            "    path.write_text(str(count))\\n"
+            "    with open(os.environ['MOCK_HEARTBEAT_STAMPS'],'a') as stamp:\\n"
+            "      stamp.write(str(time.time())+'\\\\n')\\n",
+        )
+        fake_gh.write_text(timed, encoding="utf-8")
+        stamps = tmp_path / "heartbeat-copy-monotonic-stamps"
+        env["MOCK_HEARTBEAT_STAMPS"] = str(stamps)
+        slow_run = subprocess.run(
+            ["bash", str(controlled)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+        assert slow_run.returncode != 0
+        heartbeat_times = [float(v) for v in stamps.read_text().splitlines()]
+        assert len(heartbeat_times) >= 2
+        assert 0 < heartbeat_times[1] - heartbeat_times[0] < 20
+        assert json.loads(pointer_path.read_text()) == pointer
+        assert "api -X DELETE" in log.read_text()
+        assert "fabricated fixture text" not in slow_run.stdout + slow_run.stderr
+
 
 @pytest.mark.parametrize("mode", ["inspect", "brief", "resume", "hybrid-brief", "hybrid-resume"])
 def test_actual_codespace_wrapper_dispatches_all_modes_through_shared_preflight(
