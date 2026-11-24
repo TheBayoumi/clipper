@@ -341,9 +341,10 @@ except (ValueError,TypeError,KeyError,AttributeError,UnicodeDecodeError,OSError)
   return 2
 }
 
-# Pipe archive bytes through the authenticated, non-PTY Codespace SSH command.
-# Both producer and bounded binary receiver belong to the same timed process
-# group; pipefail rejects a failed producer even if it emitted a valid prefix.
+# Stream archive bytes over authenticated, non-PTY SSH. The receiver retains
+# the producer exit status and exact-size/hash checks. Its short-lived launcher
+# waits for an explicit start gate and watches a parent-death pipe, so even a
+# hard kill before Popen returns cannot release an unowned SSH producer.
 stream_recovery_archive() {
   local remote_archive="$PRIVATE_CHAPTER_ROOT/book-candidates/private-host/chapter-recovery.tar"
   local target="$1"
