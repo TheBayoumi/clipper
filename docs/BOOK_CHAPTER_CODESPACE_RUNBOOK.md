@@ -92,10 +92,18 @@ there. The host will reject bundles whose name or bytes disagree.
   only, repository `TheBayoumi/clipper`, branch
   `review/unified-tts-cleanup`, **4 cores / 16 GiB / 32 GiB**, no other
   machine, account, repository or branch. Maximum **eight included core-hours**.
-- **Two hours total starting at Codespace creation**, including setup, source
-  inspection, both chapter source-driven argument/audit/reconciliation briefs, independent human reviews, any
-  resumes, failure handling and cleanup. A machine-time cap is **not**
-  assurance that either chapter completes.
+- **Two lifecycle modes, never an unsigned extension.** The legacy mode
+  remains creation +120 minutes (execution stops at +115, cleanup reserve
+  five minutes). For the owner's explicitly requested free-only retry, use a
+  **finite owner-signed free-allowance grant** inside every heartbeat. A grant
+  binds the original REST numeric host ID, name, creation time, exact reviewed
+  SHA, repository, 4-core/16-GiB/32-GiB shape, and a conservative verified
+  remaining included-compute/storage declaration plus a verified $0 paid-overage
+  block. It specifies the finite total duration, never an unlimited allowance.
+  The execution cutoff is the signed total deadline minus the same five-minute
+  independent deletion reserve. No hard-coded two-hour cutoff applies to
+  a valid signed grant. The provider's independent 12-hour session ceiling
+  still applies; no new session or provider restriction is bypassed.
 - **Mandatory external enforcement:** `scripts/private_chapter_external_supervisor.sh`
   runs on the owner's **separate computer**, not inside the Codespace, and
   begins immediately after creation **before** installing dependencies. It
@@ -103,7 +111,7 @@ there. The host will reject bundles whose name or bytes disagree.
   **creation +10-minute bootstrap deadline**, then performs bounded SSH
   readiness retries and public-key transfer before issuing its first signed
   heartbeat. Startup and retries also reserve at least 60 seconds before
-  creation +115 minutes; provisioning never resets the original clock.
+  the effective signed execution cutoff; provisioning never resets the original clock.
   Every readiness response must itself contain the pinned numeric ID, name,
   repository, 4-core/16-GiB/32-GiB machine shape and original creation stamp.
   Separate successful identity probes do not validate another response's
@@ -114,10 +122,10 @@ there. The host will reject bundles whose name or bytes disagree.
   After bootstrap it continuously signs and privately transfers
   45-second-verifiable heartbeats (owner signing private key stays outside
   host) and forcibly stops/deletes
-  that exact Codespace at creation +115 minutes, independently checking REST
-  stop/deletion. If restarted with the exact approved REST instance between
-  minute 115 and minute 120, it enters **cleanup-only**, with no setup or
-  heartbeat; at/after minute 120 it cannot claim bounded automated cleanup.
+  that exact Codespace at the signed execution cutoff, independently
+  checking REST stop/deletion before its signed hard deadline. During the
+  final five-minute reserve, it enters **cleanup-only**, with no setup or
+  heartbeat; at/after the hard cutoff automated deletion cannot be claimed.
   Never restart the clock, approve a different numeric ID or create another host. This covers **dependency installation, waiting for human review,
   all invocations and cleanup**. Do not start setup without a functioning
   external supervisor; if external connectivity, heartbeat or REST deletion
@@ -155,8 +163,44 @@ export PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY=/absolute/owner-supervisor.pub
 export PRIVATE_CHAPTER_ROOT=/tmp/clipper-chapter-private
 # Mandatory, owner-side absolute PRIVATE directory outside any Git worktree.
 export PRIVATE_CHAPTER_RECOVERY_DIR=/absolute/owner-private-chapter-recovery
+# For the extended FREE-ONLY lifecycle only: private, 0600, owner-authored
+# verified allowance declaration. The owner signs it into every heartbeat.
+export PRIVATE_CHAPTER_FREE_GRANT_FILE=/absolute/owner-free-allowance.json
 bash scripts/private_chapter_external_supervisor.sh
 ```
+
+For the extended lifecycle, the owner creates the free-only grant privately
+AFTER independently checking GitHub's **current** remaining included compute
+(core-seconds), eligible storage inclusion and the $0 paid-overage block.
+Do not reuse a stale usage estimate, treat a quota estimate as unlimited,
+or present this declaration as independently verified by the repository.
+Required JSON schema and fields:
+
+```json
+{
+  "schema": "clipper-owner-free-allowance-v1",
+  "codespace_id": 12,
+  "codespace_name": "REPLACE_WITH_EXACT_REST_NAME",
+  "repository": "TheBayoumi/clipper",
+  "created_at": "REPLACE_WITH_EXACT_REST_TIMESTAMP",
+  "approved_sha": "REPLACE_WITH_REVIEWED_40_HEX",
+  "machine": {"cpus": 4, "memory_in_bytes": 17179869184, "storage_in_bytes": 34359738368},
+  "verified_at": "REPLACE_WITH_FRESH_OWNER_VERIFICATION_TIMESTAMP",
+  "remaining_included_core_seconds": 0,
+  "total_seconds": 0,
+  "storage_included_verified": true,
+  "paid_overage_block_verified": true
+}
+```
+
+The numeric example ID is **not approved**; replace all placeholders with
+actual host/grant evidence. The owner must select a conservative finite
+duration that consumes no more than the verified remaining core-seconds
+(4 times elapsed seconds), fits within the provider's session ceiling,
+and preserves a five-minute cleanup reserve. A missing, invalid, expired,
+mismatched or unsigned grant cannot extend the legacy deadline. The file
+stays private on the owner machine; its exact bytes are included in the
+externally signed heartbeat, which the host verifies with OpenSSL.
 
 **This process must be active BEFORE any host setup**; it sends only
 heartbeat, public key and signature, never private source text. Stop/delete
@@ -296,13 +340,36 @@ restart irreversible attempts, extend the host window, automatically infer
 approval, or create another host. No private text, raw output or WAV is
 transferred to this chat or published.
 
-### Owner-only recovery before deletion (same 120-minute limit)
+### Owner-private periodic output caching and recovery before deletion
+
+The owner supervisor independently polls **safe phase-only status** at
+approximately 60-second intervals and attempts a scoped output archive
+checkpoint approximately every five minutes, after a verified signed
+heartbeat. Checkpoints call the same strict private output TAR verifier:
+original stage/bundle/scope and member/provenance hashes must validate.
+Each fully verified archive is privately staged and published with an atomic
+`latest-verified-snapshot.json` pointer; a later failed transfer or
+verification never replaces the previous verified snapshot. The output
+may include source-grounded generated argument/audit/brief/script/direction,
+narration reports and WAVs only when verified by the existing allowlist.
+Never cache the full source EPUB, model weights, private signing key,
+nonselected chapters or any material in the Git worktree. Safe phase
+observations are **not** proof that any file was retrieved.
+
+`owner-first-failure.json`, `owner-last-failure.json`, and
+`owner-exit-reason.json` record sanitized operation, exit classification,
+time and pinned host identity outside the ephemeral session. They contain
+no book prose, model tokens or raw remote command output; their presence
+does not retrospectively establish the earlier run's cause. Outputs are
+saved on the **owner's private machine**, not permanent/cloud backup.
+Independently back up this private owner directory under an approved
+private process if longer durability is required; never upload it to Git.
 
 The mandatory `PRIVATE_CHAPTER_RECOVERY_DIR` must exist or be safely
 creatable on the owner's **separate** machine outside Git, with owner-only
 permissions. The external supervisor tries to retrieve the exact chapter
 output inventory before STOP/DELETE, within a separate bounded **16-second
-retrieval allowance inside the original cleanup reserve**. The remote
+retrieval allowance inside the original creation-clock cleanup reserve**. The remote
 `chapter_host recover` command builds a checksum-bound TAR containing
 only scoped, verified private output files: validated text/replay evidence,
 the human-review checkpoint, chapter source ledger and final result when
@@ -320,7 +387,7 @@ private output manifest **before** marking retrieval verified. If the
 download/hash check fails, the archive must **not** be treated as recovered;
 the status records `retrieval_status=INCOMPLETE`, with a best-effort safe
 phase-only status. This never vetoes or delays a separate, identity-checked
-STOP/DELETE operation. **Within the final seconds of the original 120-minute
+STOP/DELETE operation. **Within the final seconds of the signed hard
 deadline, DELETE precedes STOP and polling**, after a fresh numeric REST
 identity check; waiting for a hung graceful STOP must not consume the DELETE
 slot. A verified DELETE with no STOP attestation is reported distinctly,
