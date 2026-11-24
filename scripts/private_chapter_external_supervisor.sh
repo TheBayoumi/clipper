@@ -933,13 +933,21 @@ def pointer(folder):
 # identical baseline before any reader-facing path changes. Interruptions
 # before the final pointer switch still resolve to the old coherent trio.
 legacy = [root / name for name in names]
-if all(p.is_symlink() for p in legacy):
-    if any(os.readlink(p) != "recovery-current/" + p.name for p in legacy):
+if any(p.is_symlink() for p in legacy):
+    if any(p.is_symlink() and os.readlink(p) != "recovery-current/" + p.name
+           for p in legacy):
         sys.exit(2)
-    if not link.is_symlink():
+    if link.is_symlink():
+        old = (root / os.readlink(link)).resolve()
+        if not old.is_dir() or not all((old / n).is_file() for n in names):
+            sys.exit(2)
+        # Interrupted initial migration: every remaining regular path must
+        # still be the hard-linked old bundle, never a foreign replacement.
+        if any(p.exists() and not p.is_symlink()
+               and not os.path.samefile(p, old / p.name) for p in legacy):
+            sys.exit(2)
+    elif any(p.exists() and not p.is_symlink() for p in legacy):
         sys.exit(2)
-elif any(p.is_symlink() for p in legacy):
-    sys.exit(2)
 elif (root / "retrieval-verification.json").is_file():
     try:
         report = json.loads(legacy[1].read_bytes())
@@ -987,7 +995,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as f:
 ' "$destination/retrieval-verification.json" || true
   fi
   # Fallback safe phase-only checkpoint, still within the same retrieval cap.
-  if identity_matches; then
+  if [[ ! -e "$destination/retrieval-verification.json" ]] && identity_matches; then
     bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
       "cd /workspaces/clipper && if [ -x .venv/bin/python ]; then .venv/bin/python -m clipper.books.chapter_host status --artifact-root '$PRIVATE_CHAPTER_ROOT'; else PYTHONPATH=/workspaces/clipper/src python -m clipper.books.chapter_host status --artifact-root '$PRIVATE_CHAPTER_ROOT'; fi" \
       >"$session/safe-status.json" 2>/dev/null || true
