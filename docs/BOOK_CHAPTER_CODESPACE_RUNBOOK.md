@@ -91,7 +91,9 @@ there. The host will reject bundles whose name or bytes disagree.
   independently confirm enough unspent included hours. One private Codespace
   only, repository `TheBayoumi/clipper`, branch
   `review/unified-tts-cleanup`, **4 cores / 16 GiB / 32 GiB**, no other
-  machine, account, repository or branch. Maximum **eight included core-hours**.
+  machine, account, repository or branch. The maximum included use is the
+  **freshly verified provider balance and signed conservative finite grant**,
+  not a presumed eight core-hours or unlimited allowance.
 - **Two lifecycle modes, never an unsigned extension.** The legacy mode
   remains creation +120 minutes (execution stops at +115, cleanup reserve
   five minutes). For the owner's explicitly requested free-only retry, use a
