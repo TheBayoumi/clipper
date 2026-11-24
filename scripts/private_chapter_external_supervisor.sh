@@ -369,7 +369,7 @@ if size is not None:
 launcher_code = """
 import os, signal, subprocess, sys, threading
 name, remote = sys.argv[1:]
-if sys.stdin.buffer.read(1) != b"1":
+if os.read(0, 1) != b"1":
     sys.exit(2)
 child = None
 lock = threading.Lock()
@@ -385,7 +385,9 @@ def stop_group():
             except subprocess.TimeoutExpired:
                 pass
 def parent_gone():
-    sys.stdin.buffer.read()
+    # os.read avoids a daemon thread holding BufferedReader internal locks
+    # during normal interpreter shutdown after a successful SSH exit.
+    os.read(0, 1)
     stop_group()
     os._exit(2)
 threading.Thread(target=parent_gone, daemon=True).start()
