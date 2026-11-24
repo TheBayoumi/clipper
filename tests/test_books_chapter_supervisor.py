@@ -226,17 +226,25 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
 
 
 @pytest.mark.parametrize(
-    ("scenario", "tamper_archive"),
+    ("scenario", "tamper_archive", "stream_fault"),
     [
-        ("brief_only", False),
-        ("brief_only", True),
-        ("inflight_empty", False),
-        ("one_complete_one_failed", False),
-        ("all_ready", False),
+        ("brief_only", False, "none"),
+        ("brief_only", True, "none"),
+        ("inflight_empty", False, "none"),
+        ("one_complete_one_failed", False, "none"),
+        ("all_ready", False, "none"),
+        ("all_ready", False, "truncated"),
+        ("all_ready", False, "partial_exit"),
+        ("all_ready", False, "disconnect"),
+        ("all_ready", False, "wrong_receipt"),
+        ("all_ready", False, "extra"),
+        ("all_ready", False, "oversize"),
+        ("all_ready", False, "hung"),
+        ("all_ready", False, "foreign_identity"),
     ],
 )
 def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
-    tmp_path: Path, scenario: str, tamper_archive: bool
+    tmp_path: Path, scenario: str, tamper_archive: bool, stream_fault: str
 ) -> None:
     """No host: transfer TARs with incomplete and genuinely READY chapter checkpoints."""
     from clipper.stage_contracts import content_fingerprint
@@ -472,9 +480,12 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     ) / "book-candidates/private-host/chapter-recovery.tar"
     remote_archive.parent.mkdir(parents=True)
     remote_archive.write_bytes(source.read_bytes() + (b"corrupted" if tamper_archive else b""))
+    if stream_fault == "wrong_receipt":
+        receipt["archive_sha256"] = "0" * 64
+        response.write_text(json.dumps(receipt), encoding="utf-8")
     fake_gh.write_text(
         f"#!{sys.executable}\n"
-        "import datetime,json,os,pathlib,shutil,subprocess,sys\n"
+        "import datetime,json,os,pathlib,shutil,subprocess,sys,time\n"
         "a=sys.argv[1:]\n"
         "with open(os.environ['MOCK_LOG'],'a') as f: f.write(' '.join(a)+'\\n')\n"
         "if a[:2]==['api','-X']:\n"
@@ -484,7 +495,8 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         "  print('HTTP/2 404 Not Found'); sys.exit(0)\n"
         "if a[:1]==['api']:\n"
         "  state='Stopped' if pathlib.Path(os.environ['MOCK_STOP']).exists() else 'Available'\n"
-        "  print(json.dumps({'id':12,'name':os.environ['CODESPACE_NAME'],"
+        "  foreign=os.environ['MOCK_STREAM_FAULT']=='foreign_identity' and pathlib.Path(os.environ['MOCK_FOREIGN_MARK']).exists()\n"
+        "  print(json.dumps({'id':999 if foreign else 12,'name':os.environ['CODESPACE_NAME'],"
         "'state':state,'created_at':os.environ['MOCK_CREATED'],"
         "'repository':{'full_name':'TheBayoumi/clipper'},"
         "'machine':{'cpus':4,'memory_in_bytes':17179869184,"
@@ -492,9 +504,19 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         "if a[:2]==['codespace','ssh']:\n"
         "  if 'exec cat -- ' in a[-1]:\n"
         "    assert '-T' in a, a\n"
+        "    fault=os.environ['MOCK_STREAM_FAULT']\n"
+        "    if fault=='hung': time.sleep(120)\n"
+        "    if fault=='disconnect': sys.exit(3)\n"
         "    completed=subprocess.run(['bash','-c',a[-1]],capture_output=True,check=False)\n"
-        "    sys.stdout.buffer.write(completed.stdout); sys.exit(completed.returncode)\n"
+        "    data=completed.stdout\n"
+        "    if fault=='truncated': data=data[:-17]\n"
+        "    if fault=='partial_exit': sys.stdout.buffer.write(data[:137]); sys.exit(7)\n"
+        "    if fault=='extra': data+=b'junk-after-tar'\n"
+        "    if fault=='oversize': data+=b'X'*10000\n"
+        "    sys.stdout.buffer.write(data); sys.exit(completed.returncode)\n"
         "  if ' recover ' in (' '+ ' '.join(a)+' '):\n"
+        "    if os.environ['MOCK_STREAM_FAULT']=='foreign_identity':\n"
+        "      pathlib.Path(os.environ['MOCK_FOREIGN_MARK']).touch()\n"
         "    print(pathlib.Path(os.environ['MOCK_RECEIPT']).read_text())\n"
         "  sys.exit(0)\n"
         "if a[:2]==['codespace','cp']:\n"
@@ -525,14 +547,28 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             "MOCK_CREATED": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
             "MOCK_STOP": str(tmp_path / "synthetic-stopped"),
             "MOCK_TAMPER": "true" if tamper_archive else "false",
+            "MOCK_STREAM_FAULT": stream_fault,
+            "MOCK_FOREIGN_MARK": str(tmp_path / "foreign-host-id"),
         }
     )
     env.pop("CODESPACES", None)
+    script = _SCRIPT
+    if stream_fault == "oversize":
+        # Smaller test-only cap exercises the real receiver without an 800MB fixture.
+        script = tmp_path / "bounded-supervisor.sh"
+        raw = _SCRIPT.read_text(encoding="utf-8")
+        assert "limit = 800_000_000" in raw
+        script.write_text(raw.replace("limit = 800_000_000", "limit = 4096", 1))
     result = subprocess.run(
-        ["bash", str(_SCRIPT)], env=env, capture_output=True, text=True, timeout=30
+        ["bash", str(script)], env=env, capture_output=True, text=True, timeout=30
     )
     assert result.returncode != 0  # Invalid synthetic signer prevents host setup.
     actions = log.read_text(encoding="utf-8")
+    if stream_fault == "foreign_identity":
+        assert "exec cat -- " not in actions
+        assert "api -X DELETE" not in actions and "api -X POST" not in actions
+        assert not list((tmp_path / "owner-private-recovery").rglob("chapter-recovery.tar"))
+        return
     assert "api -X POST" in actions and "api -X DELETE" in actions
     assert "codespace cp" not in "\n".join(
         call for call in actions.splitlines() if "chapter-recovery.tar" in call
@@ -545,12 +581,12 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     assert cleanup["host_deletion_verified"] is True
     assert verification["retrieval_status"] == (
         "INCOMPLETE"
-        if tamper_archive
+        if tamper_archive or stream_fault != "none"
         else "VERIFIED_PRIVATE_ARCHIVE"
         if scenario == "all_ready"
         else "VERIFIED_PRIVATE_ARCHIVE_PARTIAL"
     ), (result.stderr, verification)
-    if not tamper_archive:
+    if not tamper_archive and stream_fault == "none":
         expected = {
             "brief_only": ({"1": "PARTIAL_OUTPUTS", "7": "NOT_STARTED"}, "PARTIAL"),
             "inflight_empty": ({"1": "CHECKPOINT_ONLY", "7": "CHECKPOINT_ONLY"}, "NONE"),
@@ -583,9 +619,12 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
                     )
                     == 1
                 )
-    assert (folder / "chapter-recovery.tar").exists() is not tamper_archive
+    assert (folder / "chapter-recovery.tar").exists() is (
+        not tamper_archive and stream_fault == "none"
+    )
+    assert not list(folder.glob(".recovery-stage.*"))
     assert "fabricated fixture text" not in result.stdout + result.stderr
-    if scenario == "brief_only" and not tamper_archive:
+    if scenario == "brief_only" and not tamper_archive and stream_fault == "none":
         # Drive the REAL supervisor loop through one successful heartbeat,
         # a verified owner-private partial archive, then a later failed
         # heartbeat. Accelerate only checkpoint schedule in a temp shell copy.
