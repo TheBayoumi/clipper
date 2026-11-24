@@ -1133,6 +1133,11 @@ if (( owner_recovery_safe == 1 )); then
   fi
 fi
 if [[ -n "$PRIVATE_CHAPTER_FREE_GRANT_FILE" ]]; then
+  # Validation is read-only and bounded by OP_LIMIT, not by a legacy
+  # execution clock which this valid signed grant may legitimately exceed.
+  # On rejection restore the legacy clock for identity-checked cleanup.
+  legacy_deadline_epoch="$deadline_epoch"
+  deadline_epoch=0
   grant_seconds="$(printf '%s' "$metadata" | critical grant_validation python3 -c '
 import datetime,json,os,pathlib,sys
 x=json.load(sys.stdin)
@@ -1175,9 +1180,11 @@ except (ValueError,TypeError,KeyError,AttributeError,OSError):
     sys.exit(2)
 print(total)
 ')" || {
+    deadline_epoch="$legacy_deadline_epoch"
     echo "EXTERNAL_SUPERVISOR_FREE_GRANT_REJECTED_NO_EXECUTION" >&2
     exit 2
   }
+  deadline_epoch="$legacy_deadline_epoch"
   total_seconds="$grant_seconds"
   deadline_epoch="$(( $(date -u -d "$created_at" +%s) + total_seconds ))"
 fi
