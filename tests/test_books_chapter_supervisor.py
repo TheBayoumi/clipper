@@ -507,6 +507,32 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         }
     )
     env.pop("CODESPACES", None)
+    if scenario.startswith("free_grant_"):
+        if scenario == "free_grant_unsigned_override":
+            env["PRIVATE_CHAPTER_FREE_BUDGET_SECONDS"] = "14400"
+        else:
+            grant = {
+                "schema": "clipper-owner-free-allowance-v1",
+                "codespace_id": 999 if scenario == "free_grant_wrong_id" else 12,
+                "codespace_name": env["CODESPACE_NAME"],
+                "repository": "TheBayoumi/clipper",
+                "created_at": env["MOCK_CREATED"],
+                "approved_sha": env["PRIVATE_CHAPTER_APPROVED_SHA"],
+                "machine": {
+                    "cpus": 4,
+                    "memory_in_bytes": 17179869184,
+                    "storage_in_bytes": 34359738368,
+                },
+                "verified_at": env["MOCK_CREATED"],
+                "remaining_included_core_seconds": 4 * 4 * 3600,
+                "total_seconds": 4 * 3600,
+                "storage_included_verified": True,
+                "paid_overage_block_verified": scenario != "free_grant_paid_block_missing",
+            }
+            grant_file = tmp_path / "owner-finite-free-grant.json"
+            grant_file.write_text(json.dumps(grant), encoding="utf-8")
+            grant_file.chmod(0o600)
+            env["PRIVATE_CHAPTER_FREE_GRANT_FILE"] = str(grant_file)
     result = subprocess.run(
         ["bash", str(_SCRIPT)], env=env, capture_output=True, text=True, timeout=30
     )
@@ -807,6 +833,11 @@ def test_actual_codespace_wrapper_dispatches_all_modes_through_shared_preflight(
         "terminal_state",
         "transient_cp",
         "bootstrap_over_execution_reserve",
+        "free_grant_valid_past_two_hours",
+        "free_grant_reserve_cleanup",
+        "free_grant_wrong_id",
+        "free_grant_paid_block_missing",
+        "free_grant_unsigned_override",
         "foreign_available_id",
         "foreign_available_name",
         "foreign_available_repo",
@@ -897,6 +928,12 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         age = 599
     elif scenario == "bootstrap_over_execution_reserve":
         age = 6890
+    elif scenario == "free_grant_valid_past_two_hours":
+        age = 2 * 3600 + 600
+    elif scenario == "free_grant_reserve_cleanup":
+        age = 4 * 3600 - 240
+    elif scenario.startswith("free_grant_"):
+        age = 2 * 3600 + 600
     env = os.environ.copy()
     env.update(
         {
@@ -926,7 +963,17 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
     )
     actions = log.read_text(encoding="utf-8")
     assert result.returncode != 0
-    assert "api -X DELETE" in actions or scenario == "identity_swap", result.stderr
+    preflight_rejected_grant = scenario in {
+        "free_grant_wrong_id", "free_grant_paid_block_missing",
+        "free_grant_unsigned_override",
+    }
+    assert (
+        "api -X DELETE" in actions or scenario == "identity_swap" or preflight_rejected_grant
+    ), result.stderr
+    if preflight_rejected_grant:
+        assert "api -X DELETE" not in actions
+        assert "codespace ssh" not in actions
+        assert "codespace cp" not in actions
     if scenario == "identity_swap":
         assert "api -X DELETE" not in actions
         assert "api -X POST" not in actions
@@ -941,7 +988,10 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         assert "codespace cp" not in actions
     if scenario == "hung_ssh":
         assert "BOOTSTRAP_REMOTE_HUNG" in result.stderr
-    if scenario in ("provisioning_then_ready", "transient_ssh", "transient_cp"):
+    if scenario in (
+        "provisioning_then_ready", "transient_ssh", "transient_cp",
+        "free_grant_valid_past_two_hours",
+    ):
         assert "codespace ssh" in actions
         assert "external-supervisor-public.pem" in actions
         assert "external-supervisor-heartbeat-envelope.watchdog.pending" in actions
@@ -962,7 +1012,10 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
     assert all(allowed_recovery in call or allowed_status in call for call in host_calls), (
         host_calls
     )
-    if scenario in ("provisioning_then_ready", "transient_ssh", "transient_cp"):
+    if scenario in (
+        "provisioning_then_ready", "transient_ssh", "transient_cp",
+        "free_grant_valid_past_two_hours",
+    ):
         assert any(allowed_recovery in call for call in host_calls), host_calls
     else:
         assert not host_calls, "Unready or unverified bootstrap must not run host commands"
