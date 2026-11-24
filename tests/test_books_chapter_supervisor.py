@@ -32,7 +32,7 @@ _SCRIPT = Path(__file__).resolve().parents[1] / "scripts/private_chapter_externa
         "unsafe_remote",
         "shell_metacharacters",
         "near_deadline_hung_stop",
-        "heartbeat_copy_fail",
+        "heartbeat_stream_fail",
         "heartbeat_publish_fail",
     ],
 )
@@ -80,6 +80,7 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         "    open(os.environ['MOCK_SWAPPED'],'w').write('replaced')\n"
         "    sys.exit(3)\n"
         "  if hang=='heartbeat_publish_fail' and 'watchdog.pending' in ' '.join(args): sys.exit(3)\n"
+        "  if hang=='heartbeat_stream_fail' and 'watchdog.pending' in ' '.join(args): sys.exit(3)\n"
         "  sys.exit(0)\n"
         "if args[:2]==['codespace','cp']:\n"
         "  if hang=='copy': time.sleep(120)\n"
@@ -93,7 +94,7 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
     public = tmp_path / "synthetic-owner.pub"
     key.write_text("TEST_ONLY", encoding="utf-8")
     public.write_text("TEST_ONLY", encoding="utf-8")
-    if hang in {"heartbeat_copy_fail", "heartbeat_publish_fail"}:
+    if hang in {"heartbeat_stream_fail", "heartbeat_publish_fail"}:
         # These cases must reach the heartbeat transport. The legacy
         # invalid-key cases intentionally continue testing signing refusal.
         fake_openssl = fake_bin / "openssl"
@@ -161,7 +162,7 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         else 124
         if hang in {"ssh", "copy"}
         else 3
-        if hang in {"heartbeat_copy_fail", "heartbeat_publish_fail"}
+        if hang in {"heartbeat_stream_fail", "heartbeat_publish_fail"}
         else 2
     )
     assert result.returncode == expected_status
@@ -209,7 +210,7 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         expected_operation = {
             "ssh": "key_setup",
             "copy": "key_copy",
-            "heartbeat_copy_fail": "heartbeat_copy",
+            "heartbeat_stream_fail": "heartbeat_publish",
             "heartbeat_publish_fail": "heartbeat_publish",
         }
         assert failure["operation"] == expected_operation[hang]
