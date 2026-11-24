@@ -33,8 +33,8 @@ private_root="$(realpath "$PRIVATE_CHAPTER_ROOT")"
 case "$private_root/" in
   "$repo_root/"*|//) echo "PRIVATE_CHAPTER_WORKTREE_STORAGE_FORBIDDEN" >&2; exit 2 ;;
 esac
-# The Codespace REST record, not the time the command was first run, starts
-# the single cumulative 2-hour clock. Do not override or cache creation time.
+# The REST creation clock remains authoritative. The execution cutoff may be
+# extended ONLY by a finite free-inclusion grant INSIDE the signed heartbeat.
 if ! codespace="$(gh api "user/codespaces/${CODESPACE_NAME}")"; then
   echo "PRIVATE_CHAPTER_CODESPACE_METADATA_UNAVAILABLE" >&2
   exit 2
@@ -51,22 +51,24 @@ created = datetime.datetime.fromisoformat(obj["created_at"].replace("Z", "+00:00
 if created.tzinfo is None:
     sys.exit(2)
 now = datetime.datetime.now(datetime.timezone.utc)
-deadline = created + datetime.timedelta(seconds=7200 - 300)
-remaining = int((deadline - now).total_seconds())
-if created > now or remaining <= 0:
+if created > now:
     sys.exit(2)
-print(created.isoformat(), remaining)
+print(created.isoformat())
 ')"; then
   echo "PRIVATE_CHAPTER_CODESPACE_SHAPE_OR_DEADLINE_REJECTED" >&2
   exit 2
 fi
-read -r codespace_created_at remaining_seconds <<< "$clock"
+codespace_created_at="$clock"
 # REST metadata and branch do not prove an independent hard supervisor:
 # require a fresh externally signed heartbeat BEFORE Python or any providers.
-if ! python -m clipper.books.chapter_lifecycle \
+if ! remaining_seconds="$(python -m clipper.books.chapter_lifecycle \
   --artifact-root "$private_root" \
-  --codespace-created-at "$codespace_created_at"; then
+  --codespace-created-at "$codespace_created_at" --remaining-seconds)"; then
   echo "PRIVATE_CHAPTER_LIVE_EXTERNAL_SUPERVISOR_REQUIRED" >&2
+  exit 2
+fi
+if [[ ! "$remaining_seconds" =~ ^[0-9]+$ ]] || (( remaining_seconds <= 0 )); then
+  echo "PRIVATE_CHAPTER_SIGNED_EXECUTION_DEADLINE_UNAVAILABLE" >&2
   exit 2
 fi
 # Exactly one shared Hugging Face cache under the private root; same pinned
