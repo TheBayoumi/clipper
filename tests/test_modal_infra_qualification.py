@@ -435,6 +435,17 @@ def test_journal_failure_does_not_skip_teardown(
             if failed_step[1] != "app_context_enter" or failed_step[0] == "RETURN"
             else backend.events == ["verify"]
         )
+        assert result["status"] == "BLOCKED"
+        if failed_step[0] == "RETURN":
+            expected = {
+                "app_context_enter": ("app", "ap-synthetic"),
+                "volume_context_enter": ("volume", "vo-synthetic"),
+                "sandbox_1_create": ("sandbox", "sb-synthetic-1"),
+            }[failed_step[1]]
+            assert any(
+                item["kind"] == expected[0] and item["id"] == expected[1]
+                for item in result["unknown_outcomes"]
+            )
         assert len(backend.sandboxes) <= 1
         if backend.sandboxes:
             assert "poll_sb-synthetic-1" in backend.events
@@ -1212,5 +1223,41 @@ def test_terminal_journal_failure_invalidates_otherwise_good_result(tmp_path: Pa
         assert result["exact_bytes"] is True
         assert result["status"] == "BLOCKED"
         assert any(x.startswith("TERMINAL") for x in result["evidence_errors"])
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("target", ["app_context_enter", "volume_context_enter", "sandbox_1_create"])
+def test_pre_entry_operation_begin_journal_failure_blocks_allocation(
+    tmp_path: Path, target: str
+) -> None:
+    class Journal(Ledger):
+        def record(self, **fields: object) -> None:
+            if fields.get("operation") == "OPERATION_BEGIN" and fields.get("step") == target:
+                raise OSError("synthetic write failed before provider entry")
+            super().record(**fields)
+
+    async def exercise() -> None:
+        backend = FakeBackend()
+        owner = QualificationOwner(
+            backend,
+            Intent(
+                "explicit-workspace", "qualification", "a" * 40,
+                "modal-cpu-synthetic-persistence",
+            ),
+            Journal(tmp_path / "private" / "ledger.jsonl"),
+        )
+        owner.start()
+        result = await owner.terminal()
+        assert result["status"] == "BLOCKED"
+        assert result["evidence_errors"]
+        assert result["primary_error"] == "OSError"
+        if target == "app_context_enter":
+            assert backend.events == ["verify"]
+        elif target == "volume_context_enter":
+            assert backend.events == ["verify", "app_enter", "app_exit"]
+        else:
+            assert "create" not in backend.events
+            assert backend.events[-2:] == ["volume_exit", "app_exit"]
 
     asyncio.run(exercise())
