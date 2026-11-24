@@ -970,6 +970,20 @@ elif (root / "retrieval-verification.json").is_file():
 for item in legacy:
     if not item.is_symlink():
         point(item.name, "recovery-current/" + item.name)
+# An empty or regressed checkpoint cannot demote previously recovered
+# positive outputs. The existing positive snapshot remains the reader target.
+if link.is_symlink():
+    previous = json.loads((root / os.readlink(link) / names[1]).read_bytes())
+    proposed = json.loads((stage / names[1]).read_bytes())
+    old_count = previous.get("recovered_file_count", 0)
+    new_count = proposed.get("recovered_file_count", 0)
+    importance = {"PARTIAL_OUTPUTS": 1, "READY_OUTPUTS_VERIFIED": 2}
+    old_chapters, new_chapters = previous.get("chapters", {}), proposed.get("chapters", {})
+    if (type(old_count) is not int or type(new_count) is not int
+        or (old_count > 0 and new_count < old_count)
+        or any(importance.get(new_chapters.get(ch), 0) < importance.get(status, 0)
+               for ch, status in old_chapters.items())):
+        sys.exit(2)
 # Stage becomes a complete immutable bundle with one atomic directory rename.
 bundle = ".recovery-bundle-" + uuid.uuid4().hex
 os.replace(stage, root / bundle)
