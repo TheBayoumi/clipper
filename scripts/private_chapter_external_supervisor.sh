@@ -371,10 +371,14 @@ import os, signal, subprocess, sys, threading
 name, remote = sys.argv[1:]
 if os.read(0, 1) != b"1":
     sys.exit(2)
+completed = threading.Event()
 def parent_gone():
-    # The SSH producer INHERITS this already-owned launcher process group.
-    # No separately-sessioned child may escape during Popen registration.
-    os.read(0, 1)
+    # Keep ownership alive even AFTER the producer leader has exited:
+    # another same-group child may still hold the SSH stdout pipe open.
+    # Only a receiver-issued EOF-drained acknowledgement releases us.
+    if os.read(0, 1) == b"2":
+        completed.set()
+        return
     os.killpg(os.getpgrp(), signal.SIGKILL)
 threading.Thread(target=parent_gone, daemon=True).start()
 child = subprocess.Popen(
@@ -383,7 +387,9 @@ child = subprocess.Popen(
     stdin=subprocess.DEVNULL, stdout=sys.stdout.buffer,
     stderr=subprocess.DEVNULL, close_fds=True,
 )
-sys.exit(child.wait())
+result = child.wait()
+completed.wait()
+sys.exit(result)
 """
 proc = None
 pending_signal = 0
@@ -444,6 +450,10 @@ try:
             used += len(block)
     if used == 0 or (size is not None and used != size):
         sys.exit(2)
+    # stdout EOF includes descendants: only now may the launcher retire
+    # its parent-death watcher, while retaining the SSH leader exit code.
+    proc.stdin.write(b"2")
+    proc.stdin.flush()
     if proc.wait() != 0:
         sys.exit(2)
 finally:
