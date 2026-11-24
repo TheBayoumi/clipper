@@ -550,10 +550,15 @@ def test_failing_iterator_close_records_evidence_and_retains_contexts(
         owner.start()
         result = await owner.terminal()
         assert result["primary_error"] == "OSError"
-        assert "OSError" in result["cleanup_errors"]
+        phase = "sandbox_1_stdout_iterator_close" if stage == "stdout" else "volume_iterator_close"
+        assert result["cleanup_errors"] == [f"{phase}:OSError"]
+        assert result["status"] == "BLOCKED"
+        assert owner.stopped.is_set()
+        assert result["exact_bytes"] is False
         assert result["provider_removal"] == "UNKNOWN"
         assert result["app_context_closed"] and result["volume_context_closed"]
         assert len(result["sandbox_terminal"]) == (1 if stage == "stdout" else 2)
+        assert backend.events[-2:] == ["volume_exit", "app_exit"]
 
     asyncio.run(exercise())
 
@@ -781,13 +786,29 @@ def test_missing_app_id_is_not_logged_as_success_and_context_still_exits(
         owner.start()
         result = await owner.terminal()
         assert result["primary_error"] == "ValueError"
+        assert result["status"] == "BLOCKED"
+        assert owner.stopped.is_set()
         assert backend.events == ["verify", "app_enter", "app_exit"]
         assert result["app_context_closed"] is True
         assert result["volume_context_closed"] is False
         assert result["provider_removal"] == "UNKNOWN"
+        assert result["exact_bytes"] is False
+        assert result["sandbox_terminal"] == []
+        assert result["unknown_outcomes"] == [
+            {
+                "kind": "app",
+                "step": "app_context_enter",
+                "id": "",
+                "outcome": "UNRESOLVED",
+            }
+        ]
         events = _events(tmp_path)
         assert any(
-            e["operation"] == "UNKNOWN_APP_ID" and e.get("step") == "app_context_enter"
+            e["operation"] == "UNKNOWN_ID_OUTCOME"
+            and e.get("kind") == "app"
+            and e.get("step") == "app_context_enter"
+            and e.get("id") == ""
+            and e.get("outcome") == "UNRESOLVED"
             for e in events
         )
         assert not any(
@@ -1253,6 +1274,11 @@ def test_pre_entry_operation_begin_journal_failure_blocks_allocation(
         assert result["status"] == "BLOCKED"
         assert result["evidence_errors"]
         assert result["primary_error"] == "OSError"
+        assert result["unknown_outcomes"] == []
+        assert result["active_operations"] == []
+        assert not any(
+            entry["operation"] == "UNKNOWN_ID_OUTCOME" for entry in _events(tmp_path)
+        )
         if target == "app_context_enter":
             assert backend.events == ["verify"]
         elif target == "volume_context_enter":
