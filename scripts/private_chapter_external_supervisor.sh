@@ -917,7 +917,10 @@ terminate_host() {
   original_status=$?
   trap - EXIT INT TERM HUP
   set +e
-  write_owner_exit_reason "$original_status"
+  # At the hard cutoff, exact-identity DELETE outranks local journaling.
+  if (( verified_identity == 1 && deadline_epoch - $(date -u +%s) > 25 )); then
+    write_owner_exit_reason "$original_status"
+  fi
   # Execution/bootstrap expiry must never block original-clock cleanup.
   bootstrap_epoch=0
   execution_epoch=0
@@ -966,6 +969,8 @@ terminate_host() {
   fi
   # Reserve the last seconds for a fresh exact numeric identity probe and
   # DELETE. Never send DELETE on a changed name/ID/repository/machine.
+  # Owner evidence already persisted; avoid filesystem journal delay here.
+  journal_ready=0
   OP_LIMIT=1
   if ! identity_matches; then
     cleanup_identity_failure "EXTERNAL_SUPERVISOR_REJECTED_HOST_IDENTITY_NO_DELETE"
