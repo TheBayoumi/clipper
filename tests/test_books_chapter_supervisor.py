@@ -575,7 +575,12 @@ def test_actual_codespace_wrapper_dispatches_all_modes_through_shared_preflight(
             "with open(os.environ['MOCK_OPERATIONS'],'a',encoding='utf-8') as f:\n"
             "  f.write(json.dumps(args)+'\\n')\n"
             "if args[:3]==['-m','clipper.books.chapter_lifecycle','--artifact-root']:\n"
-            "  sys.exit(int(os.environ['MOCK_LIFECYCLE_STATUS']))\n"
+            "  if int(os.environ['MOCK_LIFECYCLE_STATUS']): sys.exit(2)\n"
+            "  import datetime\n"
+            "  created=datetime.datetime.fromisoformat(os.environ['MOCK_CREATED'])\n"
+            "  if (datetime.datetime.now(datetime.timezone.utc)-created).total_seconds()>6900:\n"
+            "    sys.exit(2)\n"
+            "  print('6800'); sys.exit(0)\n"
             "if args[:3]==['-m','clipper.books.chapter_host',os.environ['MOCK_MODE']]:\n"
             "  sys.exit(int(os.environ['MOCK_HOST_STATUS']))\n"
             "sys.exit(2)\n"
@@ -823,8 +828,8 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
     # Cleanup may retrieve the scoped recovery archive and, if that fails,
     # read its safe status. Neither operation authorizes generation or setup.
     host_calls = [call for call in actions.splitlines() if "clipper.books.chapter_host" in call]
-    allowed_recovery = "python3 -m clipper.books.chapter_host recover --artifact-root "
-    allowed_status = "python3 -m clipper.books.chapter_host status --artifact-root "
+    allowed_recovery = "clipper.books.chapter_host recover --artifact-root "
+    allowed_status = "clipper.books.chapter_host status --artifact-root "
     assert all(allowed_recovery in call or allowed_status in call for call in host_calls), (
         host_calls
     )
