@@ -485,9 +485,9 @@ def test_real_local_synthetic_child_scripts_byte_exact(tmp_path: Path) -> None:
     writer = writer.replace(
         "subprocess.run(['sync','/data'],check=True,timeout=15)",
         "os.sync()",
-    ).replace("time.sleep(55)", "time.sleep(0)")
+    ).replace("while True: time.sleep(10)", "time.sleep(0)")
     reader = READ_SCRIPT.replace("/data/infra-check.bin", str(source))
-    reader = reader.replace("time.sleep(55)", "time.sleep(0)")
+    reader = reader.replace("while True: time.sleep(10)", "time.sleep(0)")
     written = subprocess.run(
         [sys.executable, "-c", writer], capture_output=True, check=True, timeout=5
     )
