@@ -129,7 +129,9 @@ class SDKBackend:
     async def create(self, app: Any, volume: Any, script: str) -> Any:
         return await asyncio.to_thread(
             self.sdk.Sandbox.create,
-            "python3", "-c", script,
+            "python3",
+            "-c",
+            script,
             app=app,
             image=self.sdk.Image.debian_slim(),
             volumes={"/data": volume},
@@ -149,7 +151,7 @@ class SDKBackend:
         return await asyncio.to_thread(lambda: iter(sandbox.stdout))
 
     async def volume_chunks(self, volume: Any) -> Any:
-        return await asyncio.to_thread(lambda: iter(volume.read_file('infra-check.bin')))
+        return await asyncio.to_thread(lambda: iter(volume.read_file("infra-check.bin")))
 
     async def terminate(self, sandbox: Any) -> None:
         await asyncio.to_thread(sandbox.terminate, wait=True)
@@ -292,7 +294,8 @@ class QualificationOwner:
         if done:
             return self.task.result()
         self._record(
-            "UNRESOLVED", pending=sorted(self.unresolved),
+            "UNRESOLVED",
+            pending=sorted(self.unresolved),
             disposition="OWNER_MONITORING_CONTINUES_IN_ACTIVE_LOOP",
         )
         return {"status": "UNRESOLVED", "run_id": self.run_id, "owner_task_alive": True}
@@ -405,25 +408,35 @@ class QualificationOwner:
                 self._record("INTENT", step="app_context_enter")
                 app = await app_context.__aenter__()
                 # Context return is held locally before its durable ID record.
-                self._record("RETURN", step="app_context_enter",
-                             object_id=str(getattr(app, "object_id", "")))
+                self._record(
+                    "RETURN", step="app_context_enter", object_id=str(getattr(app, "object_id", ""))
+                )
                 volume_context = self.backend.volume_context()
                 try:
                     if self.stopped.is_set():
                         raise RuntimeError("STOP_LATCHED")
                     self._record("INTENT", step="volume_context_enter")
                     volume = await volume_context.__aenter__()
-                    self._record("RETURN", step="volume_context_enter",
-                                 object_id=str(getattr(volume, "object_id", "")))
+                    self._record(
+                        "RETURN",
+                        step="volume_context_enter",
+                        object_id=str(getattr(volume, "object_id", "")),
+                    )
                     await self._sandbox(
-                        app, volume, WRITE_SCRIPT,
-                        ("READY:" + DIGEST).encode(), 1,
+                        app,
+                        volume,
+                        WRITE_SCRIPT,
+                        ("READY:" + DIGEST).encode(),
+                        1,
                     )
                     if self.stopped.is_set():
                         raise RuntimeError("STOP_LATCHED")
                     await self._sandbox(
-                        app, volume, READ_SCRIPT,
-                        ("READ:" + str(SIZE) + ":" + DIGEST).encode(), 2,
+                        app,
+                        volume,
+                        READ_SCRIPT,
+                        ("READ:" + str(SIZE) + ":" + DIGEST).encode(),
+                        2,
                     )
                     if self.stopped.is_set():
                         raise RuntimeError("STOP_LATCHED")
