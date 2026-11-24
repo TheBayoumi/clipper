@@ -378,3 +378,15 @@ model IDs, revisions, prompts and voice parameters. Publication stays off.
 ## Publication boundary
 
 Clipper stops at production artifacts and QC evidence. It does not automatically upload to TikTok, Instagram, YouTube Shorts, Whop, or another campaign platform. Publishing/submission is a separate explicitly authorized action after the final media and campaign/account requirements are reviewed.
+
+
+## Modal infrastructure qualification (offline only)
+
+The isolated CPU-only 64 KiB synthetic persistence and lifetime qualification
+lives in `src/clipper/modal_infra_qualification.py`, with offline regressions
+in `tests/test_modal_infra_qualification.py`. Read
+[the scope and ownership limits](docs/modal_cpu_infra_offline_qualification.md).
+This code is **not a live Modal/provider approval** and has no automatic CLI,
+model, deployment or chapter execution entry point. Codespace chapter recovery
+remains paused and blocked; it is not a prerequisite for this independent
+infrastructure experiment.
