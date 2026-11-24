@@ -13,6 +13,9 @@ PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY="${PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY
 PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY="${PRIVATE_CHAPTER_SUPERVISOR_PUBLIC_KEY:-}"
 PRIVATE_CHAPTER_ROOT="${PRIVATE_CHAPTER_ROOT:-}"
 PRIVATE_CHAPTER_RECOVERY_DIR="${PRIVATE_CHAPTER_RECOVERY_DIR:-}"
+# Only an owner-supplied finite free-inclusion attestation, signed into EVERY
+# heartbeat, may select the extended lifecycle. No unsigned duration override.
+PRIVATE_CHAPTER_FREE_GRANT_FILE="${PRIVATE_CHAPTER_FREE_GRANT_FILE:-}"
 if [[ "${CODESPACES:-}" == "true" ||
       ! "$PRIVATE_CHAPTER_APPROVED_SHA" =~ ^[0-9a-f]{40}$ ||
       ! "$CODESPACE_NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
@@ -898,10 +901,49 @@ now = datetime.datetime.now(datetime.timezone.utc)
 # Even at 116 minutes, an exact approved Codespace must be cleaned up.
 if created > now:
     sys.exit(2)
-if now >= created + datetime.timedelta(seconds=7200):
+total = 7200
+grant_path = os.environ.get("PRIVATE_CHAPTER_FREE_GRANT_FILE","")
+if grant_path:
+    import pathlib, stat
+    p = pathlib.Path(grant_path)
+    if not p.is_absolute() or p.is_symlink() or not p.is_file():
+        sys.exit(2)
+    if any((part / ".git").exists() for part in (p.parent, *p.parents)):
+        sys.exit(2)
+    if p.stat().st_size > 4096 or p.stat().st_mode & 0o077:
+        sys.exit(2)
+    try:
+        grant = json.loads(p.read_bytes())
+        machine_grant=grant.get("machine")
+        total=grant.get("total_seconds")
+        remaining=grant.get("remaining_included_core_seconds")
+        checked=datetime.datetime.fromisoformat(grant["verified_at"].replace("Z","+00:00"))
+        if (set(grant) != {
+              "schema","codespace_id","codespace_name","repository","created_at",
+              "approved_sha","machine","verified_at","remaining_included_core_seconds",
+              "total_seconds","storage_included_verified","paid_overage_block_verified"}
+            or grant["schema"] != "clipper-owner-free-allowance-v1"
+            or type(grant["codespace_id"]) is not int or grant["codespace_id"] != x["id"]
+            or grant["codespace_name"] != x["name"] or grant["repository"] != "TheBayoumi/clipper"
+            or grant["created_at"] != x["created_at"]
+            or grant["approved_sha"] != os.environ["PRIVATE_CHAPTER_APPROVED_SHA"]
+            or not isinstance(machine_grant,dict)
+            or machine_grant != {"cpus":4,"memory_in_bytes":17179869184,
+                                 "storage_in_bytes":34359738368}
+            or type(total) is not int or not 7200 < total <= 42900
+            or type(remaining) is not int or remaining < total * 4
+            or grant["storage_included_verified"] is not True
+            or grant["paid_overage_block_verified"] is not True
+            or checked.tzinfo is None or checked < created-datetime.timedelta(minutes=30)
+            or checked > created+datetime.timedelta(minutes=5)
+            or checked > now+datetime.timedelta(seconds=5)):
+            sys.exit(2)
+    except (ValueError,TypeError,KeyError,AttributeError,OSError):
+        sys.exit(2)
+if now >= created + datetime.timedelta(seconds=total):
     sys.exit(3)
-execution_allowed = now < created + datetime.timedelta(seconds=6900)
-print(x["id"], x["created_at"], "EXECUTION" if execution_allowed else "CLEANUP_ONLY")
+execution_allowed = now < created + datetime.timedelta(seconds=total-300)
+print(x["id"], x["created_at"], "EXECUTION" if execution_allowed else "CLEANUP_ONLY", total)
 ')" || {
   code=$?
   if (( code == 3 )); then
@@ -911,10 +953,10 @@ print(x["id"], x["created_at"], "EXECUTION" if execution_allowed else "CLEANUP_O
   fi
   exit 2
 }
-read -r codespace_id created_at lifecycle_mode <<< "$validated"
+read -r codespace_id created_at lifecycle_mode total_seconds <<< "$validated"
 export SUPERVISED_CODESPACE_ID="$codespace_id"
 export SUPERVISED_CREATED_AT="$created_at"
-deadline_epoch="$(( $(date -u -d "$created_at" +%s) + 7200 ))"
+deadline_epoch="$(( $(date -u -d "$created_at" +%s) + total_seconds ))"
 verified_identity=1
 # The owner recovery path was checked before REST. Persist locally before
 # remote setup and without depending on the temporary shell session.
@@ -960,7 +1002,7 @@ fi
 # Ten minutes at most for provisioning and transient SSH readiness; do not
 # start dependencies or issue a signed heartbeat until BOTH remote steps pass.
 bootstrap_epoch="$(( $(date -u -d "$created_at" +%s) + 600 ))"
-execution_epoch="$(( $(date -u -d "$created_at" +%s) + 6900 ))"
+execution_epoch="$(( deadline_epoch - 300 ))"
 if (( bootstrap_epoch > execution_epoch - 60 )); then
   bootstrap_epoch="$(( execution_epoch - 60 ))"
 fi
@@ -1073,9 +1115,9 @@ while true; do
   remaining="$(bounded python3 -c '
 import datetime,sys
 created=datetime.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00"))
-print(int((created+datetime.timedelta(seconds=6900)
+print(int((created+datetime.timedelta(seconds=int(sys.argv[2])-300)
            -datetime.datetime.now(datetime.timezone.utc)).total_seconds()))
-' "$created_at")"
+' "$created_at" "$total_seconds")"
   if (( remaining <= 0 )); then
     break
   fi
@@ -1086,8 +1128,8 @@ print(datetime.datetime.now(datetime.timezone.utc).isoformat())
   deadline="$(bounded python3 -c '
 import datetime,sys
 created=datetime.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00"))
-print((created+datetime.timedelta(seconds=7200)).isoformat())
-' "$created_at")"
+print((created+datetime.timedelta(seconds=int(sys.argv[2]))).isoformat())
+' "$created_at" "$total_seconds")"
   bounded python3 -c '
 import json,sys
 record=dict(
@@ -1100,10 +1142,14 @@ record=dict(
     hard_deadline_at=sys.argv[6],
     external_watchdog_required=True,
 )
+if sys.argv[8]:
+    with open(sys.argv[8],"rb") as grant_file:
+        record["free_allowance"]=json.load(grant_file)
 with open(sys.argv[7],"wb") as output:
     output.write((json.dumps(record, sort_keys=True, ensure_ascii=False)+"\n").encode())
 ' "$codespace_id" "$CODESPACE_NAME" "$created_at" \
-  "$PRIVATE_CHAPTER_APPROVED_SHA" "$now" "$deadline" "$session/heartbeat.json"
+  "$PRIVATE_CHAPTER_APPROVED_SHA" "$now" "$deadline" "$session/heartbeat.json" \
+  "$PRIVATE_CHAPTER_FREE_GRANT_FILE"
   bounded openssl dgst -sha256 -sign "$PRIVATE_CHAPTER_SUPERVISOR_PRIVATE_KEY" \
     -out "$session/heartbeat.sig" "$session/heartbeat.json" >/dev/null
   # The signature and exact payload are a single bounded envelope. Copy to
