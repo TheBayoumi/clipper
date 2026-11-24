@@ -379,6 +379,16 @@ available, per-chapter narration reports, and every WAV linked by the
 verified report. The source EPUB, nonselected chapters, images and videos
 are not part of this output archive.
 
+The owner retrieves the prepared TAR through authenticated Codespace
+SSH **stdout with no PTY**, not `gh codespace cp`/SCP. A finite, owner-private
+binary receiver rejects failed/truncated/oversized streams, enforces the
+prepared byte count if provided, and independently verifies the exact
+prepared SHA-256 and all TAR members. The three recovery artifacts are
+committed as one immutable private bundle with an atomic
+`recovery-current` symlink switch. Stable direct paths under the owner
+recovery directory resolve through that pointer; a failed later bundle
+cannot replace the prior verified archive/report/status combination.
+
 On success the owner receives
 `$PRIVATE_CHAPTER_RECOVERY_DIR/$CODESPACE_NAME/chapter-recovery.tar`,
 `safe-recovery-status.json`, and `retrieval-verification.json`. A separate
