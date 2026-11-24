@@ -240,6 +240,7 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         ("all_ready", False, "extra"),
         ("all_ready", False, "oversize"),
         ("all_ready", False, "hung"),
+        ("all_ready", False, "signal"),
         ("all_ready", False, "foreign_identity"),
     ],
 )
@@ -330,7 +331,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
                 "final_result_identity",
             )
         }
-        audio_bytes = b"synthetic WAV samples only"
+        audio_bytes = b"RIFF\x00\xff\x80PRIVATE_SYNTHETIC_CANARY\x00WAVE"
         wav_relative = "chapter-audio-injected_test_wav/shared.wav"
         wav_path = "book-candidates/" + wav_relative
         audio_report = {
@@ -507,7 +508,9 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         "  if 'exec cat -- ' in a[-1]:\n"
         "    assert '-T' in a, a\n"
         "    fault=os.environ['MOCK_STREAM_FAULT']\n"
-        "    if fault=='hung': time.sleep(120)\n"
+        "    if fault in ('hung','signal'):\n"
+        "      pathlib.Path(os.environ['MOCK_STREAM_ENTERED']).touch()\n"
+        "      time.sleep(120)\n"
         "    if fault=='disconnect': sys.exit(3)\n"
         "    completed=subprocess.run(['bash','-c',a[-1]],capture_output=True,check=False)\n"
         "    data=completed.stdout\n"
@@ -551,6 +554,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             "MOCK_TAMPER": "true" if tamper_archive else "false",
             "MOCK_STREAM_FAULT": stream_fault,
             "MOCK_FOREIGN_MARK": str(tmp_path / "foreign-host-id"),
+            "MOCK_STREAM_ENTERED": str(tmp_path / "stream-entered"),
         }
     )
     env.pop("CODESPACES", None)
@@ -561,9 +565,32 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         raw = _SCRIPT.read_text(encoding="utf-8")
         assert "limit = 800_000_000" in raw
         script.write_text(raw.replace("limit = 800_000_000", "limit = 4096", 1))
-    result = subprocess.run(
-        ["bash", str(script)], env=env, capture_output=True, text=True, timeout=30
-    )
+    if stream_fault == "signal":
+        import signal
+
+        child = subprocess.Popen(
+            ["bash", str(script)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            marker = tmp_path / "stream-entered"
+            until = time.monotonic() + 15
+            while not marker.exists() and child.poll() is None and time.monotonic() < until:
+                time.sleep(0.025)
+            assert marker.exists() and child.poll() is None
+            child.send_signal(signal.SIGTERM)
+            stdout, stderr = child.communicate(timeout=30)
+            result = subprocess.CompletedProcess(
+                [str(script)], child.returncode, stdout, stderr
+            )
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.communicate(timeout=5)
+    else:
+        result = subprocess.run(
+            ["bash", str(script)], env=env, capture_output=True, text=True, timeout=30
+        )
     assert result.returncode != 0  # Invalid synthetic signer prevents host setup.
     actions = log.read_text(encoding="utf-8")
     if stream_fault == "foreign_identity":
@@ -626,6 +653,11 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     )
     assert not list(folder.glob(".recovery-stage.*"))
     assert "fabricated fixture text" not in result.stdout + result.stderr
+    assert "PRIVATE_SYNTHETIC_CANARY" not in result.stdout + result.stderr
+    assert (folder.stat().st_mode & 0o077) == 0
+    for artifact in (folder / "chapter-recovery.tar", folder / "retrieval-verification.json"):
+        if artifact.exists():
+            assert (artifact.stat().st_mode & 0o077) == 0
     if scenario == "brief_only" and not tamper_archive and stream_fault == "none":
         # Drive the REAL supervisor loop through one successful heartbeat,
         # a verified owner-private partial archive, then a later failed
