@@ -250,10 +250,7 @@ class QualificationOwner:
         intent.validate()
         # SDK environment is immutable and must agree with the sole journal intent
         # before workspace verification or any provider context is entered.
-        if (
-            isinstance(backend, SDKBackend)
-            and backend.environment != intent.environment
-        ):
+        if isinstance(backend, SDKBackend) and backend.environment != intent.environment:
             raise ValueError("SDK environment differs from immutable run intent")
         if decision_seconds <= 0 or reconciliation_seconds <= 0:
             raise ValueError("Finite positive observation budgets required")
@@ -374,9 +371,7 @@ class QualificationOwner:
             **self._result,
             "active_operations": sorted(self.active_operations),
             "unknown_outcomes": [dict(entry) for entry in self.unknown_outcomes],
-            "unresolved_ids": sorted(
-                self.unresolved | set(self.known_unconfirmed_sandboxes)
-            ),
+            "unresolved_ids": sorted(self.unresolved | set(self.known_unconfirmed_sandboxes)),
             "known_unconfirmed_sandboxes": [
                 dict(entry) for entry in self.known_unconfirmed_sandboxes.values()
             ],
@@ -518,9 +513,7 @@ class QualificationOwner:
                     cleanup_resource["terminate_succeeded"] = True
             except BaseException as exc:
                 if cleanup_resource is not None:
-                    cleanup_resource["cleanup_errors"].append(
-                        f"terminate:{type(exc).__name__}"
-                    )
+                    cleanup_resource["cleanup_errors"].append(f"terminate:{type(exc).__name__}")
                 self.cleanup_errors.append(f"sandbox_{index}_terminate:{type(exc).__name__}")
                 self._first_error(exc)
                 self._safe_record("SANDBOX_CLEANUP_ERROR", step=index, error=type(exc).__name__)
@@ -539,9 +532,7 @@ class QualificationOwner:
                     self.known_unconfirmed_sandboxes.pop(cleanup_resource["id"], None)
             except BaseException as exc:
                 if cleanup_resource is not None:
-                    cleanup_resource["cleanup_errors"].append(
-                        f"poll:{type(exc).__name__}"
-                    )
+                    cleanup_resource["cleanup_errors"].append(f"poll:{type(exc).__name__}")
                 self.cleanup_errors.append(f"sandbox_{index}_poll:{type(exc).__name__}")
                 self._first_error(exc)
                 self._safe_record("SANDBOX_CLEANUP_ERROR", step=index, error=type(exc).__name__)

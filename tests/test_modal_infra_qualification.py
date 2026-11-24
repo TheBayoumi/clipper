@@ -1328,7 +1328,7 @@ def test_sdk_environment_owner_binding_and_ambient_mutation(tmp_path: Path) -> N
 
     backend = SDKBackend(sdk, explicit_client, "qualification")
     with pytest.raises(FrozenInstanceError):
-        setattr(backend, "environment", "different")
+        backend.environment = "different"
     # Owner sees the original explicit environment even after ambient state changes.
     ambient = {"environment": "qualification", "client": explicit_client}
 
@@ -1399,6 +1399,7 @@ def test_terminal_waiter_cancel_during_cleanup_retains_owner_and_reconciles(
         assert result["status"] == "BLOCKED"
         assert len(backend.sandboxes) == 1
         assert result["known_unconfirmed_sandboxes"] == []
+
     asyncio.run(exercise())
 
 
@@ -1433,8 +1434,7 @@ def test_known_sandbox_id_preserved_when_terminal_not_observed(
         assert known[0]["cleanup_errors"]
         records = _events(tmp_path)
         assert any(
-            row["operation"] == "KNOWN_SANDBOX_UNCONFIRMED"
-            and row["id"] == "sb-synthetic-1"
+            row["operation"] == "KNOWN_SANDBOX_UNCONFIRMED" and row["id"] == "sb-synthetic-1"
             for row in records
         )
         assert result["app_context_closed"] and result["volume_context_closed"]
@@ -1443,9 +1443,7 @@ def test_known_sandbox_id_preserved_when_terminal_not_observed(
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize(
-    "phase", ["terminal_before_write", "terminal_after_write_fsync"]
-)
+@pytest.mark.parametrize("phase", ["terminal_before_write", "terminal_after_write_fsync"])
 def test_terminal_journal_never_publishes_file_only_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
 ) -> None:
@@ -1485,9 +1483,7 @@ def test_terminal_journal_never_publishes_file_only_success(
         assert result["status"] == "BLOCKED"
         assert result["evidence_durability"] == "UNKNOWN"
         assert any(x.startswith("TERMINAL") for x in result["evidence_errors"])
-        assert all(
-            row.get("result", {}).get("status") != "SUCCESS" for row in _events(tmp_path)
-        )
+        assert all(row.get("result", {}).get("status") != "SUCCESS" for row in _events(tmp_path))
         assert all(
             row.get("result", {}).get("evidence_durability") != "OWNER_ACKNOWLEDGED"
             for row in _events(tmp_path)
@@ -1510,4 +1506,5 @@ def test_success_requires_live_owner_evidence_ack_not_recovery_json(
         assert terminal[0]["result"]["status"] == "UNCONFIRMED"
         assert terminal[0]["result"]["evidence_durability"] == "UNCONFIRMED_FROM_FILE"
         assert result["provider_removal"] == "UNKNOWN"
+
     asyncio.run(exercise())
