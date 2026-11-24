@@ -1016,8 +1016,11 @@ def test_missing_resource_id_latches_stop_and_preserves_unknown_evidence(
         assert result["provider_removal"] == "UNKNOWN"
         expected_kind = missing_kind
         assert any(item["kind"] == expected_kind for item in result["unknown_outcomes"])
-        assert any(item["kind"] == expected_kind for item in _events(tmp_path)
-                   if item["operation"] == "UNKNOWN_ID_OUTCOME")
+        assert any(
+            item["kind"] == expected_kind
+            for item in _events(tmp_path)
+            if item["operation"] == "UNKNOWN_ID_OUTCOME"
+        )
         assert len(backend.sandboxes) == (1 if missing_kind == "sandbox" else 0)
         if backend.sandboxes:
             assert "terminate_" in " ".join(backend.events)
@@ -1048,8 +1051,9 @@ def test_termination_evidence_failure_stops_second_sandbox_and_still_cleans(
         backend = FakeBackend()
         owner = QualificationOwner(
             backend,
-            Intent("explicit-workspace", "qualification", "a" * 40,
-                   "modal-cpu-synthetic-persistence"),
+            Intent(
+                "explicit-workspace", "qualification", "a" * 40, "modal-cpu-synthetic-persistence"
+            ),
             BrokenJournal(tmp_path / "private" / "ledger.jsonl"),
         )
         owner.start()
@@ -1061,9 +1065,7 @@ def test_termination_evidence_failure_stops_second_sandbox_and_still_cleans(
         assert "terminate_sb-synthetic-1" in backend.events
         assert "poll_sb-synthetic-1" in backend.events
         assert backend.events[-2:] == ["volume_exit", "app_exit"]
-        assert not any(x == "create" for x in backend.events[
-            backend.events.index("create") + 1:
-        ])
+        assert not any(x == "create" for x in backend.events[backend.events.index("create") + 1 :])
 
     asyncio.run(exercise())
 
@@ -1105,7 +1107,9 @@ def test_primary_error_survives_failed_volume_and_app_exit(tmp_path: Path) -> No
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("phase", ["workspace_verify", "sandbox_1_create", "volume_iterator_acquire"])
+@pytest.mark.parametrize(
+    "phase", ["workspace_verify", "sandbox_1_create", "volume_iterator_acquire"]
+)
 def test_observation_reports_current_await_separately_from_unknown_allocations(
     tmp_path: Path, phase: str
 ) -> None:
@@ -1198,8 +1202,9 @@ def test_terminal_journal_failure_invalidates_otherwise_good_result(tmp_path: Pa
         backend = FakeBackend()
         owner = QualificationOwner(
             backend,
-            Intent("explicit-workspace", "qualification", "a" * 40,
-                   "modal-cpu-synthetic-persistence"),
+            Intent(
+                "explicit-workspace", "qualification", "a" * 40, "modal-cpu-synthetic-persistence"
+            ),
             BrokenJournal(tmp_path / "private" / "ledger.jsonl"),
         )
         owner.start()
