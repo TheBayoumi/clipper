@@ -425,3 +425,53 @@ def test_bounded_heartbeat_snapshot_rejects_device_race_and_oversize(
     monkeypatch.setattr(chapter_lifecycle, "_trusted_file", lambda *_args: oversized)
     with pytest.raises(chapter_lifecycle.LifecycleStop, match="finite limit"):
         chapter_lifecycle._snapshot(tmp_path, "synthetic", 8)
+
+
+@pytest.mark.parametrize("case", ["valid", "missing_deadline", "expired_deadline"])
+def test_cli_uses_only_fresh_verified_execution_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], case: str,
+) -> None:
+    """No unsigned caller or missing grant can produce a positive host budget."""
+    now = datetime.now(UTC)
+    created = now - timedelta(minutes=3)
+    deadline = (
+        None if case == "missing_deadline"
+        else now - timedelta(seconds=10) if case == "expired_deadline"
+        else now + timedelta(seconds=120)
+    )
+    monkeypatch.setenv("CODESPACE_NAME", "synthetic-private-host")
+    monkeypatch.setattr(
+        chapter_lifecycle,
+        "verify_lifecycle",
+        lambda _root, *, caller_created_at, codespace_name:
+            chapter_lifecycle.VerifiedLifecycle(
+                12, codespace_name, created, "a" * 40,
+                created + timedelta(hours=4), deadline,
+            ),
+    )
+    status = chapter_lifecycle.main(
+        [
+            "--artifact-root", str(tmp_path),
+            "--codespace-created-at", created.isoformat(),
+            "--remaining-seconds",
+        ]
+    )
+    output = capsys.readouterr().out.strip()
+    if case == "valid":
+        assert status == 0
+        assert output.isdecimal() and 0 < int(output) <= 120
+    else:
+        assert status == 2
+        assert output == "PRIVATE_CHAPTER_EXTERNAL_SUPERVISOR_UNVERIFIED"
+
+
+def test_malformed_owner_free_allowance_refuses_before_deadline_extension() -> None:
+    """Malformed or absent grant cannot extend the signed host lifecycle."""
+    created = datetime.now(UTC) - timedelta(minutes=2)
+    for invalid in (None, [], {}, {"schema": "clipper-owner-free-allowance-v1"}):
+        with pytest.raises(chapter_lifecycle.LifecycleStop, match="grant missing or malformed"):
+            chapter_lifecycle._verified_free_allowance(
+                invalid, code_id=12, name="synthetic-private-host",
+                created=created, sha="a" * 40,
+            )
