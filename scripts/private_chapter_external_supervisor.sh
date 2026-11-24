@@ -255,7 +255,7 @@ out={"schema":"clipper-owner-rest-failure-v1",
      "codespace_id":int(os.environ["SUPERVISED_CODESPACE_ID"]) if verified else None,
      "created_at":os.environ["SUPERVISED_CREATED_AT"] if verified else None}
 tmp=root/".rest-failure.tmp"
-tmp.write_text(json.dumps(out,sort_keys=True)+"\\n")
+tmp.write_text(json.dumps(out,sort_keys=True)+"\n")
 os.chmod(tmp,0o600);os.replace(tmp,root/"owner-last-rest-failure.json")
 ' "$evidence_dir" "$category" "$attempt" "$verified_identity" \
   "${rest_operation:-rest_identity}" >/dev/null 2>&1 || true
