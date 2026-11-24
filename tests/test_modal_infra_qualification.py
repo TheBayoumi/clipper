@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -458,3 +460,27 @@ def test_decision_expiry_stops_late_create_before_second_allocation(tmp_path: Pa
         assert backend.events[-2:] == ["volume_exit", "app_exit"]
 
     asyncio.run(exercise())
+
+
+def test_real_local_synthetic_child_scripts_byte_exact(tmp_path: Path) -> None:
+    # Run the actual immutable child snippets entirely offline with their mount
+    # path redirected to a temporary directory; no Modal or /data writes.
+    source = tmp_path / "infra-check.bin"
+    writer = WRITE_SCRIPT.replace("/data/infra-check.bin", str(source))
+    writer = writer.replace(
+        "subprocess.run(['sync','/data'],check=True,timeout=15)",
+        "os.sync()",
+    ).replace("time.sleep(55)", "time.sleep(0)")
+    reader = READ_SCRIPT.replace("/data/infra-check.bin", str(source))
+    reader = reader.replace("time.sleep(55)", "time.sleep(0)")
+    written = subprocess.run(
+        [sys.executable, "-c", writer], capture_output=True, check=True, timeout=5
+    )
+    assert written.stdout == ("READY:" + DIGEST + "\n").encode()
+    assert source.read_bytes() == DATA
+    assert source.stat().st_size == 65_536
+    readback = subprocess.run(
+        [sys.executable, "-c", reader], capture_output=True, check=True, timeout=5
+    )
+    assert readback.stdout == ("READ:" + str(SIZE) + ":" + DIGEST + "\n").encode()
+    assert source.read_bytes() == DATA
