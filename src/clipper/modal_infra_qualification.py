@@ -328,7 +328,9 @@ class QualificationOwner:
                 if error is None:
                     raise
 
-    async def _sandbox(self, app: Any, volume: Any, script: str, expected: bytes, index: int) -> None:
+    async def _sandbox(
+        self, app: Any, volume: Any, script: str, expected: bytes, index: int
+    ) -> None:
         if self.stopped.is_set():
             raise RuntimeError("STOP_LATCHED")
         step = f"sandbox_{index}_create"
