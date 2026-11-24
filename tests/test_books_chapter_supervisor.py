@@ -237,6 +237,7 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         ("all_ready", False, "partial_exit"),
         ("all_ready", False, "disconnect"),
         ("all_ready", False, "wrong_receipt"),
+        ("all_ready", False, "wrong_size"),
         ("all_ready", False, "extra"),
         ("all_ready", False, "matched_junk"),
         ("all_ready", False, "oversize"),
@@ -447,6 +448,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     receipt = {
         "schema": "clipper-private-chapter-recovery-created-v1",
         "archive_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "archive_bytes": source.stat().st_size,
         "manifest_sha256": hashlib.sha256(listing_bytes).hexdigest(),
     }
     response = tmp_path / "synthetic-remote-recovery-result.json"
@@ -484,6 +486,9 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     remote_archive.write_bytes(source.read_bytes() + (b"corrupted" if tamper_archive else b""))
     if stream_fault == "wrong_receipt":
         receipt["archive_sha256"] = "0" * 64
+        response.write_text(json.dumps(receipt), encoding="utf-8")
+    if stream_fault == "wrong_size":
+        receipt["archive_bytes"] = source.stat().st_size - 100
         response.write_text(json.dumps(receipt), encoding="utf-8")
     if stream_fault == "matched_junk":
         receipt["archive_sha256"] = hashlib.sha256(
@@ -564,11 +569,15 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     env.pop("CODESPACES", None)
     script = _SCRIPT
     if stream_fault == "oversize":
-        # Smaller test-only cap exercises the real receiver without an 800MB fixture.
+        # Smaller test-only cap and 1KiB blocks exercise *midstream* writes
+        # without provisioning hundreds of MB of synthetic private material.
         script = tmp_path / "bounded-supervisor.sh"
         raw = _SCRIPT.read_text(encoding="utf-8")
         assert "limit = 800_000_000" in raw
-        script.write_text(raw.replace("limit = 800_000_000", "limit = 4096", 1))
+        assert "1024 * 1024, limit - used + 1" in raw
+        raw = raw.replace("limit = 800_000_000", "limit = 4096", 1)
+        raw = raw.replace("1024 * 1024, limit - used + 1", "1024, limit - used + 1", 1)
+        script.write_text(raw)
     if stream_fault == "signal":
         import signal
 
@@ -664,6 +673,42 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         if artifact.exists():
             assert (artifact.stat().st_mode & 0o077) == 0
     if scenario == "brief_only" and not tamper_archive and stream_fault == "none":
+        # A second *valid* prepared archive must never break an older
+        # three-file snapshot if promotion fails after the bundle rename.
+        baseline = {
+            name: (folder / name).read_bytes()
+            for name in (
+                "chapter-recovery.tar",
+                "retrieval-verification.json",
+                "safe-recovery-status.json",
+            )
+        }
+        previous_pointer = os.readlink(folder / "recovery-current")
+        injected = tmp_path / "promotion-fails-supervisor.sh"
+        original_supervisor = _SCRIPT.read_text(encoding="utf-8")
+        injection_point = "os.replace(stage, root / bundle)\\n# This is the sole commit point"
+        assert injection_point in original_supervisor
+        injected.write_text(
+            original_supervisor.replace(
+                injection_point,
+                "os.replace(stage, root / bundle)\\nraise SystemExit(91)\\n# This is the sole commit point",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        stopped = Path(env["MOCK_STOP"])
+        stopped.unlink(missing_ok=True)
+        failed_promotion = subprocess.run(
+            ["bash", str(injected)], env=env, capture_output=True, text=True,
+            timeout=30, check=False,
+        )
+        assert failed_promotion.returncode != 0
+        assert "api -X DELETE" in log.read_text()
+        assert os.readlink(folder / "recovery-current") == previous_pointer
+        assert all((folder / name).read_bytes() == body for name, body in baseline.items())
+        assert "PRIVATE_SYNTHETIC_CANARY" not in (
+            failed_promotion.stdout + failed_promotion.stderr
+        )
         # Drive the REAL supervisor loop through one successful heartbeat,
         # a verified owner-private partial archive, then a later failed
         # heartbeat. Accelerate only checkpoint schedule in a temp shell copy.
