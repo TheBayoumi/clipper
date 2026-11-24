@@ -391,10 +391,11 @@ class QualificationOwner:
     async def _drain(self, name: str, iterator: Any, *, line: bool) -> bytes:
         primary: BaseException | None = None
         try:
-            return await self._await_operation(
+            consumed: bytes = await self._await_operation(
                 name + "_consume",
                 lambda: read_first_line(iterator) if line else read_exact(iterator),
             )
+            return consumed
         except BaseException as exc:
             primary = exc
             self._first_error(exc)
