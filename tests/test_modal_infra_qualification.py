@@ -984,3 +984,228 @@ def test_context_enter_unknown_id_fail_closed_without_create(
         )
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("missing_kind", ["volume", "sandbox"])
+def test_missing_resource_id_latches_stop_and_preserves_unknown_evidence(
+    tmp_path: Path, missing_kind: str
+) -> None:
+    class MissingVolume(Context):
+        def __init__(self, backend: FakeBackend) -> None:
+            super().__init__(backend, "volume")
+            self.object_id = ""
+
+    class MissingBackend(FakeBackend):
+        def volume_context(self) -> Context:
+            return MissingVolume(self) if missing_kind == "volume" else super().volume_context()
+
+        async def create(self, app: Any, volume: Any, script: str) -> Sandbox:
+            sb = await super().create(app, volume, script)
+            if missing_kind == "sandbox":
+                sb.object_id = ""
+            return sb
+
+    async def exercise() -> None:
+        backend = MissingBackend()
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        result = await owner.terminal()
+        assert result["status"] == "BLOCKED"
+        assert result["primary_error"] == "ValueError"
+        assert result["exact_bytes"] is False
+        assert result["provider_removal"] == "UNKNOWN"
+        expected_kind = missing_kind
+        assert any(item["kind"] == expected_kind for item in result["unknown_outcomes"])
+        assert any(item["kind"] == expected_kind for item in _events(tmp_path)
+                   if item["operation"] == "UNKNOWN_ID_OUTCOME")
+        assert len(backend.sandboxes) == (1 if missing_kind == "sandbox" else 0)
+        if backend.sandboxes:
+            assert "terminate_" in " ".join(backend.events)
+            assert "poll_" in " ".join(backend.events)
+        assert backend.events[-2:] == ["volume_exit", "app_exit"]
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("journal_event", ["INTENT", "RETURN"])
+def test_termination_evidence_failure_stops_second_sandbox_and_still_cleans(
+    tmp_path: Path, journal_event: str
+) -> None:
+    class BrokenJournal(Ledger):
+        failed = False
+
+        def record(self, **fields: object) -> None:
+            if (
+                not self.failed
+                and fields.get("operation") == journal_event
+                and fields.get("step") == "sandbox_1_terminate"
+            ):
+                self.failed = True
+                raise OSError("synthetic teardown journal unavailable")
+            super().record(**fields)
+
+    async def exercise() -> None:
+        backend = FakeBackend()
+        owner = QualificationOwner(
+            backend,
+            Intent("explicit-workspace", "qualification", "a" * 40,
+                   "modal-cpu-synthetic-persistence"),
+            BrokenJournal(tmp_path / "private" / "ledger.jsonl"),
+        )
+        owner.start()
+        result = await owner.terminal()
+        assert result["status"] == "BLOCKED"
+        assert result["evidence_errors"]
+        assert result["exact_bytes"] is False
+        assert len(backend.sandboxes) == 1
+        assert "terminate_sb-synthetic-1" in backend.events
+        assert "poll_sb-synthetic-1" in backend.events
+        assert backend.events[-2:] == ["volume_exit", "app_exit"]
+        assert not any(x == "create" for x in backend.events[
+            backend.events.index("create") + 1:
+        ])
+
+    asyncio.run(exercise())
+
+
+def test_primary_error_survives_failed_volume_and_app_exit(tmp_path: Path) -> None:
+    class BrokenContext(Context):
+        async def __aexit__(self, *_args: object) -> None:
+            self.backend.events.append(self.name + "_exit_failed")
+            raise OSError("synthetic cleanup failed")
+
+    class BrokenBackend(FakeBackend):
+        def app_context(self) -> Context:
+            return BrokenContext(self, "app")
+
+        def volume_context(self) -> Context:
+            return BrokenContext(self, "volume")
+
+        async def stdout_chunks(self, sandbox: Sandbox) -> Iterator:
+            if sandbox.object_id.endswith("1"):
+                iterator = Iterator([b"WRONG\n"])
+                self.iterators.append(iterator)
+                return iterator
+            return await super().stdout_chunks(sandbox)
+
+    async def exercise() -> None:
+        backend = BrokenBackend()
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        result = await owner.terminal()
+        assert result["primary_error"] == "ValueError"
+        assert result["status"] == "BLOCKED"
+        assert any(x.startswith("volume_context_exit") for x in result["cleanup_errors"])
+        assert any(x.startswith("app_context_exit") for x in result["cleanup_errors"])
+        assert result["app_context_closed"] is False
+        assert result["volume_context_closed"] is False
+        assert len(backend.sandboxes) == 1
+        assert backend.events[-2:] == ["volume_exit_failed", "app_exit_failed"]
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("phase", ["workspace_verify", "sandbox_1_create", "volume_iterator_acquire"])
+def test_observation_reports_current_await_separately_from_unknown_allocations(
+    tmp_path: Path, phase: str
+) -> None:
+    class HeldBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.phase_entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def verify(self, expected_workspace: str) -> str:
+            if phase == "workspace_verify":
+                self.phase_entered.set()
+                await self.release.wait()
+            return await super().verify(expected_workspace)
+
+        async def create(self, app: Any, volume: Any, script: str) -> Sandbox:
+            if phase == "sandbox_1_create":
+                self.phase_entered.set()
+                await self.release.wait()
+            return await super().create(app, volume, script)
+
+        async def volume_chunks(self, volume: Any) -> Iterator:
+            if phase == "volume_iterator_acquire":
+                self.phase_entered.set()
+                await self.release.wait()
+            return await super().volume_chunks(volume)
+
+    async def exercise() -> None:
+        backend = HeldBackend()
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        await backend.phase_entered.wait()
+        observed = await owner.observe()
+        assert observed["status"] == "UNRESOLVED"
+        assert phase in observed["active_operations"]
+        assert observed["unknown_outcomes"] == []
+        assert owner.task is not None and not owner.task.done()
+        backend.release.set()
+        final = await owner.terminal()
+        assert final["status"] == "BLOCKED"
+        assert final["active_operations"] == []
+        if phase == "workspace_verify":
+            assert backend.events == ["verify"]
+        elif phase == "sandbox_1_create":
+            assert len(backend.sandboxes) == 1
+            assert "poll_sb-synthetic-1" in backend.events
+        else:
+            assert len(backend.sandboxes) == 2
+            assert backend.events[-2:] == ["volume_exit", "app_exit"]
+
+    asyncio.run(exercise())
+
+
+def test_failed_entry_never_exits_unentered_context(tmp_path: Path) -> None:
+    class RefuseExit(Context):
+        async def __aenter__(self) -> Context:
+            self.backend.events.append(self.name + "_enter")
+            raise OSError("synthetic entry raised")
+
+        async def __aexit__(self, *_args: object) -> None:
+            pytest.fail("must not exit unentered async context")
+
+    class BrokenBackend(FakeBackend):
+        def volume_context(self) -> Context:
+            return RefuseExit(self, "volume")
+
+    async def exercise() -> None:
+        backend = BrokenBackend()
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        result = await owner.terminal()
+        assert result["primary_error"] == "OSError"
+        assert result["status"] == "BLOCKED"
+        assert backend.events == ["verify", "app_enter", "volume_enter", "app_exit"]
+        assert result["volume_context_closed"] is False
+        assert result["app_context_closed"] is True
+        assert any(x["kind"] == "volume" for x in result["unknown_outcomes"])
+
+    asyncio.run(exercise())
+
+
+def test_terminal_journal_failure_invalidates_otherwise_good_result(tmp_path: Path) -> None:
+    class BrokenJournal(Ledger):
+        def record(self, **fields: object) -> None:
+            if fields.get("operation") == "TERMINAL":
+                raise OSError("synthetic terminal fsync failed")
+            super().record(**fields)
+
+    async def exercise() -> None:
+        backend = FakeBackend()
+        owner = QualificationOwner(
+            backend,
+            Intent("explicit-workspace", "qualification", "a" * 40,
+                   "modal-cpu-synthetic-persistence"),
+            BrokenJournal(tmp_path / "private" / "ledger.jsonl"),
+        )
+        owner.start()
+        result = await owner.terminal()
+        assert result["exact_bytes"] is True
+        assert result["status"] == "BLOCKED"
+        assert any(x.startswith("TERMINAL") for x in result["evidence_errors"])
+
+    asyncio.run(exercise())
