@@ -7,10 +7,10 @@ import io
 import json
 import os
 import subprocess
-from contextlib import suppress
 import sys
 import tarfile
 import time
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
