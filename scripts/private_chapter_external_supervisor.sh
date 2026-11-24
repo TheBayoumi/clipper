@@ -423,7 +423,7 @@ if h.hexdigest() != created["archive_sha256"]:
 with tarfile.open(archive_path, mode="r:") as source:
     members = source.getmembers()
     # tarfile accepts non-TAR bytes after EOF. This recovery format is created
-    # with tarfile's standard 10 KiB records; require only zero-filled padding
+    # with standard 10 KiB tarfile records; require only zero-filled padding
     # after the last member, including the two mandatory zero EOF blocks.
     trailer_size = archive_path.stat().st_size - source.offset
     if (archive_path.stat().st_size % 10240 != 0
