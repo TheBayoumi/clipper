@@ -760,7 +760,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
                 pytest.fail("recovery stream left a live gh subprocess")
     if stream_fault in {"truncated", "partial_exit", "wrong_receipt", "disconnect"}:
         assert "clipper.books.chapter_host status" in actions
-        assert (folder / "safe-recovery-status.json").read_bytes() == safe_bytes
+        assert json.loads((folder / "safe-recovery-status.json").read_bytes()) == safe
         assert "api -X DELETE" in actions
     assert "fabricated fixture text" not in result.stdout + result.stderr
     assert "PRIVATE_SYNTHETIC_CANARY" not in result.stdout + result.stderr
