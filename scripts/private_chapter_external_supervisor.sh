@@ -387,6 +387,14 @@ child = subprocess.Popen(
     stdin=subprocess.DEVNULL, stdout=sys.stdout.buffer,
     stderr=subprocess.DEVNULL, close_fds=True,
 )
+# The launcher must NOT hold the stdout pipe while waiting for the
+# receiver acknowledgement. Only gh and its descendants own that pipe.
+# Rebind fd 1 (rather than close it) so Python shutdown can still flush.
+devnull = os.open(os.devnull, os.O_WRONLY)
+try:
+    os.dup2(devnull, 1)
+finally:
+    os.close(devnull)
 result = child.wait()
 completed.wait()
 sys.exit(result)
