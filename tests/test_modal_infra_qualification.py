@@ -1227,7 +1227,9 @@ def test_terminal_journal_failure_invalidates_otherwise_good_result(tmp_path: Pa
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("target", ["app_context_enter", "volume_context_enter", "sandbox_1_create"])
+@pytest.mark.parametrize(
+    "target", ["app_context_enter", "volume_context_enter", "sandbox_1_create"]
+)
 def test_pre_entry_operation_begin_journal_failure_blocks_allocation(
     tmp_path: Path, target: str
 ) -> None:
