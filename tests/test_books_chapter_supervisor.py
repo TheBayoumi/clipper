@@ -32,6 +32,8 @@ _SCRIPT = Path(__file__).resolve().parents[1] / "scripts/private_chapter_externa
         "unsafe_remote",
         "shell_metacharacters",
         "near_deadline_hung_stop",
+        "heartbeat_copy_fail",
+        "heartbeat_publish_fail",
     ],
 )
 def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
@@ -77,9 +79,11 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         "  if hang=='swap_before_stop':\n"
         "    open(os.environ['MOCK_SWAPPED'],'w').write('replaced')\n"
         "    sys.exit(3)\n"
+        "  if hang=='heartbeat_publish_fail' and 'watchdog.pending' in ' '.join(args): sys.exit(3)\n"
         "  sys.exit(0)\n"
         "if args[:2]==['codespace','cp']:\n"
         "  if hang=='copy': time.sleep(120)\n"
+        "  if hang=='heartbeat_copy_fail' and 'watchdog.pending' in ' '.join(args): sys.exit(3)\n"
         "  sys.exit(0)\n"
         "sys.exit(3)\n",
         encoding="utf-8",
@@ -185,6 +189,23 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
     if hang in {"unsafe_remote", "shell_metacharacters"}:
         assert "DO_NOT_EXECUTE" not in result.stdout
         assert not (tmp_path / "DO_NOT_EXECUTE").exists()
+    if hang in {"ssh", "copy", "heartbeat_copy_fail", "heartbeat_publish_fail"}:
+        journal = tmp_path / "owner-private-recovery/synthetic-only-approved-name"
+        failure = json.loads((journal / "owner-first-failure.json").read_text())
+        expected_operation = {
+            "ssh": "key_setup",
+            "copy": "key_copy",
+            "heartbeat_copy_fail": "heartbeat_copy",
+            "heartbeat_publish_fail": "heartbeat_publish",
+        }
+        assert failure["operation"] == expected_operation[hang]
+        assert failure["codespace_id"] == 12
+        assert failure["created_at"] == env["MOCK_CREATED"]
+        assert failure["exit_class"] == ("TIMEOUT" if hang in {"ssh", "copy"} else "FAILURE")
+        reason = json.loads((journal / "owner-exit-reason.json").read_text())
+        assert reason["original_exit_code"] == result.returncode
+        assert reason["most_recent_recorded_failed_operation"] == failure["operation"]
+        assert "TEST_ONLY" not in json.dumps(failure) + json.dumps(reason)
     # Stop returning or stalling never licenses running another host.
     assert "PRIVATE_CHAPTER" not in actions
 
