@@ -362,3 +362,204 @@ def test_exit_code_never_promotes_file_only_candidate() -> None:
         == 2
     )
     assert driver.result_exit_code({"status": "SUCCESS", "evidence_durability": "UNKNOWN"}) == 2
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Driver requires POSIX signals")
+@pytest.mark.parametrize("held", ["create", "terminate"])
+def test_driver_observer_cancellation_keeps_late_owner_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: str
+) -> None:
+    state = FakeSDKState()
+    if held == "create":
+        state.hold_create = True
+        state.release_create.clear()
+        entered = state.entered_create
+        release = state.release_create
+    else:
+        state.hold_terminate = True
+        state.release_terminate.clear()
+        entered = state.entered_terminate
+        release = state.release_terminate
+    observed = threading.Event()
+    cancelled = threading.Event()
+    original_observe = driver.QualificationOwner.observe
+
+    async def cancel_observer(owner: Any) -> dict[str, object]:
+        assert await asyncio.to_thread(entered.wait, 2)
+        observed.set()
+        current = asyncio.current_task()
+        assert current is not None
+        current.cancel()
+        try:
+            return await original_observe(owner)
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(driver.QualificationOwner, "observe", cancel_observer)
+    def release_after_cancellation() -> None:
+        if cancelled.wait(2):
+            time.sleep(0.03)
+        release.set()
+
+    worker = threading.Thread(target=release_after_cancellation, daemon=True)
+    before = (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+    worker.start()
+    try:
+        result = driver.run_infrastructure_experiment(
+            state.sdk,
+            state.client,
+            _intent(),
+            tmp_path / "journal",
+            decision_seconds=0.1,
+            reconciliation_seconds=0.1,
+        )
+    finally:
+        release.set()
+        worker.join(timeout=3)
+    assert observed.is_set() and cancelled.is_set()
+    assert not worker.is_alive()
+    assert result["driver_cancelled"] is True
+    assert result["driver_interrupted"] is True
+    assert result["driver_disposition"] == "INTERRUPTED"
+    assert result["status"] == "BLOCKED"
+    assert driver.result_exit_code(result) == 2
+    assert len(state.sandboxes) == 1
+    assert "terminate_sb-driver-1" in state.events
+    assert "poll_sb-driver-1" in state.events
+    assert state.events[-2:] == ["volume_exit", "app_exit"]
+    assert before == (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Driver requires POSIX signals")
+def test_driver_repeated_terminal_waiter_cancellation_waits_for_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = FakeSDKState()
+    state.hold_terminate = True
+    state.release_terminate.clear()
+    original_terminal = driver.QualificationOwner.terminal
+    cancellations: list[int] = []
+    cancel_processed = threading.Event()
+
+    async def repeated_cancel(owner: Any) -> dict[str, object]:
+        if len(cancellations) < 2:
+            assert await asyncio.to_thread(state.entered_terminate.wait, 2)
+            cancellations.append(1)
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+            try:
+                return await original_terminal(owner)
+            finally:
+                if len(cancellations) == 2:
+                    cancel_processed.set()
+        return await original_terminal(owner)
+
+    monkeypatch.setattr(driver.QualificationOwner, "terminal", repeated_cancel)
+
+    def release_after_cancel() -> None:
+        if cancel_processed.wait(2):
+            time.sleep(0.03)
+        state.release_terminate.set()
+
+    worker = threading.Thread(target=release_after_cancel, daemon=True)
+    worker.start()
+    try:
+        result = driver.run_infrastructure_experiment(
+            state.sdk, state.client, _intent(), tmp_path / "journal"
+        )
+    finally:
+        state.release_terminate.set()
+        worker.join(timeout=3)
+    assert len(cancellations) == 2
+    assert cancel_processed.is_set()
+    assert result["status"] == "BLOCKED"
+    assert result["driver_cancelled"] is True
+    assert driver.result_exit_code(result) == 2
+    assert len(state.sandboxes) == 1
+    assert "terminate_sb-driver-1" in state.events
+    assert "poll_sb-driver-1" in state.events
+    assert state.events[-2:] == ["volume_exit", "app_exit"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Driver requires POSIX signals")
+@pytest.mark.parametrize("phase", ["terminal_fsync", "ledger_close"])
+def test_driver_sigterm_after_owner_success_blocks_driver_disposition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    state = FakeSDKState()
+    emitted: list[str] = []
+    opened: list[int] = []
+
+    class SignallingLedger(Ledger):
+        def __init__(self, path: Path) -> None:
+            super().__init__(path)
+            opened.append(self._fd)
+
+        def record(self, **fields: object) -> None:
+            if phase == "terminal_fsync" and fields.get("operation") == "TERMINAL":
+                real_fsync = os.fsync
+
+                def signal_during_fsync(fd: int) -> None:
+                    if fd == self._fd:
+                        emitted.append("terminal_fsync")
+                        os.kill(os.getpid(), signal.SIGTERM)
+                    real_fsync(fd)
+
+                with monkeypatch.context() as patch:
+                    patch.setattr(os, "fsync", signal_during_fsync)
+                    super().record(**fields)
+                return
+            super().record(**fields)
+
+        def close(self) -> None:
+            if phase == "ledger_close":
+                emitted.append("ledger_close")
+                os.kill(os.getpid(), signal.SIGTERM)
+            super().close()
+
+    monkeypatch.setattr(driver, "Ledger", SignallingLedger)
+    before = (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+    result = driver.run_infrastructure_experiment(
+        state.sdk, state.client, _intent(), tmp_path / "journal"
+    )
+    assert emitted == [phase]
+    assert result["owner_status"] == "SUCCESS"
+    assert result["status"] == "BLOCKED"
+    assert result["evidence_durability"] == "OWNER_ACKNOWLEDGED"
+    assert result["driver_interrupted"] is True
+    assert result["driver_disposition"] == "INTERRUPTED"
+    assert result["driver_cancelled"] is False
+    assert driver.result_exit_code(result) == 2
+    assert len(state.sandboxes) == 2
+    assert _rows(tmp_path / "journal")[-1]["result"]["status"] == "UNCONFIRMED"
+    assert before == (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+    for fd in opened:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+
+
+def test_driver_exit_code_requires_complete_noninterrupted_handoff() -> None:
+    owner_success = {"status": "SUCCESS", "evidence_durability": "OWNER_ACKNOWLEDGED"}
+    assert driver.result_exit_code(owner_success) == 2
+    assert driver.result_exit_code({**owner_success, "driver_disposition": "COMPLETE"}) == 2
+    assert (
+        driver.result_exit_code(
+            {
+                **owner_success,
+                "driver_disposition": "COMPLETE",
+                "driver_interrupted": True,
+            }
+        )
+        == 2
+    )
+    assert (
+        driver.result_exit_code(
+            {
+                **owner_success,
+                "driver_disposition": "COMPLETE",
+                "driver_interrupted": False,
+            }
+        )
+        == 0
+    )

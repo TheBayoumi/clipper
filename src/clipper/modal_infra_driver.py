@@ -20,7 +20,9 @@ from clipper.modal_infra_qualification import Intent, Ledger, QualificationOwner
 def result_exit_code(result: dict[str, object]) -> int:
     """Map only live owner-acknowledged success to a successful process status."""
     if (
-        result.get("status") == "SUCCESS"
+        result.get("driver_disposition") == "COMPLETE"
+        and result.get("driver_interrupted") is False
+        and result.get("status") == "SUCCESS"
         and result.get("evidence_durability") == "OWNER_ACKNOWLEDGED"
     ):
         return 0
@@ -68,6 +70,7 @@ def run_infrastructure_experiment(
     installed: list[signal.Signals] = []
     owner: QualificationOwner | None = None
     stop_requested = False
+    observation_cancelled = False
     ledger: Ledger | None = None
 
     def on_signal(_signum: int, _frame: FrameType | None) -> None:
@@ -77,7 +80,7 @@ def run_infrastructure_experiment(
             owner.request_stop()
 
     async def exercise() -> dict[str, object]:
-        nonlocal owner
+        nonlocal owner, observation_cancelled
         if ledger is None:
             raise RuntimeError("Driver ledger unavailable")
         owner = QualificationOwner(
@@ -90,12 +93,35 @@ def run_infrastructure_experiment(
         owner.start()
         if stop_requested:
             owner.request_stop()
+        observation_error: BaseException | None = None
         try:
             await owner.observe()
-        except Exception:
-            # An observation error must not discard a started owner task.
+        except asyncio.CancelledError:
+            observation_cancelled = True
             owner.request_stop()
-        return await owner.terminal()
+            current = asyncio.current_task()
+            if current is not None:
+                current.uncancel()
+        except BaseException as exc:
+            # An unexpected observation failure is never converted to success.
+            observation_error = exc
+            owner.request_stop()
+
+        # Only the driver waiter is uncancelled; the owner task remains alive.
+        # Repeated waiter cancellation cannot bypass late-handle cleanup.
+        while True:
+            try:
+                result = await owner.terminal()
+                break
+            except asyncio.CancelledError:
+                observation_cancelled = True
+                owner.request_stop()
+                current = asyncio.current_task()
+                if current is not None:
+                    current.uncancel()
+        if observation_error is not None:
+            raise observation_error
+        return result
 
     try:
         for signum in (signal.SIGINT, signal.SIGTERM):
@@ -103,13 +129,26 @@ def run_infrastructure_experiment(
             installed.append(signum)
         ledger = Ledger(ledger_path)
         with asyncio.Runner() as runner:
-            return runner.run(exercise())
+            result = runner.run(exercise())
     finally:
-        # Do not close this ledger before terminal() has settled.
-        # A noncooperative provider call can prevent terminal() forever.
+        # Ledger remains open through terminal reconciliation. Noncooperative
+        # SDK calls may block indefinitely; this is not a hard provider deadline.
         try:
             if ledger is not None:
                 ledger.close()
         finally:
             for signum in reversed(installed):
                 signal.signal(signum, previous[signum])
+
+    # Handoff linearizes after ledger close and handler restoration. Signals
+    # processed through that boundary block driver success without rewriting
+    # the owner's already-acknowledged local result or journal history.
+    interrupted = stop_requested or observation_cancelled
+    outcome = dict(result)
+    outcome["owner_status"] = result["status"]
+    outcome["driver_interrupted"] = interrupted
+    outcome["driver_cancelled"] = observation_cancelled
+    outcome["driver_disposition"] = "INTERRUPTED" if interrupted else "COMPLETE"
+    if interrupted:
+        outcome["status"] = "BLOCKED"
+    return outcome

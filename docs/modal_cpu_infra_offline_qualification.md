@@ -197,3 +197,26 @@ process, never a provider host. The driver, unlike its owner baseline, requires
 new independent execution, exact-SHA CI + unchanged 95% coverage gate and
 separate final review before any claim of qualification. Live image preparation,
 cost/free eligibility, persistence/expiry and resource removal remain unknown.
+
+
+## Candidate 0021: driver cancellation and completion handoff (UNQUALIFIED)
+
+The driver, not the qualified owner module, handles cancellation of its public
+observation and repeated cancellations while awaiting `terminal()`: STOP is
+latched, only the driver waiter removes its own cancellation state, and the
+retained owner task remains alive until known late handles have had terminate
+and poll attempts. Unexpected observation failures are re-raised only **after**
+owner reconciliation rather than being turned into a success. No new provider
+acquisition is attempted after STOP.
+
+The owner-returned `status` is preserved as `owner_status` in the driver's
+copy. The driver adds `driver_cancelled`, `driver_interrupted` and
+`driver_disposition`. Any SIGINT/SIGTERM processed before signal-handler
+restoration, including during final journal fsync or ledger close, produces
+driver `status=BLOCKED` and a nonzero `result_exit_code` even if the owner
+already produced a valid local `OWNER_ACKNOWLEDGED`. Journal records and owner
+acknowledgement are not retroactively rewritten as an evidence failure.
+Completion handoff linearizes after ledger closure and restoration of previous
+signal handlers; signals after restoration are the caller's responsibility.
+This remains in-process only: SIGKILL, process death and noncooperative SDK
+calls have no recovery or deadline guarantee.
