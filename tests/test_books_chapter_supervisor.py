@@ -2365,3 +2365,82 @@ def test_exact_recovery_receiver_leader_exit_then_receiver_hard_kill(
         if pgid.exists():
             with suppress(ProcessLookupError):
                 os.killpg(int(pgid.read_text()), signal.SIGKILL)
+
+
+@pytest.mark.parametrize("leader_exit", [0, 7])
+def test_exact_recovery_receiver_normal_eof_retires_non_stdout_descendants(
+    tmp_path: Path, leader_exit: int
+) -> None:
+    """Complete stdout and leader status cannot strand a live same-group child."""
+    import signal
+
+    content = _SCRIPT.read_text(encoding="utf-8")
+    marker = "critical recovery_copy python3 -c '\n"
+    assert content.count(marker) == 1
+    receiver = content.split(marker, 1)[1].split(
+        '\' "$CODESPACE_NAME" "$remote_archive" "$target" "$session/recovery-created.json"',
+        1,
+    )[0]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        f"#!{sys.executable}\n"
+        "import os,pathlib,subprocess,sys\n"
+        "assert sys.argv[1:7]==['codespace','ssh','-c','synthetic-pinned','--','-T']\n"
+        "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],"
+        "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "pathlib.Path(os.environ['MOCK_DESCENDANT_PID']).write_text(str(child.pid))\n"
+        "pathlib.Path(os.environ['MOCK_GROUP']).write_text(str(os.getpgrp()))\n"
+        "sys.stdout.buffer.write(b'complete\\x00\\xff')\n"
+        "sys.stdout.buffer.flush()\n"
+        "sys.exit(int(os.environ['MOCK_EXIT']))\n",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o700)
+    target = tmp_path / "archive.tar"
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+    descendant_pid = tmp_path / "descendant.pid"
+    group = tmp_path / "group"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
+            "MOCK_DESCENDANT_PID": str(descendant_pid),
+            "MOCK_GROUP": str(group),
+            "MOCK_EXIT": str(leader_exit),
+        }
+    )
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                receiver,
+                "synthetic-pinned",
+                "/synthetic-private/chapter-recovery.tar",
+                str(target),
+                str(receipt),
+            ],
+            env=env,
+            capture_output=True,
+            check=False,
+            timeout=8,
+        )
+        assert target.read_bytes() == b"complete\x00\xff"
+        assert result.returncode == (0 if leader_exit == 0 else 2), result.stderr
+        assert descendant_pid.exists() and group.exists()
+        pid = int(descendant_pid.read_text())
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            stat = Path(f"/proc/{pid}/stat")
+            if not stat.exists() or stat.read_text().split(") ", 1)[1][:1] == "Z":
+                break
+            time.sleep(0.02)
+        else:
+            pytest.fail(f"leader exit {leader_exit} left live descendant {pid}")
+    finally:
+        if group.exists():
+            with suppress(ProcessLookupError):
+                os.killpg(int(group.read_text()), signal.SIGKILL)
