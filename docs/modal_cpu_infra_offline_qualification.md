@@ -216,8 +216,11 @@ restoration, including during final journal fsync or ledger close, produces
 driver `status=BLOCKED` and a nonzero `result_exit_code` even if the owner
 already produced a valid local `OWNER_ACKNOWLEDGED`. Journal records and owner
 acknowledgement are not retroactively rewritten as an evidence failure.
-Completion handoff linearizes after ledger closure and restoration of previous
-signal handlers; signals after restoration are the caller's responsibility.
+Ledger closure precedes sequential handler restoration. Signal ownership
+transfers **per signal** at restoration (SIGTERM first, SIGINT second).
+Before its own restoration, a signal uses the driver handler and latches STOP;
+after restoration its prior disposition belongs to the caller, even while
+the other signal remains driver-owned. There is no atomic joint handoff.
 This remains in-process only: SIGKILL, process death and noncooperative SDK
 calls have no recovery or deadline guarantee.
 
@@ -237,3 +240,28 @@ cancellations, rather than relying on a fixed helper timeout to force release.
 A separate owner-already-completed fixture tests pending cancellation after
 local owner SUCCESS and requires driver BLOCKED/nonzero without altering the
 owner's journal evidence. The owner baseline remains untouched.
+
+
+## Candidate 0123: outer Runner exception retention and signal ownership
+
+Host-installed signal handlers (including SIGUSR1, which the driver never
+intercepts) may raise while `Runner.run(exercise())` is executing. An outer
+`BaseException` boundary requests STOP and reuses the **same Runner and
+original owner task** for terminal reconciliation before closing the loop,
+ledger or signal handlers. Repeated host exceptions during a live owner's
+cleanup do not cause another allocation. The first host exception is re-raised
+after reconciliation and teardown, not converted into a successful result.
+A terminal owner task that fails or is cancelled is not retried indefinitely.
+
+SIGINT/SIGTERM handoff is **per signal**, not joint: each installed driver
+handler owns that signal only until that individual prior disposition is
+restored; after that restoration it is caller-owned. A SIGTERM ignored by the
+caller after its restoration is not a driver interruption, even if SIGINT
+is still installed. Conversely, a SIGTERM delivered just before restoration
+latches STOP and makes driver disposition nonzero.
+
+New offline subprocess regressions use a pre-existing real SIGUSR1 handler
+that raises during held inert SDK-shaped create and optionally again during
+cleanup. They verify late terminate/poll, original-exception propagation,
+ledger closure and handler restoration. No SIGKILL, crash recovery, provider
+hard deadline, live infrastructure or spending guarantee is introduced.

@@ -134,7 +134,24 @@ def run_infrastructure_experiment(
             installed.append(signum)
         ledger = Ledger(ledger_path)
         with asyncio.Runner() as runner:
-            result = runner.run(exercise())
+            try:
+                result = runner.run(exercise())
+            except BaseException:
+                # A host handler may throw outside exercise(), bypassing its
+                # cancellation handling. Retain the SAME runner/owner until
+                # terminal reconciliation; do not let Runner.close cancel it.
+                if owner is not None and owner.task is not None:
+                    owner.request_stop()
+                    while not owner.task.done():
+                        try:
+                            runner.run(owner.terminal())
+                        except BaseException:
+                            # Repeated host signals during reconciliation do
+                            # not abandon pending work or allocate again.
+                            # A failed/cancelled owner task is already done.
+                            if owner.task.done():
+                                break
+                raise
     finally:
         # Ledger remains open through terminal reconciliation. Noncooperative
         # SDK calls may block indefinitely; this is not a hard provider deadline.
@@ -145,9 +162,9 @@ def run_infrastructure_experiment(
             for signum in reversed(installed):
                 signal.signal(signum, previous[signum])
 
-    # Handoff linearizes after ledger close and handler restoration. Signals
-    # processed through that boundary block driver success without rewriting
-    # the owner's already-acknowledged local result or journal history.
+    # Ledger closes before SIGTERM and SIGINT restoration. Signal ownership
+    # transfers individually at each handler restoration, not atomically.
+    # After restoration, that signal's prior disposition belongs to the caller.
     interrupted = stop_requested or observation_cancelled
     outcome = dict(result)
     outcome["owner_status"] = result["status"]

@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 import signal
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -603,3 +605,164 @@ def test_driver_pending_cancel_when_owner_already_done_is_blocked(
     assert len(state.sandboxes) == 2
     assert state.events[-2:] == ["volume_exit", "app_exit"]
     assert original_handlers == (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(signal, "SIGUSR1"),
+    reason="Real SIGUSR1 subprocess regression requires POSIX",
+)
+@pytest.mark.parametrize("repeat_during_cleanup", [False, True])
+def test_driver_outer_host_sigusr1_exception_retains_late_owner(
+    tmp_path: Path, repeat_during_cleanup: bool
+) -> None:
+    # Separate process: a real host KeyboardInterrupt must never escape into pytest.
+    script = """
+import json
+import os
+import signal
+import sys
+import threading
+import time
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[2])
+import clipper.modal_infra_driver as driver
+from test_modal_infra_driver import FakeSDKState, _intent
+
+state = FakeSDKState()
+state.hold_create = True
+state.release_create.clear()
+state.hold_terminate = bool(int(sys.argv[3]))
+if state.hold_terminate:
+    state.release_terminate.clear()
+raised = []
+opened = []
+original_ledger = driver.Ledger
+class CheckedLedger(original_ledger):
+    def __init__(self, path):
+        super().__init__(path)
+        opened.append(self._fd)
+driver.Ledger = CheckedLedger
+
+def hostile_handler(_signum, _frame):
+    raised.append("host")
+    raise KeyboardInterrupt("injected host SIGUSR1")
+
+before_int = signal.getsignal(signal.SIGINT)
+before_term = signal.getsignal(signal.SIGTERM)
+before_usr = signal.signal(signal.SIGUSR1, hostile_handler)
+
+def interrupt():
+    assert state.entered_create.wait(3), "create not entered"
+    os.kill(os.getpid(), signal.SIGUSR1)
+    time.sleep(0.08)
+    state.release_create.set()
+    if state.hold_terminate:
+        assert state.entered_terminate.wait(3), "terminate not entered"
+        os.kill(os.getpid(), signal.SIGUSR1)
+        time.sleep(0.08)
+        state.release_terminate.set()
+
+worker = threading.Thread(target=interrupt, daemon=True)
+worker.start()
+try:
+    try:
+        driver.run_infrastructure_experiment(
+            state.sdk,
+            state.client,
+            _intent(),
+            Path(sys.argv[1]) / "ledger.jsonl",
+            decision_seconds=0.01,
+            reconciliation_seconds=0.01,
+        )
+    except KeyboardInterrupt as exc:
+        assert str(exc) == "injected host SIGUSR1"
+    else:
+        raise AssertionError("original host interrupt swallowed")
+finally:
+    state.release_create.set()
+    state.release_terminate.set()
+    worker.join(timeout=4)
+    signal.signal(signal.SIGUSR1, before_usr)
+assert not worker.is_alive()
+assert len(raised) == (2 if state.hold_terminate else 1)
+assert len(state.sandboxes) == 1
+assert "terminate_sb-driver-1" in state.events
+assert "poll_sb-driver-1" in state.events
+assert state.events[-2:] == ["volume_exit", "app_exit"]
+assert signal.getsignal(signal.SIGINT) == before_int
+assert signal.getsignal(signal.SIGTERM) == before_term
+for fd in opened:
+    try:
+        os.fstat(fd)
+    except OSError:
+        pass
+    else:
+        raise AssertionError("ledger descriptor leaked")
+print(json.dumps({"events": state.events, "raised": len(raised)}))
+"""
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(tmp_path),
+            str(Path(__file__).resolve().parent),
+            "1" if repeat_during_cleanup else "0",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, (completed.stdout, completed.stderr)
+    observed = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert observed["raised"] == (2 if repeat_during_cleanup else 1)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Signal restoration requires POSIX")
+@pytest.mark.parametrize(
+    ("moment", "expected_status"),
+    [("before_sigterm_restore", "BLOCKED"), ("after_sigterm_restore", "SUCCESS")],
+)
+def test_driver_sigterm_handoff_is_per_signal_not_joint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    moment: str,
+    expected_status: str,
+) -> None:
+    state = FakeSDKState()
+    set_handler = signal.signal
+    previous_term = set_handler(signal.SIGTERM, signal.SIG_IGN)
+    triggered: list[str] = []
+
+    def intercept(signum: signal.Signals, handler: Any) -> Any:
+        if signum == signal.SIGTERM and handler == signal.SIG_IGN:
+            if moment == "before_sigterm_restore":
+                assert signal.getsignal(signal.SIGINT) != signal.SIG_IGN
+                os.kill(os.getpid(), signal.SIGTERM)
+                triggered.append("before")
+            old = set_handler(signum, handler)
+            if moment == "after_sigterm_restore":
+                # SIGTERM is caller-owned (ignored), although SIGINT is
+                # still installed for the driver until its next restore.
+                assert signal.getsignal(signal.SIGINT) != signal.SIG_IGN
+                os.kill(os.getpid(), signal.SIGTERM)
+                triggered.append("after")
+            return old
+        return set_handler(signum, handler)
+
+    try:
+        monkeypatch.setattr(driver.signal, "signal", intercept)
+        result = driver.run_infrastructure_experiment(
+            state.sdk, state.client, _intent(), tmp_path / "journal"
+        )
+    finally:
+        monkeypatch.undo()
+        set_handler(signal.SIGTERM, previous_term)
+    assert triggered == ["before" if moment == "before_sigterm_restore" else "after"]
+    assert result["owner_status"] == "SUCCESS"
+    assert result["status"] == expected_status
+    assert result["driver_interrupted"] is (expected_status == "BLOCKED")
+    assert driver.result_exit_code(result) == (2 if expected_status == "BLOCKED" else 0)
+    assert len(state.sandboxes) == 2

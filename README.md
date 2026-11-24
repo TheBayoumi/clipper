@@ -413,3 +413,12 @@ The qualified owner module is unchanged; this driver is **UNQUALIFIED** until
 independent fake-SDK E2E, interruptions, exact-SHA CI and final review.
 See [driver prerequisites and limits](docs/modal_cpu_infra_offline_qualification.md).
 No live provider invocation or cost authorization exists.
+
+
+### Driver host-exception and per-signal handoff boundary (unqualified)
+
+Unexpected host-handler exceptions while the Python Runner is active retain
+the original owner for reconciliation on that **same Runner**, then propagate.
+SIGINT/SIGTERM ownership transfers separately when each former disposition
+is restored, not at one atomic joint handoff. See the qualification document
+for inert subprocess interruption tests and remaining limitations.
