@@ -499,3 +499,184 @@ def test_real_local_synthetic_child_scripts_byte_exact(tmp_path: Path) -> None:
     )
     assert readback.stdout == ("READ:" + str(SIZE) + ":" + DIGEST + "\n").encode()
     assert source.read_bytes() == DATA
+
+
+@pytest.mark.parametrize("stage", ["stdout", "volume"])
+def test_failing_iterator_close_records_evidence_and_retains_contexts(
+    tmp_path: Path, stage: str
+) -> None:
+    class BrokenClose(Iterator):
+        def close(self) -> None:
+            self.closed = True
+            raise OSError("synthetic iterator close failure")
+
+    class BrokenBackend(FakeBackend):
+        async def stdout_chunks(self, sandbox: Sandbox) -> Iterator:
+            result = await super().stdout_chunks(sandbox)
+            if stage == "stdout":
+                return BrokenClose([("READY:" + DIGEST + "\n").encode()])
+            return result
+
+        async def volume_chunks(self, volume: Any) -> Iterator:
+            result = await super().volume_chunks(volume)
+            if stage == "volume":
+                return BrokenClose([DATA])
+            return result
+
+    async def exercise() -> None:
+        backend = BrokenBackend()
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        result = await owner.terminal()
+        assert result["primary_error"] == "OSError"
+        assert "OSError" in result["cleanup_errors"]
+        assert result["provider_removal"] == "UNKNOWN"
+        assert result["app_context_closed"] and result["volume_context_closed"]
+        assert len(result["sandbox_terminal"]) == (1 if stage == "stdout" else 2)
+
+    asyncio.run(exercise())
+
+
+def test_stalled_iterator_close_retains_owner_through_decision_deadline(tmp_path: Path) -> None:
+    class StallIterator:
+        def __init__(self, release: asyncio.Event, entered: asyncio.Event) -> None:
+            self._chunks = iter([("READY:" + DIGEST + "\n").encode()])
+            self.release = release
+            self.entered = entered
+
+        def __aiter__(self) -> StallIterator:
+            return self
+
+        async def __anext__(self) -> bytes:
+            try:
+                return next(self._chunks)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+        async def aclose(self) -> None:
+            self.entered.set()
+            await self.release.wait()
+
+    class StallBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_entered = asyncio.Event()
+            self.close_release = asyncio.Event()
+
+        async def stdout_chunks(self, sandbox: Sandbox) -> Any:
+            if sandbox.object_id.endswith("1"):
+                return StallIterator(self.close_release, self.close_entered)
+            return await super().stdout_chunks(sandbox)
+
+    async def exercise() -> None:
+        backend = StallBackend()
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        await backend.close_entered.wait()
+        result = await owner.observe()
+        assert result["status"] == "UNRESOLVED"
+        assert owner.task is not None and not owner.task.done()
+        backend.close_release.set()
+        final = await owner.terminal()
+        assert final["primary_error"] == "RuntimeError"
+        assert len(backend.sandboxes) == 1
+        assert "poll_sb-synthetic-1" in backend.events
+        assert backend.events[-2:] == ["volume_exit", "app_exit"]
+        assert any(x["operation"] == "UNRESOLVED" for x in _events(tmp_path))
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("bad_line", [b"BAD\n", b"a" * 129 + b"\n", b"no-eof"])
+def test_owner_rejects_bad_first_line_without_second_sandbox(
+    tmp_path: Path, bad_line: bytes
+) -> None:
+    class BadBackend(FakeBackend):
+        async def stdout_chunks(self, sandbox: Sandbox) -> Iterator:
+            if sandbox.object_id.endswith("1"):
+                iterator = Iterator([bad_line])
+                self.iterators.append(iterator)
+                return iterator
+            return await super().stdout_chunks(sandbox)
+
+    async def exercise() -> None:
+        backend = BadBackend()
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        result = await owner.terminal()
+        assert result["primary_error"] == "ValueError"
+        assert len(backend.sandboxes) == 1
+        assert "poll_sb-synthetic-1" in backend.events
+        assert backend.iterators[0].closed
+        assert result["exact_bytes"] is False
+
+    asyncio.run(exercise())
+
+
+def test_unobserved_terminal_is_not_cleanup_success(tmp_path: Path) -> None:
+    class NoPoll(FakeBackend):
+        async def poll(self, sandbox: Sandbox) -> Any:
+            self.events.append("poll_unknown")
+            return None
+
+    async def exercise() -> None:
+        backend = NoPoll()
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        result = await owner.terminal()
+        assert result["primary_error"] == "ValueError"
+        assert result["sandbox_terminal"] == []
+        assert len(backend.sandboxes) == 1
+        assert result["provider_removal"] == "UNKNOWN"
+        assert result["app_context_closed"] and result["volume_context_closed"]
+
+    asyncio.run(exercise())
+
+
+def test_context_exit_failure_never_implies_provider_removal(tmp_path: Path) -> None:
+    class BadContext(Context):
+        async def __aexit__(self, *_args: object) -> None:
+            self.backend.events.append(self.name + "_exit_failed")
+            raise OSError("synthetic context exit failure")
+
+    class ContextFailure(FakeBackend):
+        def volume_context(self) -> Context:
+            return BadContext(self, "volume")
+
+    async def exercise() -> None:
+        backend = ContextFailure()
+        owner = _owner(tmp_path, backend)
+        owner.start()
+        result = await owner.terminal()
+        assert result["primary_error"] == "OSError"
+        assert result["volume_context_closed"] is False
+        assert result["app_context_closed"] is True
+        assert result["provider_removal"] == "UNKNOWN"
+        assert result["exact_bytes"] is True
+        assert len(result["sandbox_terminal"]) == 2
+
+    asyncio.run(exercise())
+
+
+def test_durable_intent_survives_synthetic_process_interruption(tmp_path: Path) -> None:
+    journal_path = tmp_path / "private" / "ledger.jsonl"
+    snippet = (
+        "import os,pathlib,sys\n"
+        "from clipper.modal_infra_qualification import Ledger\n"
+        "ledger=Ledger(pathlib.Path(sys.argv[1]))\n"
+        "ledger.record(operation='INTENT',step='sandbox_create',run_id='synthetic')\n"
+        "os._exit(7)\n"
+    )
+    interrupted = subprocess.run(
+        [sys.executable, "-c", snippet, str(journal_path)],
+        capture_output=True,
+        check=False,
+        timeout=5,
+    )
+    assert interrupted.returncode == 7
+    evidence = json.loads(journal_path.read_text())
+    assert evidence == {
+        "operation": "INTENT",
+        "run_id": "synthetic",
+        "step": "sandbox_create",
+    }
