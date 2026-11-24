@@ -1031,6 +1031,9 @@ if link.is_symlink():
 bundle = ".recovery-bundle-" + uuid.uuid4().hex
 os.replace(stage, root / bundle)
 # This is the sole commit point for the three verified artifacts.
+# Reader contract: resolve recovery-current ONCE, then open all three files
+# under that pinned immutable bundle directory. Separate alias opens can
+# straddle pointer generations and do NOT guarantee a coherent read.
 pointer(bundle)
 ' "$destination" "$transfer_stage" >/dev/null 2>&1; then
             return 0
