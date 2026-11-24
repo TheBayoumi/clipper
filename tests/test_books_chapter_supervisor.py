@@ -1231,14 +1231,21 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         category = expected_rest_class[scenario]
         assert "REST_" + category in result.stderr, (scenario, result.stderr)
         assert "IDENTITY_CHANGED" not in result.stderr
-        if not scenario.startswith("rest_initial_"):
-            journal = tmp_path / "owner-private/synthetic-approved-host"
-            evidence = json.loads((journal / "owner-last-rest-failure.json").read_text())
-            assert evidence["schema"] == "clipper-owner-rest-failure-v1"
-            assert evidence["failure_class"] == category
-            assert evidence["codespace_id"] == 12
-            assert evidence["created_at"] == env["MOCK_CREATED"]
-            assert "foreign" not in json.dumps(evidence)
+        journal = tmp_path / "owner-private/synthetic-approved-host"
+        evidence = json.loads((journal / "owner-last-rest-failure.json").read_text())
+        assert evidence["schema"] == "clipper-owner-rest-failure-v1"
+        assert evidence["failure_class"] == category
+        assert evidence["operation"] == (
+            "rest_metadata" if scenario.startswith("rest_initial_") else "rest_identity"
+        )
+        assert evidence["identity_verified"] is (not scenario.startswith("rest_initial_"))
+        assert evidence["codespace_id"] == (
+            None if scenario.startswith("rest_initial_") else 12
+        )
+        assert evidence["created_at"] == (
+            None if scenario.startswith("rest_initial_") else env["MOCK_CREATED"]
+        )
+        assert "foreign" not in json.dumps(evidence)
     if scenario in {"lost_rest", "hung_rest", "rest_transient_then_valid"}:
         reads = int(state_counter.read_text())
         assert reads >= 5, reads
