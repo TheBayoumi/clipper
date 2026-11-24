@@ -1164,9 +1164,23 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         "free_grant_invalid_past_legacy",
         "free_grant_unsigned_override",
     }
-    assert "api -X DELETE" in actions or scenario == "identity_swap" or expired_invalid_grant, (
+    never_verified = scenario in {
+        "identity_swap",
+        "rest_persistent_unavailable",
+        "rest_persistent_timeout",
+        "rest_persistent_malformed",
+        "rest_foreign_confirmed",
+        "rest_initial_unavailable",
+        "rest_initial_malformed",
+    }
+    assert "api -X DELETE" in actions or never_verified or expired_invalid_grant, (
         result.stderr
     )
+    if never_verified:
+        assert "api -X POST" not in actions
+        assert "api -X DELETE" not in actions
+        assert "codespace ssh" not in actions
+        assert "codespace cp" not in actions
     if scenario == "free_grant_unsigned_override":
         assert "EXTERNAL_SUPERVISOR_TOTAL_DEADLINE_EXPIRED_NO_AUTOMATED_DELETE" in result.stderr
         assert "codespace ssh" not in actions
@@ -1192,14 +1206,52 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         assert "codespace ssh" not in actions
         assert "codespace cp" not in actions
         assert "external-supervisor-heartbeat-envelope" not in actions
-    if scenario in ("lost_rest", "hung_rest", "identity_swap", "terminal_state"):
+    if scenario in (
+        "identity_swap",
+        "terminal_state",
+        "rest_persistent_unavailable",
+        "rest_persistent_timeout",
+        "rest_persistent_malformed",
+        "rest_foreign_confirmed",
+        "rest_initial_unavailable",
+        "rest_initial_malformed",
+    ):
         assert "codespace cp" not in actions
     if scenario == "hung_ssh":
         assert "BOOTSTRAP_REMOTE_HUNG" in result.stderr
+    expected_rest_class = {
+        "rest_persistent_unavailable": "TRANSPORT",
+        "rest_persistent_timeout": "TIMEOUT",
+        "rest_persistent_malformed": "MALFORMED",
+        "rest_foreign_confirmed": "CONFIRMED_MISMATCH",
+        "rest_initial_unavailable": "TRANSPORT",
+        "rest_initial_malformed": "MALFORMED",
+    }
+    if scenario in expected_rest_class:
+        category = expected_rest_class[scenario]
+        assert "REST_" + category in result.stderr, (scenario, result.stderr)
+        assert "IDENTITY_CHANGED" not in result.stderr
+        if not scenario.startswith("rest_initial_"):
+            journal = tmp_path / "owner-private/synthetic-approved-host"
+            evidence = json.loads((journal / "owner-last-rest-failure.json").read_text())
+            assert evidence["schema"] == "clipper-owner-rest-failure-v1"
+            assert evidence["failure_class"] == category
+            assert evidence["codespace_id"] == 12
+            assert evidence["created_at"] == env["MOCK_CREATED"]
+            assert "foreign" not in json.dumps(evidence)
+    if scenario in {"lost_rest", "hung_rest", "rest_transient_then_valid"}:
+        reads = int(state_counter.read_text())
+        assert reads >= 5, reads
+        # Recovery from an early metadata failure requires a NEW exact REST
+        # identity check; never infer success from a failed read.
+        assert "external-supervisor-public.pem" in actions
     if scenario in (
         "provisioning_then_ready",
         "transient_ssh",
         "transient_cp",
+        "lost_rest",
+        "hung_rest",
+        "rest_transient_then_valid",
         "free_grant_extended_deadline",
     ):
         assert "codespace ssh" in actions
@@ -1226,6 +1278,9 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         "provisioning_then_ready",
         "transient_ssh",
         "transient_cp",
+        "lost_rest",
+        "hung_rest",
+        "rest_transient_then_valid",
         "free_grant_extended_deadline",
     ):
         assert any(allowed_recovery in call for call in host_calls), host_calls
