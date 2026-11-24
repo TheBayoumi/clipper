@@ -141,14 +141,16 @@ def run_infrastructure_experiment(
                 # cancellation handling. Retain the SAME runner/owner until
                 # terminal reconciliation; do not let Runner.close cancel it.
                 if owner is not None and owner.task is not None:
-                    owner.request_stop()
                     while not owner.task.done():
                         try:
+                            # STOP entry is also interruptible by a pre-existing
+                            # host handler. Retain the original outer exception
+                            # and retry the entire transition on this Runner.
+                            owner.request_stop()
                             runner.run(owner.terminal())
                         except BaseException:
-                            # Repeated host signals during reconciliation do
-                            # not abandon pending work or allocate again.
-                            # A failed/cancelled owner task is already done.
+                            # A failed/cancelled owner task is terminal, not a
+                            # reason to retry indefinitely.
                             if owner.task.done():
                                 break
                 raise

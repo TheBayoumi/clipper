@@ -265,3 +265,22 @@ that raises during held inert SDK-shaped create and optionally again during
 cleanup. They verify late terminate/poll, original-exception propagation,
 ledger closure and handler restoration. No SIGKILL, crash recovery, provider
 hard deadline, live infrastructure or spending guarantee is introduced.
+
+
+## Candidate 0154: interruption-safe outer STOP entry (UNQUALIFIED)
+
+The outer `Runner.run` exception path now includes both the initial
+`owner.request_stop()` and the terminal wait in the same retry guard.
+A second pre-existing host-handler exception raised *before* the first STOP
+side effect does not replace the original host exception or let Runner
+shutdown cancel the retained owner. The driver retries STOP and terminal
+reconciliation on the same Runner, and propagates the original exception
+after the owner is done and ledger/installed handlers have been cleaned up.
+An already completed failed or cancelled owner ends reconciliation without
+a retry spin. No guarantee is made against arbitrary continuously repeated
+host exceptions, SIGKILL or a noncooperative provider call.
+
+An inert subprocess test sends two actual SIGUSR1 signals, injecting the
+second at the first STOP-entry boundary, then verifies the first exception,
+late create return, sandbox termination/poll, context exit, descriptor closure
+and signal restoration. The qualified owner module is unchanged.

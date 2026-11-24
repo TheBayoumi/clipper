@@ -766,3 +766,113 @@ def test_driver_sigterm_handoff_is_per_signal_not_joint(
     assert result["driver_interrupted"] is (expected_status == "BLOCKED")
     assert driver.result_exit_code(result) == (2 if expected_status == "BLOCKED" else 0)
     assert len(state.sandboxes) == 2
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(signal, "SIGUSR1"),
+    reason="Real SIGUSR1 subprocess regression requires POSIX",
+)
+def test_driver_second_host_exception_at_stop_entry_retains_first_and_cleans(
+    tmp_path: Path,
+) -> None:
+    # Two real SIGUSR1 deliveries: second occurs BEFORE request_stop's side effect.
+    script = """
+import json
+import os
+import signal
+import sys
+import threading
+import time
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[2])
+import clipper.modal_infra_driver as driver
+from test_modal_infra_driver import FakeSDKState, _intent
+
+state = FakeSDKState()
+state.hold_create = True
+state.release_create.clear()
+opened = []
+real_ledger = driver.Ledger
+class CheckedLedger(real_ledger):
+    def __init__(self, path):
+        super().__init__(path)
+        opened.append(self._fd)
+driver.Ledger = CheckedLedger
+
+seen = []
+def hostile_handler(_signum, _frame):
+    label = "host" + str(len(seen) + 1)
+    seen.append(label)
+    raise KeyboardInterrupt(label)
+
+before_int = signal.getsignal(signal.SIGINT)
+before_term = signal.getsignal(signal.SIGTERM)
+before_usr = signal.signal(signal.SIGUSR1, hostile_handler)
+real_stop = driver.QualificationOwner.request_stop
+stop_entries = []
+def interrupt_stop(self):
+    stop_entries.append("entered")
+    if len(stop_entries) == 1:
+        os.kill(os.getpid(), signal.SIGUSR1)
+    return real_stop(self)
+driver.QualificationOwner.request_stop = interrupt_stop
+
+def deliver_first():
+    assert state.entered_create.wait(3), "create not entered"
+    os.kill(os.getpid(), signal.SIGUSR1)
+    time.sleep(0.08)
+    state.release_create.set()
+
+worker = threading.Thread(target=deliver_first, daemon=True)
+worker.start()
+try:
+    try:
+        driver.run_infrastructure_experiment(
+            state.sdk,
+            state.client,
+            _intent(),
+            Path(sys.argv[1]) / "ledger.jsonl",
+            decision_seconds=0.01,
+            reconciliation_seconds=0.01,
+        )
+    except KeyboardInterrupt as exc:
+        assert str(exc) == "host1", str(exc)
+    else:
+        raise AssertionError("original host1 exception swallowed")
+finally:
+    state.release_create.set()
+    worker.join(timeout=4)
+    signal.signal(signal.SIGUSR1, before_usr)
+    driver.QualificationOwner.request_stop = real_stop
+
+assert not worker.is_alive()
+assert seen == ["host1", "host2"], seen
+assert len(stop_entries) >= 2
+assert len(state.sandboxes) == 1
+assert "terminate_sb-driver-1" in state.events, state.events
+assert "poll_sb-driver-1" in state.events, state.events
+assert state.events.index("create_return") < state.events.index("terminate_sb-driver-1")
+assert state.events.index("poll_sb-driver-1") < state.events.index("volume_exit")
+assert state.events[-2:] == ["volume_exit", "app_exit"]
+assert signal.getsignal(signal.SIGINT) == before_int
+assert signal.getsignal(signal.SIGTERM) == before_term
+for fd in opened:
+    try:
+        os.fstat(fd)
+    except OSError:
+        pass
+    else:
+        raise AssertionError("ledger descriptor leaked")
+print(json.dumps({"seen": seen, "events": state.events}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path), str(Path(__file__).resolve().parent)],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, (completed.stdout, completed.stderr)
+    evidence = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert evidence["seen"] == ["host1", "host2"]
