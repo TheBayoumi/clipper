@@ -176,7 +176,8 @@ def test_offline_exact_bytes_sequential_termination_and_ledger(tmp_path: Path) -
             if x["operation"] == "RETURN" and x["step"].endswith("_create")
         ] == ["sb-synthetic-1", "sb-synthetic-2"]
         app_returns = [
-            x for x in entries
+            x
+            for x in entries
             if x["operation"] == "RETURN" and x.get("step") == "app_context_enter"
         ]
         assert len(app_returns) == 1
@@ -735,7 +736,9 @@ def test_sdk_workspace_name_property_fails_before_any_resource_entry(
         owner = QualificationOwner(
             NoResourceBackend(sdk, explicit_client, "qualification"),
             Intent(
-                "expected-workspace", "qualification", "a" * 40,
+                "expected-workspace",
+                "qualification",
+                "a" * 40,
                 "modal-cpu-synthetic-persistence",
             ),
             Ledger(tmp_path / "private" / "ledger.jsonl"),
@@ -746,7 +749,8 @@ def test_sdk_workspace_name_property_fails_before_any_resource_entry(
         assert observed == ["workspace", "hydrate"]
         assert result["provider_removal"] == "UNKNOWN"
         assert not any(
-            e["operation"] == "INTENT" for e in _events(tmp_path)
+            e["operation"] == "INTENT"
+            for e in _events(tmp_path)
             if e.get("step") in {"app_context_enter", "volume_context_enter"}
         )
 
@@ -775,13 +779,11 @@ def test_missing_app_id_is_not_logged_as_success_and_context_still_exits(
         assert result["provider_removal"] == "UNKNOWN"
         events = _events(tmp_path)
         assert any(
-            e["operation"] == "UNKNOWN_APP_ID"
-            and e.get("step") == "app_context_enter"
+            e["operation"] == "UNKNOWN_APP_ID" and e.get("step") == "app_context_enter"
             for e in events
         )
         assert not any(
-            e["operation"] == "RETURN" and e.get("step") == "app_context_enter"
-            for e in events
+            e["operation"] == "RETURN" and e.get("step") == "app_context_enter" for e in events
         )
 
     asyncio.run(exercise())
@@ -809,9 +811,7 @@ def test_sdk_combined_async_contexts_use_single_explicit_client() -> None:
         class App:
             app_id = "ap-actual-shaped"
 
-            def run(
-                self, *, client: object, environment_name: str, detach: bool
-            ) -> AsyncContext:
+            def run(self, *, client: object, environment_name: str, detach: bool) -> AsyncContext:
                 assert client is explicit_client
                 assert environment_name == "qualification"
                 assert detach is False
@@ -821,9 +821,7 @@ def test_sdk_combined_async_contexts_use_single_explicit_client() -> None:
             object_id = "vo-actual-shaped"
 
             @classmethod
-            def ephemeral(
-                cls, *, client: object, environment_name: str
-            ) -> AsyncContext:
+            def ephemeral(cls, *, client: object, environment_name: str) -> AsyncContext:
                 assert client is explicit_client
                 assert environment_name == "qualification"
                 return AsyncContext("volume", cls())
