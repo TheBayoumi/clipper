@@ -853,7 +853,7 @@ except (ValueError, TypeError, KeyError):
     sys.exit(2)
 ')" || return 2
   bootstrap_identity || return 2
-  printf '%s\\n' "$state"
+  printf '%s\n' "$state"
 }"""
         source = _SCRIPT.read_text(encoding="utf-8")
         start = source.index("bootstrap_state() {")
