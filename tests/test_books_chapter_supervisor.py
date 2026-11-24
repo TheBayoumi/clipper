@@ -1275,3 +1275,157 @@ except (ValueError, TypeError, KeyError):
         "model.generate",
     ):
         assert forbidden not in actions
+
+
+@pytest.mark.parametrize(
+    ("held_operation", "identity_swapped"),
+    [
+        ("grant_validation", False),
+        ("grant_validation", True),
+        ("journal_setup", False),
+        ("journal_setup", True),
+    ],
+)
+def test_signal_during_local_preflight_retains_exact_id_cleanup_clock(
+    tmp_path: Path, held_operation: str, identity_swapped: bool
+) -> None:
+    """SIGTERM while a REAL owner shell is inside a bounded local subprocess.
+
+    The REST host is initially ID 12 and one second old. The synthetic
+    transport optionally replaces the ID during the held local operation.
+    No network, actual hosting, book text or model execution is involved.
+    """
+    import signal
+
+    fake_bin = tmp_path / "commands"
+    fake_bin.mkdir()
+    marker = tmp_path / "local-operation-entered"
+    gh_log = tmp_path / "gh-operations.log"
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        f"#!{sys.executable}\n"
+        "import json,os,pathlib,sys\n"
+        "args=sys.argv[1:]\n"
+        "with open(os.environ['MOCK_LOG'],'a') as f: f.write(' '.join(args)+'\\n')\n"
+        "if args[:2]==['api','-i']:\n"
+        "  print('HTTP/2 404 Not Found'); sys.exit(0)\n"
+        "if args[:2]==['api','-X']: sys.exit(0)\n"
+        "if args[:1]==['api']:\n"
+        "  changed=os.environ['MOCK_SWAP']=='1' and pathlib.Path(os.environ['MOCK_MARK']).exists()\n"
+        "  print(json.dumps({'id':999 if changed else 12,"
+        "'name':os.environ['CODESPACE_NAME'],'created_at':os.environ['MOCK_CREATED'],"
+        "'state':'Available','repository':{'full_name':'TheBayoumi/clipper'},"
+        "'machine':{'cpus':4,'memory_in_bytes':17179869184,"
+        "'storage_in_bytes':34359738368}})); sys.exit(0)\n"
+        "sys.exit(3)\n",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o700)
+    # Hold the local Python grant validator or a real mkdir-after-creation
+    # without affecting the REST probes. The parent receives SIGTERM while
+    # this subprocess is alive, not after grant validation returns.
+    fake_python = fake_bin / "python3"
+    fake_python.write_text(
+        f"#!{sys.executable}\n"
+        "import os,pathlib,sys,time\n"
+        "args=sys.argv[1:]\n"
+        "if os.environ['MOCK_HOLD']=='grant_validation' and len(args)>1 "
+        "and 'PRIVATE_CHAPTER_FREE_GRANT_FILE' in args[1]:\n"
+        "  pathlib.Path(os.environ['MOCK_MARK']).touch(); time.sleep(3)\n"
+        "os.execv(sys.executable,[sys.executable,*args])\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    fake_mkdir = fake_bin / "mkdir"
+    fake_mkdir.write_text(
+        f"#!{sys.executable}\n"
+        "import os,pathlib,subprocess,sys,time\n"
+        "args=sys.argv[1:]\n"
+        "code=subprocess.call(['/usr/bin/mkdir',*args])\n"
+        "if code: sys.exit(code)\n"
+        "if os.environ['MOCK_HOLD']=='journal_setup':\n"
+        "  pathlib.Path(os.environ['MOCK_MARK']).touch(); time.sleep(3)\n",
+        encoding="utf-8",
+    )
+    fake_mkdir.chmod(0o700)
+    created = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    grant = {
+        "schema": "clipper-owner-free-allowance-v1",
+        "codespace_id": 12,
+        "codespace_name": "synthetic-approved",
+        "repository": "TheBayoumi/clipper",
+        "created_at": created,
+        "approved_sha": "a" * 40,
+        "machine": {
+            "cpus": 4, "memory_in_bytes": 17179869184,
+            "storage_in_bytes": 34359738368,
+        },
+        "verified_at": created,
+        "remaining_included_core_seconds": 4 * 4 * 3600,
+        "total_seconds": 4 * 3600,
+        "storage_included_verified": True,
+        "paid_overage_block_verified": False,
+    }
+    grant_path = tmp_path / "invalid-grant.json"
+    grant_path.write_text(json.dumps(grant), encoding="utf-8")
+    grant_path.chmod(0o600)
+    private = tmp_path / "owner-private"
+    private.mkdir(mode=0o700)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
+            "CODESPACE_NAME": "synthetic-approved",
+            "PRIVATE_CHAPTER_APPROVED_SHA": "a" * 40,
+            "PRIVATE_CHAPTER_ROOT": str(tmp_path / "host-private"),
+            "PRIVATE_CHAPTER_RECOVERY_DIR": str(private),
+            "PRIVATE_CHAPTER_FREE_GRANT_FILE": str(grant_path),
+            "MOCK_CREATED": created,
+            "MOCK_LOG": str(gh_log),
+            "MOCK_MARK": str(marker),
+            "MOCK_HOLD": held_operation,
+            "MOCK_SWAP": "1" if identity_swapped else "0",
+        }
+    )
+    env.pop("CODESPACES", None)
+    child = subprocess.Popen(
+        ["bash", str(_SCRIPT)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        until = time.monotonic() + 12
+        while time.monotonic() < until and child.poll() is None and not marker.exists():
+            time.sleep(0.025)
+        assert marker.exists(), "expected local preflight operation was never reached"
+        assert child.poll() is None, "supervisor exited before injection"
+        child.send_signal(signal.SIGTERM)
+        stdout, stderr = child.communicate(timeout=22)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.communicate(timeout=5)
+    assert child.returncode == 143, (stdout, stderr)
+    calls = gh_log.read_text(encoding="utf-8")
+    assert "codespace ssh" not in calls and "codespace cp" not in calls
+    if identity_swapped:
+        assert "api -X POST" not in calls
+        assert "api -X DELETE" not in calls
+        assert "REJECTED_HOST_IDENTITY_NO_DESTRUCTIVE_CALL" in stderr
+    else:
+        assert "api -X POST" in calls
+        assert "api -X DELETE" in calls
+        assert "EXTERNAL_SUPERVISOR_HOST_" in stdout
+        journal = private / "synthetic-approved"
+        first = json.loads((journal / "owner-first-failure.json").read_text())
+        reason = json.loads((journal / "owner-exit-reason.json").read_text())
+        assert first["operation"] == "signal"
+        assert first["exit_code"] == 143
+        assert first["codespace_id"] == 12
+        assert reason["original_exit_code"] == 143
+        assert reason["exit_class"] == "SIGNAL"
+        assert reason["codespace_id"] == 12
+        assert "TOTAL_DEADLINE_EXPIRED" not in stderr
+        assert "invalid-grant" not in json.dumps(first) + json.dumps(reason)
