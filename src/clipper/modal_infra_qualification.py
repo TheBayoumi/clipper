@@ -7,6 +7,7 @@ A caller MUST keep the owner event loop alive until terminal() completes.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import hashlib
 import json
 import os
@@ -14,7 +15,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 DATA = bytes(range(256)) * 256
 DIGEST = hashlib.sha256(DATA).hexdigest()
@@ -283,10 +284,8 @@ class QualificationOwner:
             raise
 
     def _safe_record(self, operation: str, **details: object) -> None:
-        try:
+        with suppress(OSError):
             self._record(operation, **details)
-        except OSError:
-            pass
 
     def _first_error(self, exc: BaseException) -> None:
         if self._result["primary_error"] is None:
