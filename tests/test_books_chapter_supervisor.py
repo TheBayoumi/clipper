@@ -2262,3 +2262,103 @@ def test_exact_recovery_receiver_inner_popen_startup_interruption(
         if producer_pgid.exists():
             with suppress(ProcessLookupError):
                 os.killpg(int(producer_pgid.read_text()), signal.SIGKILL)
+
+
+def test_exact_recovery_receiver_leader_exit_then_receiver_hard_kill(
+    tmp_path: Path,
+) -> None:
+    """Leader exits zero but same-group descendant holds stdout until receiver dies.
+
+    The real inline receiver must retain a live parent-death guardian AFTER
+    child.wait() reports leader exit. Check /proc process state to distinguish
+    a still-running descendant from a reparented, unreaped zombie.
+    """
+    import signal
+
+    content = _SCRIPT.read_text(encoding="utf-8")
+    marker = "critical recovery_copy python3 -c '\n"
+    assert content.count(marker) == 1
+    receiver = content.split(marker, 1)[1].split(
+        '\' "$CODESPACE_NAME" "$remote_archive" "$target" "$session/recovery-created.json"',
+        1,
+    )[0]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        f"#!{sys.executable}\n"
+        "import os,pathlib,subprocess,sys\n"
+        "assert sys.argv[1:7]==['codespace','ssh','-c','synthetic-pinned','--','-T']\n"
+        "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],"
+        "stdin=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "pathlib.Path(os.environ['MOCK_DESCENDANT_PID']).write_text(str(child.pid))\n"
+        "pathlib.Path(os.environ['MOCK_GROUP']).write_text(str(os.getpgrp()))\n"
+        "pathlib.Path(os.environ['MOCK_LEADER_PID']).write_text(str(os.getpid()))\n"
+        "sys.stdout.buffer.write(b'prefix\\x00\\xff')\n"
+        "sys.stdout.buffer.flush()\n"
+        "sys.exit(0)\n",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o700)
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+    target = tmp_path / "archive.tar"
+    descendant_pid = tmp_path / "descendant.pid"
+    leader_pid = tmp_path / "leader.pid"
+    pgid = tmp_path / "group"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
+            "MOCK_DESCENDANT_PID": str(descendant_pid),
+            "MOCK_LEADER_PID": str(leader_pid),
+            "MOCK_GROUP": str(pgid),
+        }
+    )
+
+    def live(pid: int) -> bool:
+        stat = Path(f"/proc/{pid}/stat")
+        return stat.exists() and stat.read_text().split(") ", 1)[1][:1] != "Z"
+
+    receiver_proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            receiver,
+            "synthetic-pinned",
+            "/synthetic-private/chapter-recovery.tar",
+            str(target),
+            str(receipt),
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 7
+        while time.monotonic() < deadline and receiver_proc.poll() is None:
+            if descendant_pid.exists() and leader_pid.exists() and pgid.exists():
+                if not live(int(leader_pid.read_text())):
+                    break
+            time.sleep(0.02)
+        assert descendant_pid.exists() and leader_pid.exists() and pgid.exists()
+        assert not live(int(leader_pid.read_text())), "producer leader still alive"
+        assert live(int(descendant_pid.read_text())), "descendant must hold stdout"
+        assert receiver_proc.poll() is None, "receiver unexpectedly ended before stdout EOF"
+        assert target.read_bytes().startswith(b"prefix\x00\xff")
+        receiver_proc.send_signal(signal.SIGKILL)
+        receiver_proc.communicate(timeout=5)
+        assert receiver_proc.returncode == -signal.SIGKILL
+        deadline = time.monotonic() + 4
+        pid = int(descendant_pid.read_text())
+        while time.monotonic() < deadline and live(pid):
+            time.sleep(0.02)
+        assert not live(pid), f"same-group stdout descendant {pid} survived hard-kill"
+    finally:
+        if receiver_proc.poll() is None:
+            receiver_proc.kill()
+            receiver_proc.communicate(timeout=5)
+        # Synthetic process cleanup only, including on an assertion failure.
+        if pgid.exists():
+            with suppress(ProcessLookupError):
+                os.killpg(int(pgid.read_text()), signal.SIGKILL)
