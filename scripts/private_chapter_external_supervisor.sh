@@ -202,7 +202,7 @@ recover_private() (
   # Recovery is always best-effort and bounded within original cleanup reserve.
   recovery_epoch="$(( $(date -u +%s) + 16 ))"
   if (( recovery_allowed != 1 )) || ! identity_matches; then return 2; fi
-  local destination="$PRIVATE_CHAPTER_RECOVERY_DIR/$CODESPACE_NAME"
+  local destination="${SNAPSHOT_STAGE_DIR:-$PRIVATE_CHAPTER_RECOVERY_DIR/$CODESPACE_NAME}"
   bounded mkdir -p -m 700 -- "$destination" || return 2
   bounded chmod 700 "$destination" || return 2
   # One scoped, allowlisted private output TAR includes final WAVs, text
@@ -752,6 +752,98 @@ pathlib.Path(sys.argv[2]).write_bytes(raw)
   return 2
 )
 
+# A safe phase snapshot is intentionally separate from the private archive.
+# It is bounded, source-free, identity-bound and does NOT claim file retrieval.
+poll_safe_phase() (
+  (( journal_ready == 1 && recovery_allowed == 1 )) || return 2
+  identity_matches || return 2
+  local phase_file="$session/phase-snapshot.json"
+  critical safe_phase_poll gh codespace ssh -c "$CODESPACE_NAME" -- \
+    "cd /workspaces/clipper && if [ -x .venv/bin/python ]; then .venv/bin/python -m clipper.books.chapter_host status --artifact-root '$PRIVATE_CHAPTER_ROOT'; else PYTHONPATH=/workspaces/clipper/src python -m clipper.books.chapter_host status --artifact-root '$PRIVATE_CHAPTER_ROOT'; fi" \
+    >"$phase_file" 2>/dev/null || return 2
+  identity_matches || return 2
+  bounded python3 -c '
+import json, os, pathlib, re, sys
+source,target=sys.argv[1:]
+raw=pathlib.Path(source).read_bytes()
+if len(raw)>16384: sys.exit(2)
+x=json.loads(raw)
+if (not isinstance(x,dict) or x.get("schema")!="clipper-private-chapter-safe-recovery-v1"
+    or set(x)!={"schema","status","chapters","files_retrieved","publish_eligible"}
+    or x["files_retrieved"] is not False or x["publish_eligible"] is not False
+    or not isinstance(x["chapters"],dict) or set(x["chapters"])!={"1","7"}):
+    sys.exit(2)
+phase={}
+for number,chapter in x["chapters"].items():
+    if not isinstance(chapter,dict): sys.exit(2)
+    value=chapter.get("last_subphase")
+    state=chapter.get("recovery_state")
+    if (not isinstance(value,str) or not re.fullmatch(r"[A-Z0-9_]{1,64}",value)
+        or state not in ("NEVER_STARTED","IN_FLIGHT","INTERRUPTED",
+                         "AWAITING_REVIEW","READY","INCOMPLETE")):
+        sys.exit(2)
+    phase[number]=value
+record={"schema":"clipper-owner-private-safe-phase-v1",
+        "codespace_id":int(os.environ["SUPERVISED_CODESPACE_ID"]),
+        "created_at":os.environ["SUPERVISED_CREATED_AT"],
+        "chapters":phase,
+        "status_source":"HOST_STATUS_READ_ONLY_NOT_RETRIEVAL"}
+dest=pathlib.Path(target)
+tmp=dest.with_name("."+dest.name+".tmp")
+tmp.write_text(json.dumps(record,sort_keys=True)+"\\n",encoding="utf-8")
+os.chmod(tmp,0o600)
+os.replace(tmp,dest)
+' "$phase_file" "$journal_dir/owner-safe-phase.json" || return 2
+)
+
+# Periodic checkpoints use the EXISTING strict archive verifier and stage
+# privately. Publish a new snapshot only after complete hash/member checks.
+# A failed transfer must not replace the last verified snapshot.
+checkpoint_private() (
+  (( journal_ready == 1 && recovery_allowed == 1 )) || return 2
+  (( deadline_epoch - $(date -u +%s) > 60 )) || return 2
+  identity_matches || return 2
+  local stage now final pointer report hash
+  stage="$(mktemp -d "$journal_dir/.snapshot-stage.XXXXXX")" || return 2
+  chmod 700 "$stage" || return 2
+  if ! SNAPSHOT_STAGE_DIR="$stage" recover_private >/dev/null 2>&1; then
+    rm -rf -- "$stage"
+    return 2
+  fi
+  identity_matches || { rm -rf -- "$stage"; return 2; }
+  now="$(date -u +%s)"
+  final="$journal_dir/verified-snapshot-$now"
+  if [[ -e "$final" ]] || ! mv -T -- "$stage" "$final"; then
+    rm -rf -- "$stage"
+    return 2
+  fi
+  # The only published pointer is owner-private, atomic and refers to a
+  # previously verified archive; never trust a bare incomplete TAR.
+  critical archive_verification python3 -c '
+import hashlib,json,os,pathlib,sys
+root=pathlib.Path(sys.argv[1])
+name=sys.argv[2]
+folder=root/name
+archive=folder/"chapter-recovery.tar"
+report=folder/"retrieval-verification.json"
+if not archive.is_file() or archive.is_symlink() or not report.is_file(): sys.exit(2)
+verified=json.loads(report.read_bytes())
+if verified.get("retrieval_status") == "INCOMPLETE": sys.exit(2)
+h=hashlib.sha256()
+with archive.open("rb") as stream:
+    for block in iter(lambda:stream.read(1024*1024),b""):h.update(block)
+record={"schema":"clipper-owner-verified-snapshot-pointer-v1",
+        "snapshot_dir":name,"archive_sha256":h.hexdigest(),
+        "codespace_id":int(os.environ["SUPERVISED_CODESPACE_ID"]),
+        "created_at":os.environ["SUPERVISED_CREATED_AT"],
+        "retrieval_status":"VERIFIED_OWNER_PRIVATE_SNAPSHOT"}
+tmp=root/".latest-verified-snapshot.tmp"
+tmp.write_text(json.dumps(record,sort_keys=True)+"\\n",encoding="utf-8")
+os.chmod(tmp,0o600)
+os.replace(tmp,root/"latest-verified-snapshot.json")
+' "$journal_dir" "${final##*/}" >/dev/null 2>&1
+)
+
 write_owner_cleanup_status() {
   if (( owner_recovery_safe != 1 )); then return 0; fi
   local destination="$PRIVATE_CHAPTER_RECOVERY_DIR/$CODESPACE_NAME"
@@ -1126,6 +1218,8 @@ if [[ "$state" != "Available" ]]; then
 fi
 bootstrap_epoch=0
 recovery_allowed=1
+last_phase_poll_epoch="$(date -u +%s)"
+last_checkpoint_epoch="$last_phase_poll_epoch"
 
 # Every iteration bounds both the individual operation and the time remaining.
 # Execution stops at host creation +115m; the remaining five minutes are for
@@ -1192,6 +1286,28 @@ with open(sys.argv[3], "wb") as f:
   identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_CHANGED" >&2; exit 2; }
   critical heartbeat_publish gh codespace ssh -c "$CODESPACE_NAME" -- \
     "mv -f -- '$remote/external-supervisor-heartbeat-envelope.watchdog.pending' '$remote/external-supervisor-heartbeat-envelope.json'" >/dev/null
+  # Poll source-free phase every minute and verify owner-private output
+  # archive approximately every five minutes. Both are best effort and must
+  # yield to heartbeat and DELETE; never treat phase-only status as retrieval.
+  if (( journal_ready == 1 && deadline_epoch - $(date -u +%s) > 60 )); then
+    checked_now="$(date -u +%s)"
+    if (( checked_now - last_phase_poll_epoch >= 60 )); then
+      last_phase_poll_epoch="$checked_now"
+      phase_rc=0
+      poll_safe_phase || phase_rc=$?
+      if (( phase_rc != 0 )); then
+        record_operation safe_phase_poll "$now" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$phase_rc"
+      fi
+    fi
+    if (( checked_now - last_checkpoint_epoch >= 300 )); then
+      last_checkpoint_epoch="$checked_now"
+      checkpoint_rc=0
+      checkpoint_private || checkpoint_rc=$?
+      if (( checkpoint_rc != 0 )); then
+        record_operation archive_verification "$now" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$checkpoint_rc"
+      fi
+    fi
+  fi
   sleep "$(( remaining < 10 ? remaining : 10 ))"
 done
 # The EXIT trap always tries bounded STOP then bounded DELETE and REST checks.
