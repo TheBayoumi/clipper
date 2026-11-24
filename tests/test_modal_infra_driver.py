@@ -200,9 +200,7 @@ def test_driver_workspace_mismatch_has_no_context_or_allocation(tmp_path: Path) 
 
 @pytest.mark.skipif(os.name != "posix", reason="Driver explicitly requires POSIX signals")
 @pytest.mark.parametrize("point", ["create", "terminate"])
-def test_driver_real_repeated_signals_wait_for_late_cleanup(
-    tmp_path: Path, point: str
-) -> None:
+def test_driver_real_repeated_signals_wait_for_late_cleanup(tmp_path: Path, point: str) -> None:
     state = FakeSDKState()
     if point == "create":
         state.hold_create = True
@@ -267,9 +265,7 @@ def test_driver_journal_failure_closes_fd_and_reconciles(
             opened.append(self._fd)
 
         def record(self, **fields: object) -> None:
-            fail = (
-                step == "run_start" and fields.get("operation") == "RUN_START"
-            ) or (
+            fail = (step == "run_start" and fields.get("operation") == "RUN_START") or (
                 step == "sandbox_return"
                 and fields.get("operation") == "RETURN"
                 and fields.get("step") == "sandbox_1_create"
@@ -359,9 +355,10 @@ def test_driver_nonmain_thread_fails_before_provider_work(tmp_path: Path) -> Non
 
 def test_exit_code_never_promotes_file_only_candidate() -> None:
     assert driver.result_exit_code({"status": "SUCCESS"}) == 2
-    assert driver.result_exit_code(
-        {"status": "UNCONFIRMED", "evidence_durability": "OWNER_ACKNOWLEDGED"}
-    ) == 2
-    assert driver.result_exit_code(
-        {"status": "SUCCESS", "evidence_durability": "UNKNOWN"}
-    ) == 2
+    assert (
+        driver.result_exit_code(
+            {"status": "UNCONFIRMED", "evidence_durability": "OWNER_ACKNOWLEDGED"}
+        )
+        == 2
+    )
+    assert driver.result_exit_code({"status": "SUCCESS", "evidence_durability": "UNKNOWN"}) == 2
