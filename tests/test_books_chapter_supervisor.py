@@ -1408,7 +1408,11 @@ def test_signal_during_local_preflight_retains_exact_id_cleanup_clock(
         if child.poll() is None:
             child.kill()
             child.communicate(timeout=5)
-    assert child.returncode == 143, (stdout, stderr)
+    # The parent was signaled while the subprocess was held; Bash may defer
+    # the TERM trap until its bounded local command returns. A subsequently
+    # replaced REST identity must keep the existing fail-closed exit code 2.
+    assert child.returncode == (2 if identity_swapped else 143), (stdout, stderr)
+    assert "EXTERNAL_SUPERVISOR_SIGNAL_TERM_CLEANUP_REQUIRED" in stderr
     calls = gh_log.read_text(encoding="utf-8")
     assert "codespace ssh" not in calls and "codespace cp" not in calls
     if identity_swapped:
@@ -1419,14 +1423,26 @@ def test_signal_during_local_preflight_retains_exact_id_cleanup_clock(
         assert "api -X POST" in calls
         assert "api -X DELETE" in calls
         assert "EXTERNAL_SUPERVISOR_HOST_" in stdout
-        journal = private / "synthetic-approved"
-        first = json.loads((journal / "owner-first-failure.json").read_text())
-        reason = json.loads((journal / "owner-exit-reason.json").read_text())
-        assert first["operation"] == "signal"
-        assert first["exit_code"] == 143
-        assert first["codespace_id"] == 12
-        assert reason["original_exit_code"] == 143
-        assert reason["exit_class"] == "SIGNAL"
-        assert reason["codespace_id"] == 12
         assert "TOTAL_DEADLINE_EXPIRED" not in stderr
-        assert "invalid-grant" not in json.dumps(first) + json.dumps(reason)
+    journal = private / "synthetic-approved"
+    first = json.loads((journal / "owner-first-failure.json").read_text())
+    latest = json.loads((journal / "owner-last-failure.json").read_text())
+    reason = json.loads((journal / "owner-exit-reason.json").read_text())
+    # Keep the actual first failure: a held grant validator may finish and
+    # reject the grant before Bash runs its deferred SIGTERM handler.
+    assert first["operation"] == (
+        "grant_validation" if held_operation == "grant_validation" else "signal"
+    )
+    assert first["exit_code"] == (
+        2 if held_operation == "grant_validation" else 143
+    )
+    assert first["codespace_id"] == 12
+    assert latest["operation"] == "signal"
+    assert latest["exit_code"] == 143
+    assert latest["exit_class"] == "SIGNAL"
+    assert latest["codespace_id"] == 12
+    assert reason["original_exit_code"] == 143
+    assert reason["exit_class"] == "SIGNAL"
+    assert reason["codespace_id"] == 12
+    assert reason["most_recent_recorded_failed_operation"] == "signal"
+    assert "invalid-grant" not in json.dumps(first) + json.dumps(latest) + json.dumps(reason)
