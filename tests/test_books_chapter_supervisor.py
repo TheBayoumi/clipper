@@ -590,13 +590,13 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         assert "1024 * 1024, limit - used + 1" in raw
         raw = raw.replace("limit = 800_000_000", "limit = 4096", 1)
         raw = raw.replace("1024 * 1024, limit - used + 1", "1024, limit - used + 1", 1)
-        bound_probe = "if used + len(block) > limit:\n            sys.exit(2)"
+        bound_probe = "if used + len(block) > limit:\n                sys.exit(2)"
         assert bound_probe in raw
         raw = raw.replace(
             bound_probe,
             "if used + len(block) > limit:\n"
-            '            open(os.environ["MOCK_MAX_STAGED_SIZE"], "w").write(str(used))\n'
-            "            sys.exit(2)",
+            '                open(os.environ["MOCK_MAX_STAGED_SIZE"], "w").write(str(used))\n'
+            "                sys.exit(2)",
             1,
         )
         script.write_text(raw)
