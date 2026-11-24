@@ -569,7 +569,10 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         import signal
 
         child = subprocess.Popen(
-            ["bash", str(script)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            ["bash", str(script)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
         )
         try:
@@ -580,9 +583,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             assert marker.exists() and child.poll() is None
             child.send_signal(signal.SIGTERM)
             stdout, stderr = child.communicate(timeout=30)
-            result = subprocess.CompletedProcess(
-                [str(script)], child.returncode, stdout, stderr
-            )
+            result = subprocess.CompletedProcess([str(script)], child.returncode, stdout, stderr)
         finally:
             if child.poll() is None:
                 child.kill()
