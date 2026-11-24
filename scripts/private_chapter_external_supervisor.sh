@@ -475,7 +475,7 @@ try:
     status = proc.stderr.read(64)
     if proc.wait() != -signal.SIGKILL:
         sys.exit(2)
-    if not status.startswith(b"SSH_EXIT:") or not status.endswith(b"\\n"):
+    if not status.startswith(b"SSH_EXIT:") or not status.endswith(b"\n"):
         sys.exit(2)
     raw_code = status[len(b"SSH_EXIT:"):-1]
     if not raw_code.isdigit() or len(raw_code) > 3 or int(raw_code) != 0:
