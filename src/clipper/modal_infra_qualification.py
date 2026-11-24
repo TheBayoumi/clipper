@@ -296,7 +296,7 @@ class QualificationOwner:
     def _unknown(self, kind: str, step: str, identifier: str = "") -> None:
         item = {
             "kind": kind,
-            "operation": step,
+            "step": step,
             "id": identifier,
             "outcome": "UNRESOLVED",
         }
