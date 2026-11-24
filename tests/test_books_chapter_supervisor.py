@@ -1220,6 +1220,15 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         "rest_initial_malformed",
     ):
         assert "codespace cp" not in actions
+    if scenario == "terminal_state":
+        # A valid pinned ID in Shutdown must never be called a mismatch.
+        # It refuses remote setup, but exact-ID cleanup remains permitted.
+        assert "BOOTSTRAP_STATE_REST_DISALLOWED_STATE" in result.stderr
+        assert "CONFIRMED_MISMATCH" not in result.stderr
+        assert "api -X POST" in actions
+        assert "api -X DELETE" in actions
+        assert "codespace ssh" not in actions
+        assert "codespace cp" not in actions
     if scenario == "hung_ssh":
         assert "BOOTSTRAP_REMOTE_HUNG" in result.stderr
     expected_rest_class = {
@@ -1229,6 +1238,7 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         "rest_foreign_confirmed": "CONFIRMED_MISMATCH",
         "rest_initial_unavailable": "TRANSPORT",
         "rest_initial_malformed": "MALFORMED",
+        "terminal_state": "DISALLOWED_STATE",
     }
     if scenario in expected_rest_class:
         category = expected_rest_class[scenario]
@@ -1239,7 +1249,11 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         assert evidence["schema"] == "clipper-owner-rest-failure-v1"
         assert evidence["failure_class"] == category
         assert evidence["operation"] == (
-            "rest_metadata" if scenario.startswith("rest_initial_") else "rest_identity"
+            "rest_metadata"
+            if scenario.startswith("rest_initial_")
+            else "rest_state"
+            if scenario == "terminal_state"
+            else "rest_identity"
         )
         assert evidence["identity_verified"] is (not scenario.startswith("rest_initial_"))
         assert evidence["codespace_id"] == (None if scenario.startswith("rest_initial_") else 12)
