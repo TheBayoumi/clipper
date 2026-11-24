@@ -246,6 +246,8 @@ def test_external_owner_watchdog_bounds_hung_remote_calls_and_still_deletes(
         ("all_ready", False, "hung"),
         ("all_ready", False, "fork_ignores_term"),
         ("all_ready", False, "fork_signal"),
+        ("all_ready", False, "startup_soft"),
+        ("all_ready", False, "startup_hard"),
         ("all_ready", False, "signal"),
         ("all_ready", False, "foreign_identity"),
     ],
@@ -644,6 +646,35 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             1,
         )
         script.write_text(raw)
+    if stream_fault in {"startup_soft", "startup_hard"}:
+        # The launcher OS process exists, but the receiver has not yet
+        # obtained the Popen return value. Delay that exact registration
+        # boundary, then simulate TERM or unconditional hard KILL.
+        script = tmp_path / "startup-boundary-supervisor.sh"
+        raw = _SCRIPT.read_text(encoding="utf-8")
+        start = 'try:\n    proc = subprocess.Popen(\n        [sys.executable, "-c", launcher_code, name, remote],'
+        assert start in raw
+        wrapper = (
+            'original_popen = subprocess.Popen\n'
+            'def delayed_popen(*args, **kwargs):\n'
+            '    launched = original_popen(*args, **kwargs)\n'
+            '    if args[0][0] == sys.executable:\n'
+            '        open(os.environ["MOCK_STARTUP_LAUNCHER_PID"], "w").write(str(launched.pid))\n'
+            '        time.sleep(1.5)\n'
+            '    return launched\n'
+            'subprocess.Popen = delayed_popen\n'
+        )
+        raw = raw.replace(start, wrapper + start, 1)
+        boundary = 'critical recovery_copy python3 -c \''
+        assert boundary in raw
+        kill_type = "KILL" if stream_fault == "startup_hard" else "TERM"
+        raw = raw.replace(
+            boundary,
+            f'critical recovery_copy timeout --signal={kill_type} --kill-after=2s 1s python3 -c \'',
+            1,
+        )
+        script.write_text(raw)
+        env["MOCK_STARTUP_LAUNCHER_PID"] = str(tmp_path / "startup-launcher-pid")
     if stream_fault in {"signal", "fork_signal"}:
         import signal
 
@@ -672,6 +703,19 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             ["bash", str(script)], env=env, capture_output=True, text=True, timeout=30
         )
     assert result.returncode != 0  # Invalid synthetic signer prevents host setup.
+    if stream_fault in {"startup_soft", "startup_hard"}:
+        launcher_pid = int((tmp_path / "startup-launcher-pid").read_text())
+        assert "exec cat -- " not in log.read_text(encoding="utf-8")
+        # No producer may launch before registration. Even SIGKILL during
+        # startup must close the parent-death pipe and retire the launcher.
+        def launcher_live() -> bool:
+            stat = Path(f"/proc/{launcher_pid}/stat")
+            return stat.exists() and stat.read_text().split(") ", 1)[1][0] != "Z"
+
+        until = time.monotonic() + 2
+        while launcher_live() and time.monotonic() < until:
+            time.sleep(0.02)
+        assert not launcher_live(), "unregistered startup launcher survived"
     if stream_fault in {"fork_ignores_term", "fork_signal"}:
         grandchild = tmp_path / "grandchild-pid"
         assert grandchild.is_file()
@@ -697,7 +741,8 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     assert "codespace cp" not in "\n".join(
         call for call in actions.splitlines() if "chapter-recovery.tar" in call
     )
-    assert " -T " in actions and "exec cat -- " in actions
+    if stream_fault not in {"startup_soft", "startup_hard"}:
+        assert " -T " in actions and "exec cat -- " in actions
     folder = tmp_path / "owner-private-recovery/synthetic-private-host"
     verification = json.loads((folder / "retrieval-verification.json").read_bytes())
     cleanup = json.loads((folder / "host-cleanup-verification.json").read_bytes())
