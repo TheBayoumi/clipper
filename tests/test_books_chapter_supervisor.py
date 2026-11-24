@@ -967,6 +967,15 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         env["MOCK_ARCHIVE"] = str(empty_tar)
         env["MOCK_RECEIPT"] = str(empty_receipt)
         env["MOCK_TAMPER"] = "false"
+        direct_before_empty = {
+            name: (folder / name).read_bytes()
+            for name in (
+                "chapter-recovery.tar",
+                "retrieval-verification.json",
+                "safe-recovery-status.json",
+            )
+        }
+        pointer_before_empty = os.readlink(folder / "recovery-current")
         stopped.unlink(missing_ok=True)
         counter.unlink(missing_ok=True)
         empty_run = subprocess.run(
@@ -980,6 +989,8 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         assert empty_run.returncode != 0
         assert json.loads(pointer_path.read_text()) == pointer
         assert (verified / "chapter-recovery.tar").read_bytes() == source.read_bytes()
+        assert os.readlink(folder / "recovery-current") == pointer_before_empty
+        assert all((folder / name).read_bytes() == body for name, body in direct_before_empty.items())
         assert "api -X DELETE" in log.read_text()
         assert "fabricated fixture text" not in empty_run.stdout + empty_run.stderr
 
