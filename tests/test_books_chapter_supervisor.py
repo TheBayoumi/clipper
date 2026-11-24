@@ -973,6 +973,13 @@ def test_actual_codespace_wrapper_dispatches_all_modes_through_shared_preflight(
         "identity_swap",
         "lost_rest",
         "hung_rest",
+        "rest_transient_then_valid",
+        "rest_persistent_unavailable",
+        "rest_persistent_timeout",
+        "rest_persistent_malformed",
+        "rest_foreign_confirmed",
+        "rest_initial_unavailable",
+        "rest_initial_malformed",
         "hung_ssh",
         "terminal_state",
         "transient_cp",
@@ -1019,11 +1026,17 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         "  n=int(c.read_text())+1 if c.exists() else 1; c.write_text(str(n))\n"
         "  if mode=='hung_rest' and n==4: time.sleep(120)\n"
         "  if mode=='lost_rest' and n==4: sys.exit(3)\n"
+        "  if mode=='rest_transient_then_valid' and n==4: sys.exit(3)\n"
+        "  if mode=='rest_persistent_unavailable' and n>=4: sys.exit(3)\n"
+        "  if mode=='rest_persistent_timeout' and n>=4: time.sleep(120)\n"
+        "  if mode=='rest_persistent_malformed' and n>=4: print('{malformed'); sys.exit(0)\n"
+        "  if mode=='rest_initial_unavailable': sys.exit(3)\n"
+        "  if mode=='rest_initial_malformed': print('{malformed'); sys.exit(0)\n"
         "  state='Available'\n"
         "  if mode in ('provisioning_then_ready','transient_ssh') and n<5: state='Created'\n"
         "  if mode=='never_ready_original_clock': state='Created'\n"
         "  if mode=='terminal_state': state='Shutdown'\n"
-        "  host_id=999 if mode=='identity_swap' and n>=4 else 12\n"
+        "  host_id=999 if mode in ('identity_swap','rest_foreign_confirmed') and n>=4 else 12\n"
         "  name=os.environ['CODESPACE_NAME']\n"
         "  repo='TheBayoumi/clipper'\n"
         "  created=os.environ['MOCK_CREATED']\n"
