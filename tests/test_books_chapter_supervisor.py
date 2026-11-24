@@ -990,7 +990,9 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
         assert json.loads(pointer_path.read_text()) == pointer
         assert (verified / "chapter-recovery.tar").read_bytes() == source.read_bytes()
         assert os.readlink(folder / "recovery-current") == pointer_before_empty
-        assert all((folder / name).read_bytes() == body for name, body in direct_before_empty.items())
+        assert all(
+            (folder / name).read_bytes() == body for name, body in direct_before_empty.items()
+        )
         assert "api -X DELETE" in log.read_text()
         assert "fabricated fixture text" not in empty_run.stdout + empty_run.stderr
 
