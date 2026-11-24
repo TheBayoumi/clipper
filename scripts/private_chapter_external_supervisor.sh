@@ -1630,12 +1630,17 @@ print(hashlib.sha256(raw).hexdigest())
   # time to an absolute timestamp from the signed heartbeat, preserving the
   # remaining freshness budget for the next signed renewal.
   until_renew="$(( signed_issued_epoch + 10 - $(date -u +%s) ))"
-  if (( until_renew > 0 )); then
-    if (( remaining < until_renew )); then until_renew="$remaining"; fi
-    bounded sleep "$until_renew" || {
+  while (( until_renew > 0 )); do
+    # One idle wait may exceed the fixed eight-second operation cap.
+    # Divide only this finite signed-time wait; never extend its deadline.
+    sleep_slice="$until_renew"
+    if (( sleep_slice >= OP_LIMIT )); then sleep_slice="$(( OP_LIMIT - 1 ))"; fi
+    if (( remaining < sleep_slice )); then sleep_slice="$remaining"; fi
+    bounded sleep "$sleep_slice" || {
       echo "EXTERNAL_SUPERVISOR_HEARTBEAT_RENEWAL_BUDGET_EXHAUSTED" >&2
       exit 124
     }
-  fi
+    until_renew="$(( signed_issued_epoch + 10 - $(date -u +%s) ))"
+  done
 done
 # The EXIT trap always tries bounded STOP then bounded DELETE and REST checks.
