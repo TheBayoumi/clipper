@@ -355,6 +355,11 @@ class QualificationOwner:
         self.unresolved.add(step)
         try:
             sb = await self.backend.create(app, volume, script)
+        except BaseException:
+            # The provider may have allocated a Sandbox without returning
+            # its ID. Never retry or falsely assert non-acquisition.
+            self._record("UNKNOWN_ID_OUTCOME", step=step, outcome="UNRESOLVED")
+            raise
         finally:
             self.unresolved.discard(step)
         # Retain the returned handle BEFORE attempting a second journal write.
@@ -406,7 +411,11 @@ class QualificationOwner:
                 if self.stopped.is_set():
                     raise RuntimeError("STOP_LATCHED")
                 self._record("INTENT", step="app_context_enter")
-                app = await app_context.__aenter__()
+                try:
+                    app = await app_context.__aenter__()
+                except BaseException:
+                    self._record("UNKNOWN_ID_OUTCOME", step="app_context_enter", outcome="UNRESOLVED")
+                    raise
                 # Context return is held locally before its durable ID record.
                 self._record(
                     "RETURN", step="app_context_enter", object_id=str(getattr(app, "object_id", ""))
@@ -416,7 +425,13 @@ class QualificationOwner:
                     if self.stopped.is_set():
                         raise RuntimeError("STOP_LATCHED")
                     self._record("INTENT", step="volume_context_enter")
-                    volume = await volume_context.__aenter__()
+                    try:
+                        volume = await volume_context.__aenter__()
+                    except BaseException:
+                        self._record(
+                            "UNKNOWN_ID_OUTCOME", step="volume_context_enter", outcome="UNRESOLVED"
+                        )
+                        raise
                     self._record(
                         "RETURN",
                         step="volume_context_enter",
