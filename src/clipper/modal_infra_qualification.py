@@ -415,7 +415,9 @@ class QualificationOwner:
                 try:
                     app = await app_context.__aenter__()
                 except BaseException:
-                    self._record("UNKNOWN_ID_OUTCOME", step="app_context_enter", outcome="UNRESOLVED")
+                    self._record(
+                        "UNKNOWN_ID_OUTCOME", step="app_context_enter", outcome="UNRESOLVED"
+                    )
                     raise
                 # Context return is held locally before its durable ID record.
                 self._record(
