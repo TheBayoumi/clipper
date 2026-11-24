@@ -34,6 +34,79 @@ deadline_epoch=0
 recovery_epoch=0
 bootstrap_epoch=0
 execution_epoch=0
+# Owner-side evidence stays outside the ephemeral session. It contains only
+# allowlisted operation names, exit classifications, identity and safe phase.
+journal_dir=""
+journal_ready=0
+signal_name=""
+record_operation() {
+  local operation="$1" start="$2" ended="$3" rc="$4"
+  [[ "$journal_ready" == 1 && -n "$journal_dir" ]] || return 0
+  timeout --signal=TERM --kill-after=1s 2s python3 -c '
+import datetime, json, os, pathlib, re, sys
+root=pathlib.Path(sys.argv[1])
+op,start,ended,raw_rc=sys.argv[2:]
+if op not in {"rest_metadata","rest_identity","rest_state","rest_stop","rest_delete",
+    "rest_deleted_check","key_setup","key_copy","sign_heartbeat","heartbeat_copy",
+    "heartbeat_publish","recovery_prepare","recovery_copy","safe_phase_poll",
+    "recovery_fallback","archive_verification","signal","heartbeat_build",
+    "envelope_build","bootstrap_wait"}:
+    sys.exit(2)
+rc=int(raw_rc)
+if rc<0 or rc>255: sys.exit(2)
+phase={"1":"UNOBSERVED","7":"UNOBSERVED"}
+saved=root/"owner-safe-phase.json"
+try:
+    obj=json.loads(saved.read_text(encoding="utf-8"))
+    if (obj.get("codespace_id")==int(os.environ["SUPERVISED_CODESPACE_ID"])
+        and obj.get("created_at")==os.environ["SUPERVISED_CREATED_AT"]):
+        phase={k:v for k,v in obj["chapters"].items()
+               if k in ("1","7") and isinstance(v,str)
+               and re.fullmatch(r"[A-Z0-9_]{1,64}",v)}
+except (OSError,ValueError,KeyError,TypeError): pass
+data={"schema":"clipper-owner-supervisor-operation-v1","operation":op,
+      "started_at":start,"ended_at":ended,"exit_code":rc,
+      "exit_class":"TIMEOUT" if rc==124 else "KILLED" if rc==137
+                   else "SIGNAL" if rc>=128 else "FAILURE" if rc else "OK",
+      "codespace_id":int(os.environ["SUPERVISED_CODESPACE_ID"]),
+      "created_at":os.environ["SUPERVISED_CREATED_AT"],
+      "last_verified_safe_phase":phase}
+target=root/("owner-first-failure.json" if rc else "owner-last-operation.json")
+if rc and target.exists(): sys.exit(0)
+tmp=root/(".operation-"+str(os.getpid())+".tmp")
+tmp.write_text(json.dumps(data,sort_keys=True)+"\\n",encoding="utf-8")
+os.chmod(tmp,0o600)
+os.replace(tmp,target)
+' "$journal_dir" "$operation" "$start" "$ended" "$rc" >/dev/null 2>&1 || true
+}
+operation_label() {
+  if [[ "${1:-}" == "gh" ]]; then
+    if [[ "${2:-}" == "api" ]]; then
+      if [[ "${3:-}" == "-X" ]]; then
+        [[ "${4:-}" == "POST" ]] && echo rest_stop || echo rest_delete
+      elif [[ "${3:-}" == "-i" ]]; then echo rest_deleted_check
+      else echo rest_metadata; fi
+    elif [[ "${2:-}" == "codespace" ]]; then
+      if [[ "${3:-}" == "cp" ]]; then
+        case " $* " in
+          *heartbeat-envelope.watchdog.pending*) echo heartbeat_copy ;;
+          *chapter-recovery.tar*) echo recovery_copy ;;
+          *) echo key_copy ;;
+        esac
+      else
+        case " $* " in
+          *"chapter_host recover"*) echo recovery_prepare ;;
+          *"chapter_host status"*) echo safe_phase_poll ;;
+          *heartbeat-envelope.watchdog.pending*) echo heartbeat_publish ;;
+          *) echo key_setup ;;
+        esac
+      fi
+    fi
+  elif [[ "${1:-}" == "openssl" ]]; then echo sign_heartbeat
+  elif [[ -n "${current_operation:-}" ]]; then echo "$current_operation"
+  fi
+}
+
 bounded() {
   local limit="$OP_LIMIT" remaining
   if (( deadline_epoch > 0 )); then
@@ -56,7 +129,16 @@ bounded() {
     if (( remaining <= 0 )); then return 124; fi
     if (( remaining < limit )); then limit="$remaining"; fi
   fi
-  timeout --signal=TERM --kill-after="${KILL_GRACE}s" "${limit}s" "$@"
+  local operation started ended status
+  operation="$(operation_label "$@")"
+  started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  status=0
+  timeout --signal=TERM --kill-after="${KILL_GRACE}s" "${limit}s" "$@" || status=$?
+  if [[ -n "$operation" ]]; then
+    ended="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    record_operation "$operation" "$started" "$ended" "$status"
+  fi
+  return "$status"
 }
 
 # Install cleanup BEFORE the first potentially hung REST/SSH operation.
@@ -106,7 +188,7 @@ recover_private() (
   # One scoped, allowlisted private output TAR includes final WAVs, text
   # validation records, narration reports and safe status; never a whole EPUB.
   if bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
-    "python3 -m clipper.books.chapter_host recover --artifact-root '$PRIVATE_CHAPTER_ROOT'" \
+    "cd /workspaces/clipper && python -m clipper.books.chapter_host recover --artifact-root '$PRIVATE_CHAPTER_ROOT'" \
     >"$session/recovery-created.json" 2>/dev/null; then
     if identity_matches && bounded gh codespace cp -c "$CODESPACE_NAME" \
       "remote:$PRIVATE_CHAPTER_ROOT/book-candidates/private-host/chapter-recovery.tar" \
@@ -624,7 +706,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as f:
   # Fallback safe phase-only checkpoint, still within the same retrieval cap.
   if identity_matches; then
     bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
-      "python3 -m clipper.books.chapter_host status --artifact-root '$PRIVATE_CHAPTER_ROOT'" \
+      "cd /workspaces/clipper && python -m clipper.books.chapter_host status --artifact-root '$PRIVATE_CHAPTER_ROOT'" \
       >"$session/safe-status.json" 2>/dev/null || true
     bounded python3 -c '
 import json, pathlib, sys
@@ -834,6 +916,16 @@ export SUPERVISED_CODESPACE_ID="$codespace_id"
 export SUPERVISED_CREATED_AT="$created_at"
 deadline_epoch="$(( $(date -u -d "$created_at" +%s) + 7200 ))"
 verified_identity=1
+# The owner recovery path was checked before REST. Persist locally before
+# remote setup and without depending on the temporary shell session.
+if (( owner_recovery_safe == 1 )); then
+  journal_dir="$PRIVATE_CHAPTER_RECOVERY_DIR/$CODESPACE_NAME"
+  if [[ ! -L "$journal_dir" ]] &&
+      bounded mkdir -p -m 700 -- "$journal_dir" &&
+      bounded chmod 700 "$journal_dir"; then
+    journal_ready=1
+  fi
+fi
 
 # BEFORE any recovery command or remote shell arguments, validate the path.
 # Invalid retrieval configuration must not veto STOP/DELETE for a verified ID.
