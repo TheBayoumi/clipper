@@ -397,7 +397,13 @@ finally:
     os.close(devnull)
 result = child.wait()
 completed.wait()
-sys.exit(result)
+# The group MUST be retired by its owner before the receiver may accept
+# success. Report the already-reaped leader result on a dedicated private
+# control fd (stderr), then SIGKILL our OWN group, including ourselves.
+# The receiver requires BOTH this frame and our SIGKILL exit status.
+os.write(2, ("SSH_EXIT:" + str(result) + "\\n").encode("ascii"))
+os.killpg(os.getpgrp(), signal.SIGKILL)
+os._exit(2)
 """
 proc = None
 pending_signal = 0
@@ -435,7 +441,7 @@ try:
     proc = subprocess.Popen(
         [sys.executable, "-c", launcher_code, name, remote],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+        stderr=subprocess.PIPE, close_fds=True, start_new_session=True,
     )
     if proc.stdin is None:
         sys.exit(2)
@@ -462,7 +468,17 @@ try:
     # its parent-death watcher, while retaining the SSH leader exit code.
     proc.stdin.write(b"2")
     proc.stdin.flush()
-    if proc.wait() != 0:
+    # Only the launcher writes this bounded frame; gh stderr is DEVNULL.
+    # A normal launcher exit is NOT evidence of group teardown.
+    if proc.stderr is None:
+        sys.exit(2)
+    status = proc.stderr.read(64)
+    if proc.wait() != -signal.SIGKILL:
+        sys.exit(2)
+    if not status.startswith(b"SSH_EXIT:") or not status.endswith(b"\\n"):
+        sys.exit(2)
+    raw_code = status[len(b"SSH_EXIT:"):-1]
+    if not raw_code.isdigit() or len(raw_code) > 3 or int(raw_code) != 0:
         sys.exit(2)
 finally:
     end_child()
