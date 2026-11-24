@@ -197,6 +197,7 @@ def test_repeated_caller_cancel_retains_owner_and_cleans_late_handle(
             await backend.entered_cleanup.wait()
         for _ in range(2):
             observer = asyncio.create_task(owner.observe())
+            await asyncio.sleep(0)
             observer.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await observer
