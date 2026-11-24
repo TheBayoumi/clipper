@@ -383,6 +383,8 @@ def test_sdk_explicit_client_workspace_and_resource_wiring() -> None:
     [
         ("INTENT", "app_context_enter"),
         ("RETURN", "app_context_enter"),
+        ("INTENT", "volume_context_enter"),
+        ("RETURN", "volume_context_enter"),
         ("INTENT", "sandbox_1_create"),
         ("RETURN", "sandbox_1_create"),
     ],
