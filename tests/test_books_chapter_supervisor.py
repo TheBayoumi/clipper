@@ -797,7 +797,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             "    path.write_text(str(count))\n",
             "    path.write_text(str(count))\n"
             "    with open(os.environ['MOCK_HEARTBEAT_STAMPS'],'a') as stamp:\n"
-            "      stamp.write(str(time.time())+'\\\n')\n",
+            "      stamp.write(str(time.time())+'\\n')\n",
         )
         fake_gh.write_text(timed, encoding="utf-8")
         stamps = tmp_path / "heartbeat-copy-monotonic-stamps"
