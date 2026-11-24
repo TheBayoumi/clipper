@@ -37,6 +37,8 @@ deadline_epoch=0
 recovery_epoch=0
 bootstrap_epoch=0
 execution_epoch=0
+optional_epoch=0
+heartbeat_expiry_epoch=0
 # Owner-side evidence stays outside the ephemeral session. It contains only
 # allowlisted operation names, exit classifications, identity and safe phase.
 journal_dir=""
@@ -150,6 +152,18 @@ bounded() {
   fi
   if (( execution_epoch > 0 )); then
     remaining="$(( execution_epoch - $(date -u +%s) ))"
+    if (( remaining <= 0 )); then return 124; fi
+    if (( remaining < limit )); then limit="$remaining"; fi
+  fi
+  # A published heartbeat has a finite 45-second freshness window.
+  # Leave room for the host's timestamp precision and GNU timeout grace.
+  if (( heartbeat_expiry_epoch > 0 )); then
+    remaining="$(( heartbeat_expiry_epoch - $(date -u +%s) ))"
+    if (( remaining <= 0 )); then return 124; fi
+    if (( remaining < limit )); then limit="$remaining"; fi
+  fi
+  if (( optional_epoch > 0 )); then
+    remaining="$(( optional_epoch - $(date -u +%s) ))"
     if (( remaining <= 0 )); then return 124; fi
     if (( remaining < limit )); then limit="$remaining"; fi
   fi
@@ -937,6 +951,8 @@ terminate_host() {
   # Execution/bootstrap expiry must never block original-clock cleanup.
   bootstrap_epoch=0
   execution_epoch=0
+  optional_epoch=0
+  heartbeat_expiry_epoch=0
   if [[ "$verified_identity" != 1 ]]; then
     rm -rf -- "$session"
     echo "EXTERNAL_SUPERVISOR_IDENTITY_UNVERIFIED_OWNER_MUST_CHECK_HOST" >&2
@@ -1355,12 +1371,24 @@ with open(sys.argv[3], "wb") as f:
   identity_matches || { echo "EXTERNAL_SUPERVISOR_IDENTITY_CHANGED" >&2; exit 2; }
   critical heartbeat_publish gh codespace ssh -c "$CODESPACE_NAME" -- \
     "mv -f -- '$remote/external-supervisor-heartbeat-envelope.watchdog.pending' '$remote/external-supervisor-heartbeat-envelope.json'" >/dev/null
+  signed_issued_epoch="$(date -u -d "$now" +%s)"
+  # The signed observed_at timestamp, not local loop start or publish finish,
+  # is the freshness authority. Fail closed if transport already consumed it.
+  if (( $(date -u +%s) >= signed_issued_epoch + 43 )); then
+    echo "EXTERNAL_SUPERVISOR_HEARTBEAT_FRESHNESS_BUDGET_EXHAUSTED" >&2
+    exit 124
+  fi
+  heartbeat_expiry_epoch="$(( signed_issued_epoch + 43 ))"
+  # ALL optional tasks share only the first eight seconds after observed_at;
+  # the rest is reserved for safe signed renewal and owner DELETE.
+  optional_epoch="$(( signed_issued_epoch + 8 ))"
   # Poll source-free phase every minute and verify owner-private output
   # archive approximately every five minutes. Both are best effort and must
   # yield to heartbeat and DELETE; never treat phase-only status as retrieval.
   if (( journal_ready == 1 && deadline_epoch - $(date -u +%s) > 60 )); then
     checked_now="$(date -u +%s)"
-    if (( checked_now - last_phase_poll_epoch >= 60 )); then
+    if (( checked_now < optional_epoch &&
+          checked_now - last_phase_poll_epoch >= 60 )); then
       last_phase_poll_epoch="$checked_now"
       phase_rc=0
       poll_safe_phase || phase_rc=$?
@@ -1368,7 +1396,8 @@ with open(sys.argv[3], "wb") as f:
         record_operation safe_phase_poll "$now" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$phase_rc"
       fi
     fi
-    if (( checked_now - last_checkpoint_epoch >= 300 )); then
+    if (( $(date -u +%s) < optional_epoch &&
+          checked_now - last_checkpoint_epoch >= 300 )); then
       last_checkpoint_epoch="$checked_now"
       checkpoint_rc=0
       checkpoint_private || checkpoint_rc=$?
@@ -1377,6 +1406,17 @@ with open(sys.argv[3], "wb") as f:
       fi
     fi
   fi
-  sleep "$(( remaining < 10 ? remaining : 10 ))"
+  optional_epoch=0
+  # No fixed ten-second sleep after slow successful optional calls. Cap idle
+  # time to an absolute timestamp from the signed heartbeat, preserving the
+  # remaining freshness budget for the next signed renewal.
+  until_renew="$(( signed_issued_epoch + 10 - $(date -u +%s) ))"
+  if (( until_renew > 0 )); then
+    if (( remaining < until_renew )); then until_renew="$remaining"; fi
+    bounded sleep "$until_renew" || {
+      echo "EXTERNAL_SUPERVISOR_HEARTBEAT_RENEWAL_BUDGET_EXHAUSTED" >&2
+      exit 124
+    }
+  fi
 done
 # The EXIT trap always tries bounded STOP then bounded DELETE and REST checks.
