@@ -27,15 +27,18 @@ before any app/volume context entry. Its synchronous hydrate() is executed
 inside asyncio.to_thread, not in the event-loop thread. App.run() and
 Volume.ephemeral() expose async-capable context managers; app context return
 is correlated via nonempty App.app_id, whereas Volume and Sandbox use
-object_id. A missing app ID is a fail-closed evidence error; the acquired
-app context must still exit, and neither an empty ID nor source SHA
+object_id. Any missing app/volume/sandbox ID is a fail-closed
+unresolved-allocation outcome; known acquired handles remain subject to
+teardown and no second allocation is permitted. Neither an empty ID nor source SHA
 constitutes provider recovery or remote identity proof. Sandbox environment is inherited from App.run,
 not passed via deprecated Sandbox.create environment_name.
 
 **Important runtime limitation:** The owner is a retained asyncio Task.
 observe() has finite *decision* and *reconciliation observation* windows,
 not a hard timeout or provider operation deadline. On expiry the durable ledger
-records UNRESOLVED and OWNER_MONITORING_CONTINUES_IN_ACTIVE_LOOP, and the
+records UNRESOLVED with the current active awaited operation and any separate
+settled unknown allocation IDs/outcomes, plus
+OWNER_MONITORING_CONTINUES_IN_ACTIVE_LOOP, and the
 owner continues waiting and cleaning up inside the **same running event loop**.
 Callers must explicitly await terminal() before closing the loop; calling
 asyncio.run(owner.observe()) alone is unsafe and unsupported. A process crash
@@ -46,21 +49,30 @@ identify unknown provider allocations.
 
 The ledger uses private file permissions, append-only JSON records and fsync.
 Records separate run/source identity, acquisition intent, returned IDs,
-sandbox terminal observations, exact bytes, context closures and
-provider_removal=UNKNOWN (not verified). Failed journal records MUST NOT be
-interpreted as provider non-acquisition; known handles remain subject to teardown.
+active awaited operations, durable unknown-allocation outcomes, first
+primary error, separate cleanup/evidence errors, sandbox terminal observations,
+exact bytes, entered-context closures and provider_removal=UNKNOWN (not verified).
+A failed __aenter__ is never followed by __aexit__ for that context; the
+unknown allocation outcome remains recorded, not asserted reversed.
+Any journal error latches STOP and forbids new acquisitions; it must not
+suppress teardown of previously returned handles. A ledger failure can
+make a locally completed synthetic run terminally BLOCKED.
+No local observation or journal failure proves provider non-acquisition.
 
 ## Synthetic exercise
 
 Payload: bytes(range(256)) * 256 = **65,536 bytes**. Fixed SHA-256 is
 computed by code; no private inputs. Two CPU-only sandboxes share one anonymous
 ephemeral Volume, execute serially, then context managers exit. The writer
-writes /data/infra-check.bin, flushes and fsyncs, executes sync /data
-to commit the mounted Volume, emits one bounded readiness line and stays alive
+writes /data/infra-check.bin, flushes and fsyncs its file, then emits
+one bounded readiness line and stays alive
 until explicitly terminated. Only after terminate(wait=True) and a terminal
 poll() is the fresh reader created. Reader compares byte count/hash and
-remains alive for explicit termination. The owner also checks exact bytes and
-SHA from Volume.read_file before context exit.
+remains alive for explicit termination. Readiness only proves a local
+write/flush and expected hash expression, NOT provider Volume persistence.
+The persistence experiment occurs strictly after first sandbox termination,
+through a fresh reader and then exact bytes and SHA from Volume.read_file
+before context exit. No unspecified Volume commit or sync API is assumed.
 
 Requested sandbox limits: CPU (0.25, 0.25), memory (256, 256) MiB,
 gpu=None, no secrets or ports, block_network=True, timeout=60.
