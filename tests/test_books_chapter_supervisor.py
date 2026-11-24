@@ -706,6 +706,7 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
     if stream_fault in {"startup_soft", "startup_hard"}:
         launcher_pid = int((tmp_path / "startup-launcher-pid").read_text())
         assert "exec cat -- " not in log.read_text(encoding="utf-8")
+
         # No producer may launch before registration. Even SIGKILL during
         # startup must close the parent-death pipe and retire the launcher.
         def launcher_live() -> bool:
