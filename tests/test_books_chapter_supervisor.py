@@ -539,6 +539,88 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
                 )
     assert (folder / "chapter-recovery.tar").exists() is not tamper_archive
     assert "fabricated fixture text" not in result.stdout + result.stderr
+    if scenario == "brief_only" and not tamper_archive:
+        # Drive the REAL supervisor loop through one successful heartbeat,
+        # a verified owner-private partial archive, then a later failed
+        # heartbeat. Accelerate only checkpoint schedule in a temp shell copy.
+        fake_openssl = fake_bin / "openssl"
+        fake_openssl.write_text(
+            f"#!{sys.executable}\\n"
+            "import pathlib,sys\\n"
+            "a=sys.argv[1:]\\n"
+            "pathlib.Path(a[a.index('-out')+1]).write_bytes(b'SYNTHETIC_TEST_SIGNATURE')\\n",
+            encoding="utf-8",
+        )
+        fake_openssl.chmod(0o700)
+        safe_path = tmp_path / "synthetic-phase-status.json"
+        safe_path.write_text(json.dumps(safe), encoding="utf-8")
+        gh_body = fake_gh.read_text(encoding="utf-8")
+        gh_body = gh_body.replace(
+            "if a[:2]==['codespace','ssh']:\\n",
+            "if a[:2]==['codespace','ssh']:\\n"
+            "  if ' chapter_host status ' in (' '+' '.join(a)+' '):\\n"
+            "    print(pathlib.Path(os.environ['MOCK_SAFE_STATUS']).read_text()); sys.exit(0)\\n",
+        )
+        gh_body = gh_body.replace(
+            "if a[:2]==['codespace','cp']:\\n",
+            "if a[:2]==['codespace','cp']:\\n"
+            "  if 'heartbeat-envelope.watchdog.pending' in ' '.join(a):\\n"
+            "    path=pathlib.Path(os.environ['MOCK_HEARTBEAT_COUNT'])\\n"
+            "    count=int(path.read_text())+1 if path.exists() else 1\\n"
+            "    path.write_text(str(count))\\n"
+            "    if count>=2: sys.exit(3)\\n",
+        )
+        fake_gh.write_text(gh_body, encoding="utf-8")
+        env["MOCK_SAFE_STATUS"] = str(safe_path)
+        counter = tmp_path / "synthetic-heartbeat-counter"
+        env["MOCK_HEARTBEAT_COUNT"] = str(counter)
+        controlled = tmp_path / "synthetic-checkpoint-supervisor.sh"
+        original = _SCRIPT.read_text(encoding="utf-8")
+        assert 'last_checkpoint_epoch="$last_phase_poll_epoch"' in original
+        controlled.write_text(
+            original.replace('last_checkpoint_epoch="$last_phase_poll_epoch"',
+                             "last_checkpoint_epoch=0", 1).replace(
+                                 'last_phase_poll_epoch="$(date -u +%s)"',
+                                 'last_phase_poll_epoch=0', 1),
+            encoding="utf-8",
+        )
+        stopped = Path(env["MOCK_STOP"])
+        stopped.unlink(missing_ok=True)
+        first = subprocess.run(
+            ["bash", str(controlled)], env=env, capture_output=True, text=True,
+            timeout=35, check=False,
+        )
+        assert first.returncode != 0
+        pointer_path = folder / "latest-verified-snapshot.json"
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        assert pointer["retrieval_status"] == "VERIFIED_OWNER_PRIVATE_SNAPSHOT"
+        assert pointer["archive_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+        verified = folder / pointer["snapshot_dir"]
+        assert (verified / "chapter-recovery.tar").read_bytes() == source.read_bytes()
+        assert (verified / "retrieval-verification.json").is_file()
+        safe_phase = json.loads((folder / "owner-safe-phase.json").read_text())
+        assert safe_phase["chapters"] == {
+            "1": "AWAITING_HUMAN_REVIEW", "7": "NOT_STARTED",
+        }
+        assert safe_phase["codespace_id"] == 12
+        exit_reason = json.loads((folder / "owner-exit-reason.json").read_text())
+        assert exit_reason["codespace_id"] == 12
+        assert exit_reason["most_recent_recorded_failed_operation"] == "heartbeat_copy"
+        assert "fabricated fixture text" not in first.stdout + first.stderr
+        # A failed *next* checkpoint must not replace or damage the verified
+        # owner-private first snapshot. REST DELETE remains independent.
+        stopped.unlink(missing_ok=True)
+        counter.unlink(missing_ok=True)
+        env["MOCK_TAMPER"] = "true"
+        second = subprocess.run(
+            ["bash", str(controlled)], env=env, capture_output=True, text=True,
+            timeout=35, check=False,
+        )
+        assert second.returncode != 0
+        assert json.loads(pointer_path.read_text()) == pointer
+        assert (verified / "chapter-recovery.tar").read_bytes() == source.read_bytes()
+        assert "api -X DELETE" in log.read_text()
+        assert "fabricated fixture text" not in second.stdout + second.stderr
 
 
 @pytest.mark.parametrize("mode", ["inspect", "brief", "resume", "hybrid-brief", "hybrid-resume"])
