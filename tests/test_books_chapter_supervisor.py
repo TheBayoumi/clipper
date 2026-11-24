@@ -832,6 +832,53 @@ def test_external_supervisor_bootstrap_real_shell_consumer(tmp_path: Path, scena
         assert any(allowed_recovery in call for call in host_calls), host_calls
     else:
         assert not host_calls, "Unready or unverified bootstrap must not run host commands"
+    if scenario.startswith("foreign_available_"):
+        # The only substitution below is the exact vulnerable bootstrap_state
+        # function from reviewed 5ccd857c. Keep the rest of the REAL shell
+        # supervisor and fake gh REST sequence identical. This is an offline
+        # differential consumer test, not a helper/parser-only assertion.
+        old_readiness = r"""bootstrap_state() {
+  bootstrap_identity || return 2
+  local metadata state
+  metadata="$(bounded gh api "user/codespaces/$CODESPACE_NAME")" || return 2
+  state="$(printf '%s' "$metadata" | bounded python3 -c '
+import json, sys
+try:
+    obj=json.load(sys.stdin)
+    state=obj["state"]
+    if state not in {"Available","Created","Starting","Provisioning","Queued","Rebuilding"}:
+        sys.exit(2)
+    print(state)
+except (ValueError, TypeError, KeyError):
+    sys.exit(2)
+')" || return 2
+  bootstrap_identity || return 2
+  printf '%s\\n' "$state"
+}"""
+        source = _SCRIPT.read_text(encoding="utf-8")
+        start = source.index("bootstrap_state() {")
+        end = source.index("\nremote=", start)
+        assert "SUPERVISED_CODESPACE_ID" in source[start:end]
+        old_script = tmp_path / "vulnerable-supervisor.sh"
+        old_script.write_text(source[:start] + old_readiness + source[end:], encoding="utf-8")
+        state_counter.unlink()
+        log.unlink()
+        stopped = Path(env["MOCK_STOP"])
+        if stopped.exists():
+            stopped.unlink()
+        vulnerable = subprocess.run(
+            ["bash", str(old_script)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        old_calls = log.read_text(encoding="utf-8")
+        assert "codespace ssh" in old_calls, (scenario, vulnerable.stderr, old_calls)
+        assert "mkdir -p" in old_calls
+        assert "codespace cp" not in old_calls
+        assert "api -X DELETE" in old_calls
     for forbidden in (
         "pip install",
         "chapter_host brief",
