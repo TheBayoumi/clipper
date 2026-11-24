@@ -60,7 +60,7 @@ if op not in {"rest_metadata","rest_identity","rest_state","rest_stop","rest_del
     "rest_deleted_check","key_setup","key_copy","sign_heartbeat","heartbeat_copy",
     "heartbeat_publish","recovery_prepare","recovery_copy","safe_phase_poll",
     "recovery_fallback","archive_verification","signal","heartbeat_build",
-    "envelope_build","bootstrap_wait"}:
+    "envelope_build","bootstrap_wait","journal_setup","grant_validation"}:
     sys.exit(2)
 rc=int(raw_rc)
 if rc<0 or rc>255: sys.exit(2)
@@ -126,9 +126,30 @@ critical() {
   shift
   bounded "$@"
 }
+# Local-only operations must not inherit the legacy two-hour execution clock.
+# This function never mutates deadline_epoch or any cleanup/REST authority.
+# Its fixed eight-second bound, two-second kill grace and sanitized journal
+# are independent from the original creation-time cleanup deadline.
+bounded_local() {
+  local current_operation="$1"
+  shift
+  local started ended status
+  started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  status=0
+  timeout --signal=TERM --kill-after="${KILL_GRACE}s" "${OP_LIMIT}s" "$@" || status=$?
+  ended="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  record_operation "$current_operation" "$started" "$ended" "$status"
+  return "$status"
+}
 signal_exit() {
   local label="$1" status="$2" stamp
   stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # A signal can land between mkdir and chmod while journal_ready is not
+  # committed yet. Reuse only an existing safe owner-private directory.
+  if [[ "$verified_identity" == 1 && "$journal_ready" != 1 &&
+        -n "$journal_dir" && -d "$journal_dir" && ! -L "$journal_dir" ]]; then
+    journal_ready=1
+  fi
   record_operation signal "$stamp" "$stamp" "$status"
   echo "EXTERNAL_SUPERVISOR_SIGNAL_${label}_CLEANUP_REQUIRED" >&2
   exit "$status"
@@ -1126,25 +1147,18 @@ verified_identity=1
 # itself is recorded but its failure cannot hide the identity-checked cleanup.
 if (( owner_recovery_safe == 1 )); then
   journal_dir="$PRIVATE_CHAPTER_RECOVERY_DIR/$CODESPACE_NAME"
-  # Only local owner-private journal setup temporarily ignores the legacy
-  # execution clock; every command still has its fixed eight-second cap.
-  # An older valid grant must not start execution with journaling disabled.
-  journal_deadline_epoch="$deadline_epoch"
-  deadline_epoch=0
+  # Local bounded setup never changes the cleanup clock, even if
+  # SIGTERM arrives while an operation is in progress.
   if [[ ! -L "$journal_dir" ]] &&
-      bounded mkdir -p -m 700 -- "$journal_dir" &&
-      bounded chmod 700 "$journal_dir"; then
+      bounded_local journal_setup mkdir -p -m 700 -- "$journal_dir" &&
+      bounded_local journal_setup chmod 700 "$journal_dir"; then
     journal_ready=1
   fi
-  deadline_epoch="$journal_deadline_epoch"
 fi
 if [[ -n "$PRIVATE_CHAPTER_FREE_GRANT_FILE" ]]; then
-  # Validation is read-only and bounded by OP_LIMIT, not by a legacy
-  # execution clock which this valid signed grant may legitimately exceed.
-  # On rejection restore the legacy clock for identity-checked cleanup.
-  legacy_deadline_epoch="$deadline_epoch"
-  deadline_epoch=0
-  grant_seconds="$(printf '%s' "$metadata" | critical grant_validation python3 -c '
+  # Read-only validation receives a local eight-second operation cap,
+  # without mutating the legacy cleanup deadline or its signal path.
+  grant_seconds="$(printf '%s' "$metadata" | bounded_local grant_validation python3 -c '
 import datetime,json,os,pathlib,sys
 x=json.load(sys.stdin)
 path=pathlib.Path(os.environ["PRIVATE_CHAPTER_FREE_GRANT_FILE"])
@@ -1186,11 +1200,9 @@ except (ValueError,TypeError,KeyError,AttributeError,OSError):
     sys.exit(2)
 print(total)
 ')" || {
-    deadline_epoch="$legacy_deadline_epoch"
     echo "EXTERNAL_SUPERVISOR_FREE_GRANT_REJECTED_NO_EXECUTION" >&2
     exit 2
   }
-  deadline_epoch="$legacy_deadline_epoch"
   total_seconds="$grant_seconds"
   deadline_epoch="$(( $(date -u -d "$created_at" +%s) + total_seconds ))"
 fi
