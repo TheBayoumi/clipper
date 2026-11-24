@@ -207,13 +207,13 @@ recover_private() (
   bounded chmod 700 "$destination" || return 2
   # One scoped, allowlisted private output TAR includes final WAVs, text
   # validation records, narration reports and safe status; never a whole EPUB.
-  if bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
-    "cd /workspaces/clipper && python -m clipper.books.chapter_host recover --artifact-root '$PRIVATE_CHAPTER_ROOT'" \
+  if critical recovery_prepare gh codespace ssh -c "$CODESPACE_NAME" -- \
+    "cd /workspaces/clipper && if [ -x .venv/bin/python ]; then .venv/bin/python -m clipper.books.chapter_host recover --artifact-root '$PRIVATE_CHAPTER_ROOT'; else PYTHONPATH=/workspaces/clipper/src python -m clipper.books.chapter_host recover --artifact-root '$PRIVATE_CHAPTER_ROOT'; fi" \
     >"$session/recovery-created.json" 2>/dev/null; then
-    if identity_matches && bounded gh codespace cp -c "$CODESPACE_NAME" \
+    if identity_matches && critical recovery_copy gh codespace cp -c "$CODESPACE_NAME" \
       "remote:$PRIVATE_CHAPTER_ROOT/book-candidates/private-host/chapter-recovery.tar" \
       "$destination/chapter-recovery.tar" >/dev/null 2>&1; then
-      if bounded python3 -c '
+      if critical archive_verification python3 -c '
 import hashlib, json, pathlib, re, sys, tarfile
 created_path, archive_path, report_path, safe_path = map(pathlib.Path, sys.argv[1:])
 dig = re.compile(r"[0-9a-f]{64}\Z")
@@ -726,7 +726,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as f:
   # Fallback safe phase-only checkpoint, still within the same retrieval cap.
   if identity_matches; then
     bounded gh codespace ssh -c "$CODESPACE_NAME" -- \
-      "cd /workspaces/clipper && python -m clipper.books.chapter_host status --artifact-root '$PRIVATE_CHAPTER_ROOT'" \
+      "cd /workspaces/clipper && if [ -x .venv/bin/python ]; then .venv/bin/python -m clipper.books.chapter_host status --artifact-root '$PRIVATE_CHAPTER_ROOT'; else PYTHONPATH=/workspaces/clipper/src python -m clipper.books.chapter_host status --artifact-root '$PRIVATE_CHAPTER_ROOT'; fi" \
       >"$session/safe-status.json" 2>/dev/null || true
     bounded python3 -c '
 import json, pathlib, sys
@@ -790,7 +790,7 @@ record={"schema":"clipper-owner-private-safe-phase-v1",
         "status_source":"HOST_STATUS_READ_ONLY_NOT_RETRIEVAL"}
 dest=pathlib.Path(target)
 tmp=dest.with_name("."+dest.name+".tmp")
-tmp.write_text(json.dumps(record,sort_keys=True)+"\\n",encoding="utf-8")
+tmp.write_text(json.dumps(record,sort_keys=True)+"\n",encoding="utf-8")
 os.chmod(tmp,0o600)
 os.replace(tmp,dest)
 ' "$phase_file" "$journal_dir/owner-safe-phase.json" || return 2
@@ -838,7 +838,7 @@ record={"schema":"clipper-owner-verified-snapshot-pointer-v1",
         "created_at":os.environ["SUPERVISED_CREATED_AT"],
         "retrieval_status":"VERIFIED_OWNER_PRIVATE_SNAPSHOT"}
 tmp=root/".latest-verified-snapshot.tmp"
-tmp.write_text(json.dumps(record,sort_keys=True)+"\\n",encoding="utf-8")
+tmp.write_text(json.dumps(record,sort_keys=True)+"\n",encoding="utf-8")
 os.chmod(tmp,0o600)
 os.replace(tmp,root/"latest-verified-snapshot.json")
 ' "$journal_dir" "${final##*/}" >/dev/null 2>&1
