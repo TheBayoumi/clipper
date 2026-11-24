@@ -2145,3 +2145,121 @@ def test_exact_recovery_receiver_success_and_nonzero_producer(
     assert b"Fatal Python error" not in result.stderr
     assert result.returncode == (0 if producer_exit == 0 else 2), result.stderr
     assert target.stat().st_mode & 0o077 == 0
+
+
+@pytest.mark.parametrize("interruption", ["soft", "hard"])
+def test_exact_recovery_receiver_inner_popen_startup_interruption(
+    tmp_path: Path, interruption: str
+) -> None:
+    """Interrupt *after* the inner OS spawn but *before* Popen returns.
+
+    Both producer and non-detached descendant must leave the registered
+    launcher process group. This runs the actual receiver and launcher
+    source with only the inner Popen-return boundary widened.
+    """
+    import signal
+
+    content = _SCRIPT.read_text(encoding="utf-8")
+    marker = "critical recovery_copy python3 -c '\n"
+    assert content.count(marker) == 1
+    receiver = content.split(marker, 1)[1].split(
+        '\' "$CODESPACE_NAME" "$remote_archive" "$target" "$session/recovery-created.json"',
+        1,
+    )[0]
+    boundary = "threading.Thread(target=parent_gone, daemon=True).start()\n"
+    assert receiver.count(boundary) == 1
+    injection = (
+        "import pathlib, time\n"
+        "_original_popen = subprocess.Popen\n"
+        "def _held_inner_popen(*args, **kwargs):\n"
+        "    process = _original_popen(*args, **kwargs)\n"
+        "    pathlib.Path(os.environ['MOCK_INNER_ENTERED']).touch()\n"
+        "    time.sleep(3)\n"
+        "    return process\n"
+        "subprocess.Popen = _held_inner_popen\n"
+    )
+    receiver = receiver.replace(boundary, boundary + injection, 1)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    producer = fake_bin / "gh"
+    producer.write_text(
+        f"#!{sys.executable}\n"
+        "import os,pathlib,subprocess,sys,time\n"
+        "pathlib.Path(os.environ['MOCK_PRODUCER_PID']).write_text(str(os.getpid()))\n"
+        "pathlib.Path(os.environ['MOCK_PRODUCER_PGID']).write_text(str(os.getpgrp()))\n"
+        "descendant=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],"
+        "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "pathlib.Path(os.environ['MOCK_DESCENDANT_PID']).write_text(str(descendant.pid))\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    producer.chmod(0o700)
+    target = tmp_path / "archive.tar"
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+    entered = tmp_path / "inner-entered"
+    producer_pid = tmp_path / "producer.pid"
+    descendant_pid = tmp_path / "descendant.pid"
+    producer_pgid = tmp_path / "producer.pgid"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
+            "MOCK_INNER_ENTERED": str(entered),
+            "MOCK_PRODUCER_PID": str(producer_pid),
+            "MOCK_PRODUCER_PGID": str(producer_pgid),
+            "MOCK_DESCENDANT_PID": str(descendant_pid),
+        }
+    )
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            receiver,
+            "synthetic-pinned",
+            "/synthetic-private/chapter-recovery.tar",
+            str(target),
+            str(receipt),
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 7
+        while time.monotonic() < deadline and child.poll() is None:
+            if entered.exists() and producer_pid.exists() and descendant_pid.exists():
+                break
+            time.sleep(0.02)
+        assert entered.exists() and producer_pid.exists() and descendant_pid.exists()
+        assert child.poll() is None, "receiver exited before interruption"
+        child.send_signal(signal.SIGTERM if interruption == "soft" else signal.SIGKILL)
+        _, stderr = child.communicate(timeout=5)
+        assert child.returncode == (143 if interruption == "soft" else -9), stderr
+
+        def running(pid: int) -> bool:
+            stat = Path(f"/proc/{pid}/stat")
+            if not stat.exists():
+                return False
+            # Reparented zombies do not represent surviving processes.
+            return stat.read_text().split(") ", 1)[1][:1] != "Z"
+
+        deadline = time.monotonic() + 4
+        pids = [int(producer_pid.read_text()), int(descendant_pid.read_text())]
+        while time.monotonic() < deadline and any(running(pid) for pid in pids):
+            time.sleep(0.02)
+        assert all(not running(pid) for pid in pids), (
+            interruption,
+            pids,
+            producer_pgid.read_text(),
+        )
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.communicate(timeout=5)
+        # Cleanup only the synthetic process group established for this test.
+        if producer_pgid.exists():
+            try:
+                os.killpg(int(producer_pgid.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
