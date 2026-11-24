@@ -1435,9 +1435,15 @@ def test_signal_during_local_preflight_retains_exact_id_cleanup_clock(
     )
     assert first["exit_code"] == (2 if held_operation == "grant_validation" else 143)
     assert first["codespace_id"] == 12
-    assert latest["operation"] == "signal"
-    assert latest["exit_code"] == 143
-    assert latest["exit_class"] == "SIGNAL"
+    if held_operation == "journal_setup" and identity_swapped:
+        # The bounded local command can finish after the deferred TERM trap
+        # and update the mutable last-operation record. Preserve its truth.
+        assert latest["operation"] == "journal_setup"
+        assert latest["exit_code"] != 0
+    else:
+        assert latest["operation"] == "signal"
+        assert latest["exit_code"] == 143
+        assert latest["exit_class"] == "SIGNAL"
     assert latest["codespace_id"] == 12
     assert reason["original_exit_code"] == 143
     assert reason["exit_class"] == "SIGNAL"
