@@ -112,7 +112,11 @@ class SDKBackend:
         def check() -> str:
             workspace = self.sdk.Workspace.from_context(client=self.client)
             workspace.hydrate()
-            return str(workspace.name())
+            # Modal 1.5.5 Workspace.name is an Optional[str] property.
+            name = workspace.name
+            if not isinstance(name, str) or not name:
+                raise ValueError("Modal workspace identity unavailable")
+            return name
 
         actual = await asyncio.to_thread(check)
         if actual != expected_workspace:
@@ -421,10 +425,14 @@ class QualificationOwner:
                         "UNKNOWN_ID_OUTCOME", step="app_context_enter", outcome="UNRESOLVED"
                     )
                     raise
-                # Context return is held locally before its durable ID record.
-                self._record(
-                    "RETURN", step="app_context_enter", object_id=str(getattr(app, "object_id", ""))
-                )
+                # Modal App has app_id, not object_id. The acquired context
+                # remains owned by the enclosing finally even on ID/journal
+                # failure; never treat an empty ID as useful correlation.
+                app_id = getattr(app, "app_id", None)
+                if not isinstance(app_id, str) or not app_id:
+                    self._record("UNKNOWN_APP_ID", step="app_context_enter")
+                    raise ValueError("Modal App returned without an app_id")
+                self._record("RETURN", step="app_context_enter", app_id=app_id)
                 volume_context = self.backend.volume_context()
                 try:
                     if self.stopped.is_set():
