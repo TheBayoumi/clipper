@@ -169,6 +169,7 @@ def test_offline_exact_bytes_sequential_termination_and_ledger(tmp_path: Path) -
             for x in entries
             if x["operation"] == "RETURN" and x["step"].endswith("_create")
         ] == ["sb-synthetic-1", "sb-synthetic-2"]
+
     asyncio.run(exercise())
 
 
@@ -181,6 +182,7 @@ def test_mismatch_prevents_any_context_or_create(tmp_path: Path) -> None:
         result = await owner.terminal()
         assert result["primary_error"] == "ValueError"
         assert backend.events == ["verify"]
+
     asyncio.run(exercise())
 
 
@@ -216,6 +218,7 @@ def test_repeated_caller_cancel_retains_owner_and_cleans_late_handle(
         assert "poll_sb-synthetic-1" in backend.events
         assert backend.events[-2:] == ["volume_exit", "app_exit"]
         assert any(x["operation"] == "UNRESOLVED" for x in _events(tmp_path))
+
     asyncio.run(exercise())
 
 
@@ -232,6 +235,7 @@ def test_readiness_ignores_suffix_and_closes_on_owner(tmp_path: Path, chunks: li
         assert await read_first_line(iterator, maximum=32) == b"READY:ok"
         iterator.close()
         assert iterator.closed
+
     asyncio.run(exercise())
 
 
@@ -240,6 +244,7 @@ def test_readiness_rejects_eof_overflow_and_missing_newline(chunks: list[bytes])
     async def exercise() -> None:
         with pytest.raises(ValueError):
             await read_first_line(Iterator(chunks))
+
     asyncio.run(exercise())
 
 
@@ -250,6 +255,7 @@ def test_volume_cap_and_iterator_error() -> None:
             await read_exact(Iterator([DATA, b"overflow"]))
         with pytest.raises(OSError):
             await read_exact(Iterator([], error=True))
+
     asyncio.run(exercise())
 
 
@@ -263,12 +269,14 @@ def test_volume_corruption_fails_independently_of_readiness(tmp_path: Path) -> N
         assert result["primary_error"] == "ValueError"
         assert result["exact_bytes"] is False
         assert len(result["sandbox_terminal"]) == 2
+
     asyncio.run(exercise())
 
 
 def test_sdk_injection_has_no_provider_work_at_construction() -> None:
     class SDK:
         pass
+
     client = object()
     backend = SDKBackend(SDK(), client, "qualification")
     assert backend.client is client
