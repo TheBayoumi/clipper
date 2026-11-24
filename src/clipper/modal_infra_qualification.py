@@ -279,6 +279,9 @@ class QualificationOwner:
             raise
         if done:
             return self.task.result()
+        # Decision expiry stops *new* acquisitions, not the retained create
+        # task or its subsequent termination/reconciliation.
+        self.request_stop()
         self._record("DECISION_DEADLINE", disposition="OWNER_RETAINED_IN_LOOP")
         try:
             done, _ = await asyncio.wait({self.task}, timeout=self.reconciliation_seconds)
