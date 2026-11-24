@@ -688,9 +688,10 @@ def test_owner_recovery_hash_verification_is_independent_of_rest_deletion(
             check=False,
         )
         assert copy_failed.returncode != 0
-        assert log.read_text(encoding="utf-8").count(
-            "heartbeat-envelope.watchdog.pending"
-        ) > transport_before
+        assert (
+            log.read_text(encoding="utf-8").count("heartbeat-envelope.watchdog.pending")
+            > transport_before
+        )
         latest_failure = json.loads((folder / "owner-last-failure.json").read_text())
         assert latest_failure["operation"] == "heartbeat_copy", (
             copy_failed.stderr,
