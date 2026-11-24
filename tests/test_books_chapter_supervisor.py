@@ -2337,9 +2337,13 @@ def test_exact_recovery_receiver_leader_exit_then_receiver_hard_kill(
     try:
         deadline = time.monotonic() + 7
         while time.monotonic() < deadline and receiver_proc.poll() is None:
-            if descendant_pid.exists() and leader_pid.exists() and pgid.exists():
-                if not live(int(leader_pid.read_text())):
-                    break
+            if (
+                descendant_pid.exists()
+                and leader_pid.exists()
+                and pgid.exists()
+                and not live(int(leader_pid.read_text()))
+            ):
+                break
             time.sleep(0.02)
         assert descendant_pid.exists() and leader_pid.exists() and pgid.exists()
         assert not live(int(leader_pid.read_text())), "producer leader still alive"
