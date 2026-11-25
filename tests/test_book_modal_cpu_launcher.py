@@ -71,8 +71,12 @@ def test_plan_mode_never_imports_sdk_or_provider(
     assert launcher.main(["--expected-sha", SHA]) == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan["status"] == "DORMANT_PLAN_ONLY"
-    assert plan["function_limits"]["cpu"] == [1, 1] or plan["function_limits"]["cpu"] == (1, 1)
-    assert plan["function_limits"]["memory"] == [512, 512] or plan["function_limits"]["memory"] == (
+    assert plan["function_limits"]["cpu"] == [1, 1] or plan["function_limits"][
+        "cpu"
+    ] == (1, 1)
+    assert plan["function_limits"]["memory"] == [512, 512] or plan["function_limits"][
+        "memory"
+    ] == (
         512,
         512,
     )
@@ -117,7 +121,9 @@ def test_no_approval_blocks_before_client_construction(
         {"expires_utc": "2999-01-01T00:00:00+00:00"},
     ],
 )
-def test_invalid_external_approval_rejected(tmp_path: Path, change: dict[str, Any]) -> None:
+def test_invalid_external_approval_rejected(
+    tmp_path: Path, change: dict[str, Any]
+) -> None:
     path, digest = _manifest(tmp_path, **change)
     with pytest.raises(launcher.LaunchBlocked):
         launcher.load_approval(path, digest, SHA)
@@ -184,12 +190,16 @@ def test_approved_fake_control_does_not_import_modal(tmp_path: Path) -> None:
             events.append("run-called-inert-fake")
             return {"source_sha": a.source_sha, "test_double": True}
 
-    output = launcher.execute(SHA, approval, FakeControl(), external_control_verified=True)
+    output = launcher.execute(
+        SHA, approval, FakeControl(), external_control_verified=True
+    )
     assert output["test_double"] is True
     assert events == ["identity-read", "run-called-inert-fake"]
 
 
-def test_local_source_fails_on_foreign_or_dirty_source(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_local_source_fails_on_foreign_or_dirty_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     checkout = Path(launcher.__file__).resolve().parents[1]
     calls: list[tuple[str, ...]] = []
 
@@ -202,10 +212,15 @@ def test_local_source_fails_on_foreign_or_dirty_source(monkeypatch: pytest.Monke
     monkeypatch.setattr(launcher, "_git", fake_git)
     with pytest.raises(launcher.LaunchBlocked, match="clean"):
         launcher.local_source(checkout, SHA)
-    assert calls == [("rev-parse", "HEAD"), ("status", "--porcelain=v1", "--untracked-files=all")]
+    assert calls == [
+        ("rev-parse", "HEAD"),
+        ("status", "--porcelain=v1", "--untracked-files=all"),
+    ]
 
 
-def test_child_function_uses_only_synthetic_cli_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_child_function_uses_only_synthetic_cli_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     checkout = Path("/opt/clipper")
     fake_payload = {
         "source_sha": SHA,
@@ -238,7 +253,9 @@ def test_child_function_uses_only_synthetic_cli_contract(monkeypatch: pytest.Mon
     assert output["publish_eligible"] is False
     assert len(calls) == 1
     assert calls[0]["argv"][1] == str(checkout / "tests" / "book_public_rehearsal.py")
-    assert calls[0]["kwargs"]["env"]["PYTHONPATH"] == "/opt/clipper/src:/opt/clipper/tests"
+    assert (
+        calls[0]["kwargs"]["env"]["PYTHONPATH"] == "/opt/clipper/src:/opt/clipper/tests"
+    )
     assert "MODAL_TOKEN_SECRET" not in calls[0]["kwargs"]["env"]
     assert output["real_model_calls"] == 0
     assert output["artifact_inventory_count"] == 1
@@ -453,7 +470,8 @@ def test_stop_and_list_terminal_evidence_requires_exact_id_zero_tasks() -> None:
             return SimpleNamespace(returncode=1, stdout="")
         state = "ephemeral" if len(commands) == 1 else "stopped"
         return SimpleNamespace(
-            returncode=0, stdout=json.dumps([{"app_id": app_id, "state": state, "tasks": "0"}])
+            returncode=0,
+            stdout=json.dumps([{"app_id": app_id, "state": state, "tasks": "0"}]),
         )
 
     confirmed, errors = launcher._stop_and_observe(
@@ -467,8 +485,19 @@ def test_stop_and_list_terminal_evidence_requires_exact_id_zero_tasks() -> None:
     ("states", "expected"),
     [
         ([("ephemeral", "1"), ("ephemeral", "1"), ("stopped", "0")], True),
-        ([("ephemeral", "1"), ("ephemeral", "1"), ("ephemeral", "1"), ("ephemeral", "1")], False),
-        ([("ephemeral", "1"), ("stopped", "1"), ("stopped", "1"), ("stopped", "1")], False),
+        (
+            [
+                ("ephemeral", "1"),
+                ("ephemeral", "1"),
+                ("ephemeral", "1"),
+                ("ephemeral", "1"),
+            ],
+            False,
+        ),
+        (
+            [("ephemeral", "1"), ("stopped", "1"), ("stopped", "1"), ("stopped", "1")],
+            False,
+        ),
         ([("ephemeral", "1"), ("stopped", True)], False),
     ],
 )
@@ -485,9 +514,10 @@ def test_bounded_lifecycle_reobservation_without_retry(
         if argv[2] == "stop":
             return SimpleNamespace(returncode=1, stdout="")
         state, tasks = next(sequence)
-        return SimpleNamespace(returncode=0, stdout=json.dumps(
-            [{"app_id": app_id, "state": state, "tasks": tasks}]
-        ))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps([{"app_id": app_id, "state": state, "tasks": tasks}]),
+        )
 
     warnings: list[str] = []
     confirmed, errors = launcher._stop_and_observe(
@@ -495,7 +525,11 @@ def test_bounded_lifecycle_reobservation_without_retry(
     )
     assert confirmed is expected
     assert commands.count("stop") == 1
-    assert (warnings == ["stop:nonzero"]) if expected else (bool(errors) and warnings == [])
+    assert (
+        (warnings == ["stop:nonzero"])
+        if expected
+        else (bool(errors) and warnings == [])
+    )
 
 
 @pytest.mark.parametrize(
@@ -508,16 +542,21 @@ def test_bounded_lifecycle_reobservation_without_retry(
         [{"app_id": "ap-" + "A" * 22, "state": "stopped", "tasks": 0}],
     ],
 )
-def test_missing_duplicate_wrong_or_malformed_terminal_fails_without_stop(rows: list[object]) -> None:
+def test_missing_duplicate_wrong_or_malformed_terminal_fails_without_stop(
+    rows: list[object],
+) -> None:
     commands: list[str] = []
 
     def fake_cli(argv: list[str], **_kw: object) -> SimpleNamespace:
         commands.append(argv[2])
         return SimpleNamespace(returncode=0, stdout=json.dumps(rows))
 
-    assert launcher._stop_and_observe(
-        "ap-" + "A" * 22, "main", time.monotonic() + 2, runner=fake_cli
-    )[0] is False
+    assert (
+        launcher._stop_and_observe(
+            "ap-" + "A" * 22, "main", time.monotonic() + 2, runner=fake_cli
+        )[0]
+        is False
+    )
     assert commands == ["list"]
 
 
@@ -530,9 +569,10 @@ def test_stop_timeout_does_not_claim_terminal(monkeypatch: pytest.MonkeyPatch) -
         commands.append(argv[2])
         if argv[2] == "stop":
             raise subprocess.TimeoutExpired("mock-stop", 0.1)
-        return SimpleNamespace(returncode=0, stdout=json.dumps([
-            {"app_id": app_id, "state": "ephemeral", "tasks": "1"}
-        ]))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps([{"app_id": app_id, "state": "ephemeral", "tasks": "1"}]),
+        )
 
     confirmed, errors = launcher._stop_and_observe(
         app_id, "main", time.monotonic() + 2, runner=fake_cli
@@ -576,7 +616,9 @@ def test_build_stall_retains_unknown_cleanup_without_app_id(
     assert "CONTROL_PLANE_TIMEOUT" in outcome["cleanup_errors"]
 
 
-def test_nonzero_stop_then_terminal_preserves_verified_execution(tmp_path: Path) -> None:
+def test_nonzero_stop_then_terminal_preserves_verified_execution(
+    tmp_path: Path,
+) -> None:
     path, digest = _manifest(tmp_path)
     approval = launcher.load_approval(path, digest, SHA)
     recorded: list[list[str]] = []
@@ -604,7 +646,10 @@ def test_nonzero_stop_then_terminal_preserves_verified_execution(tmp_path: Path)
                 {
                     "source_sha": SHA,
                     "rehearsal": launcher._compact_rehearsal(
-                        {**_valid_child_output(), "artifact_sha256": {"fixture.json": "a" * 64}},
+                        {
+                            **_valid_child_output(),
+                            "artifact_sha256": {"fixture.json": "a" * 64},
+                        },
                         SHA,
                     ),
                     "app_id": "ap-CCCCCCCCCCCCCCCCCCCCCC",
@@ -668,16 +713,24 @@ def test_worker_compact_survives_cleanup_unknown_without_promoting_success(
         journal = Path(argv[argv.index("--journal") + 1])
         result_file = Path(argv[argv.index("--result-file") + 1])
         for phase, identifier in (
-            ("APP_ID", app_id), ("CALL_ID", call_id),
-            ("GET_BEGIN", call_id), ("RESULT_ACCEPTED", call_id),
+            ("APP_ID", app_id),
+            ("CALL_ID", call_id),
+            ("GET_BEGIN", call_id),
+            ("RESULT_ACCEPTED", call_id),
         ):
             launcher._journal(journal, phase, identifier)
         full = _valid_child_output()
         full["artifact_sha256"] = {"fixture.json": "a" * 64}
-        result_file.write_text(json.dumps({
-            "source_sha": SHA, "app_id": app_id, "call_id": call_id,
-            "rehearsal": launcher._compact_rehearsal(full, SHA),
-        }))
+        result_file.write_text(
+            json.dumps(
+                {
+                    "source_sha": SHA,
+                    "app_id": app_id,
+                    "call_id": call_id,
+                    "rehearsal": launcher._compact_rehearsal(full, SHA),
+                }
+            )
+        )
         return Finished()
 
     def fake_cli(argv: list[str], **_kw: object) -> SimpleNamespace:
@@ -685,13 +738,18 @@ def test_worker_compact_survives_cleanup_unknown_without_promoting_success(
         counts[kind] += 1
         if kind == "stop":
             return SimpleNamespace(returncode=1, stdout="")
-        return SimpleNamespace(returncode=0, stdout=json.dumps([
-            {"app_id": app_id, "state": "stopping", "tasks": "1"}
-        ]))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps([{"app_id": app_id, "state": "stopping", "tasks": "1"}]),
+        )
 
     result = launcher._bounded_run(
-        approval, path, digest, deadline_seconds=10,
-        popen=fake_popen, runner=fake_cli,
+        approval,
+        path,
+        digest,
+        deadline_seconds=10,
+        popen=fake_popen,
+        runner=fake_cli,
     )
     assert counts == {"stop": 1, "list": 4}
     assert result["status"] == "BLOCKED"
@@ -808,13 +866,18 @@ def test_list_unknown_and_mismatched_states_never_claim_stop() -> None:
         {"app_id": "ap-DDDDDDDDDDDDDDDDDDDDDD", "state": "stopped", "tasks": "0"},
     ):
 
-        def fake_cli(argv: list[str], rows: object = rows, **_kw: object) -> SimpleNamespace:
+        def fake_cli(
+            argv: list[str], rows: object = rows, **_kw: object
+        ) -> SimpleNamespace:
             if "stop" in argv:
                 return SimpleNamespace(returncode=0, stdout="")
             return SimpleNamespace(returncode=0, stdout=json.dumps(rows))
 
         confirmed, errors = launcher._stop_and_observe(
-            "ap-DDDDDDDDDDDDDDDDDDDDDD", "qualification", time.monotonic() + 10, runner=fake_cli
+            "ap-DDDDDDDDDDDDDDDDDDDDDD",
+            "qualification",
+            time.monotonic() + 10,
+            runner=fake_cli,
         )
         assert confirmed is False
         assert errors
@@ -848,7 +911,13 @@ def test_stop_preserves_prior_cancel_and_journal_failures(tmp_path: Path) -> Non
         return SimpleNamespace(
             returncode=0,
             stdout=json.dumps(
-                [{"app_id": "ap-DDDDDDDDDDDDDDDDDDDDDD", "state": "stopped", "tasks": "0"}]
+                [
+                    {
+                        "app_id": "ap-DDDDDDDDDDDDDDDDDDDDDD",
+                        "state": "stopped",
+                        "tasks": "0",
+                    }
+                ]
             ),
         )
 
@@ -900,7 +969,9 @@ def test_parent_retains_bounded_diagnostics_only(tmp_path: Path) -> None:
     for part in ("stdout", "stderr"):
         evidence = output["worker_diagnostics"][part]
         assert evidence["size_bytes"] == len(sensitive)
-        assert evidence["bounded_prefix_sha256"] == hashlib.sha256(sensitive).hexdigest()
+        assert (
+            evidence["bounded_prefix_sha256"] == hashlib.sha256(sensitive).hexdigest()
+        )
     assert sensitive.decode() not in json.dumps(output)
 
 
@@ -1003,7 +1074,9 @@ def test_already_stopped_app_skips_stop_even_if_stop_would_exit_nonzero() -> Non
     assert calls == [["modal", "app", "list", "--json", "--env", "qualification"]]
 
 
-def test_keyboard_interrupt_reconciles_exact_id_and_propagates_evidence(tmp_path: Path) -> None:
+def test_keyboard_interrupt_reconciles_exact_id_and_propagates_evidence(
+    tmp_path: Path,
+) -> None:
     path, digest = _manifest(tmp_path)
     approval = launcher.load_approval(path, digest, SHA)
     app_id = "ap-" + "A" * 22
@@ -1175,7 +1248,8 @@ def test_journal_valid_app_id_then_nonobject_json_keeps_cleanup_and_interrupt(
             return SimpleNamespace(returncode=0, stdout="")
         state = "ephemeral" if len(commands) == 1 else "stopped"
         return SimpleNamespace(
-            returncode=0, stdout=json.dumps([{"app_id": app_id, "state": state, "tasks": "0"}])
+            returncode=0,
+            stdout=json.dumps([{"app_id": app_id, "state": state, "tasks": "0"}]),
         )
 
     with pytest.raises(launcher.LaunchInterrupted) as interrupted:
@@ -1215,7 +1289,8 @@ def test_initial_inconclusive_list_does_not_stop_unverified_app(
                 return SimpleNamespace(returncode=0, stdout="{invalid")
             return SimpleNamespace(returncode=0, stdout="[]")
         return SimpleNamespace(
-            returncode=0, stdout=json.dumps([{"app_id": app_id, "state": "stopped", "tasks": "0"}])
+            returncode=0,
+            stdout=json.dumps([{"app_id": app_id, "state": "stopped", "tasks": "0"}]),
         )
 
     confirmed, errors = launcher._stop_and_observe(
@@ -1251,7 +1326,8 @@ def test_initial_transport_failure_allows_only_bounded_exact_stop(
         if argv[2] == "stop":
             return SimpleNamespace(returncode=0, stdout="")
         return SimpleNamespace(
-            returncode=0, stdout=json.dumps([{"app_id": app_id, "state": "stopped", "tasks": "0"}])
+            returncode=0,
+            stdout=json.dumps([{"app_id": app_id, "state": "stopped", "tasks": "0"}]),
         )
 
     confirmed, errors = launcher._stop_and_observe(
@@ -1310,8 +1386,10 @@ def test_reached_main_scoped_action_success_blocked_interrupt(
                 "cleanup_errors": [],
                 "initiator_interrupted": False,
                 "result": {
-                    "source_sha": SHA, "app_id": "ap-" + "A" * 22,
-                    "call_id": "fc-synthetic-known", "rehearsal": evidence,
+                    "source_sha": SHA,
+                    "app_id": "ap-" + "A" * 22,
+                    "call_id": "fc-synthetic-known",
+                    "rehearsal": evidence,
                 },
                 "unapproved_field": "marker-not-for-output",
             }
@@ -1355,7 +1433,10 @@ def test_reached_main_scoped_action_success_blocked_interrupt(
     assert output["rehearsal"]["network_calls"] == 0
     assert output["rehearsal"]["publication_calls"] == 0
     expected_inventory = json.dumps(
-        {"test.json": "b" * 64}, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        {"test.json": "b" * 64},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
     ).encode("utf-8")
     assert output["rehearsal"]["artifact_inventory_count"] == 1
     assert (
@@ -1462,7 +1543,9 @@ def test_worker_identity_exact_workspace_and_unexpired_before_remote(
             calls.append("identity")
             return approval.workspace
 
-        def run_remote(self, _approval: launcher.Approval, record: Any) -> dict[str, object]:
+        def run_remote(
+            self, _approval: launcher.Approval, record: Any
+        ) -> dict[str, object]:
             calls.append("resource")
             record("RESULT_ACCEPTED", "synthetic")
             full = _valid_child_output()
@@ -1542,7 +1625,9 @@ def test_actual_public_rehearsal_inventory_sanitized_end_to_end(tmp_path: Path) 
     report = rehearsal.rehearse(tmp_path / "public-rehearsal", source_sha)
     report["source_pin"] = "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
     # Nested arbitrary metadata from test producers is not an output permission.
-    report["tracks"]["pause"]["unapproved_field"] = {"marker": "never-publish-nested-marker"}
+    report["tracks"]["pause"]["unapproved_field"] = {
+        "marker": "never-publish-nested-marker"
+    }
     report["unapproved_field"] = "never-publish-nested-marker"
     inventory_map = report["artifact_sha256"]
     assert isinstance(inventory_map, dict)
@@ -1563,8 +1648,10 @@ def test_actual_public_rehearsal_inventory_sanitized_end_to_end(tmp_path: Path) 
             "app_id": "ap-" + "A" * 22,
             "call_id": "fc-synthetic-known",
             "result": {
-                "source_sha": source_sha, "app_id": "ap-" + "A" * 22,
-                "call_id": "fc-synthetic-known", "rehearsal": compact,
+                "source_sha": source_sha,
+                "app_id": "ap-" + "A" * 22,
+                "call_id": "fc-synthetic-known",
+                "rehearsal": compact,
             },
         },
         source_sha,
@@ -1586,12 +1673,19 @@ def test_actual_public_rehearsal_inventory_sanitized_end_to_end(tmp_path: Path) 
     assert all(path not in json.dumps(result) for path in inventory_map)
 
 
-def test_real_child_cli_proves_source_pin_before_remote_compaction(tmp_path: Path) -> None:
+def test_real_child_cli_proves_source_pin_before_remote_compaction(
+    tmp_path: Path,
+) -> None:
     """Actual clean-checkout CLI; no Modal SDK and no test-double source pin."""
     checkout = Path(__file__).resolve().parents[1]
     source_sha = launcher._git(checkout, "rev-parse", "HEAD")
-    assert launcher._git(checkout, "status", "--porcelain=v1", "--untracked-files=all") == ""
-    compact = launcher._run_synthetic_child(checkout, tmp_path / "fresh-artifacts", source_sha)
+    assert (
+        launcher._git(checkout, "status", "--porcelain=v1", "--untracked-files=all")
+        == ""
+    )
+    compact = launcher._run_synthetic_child(
+        checkout, tmp_path / "fresh-artifacts", source_sha
+    )
     launcher._validate_compact_report(compact, source_sha)
     assert compact["source_pin"] == "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
     assert compact["artifact_inventory_count"] == 97
@@ -1615,7 +1709,9 @@ def test_artifact_inventory_count_and_size_bounds() -> None:
     report["artifact_sha256"] = {f"file-{i}.json": "a" * 64 for i in range(513)}
     with pytest.raises(launcher.LaunchBlocked):
         launcher._compact_rehearsal(report, SHA)
-    report["artifact_sha256"] = {f"folder/{i:03d}-{'x' * 100}.json": "a" * 64 for i in range(510)}
+    report["artifact_sha256"] = {
+        f"folder/{i:03d}-{'x' * 100}.json": "a" * 64 for i in range(510)
+    }
     with pytest.raises(launcher.LaunchBlocked):
         launcher._compact_rehearsal(report, SHA)
 
@@ -1700,7 +1796,10 @@ def test_compact_wire_contract_rejects_extra_nested_and_wrong_types() -> None:
             launcher._validate_compact_report(malformed, SHA)
         with pytest.raises(launcher.LaunchBlocked):
             launcher._public_result(
-                {"status": "SYNTHETIC_REHEARSAL_CONFIRMED", "result": {"rehearsal": malformed}},
+                {
+                    "status": "SYNTHETIC_REHEARSAL_CONFIRMED",
+                    "result": {"rehearsal": malformed},
+                },
                 SHA,
             )
 
@@ -1719,7 +1818,9 @@ def test_blocked_lifecycle_retains_only_verified_compact_evidence() -> None:
         "call_id": call_id,
         "cleanup_errors": ["list:terminal_or_tasks_unconfirmed"],
         "result": {
-            "source_sha": SHA, "app_id": app_id, "call_id": call_id,
+            "source_sha": SHA,
+            "app_id": app_id,
+            "call_id": call_id,
             "rehearsal": compact,
         },
         "worker_diagnostics": {"secret": "must-not-publish"},
@@ -1736,20 +1837,29 @@ def test_blocked_lifecycle_retains_only_verified_compact_evidence() -> None:
         {"app_id": "ap-invalid"},
         {"result": {**blocked["result"], "call_id": "fc-wrong-id"}},
         {"result": {**blocked["result"], "source_sha": "b" * 40}},
-        {"result": {**blocked["result"], "rehearsal": {
-            **compact, "tracks": {**compact["tracks"], "synthetic_test_review": {
-                "status": "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED",
-                "publish_eligible": 0,
-            }}
-        }}},
+        {
+            "result": {
+                **blocked["result"],
+                "rehearsal": {
+                    **compact,
+                    "tracks": {
+                        **compact["tracks"],
+                        "synthetic_test_review": {
+                            "status": "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED",
+                            "publish_eligible": 0,
+                        },
+                    },
+                },
+            }
+        },
         {"initiator_interrupted": True},
     ):
         with pytest.raises(launcher.LaunchBlocked):
             launcher._public_result({**blocked, **change}, SHA)
     with pytest.raises(launcher.LaunchBlocked):
-        launcher._public_result({
-            **blocked, "status": "SYNTHETIC_REHEARSAL_CONFIRMED"
-        }, SHA)
+        launcher._public_result(
+            {**blocked, "status": "SYNTHETIC_REHEARSAL_CONFIRMED"}, SHA
+        )
 
 
 def test_invalid_publication_fallback_does_not_recurse(
@@ -1763,17 +1873,29 @@ def test_invalid_publication_fallback_does_not_recurse(
 
     def invalid(*_args: object) -> dict[str, object]:
         return {
-            "status": "BLOCKED", "app_id": "ap-" + "A" * 22,
+            "status": "BLOCKED",
+            "app_id": "ap-" + "A" * 22,
             "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
             "result": {"untrusted": "secret"},
         }
 
     monkeypatch.setattr(launcher.BoundedModalControl, "run_once", invalid)
-    assert launcher.main([
-        "--execute", "--expected-sha", SHA, "--approval-file", str(path),
-        "--approval-sha256", digest,
-        "--independent-control-receipt", "independent-ctrl-123",
-    ]) == 2
+    assert (
+        launcher.main(
+            [
+                "--execute",
+                "--expected-sha",
+                SHA,
+                "--approval-file",
+                str(path),
+                "--approval-sha256",
+                digest,
+                "--independent-control-receipt",
+                "independent-ctrl-123",
+            ]
+        )
+        == 2
+    )
     visible = json.loads(capsys.readouterr().out)
     assert visible["status"] == "BLOCKED"
     assert visible["provider_removal"] == "STOPPED_CONFIRMED_BY_LIST"
@@ -1796,8 +1918,10 @@ def test_public_report_rejects_self_consistent_untrusted_source_sha() -> None:
                 "app_id": "ap-" + "A" * 22,
                 "call_id": "fc-synthetic-known",
                 "result": {
-                    "source_sha": forged_sha, "app_id": "ap-" + "A" * 22,
-                    "call_id": "fc-synthetic-known", "rehearsal": compact,
+                    "source_sha": forged_sha,
+                    "app_id": "ap-" + "A" * 22,
+                    "call_id": "fc-synthetic-known",
+                    "rehearsal": compact,
                 },
             },
             SHA,
@@ -1846,7 +1970,9 @@ def test_child_nonzero_exposes_fixed_category_and_numeric_code(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def fake_run(*_args: object, **_kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(returncode=17, stdout="private error detail", stderr="also private")
+        return SimpleNamespace(
+            returncode=17, stdout="private error detail", stderr="also private"
+        )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(launcher.SyntheticChildError) as error:
@@ -1900,7 +2026,9 @@ def test_internal_worker_records_safe_auth_error_phase_and_status(
     assert "private-raw-provider-error-never-journal" not in ledger.read_text()
 
 
-def test_bounded_parent_retains_typed_worker_error_after_exact_cleanup(tmp_path: Path) -> None:
+def test_bounded_parent_retains_typed_worker_error_after_exact_cleanup(
+    tmp_path: Path,
+) -> None:
     path, digest = _manifest(tmp_path)
     approval = launcher.load_approval(path, digest, SHA)
     target = "ap-" + "A" * 22

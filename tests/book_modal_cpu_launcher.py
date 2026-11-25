@@ -95,7 +95,8 @@ def _git(checkout: Path, *args: str) -> str:
 def local_source(checkout: Path, sha: str) -> None:
     _require(bool(HEX40.fullmatch(sha)), "explicit full source SHA required")
     _require(
-        checkout.resolve() == Path(__file__).resolve().parents[1], "launcher must use own checkout"
+        checkout.resolve() == Path(__file__).resolve().parents[1],
+        "launcher must use own checkout",
     )
     _require(_git(checkout, "rev-parse", "HEAD") == sha, "source checkout SHA differs")
     _require(
@@ -103,7 +104,8 @@ def local_source(checkout: Path, sha: str) -> None:
         "source checkout is not clean",
     )
     _require(
-        (checkout / "tests" / "book_public_rehearsal.py").is_file(), "rehearsal entrypoint missing"
+        (checkout / "tests" / "book_public_rehearsal.py").is_file(),
+        "rehearsal entrypoint missing",
     )
 
 
@@ -121,9 +123,15 @@ class Approval:
     external_control_id: str
 
 
-def load_approval(path: Path, digest: str, sha: str, *, now: datetime | None = None) -> Approval:
-    _require(bool(HEX64.fullmatch(digest)), "out-of-band approval file SHA-256 required")
-    _require(path.is_file() and not path.is_symlink(), "approval must be a regular file")
+def load_approval(
+    path: Path, digest: str, sha: str, *, now: datetime | None = None
+) -> Approval:
+    _require(
+        bool(HEX64.fullmatch(digest)), "out-of-band approval file SHA-256 required"
+    )
+    _require(
+        path.is_file() and not path.is_symlink(), "approval must be a regular file"
+    )
     _require(0 < path.stat().st_size <= 8192, "missing or oversized approval")
     with path.open("rb") as stream:
         raw = stream.read(8193)
@@ -147,17 +155,20 @@ def load_approval(path: Path, digest: str, sha: str, *, now: datetime | None = N
     }
     _require(set(data) == expected, "approval fields mismatch")
     _require(
-        data["schema"] == "clipper-modal-public-synthetic-approval-v2", "approval schema mismatch"
+        data["schema"] == "clipper-modal-public-synthetic-approval-v2",
+        "approval schema mismatch",
     )
     _require(data["intent"] == INTENT, "wrong operation authorized")
     _require(data["execution_permission"] is True, "no explicit permission")
     _require(
-        isinstance(data["source_sha"], str) and data["source_sha"] == sha, "approval SHA mismatch"
+        isinstance(data["source_sha"], str) and data["source_sha"] == sha,
+        "approval SHA mismatch",
     )
     for key in ("workspace", "environment", "credential_route", "external_control_id"):
         value = data[key]
         _require(
-            isinstance(value, str) and bool(re.fullmatch(r"[A-Za-z0-9_.:/-]{3,128}", value)),
+            isinstance(value, str)
+            and bool(re.fullmatch(r"[A-Za-z0-9_.:/-]{3,128}", value)),
             "invalid or missing approval " + key,
         )
     _require(data["workspace"] == "mahmoud-bayoumi-mm", "workspace scope mismatch")
@@ -165,23 +176,32 @@ def load_approval(path: Path, digest: str, sha: str, *, now: datetime | None = N
         data["credential_route"] == "actions-existing-secret-route",
         "Actions-only credential route required",
     )
-    _require(data["included_credit_only"] is True, "included-credit-only scope required")
+    _require(
+        data["included_credit_only"] is True, "included-credit-only scope required"
+    )
     _require(data["paid_overage_authorized"] is False, "paid overage prohibited")
     _require(
-        data["owner_request_ref"] == "2026-11-25T11:09:05+02:00", "owner request reference mismatch"
+        data["owner_request_ref"] == "2026-11-25T11:09:05+02:00",
+        "owner request reference mismatch",
     )
     _require(
-        data["credit_confirmation_ref"] == "2026-11-25T15:00:33+02:00", "credit reference mismatch"
+        data["credit_confirmation_ref"] == "2026-11-25T15:00:33+02:00",
+        "credit reference mismatch",
     )
     try:
         expiry = datetime.fromisoformat(data["expires_utc"].replace("Z", "+00:00"))
     except (ValueError, TypeError, AttributeError) as exc:
         raise LaunchBlocked("invalid UTC approval expiry") from exc
     offset = expiry.utcoffset()
-    _require(offset is not None and offset.total_seconds() == 0, "approval expiry must be UTC")
+    _require(
+        offset is not None and offset.total_seconds() == 0,
+        "approval expiry must be UTC",
+    )
     current = now if now is not None else datetime.now(UTC)
     _require(current < expiry, "approval expired")
-    _require((expiry - current).total_seconds() <= 3600, "approval exceeds one-hour validity")
+    _require(
+        (expiry - current).total_seconds() <= 3600, "approval exceeds one-hour validity"
+    )
     return Approval(
         sha,
         data["workspace"],
@@ -277,7 +297,9 @@ class ModalControl:
         return str(workspace.name)
 
     def run_once(self, approval: Approval) -> dict[str, object]:
-        raise LaunchBlocked("control-plane work must run in bounded child; not directly")
+        raise LaunchBlocked(
+            "control-plane work must run in bounded child; not directly"
+        )
 
     def run_remote(self, approval: Approval, record: Any) -> dict[str, object]:
         """Only internal bounded child may construct image and App."""
@@ -287,7 +309,9 @@ class ModalControl:
         record("BUILD_BEGIN", "")
         clone = (
             "set -eu; export GIT_TERMINAL_PROMPT=0; "
-            "git -c credential.helper= clone --no-checkout " + SOURCE_URL + " /opt/clipper; "
+            "git -c credential.helper= clone --no-checkout "
+            + SOURCE_URL
+            + " /opt/clipper; "
             "git -C /opt/clipper checkout --detach " + sha + "; "
             'test "$(git -C /opt/clipper rev-parse HEAD)" = ' + sha + "; "
             'test -z "$(git -C /opt/clipper status --porcelain=v1 --untracked-files=all)"; '
@@ -307,7 +331,9 @@ class ModalControl:
         record("APP_RUN_BEGIN", "")
         # Context-entry can create an App before its ID is returned: the
         # parent retains BUILD/APP_RUN_BEGIN with unknown resource identity.
-        with app.run(client=client, detach=False, environment_name=approval.environment):
+        with app.run(
+            client=client, detach=False, environment_name=approval.environment
+        ):
             app_id = getattr(app, "app_id", None)
             _require(
                 isinstance(app_id, str) and bool(APP_ID.fullmatch(app_id)),
@@ -319,7 +345,10 @@ class ModalControl:
                 record("SPAWN_BEGIN", app_id)
                 call = function.spawn(sha)
                 call_id = getattr(call, "object_id", None)
-                _require(isinstance(call_id, str) and bool(call_id), "FunctionCall id missing")
+                _require(
+                    isinstance(call_id, str) and bool(call_id),
+                    "FunctionCall id missing",
+                )
                 record("CALL_ID", call_id)
                 record("GET_BEGIN", call_id)
                 output = call.get(timeout=30)
@@ -336,7 +365,9 @@ class ModalControl:
                 if call is not None:
                     try:
                         call.cancel(terminate_containers=True)
-                        record("CALL_CANCEL_ATTEMPTED", str(getattr(call, "object_id", "")))
+                        record(
+                            "CALL_CANCEL_ATTEMPTED", str(getattr(call, "object_id", ""))
+                        )
                     except Exception as exc:
                         record("CALL_CANCEL_ERROR", type(exc).__name__)
 
@@ -370,7 +401,10 @@ def _validate_child_report(payload: object, sha: str) -> None:
         "synthetic test continuation invalid",
     )
     proof = payload.get("zero_call_evidence")
-    _require(isinstance(proof, dict) and proof.get("attempts") == [], "guard attempts not empty")
+    _require(
+        isinstance(proof, dict) and proof.get("attempts") == [],
+        "guard attempts not empty",
+    )
     _require(
         all(
             type(payload.get(key)) is int and payload[key] == 0
@@ -446,9 +480,9 @@ def _compact_rehearsal(payload: object, sha: str) -> dict[str, object]:
             and bool(HEX64.fullmatch(digest)),
             "invalid relative POSIX artifact inventory",
         )
-    inventory = json.dumps(hashes, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
-        "utf-8"
-    )
+    inventory = json.dumps(
+        hashes, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
     _require(len(inventory) <= 65536, "synthetic artifact inventory exceeds 64 KiB")
     compact: dict[str, object] = {
         "schema": COMPACT_SCHEMA,
@@ -477,7 +511,8 @@ def _compact_rehearsal(payload: object, sha: str) -> dict[str, object]:
 def _validate_compact_report(payload: object, sha: str) -> None:
     """Strict compact wire contract applied at remote, worker-parent and public edges."""
     _require(
-        isinstance(payload, dict) and set(payload) == COMPACT_KEYS, "invalid compact report keys"
+        isinstance(payload, dict) and set(payload) == COMPACT_KEYS,
+        "invalid compact report keys",
     )
     assert isinstance(payload, dict)
     _require(
@@ -585,7 +620,11 @@ def _read_worker_error(path: Path) -> dict[str, object] | None:
                 found["class"] = value
             elif key == "WORKER_ERROR_PHASE" and value in ERROR_PHASES:
                 found["phase"] = value
-            elif key == "WORKER_ERROR_HTTP_STATUS" and value.isascii() and value.isdecimal():
+            elif (
+                key == "WORKER_ERROR_HTTP_STATUS"
+                and value.isascii()
+                and value.isdecimal()
+            ):
                 number = int(value)
                 if 100 <= number <= 599:
                     found["http_status"] = number
@@ -605,7 +644,9 @@ def _read_accepted_call_id(path: Path, app_id: str | None) -> str | None:
     if not path.is_file() or path.stat().st_size > 65536:
         return None
     try:
-        entries = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        entries = [
+            json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+        ]
     except (OSError, UnicodeError, ValueError):
         return None
     if len(entries) > 512 or not all(type(entry) is dict for entry in entries):
@@ -647,7 +688,11 @@ def _stop_and_observe(
             return None, "list:deadline"
         try:
             response = runner(
-                list_command, check=False, text=True, capture_output=True, timeout=remaining
+                list_command,
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=remaining,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             transient_observation = True
@@ -663,7 +708,11 @@ def _stop_and_observe(
             return None, "list:invalid_json"
         if not isinstance(rows, list):
             return None, "list:invalid_schema"
-        matches = [item for item in rows if isinstance(item, dict) and item.get("app_id") == app_id]
+        matches = [
+            item
+            for item in rows
+            if isinstance(item, dict) and item.get("app_id") == app_id
+        ]
         if len(matches) != 1:
             return None, "list:exact_id_not_found_or_duplicate"
         row = matches[0]
@@ -730,7 +779,6 @@ def _stop_and_observe(
     return False, [*local_warnings, last_issue]
 
 
-
 def _bounded_run(
     approval: Approval,
     manifest_path: Path,
@@ -769,7 +817,10 @@ def _bounded_run(
         ]
         # Capture only bounded diagnostic digests/sizes; never expose raw
         # stdout/stderr, which might contain provider or environment details.
-        with stdout_file.open("wb") as stdout_sink, stderr_file.open("wb") as stderr_sink:
+        with (
+            stdout_file.open("wb") as stdout_sink,
+            stderr_file.open("wb") as stderr_sink,
+        ):
             proc = popen(
                 command,
                 cwd=Path(__file__).resolve().parents[1],
@@ -815,7 +866,10 @@ def _bounded_run(
         if app_id is not None and "INVALID_APP_ID" not in phases:
             try:
                 confirmed, stop_errors = _stop_and_observe(
-                    app_id, approval.environment, deadline, runner=runner,
+                    app_id,
+                    approval.environment,
+                    deadline,
+                    runner=runner,
                     warnings=cleanup_warnings,
                 )
                 cleanup_errors.extend(stop_errors)
@@ -845,7 +899,10 @@ def _bounded_run(
             try:
                 parsed = json.loads(result_file.read_text())
                 if type(parsed) is not dict or set(parsed) != {
-                    "source_sha", "app_id", "call_id", "rehearsal"
+                    "source_sha",
+                    "app_id",
+                    "call_id",
+                    "rehearsal",
                 }:
                     raise LaunchBlocked("unexpected result envelope")
                 if (
@@ -860,7 +917,9 @@ def _bounded_run(
                     raise LaunchBlocked("result identity does not match journal")
                 _validate_compact_report(parsed["rehearsal"], approval.source_sha)
                 if (
-                    proc.returncode != 0 or timed_out or interrupted
+                    proc.returncode != 0
+                    or timed_out
+                    or interrupted
                     or "INVALID_JOURNAL" in cleanup_errors
                     or "INVALID_APP_ID" in cleanup_errors
                 ):
@@ -910,7 +969,9 @@ def _internal_worker(approval: Approval, journal: Path, result_file: Path) -> in
 
     try:
         record("WORKSPACE_VERIFY_BEGIN")
-        _require(controller.identify(approval) == approval.workspace, "workspace mismatch")
+        _require(
+            controller.identify(approval) == approval.workspace, "workspace mismatch"
+        )
         _require(
             datetime.now(UTC) < approval.expires_utc,
             "approval expired during workspace identity lookup",
@@ -923,7 +984,10 @@ def _internal_worker(approval: Approval, journal: Path, result_file: Path) -> in
         return 0
     except Exception as exc:
         name = type(exc).__name__
-        record("WORKER_ERROR", name if SAFE_WORKER_CLASS.fullmatch(name) else "OtherException")
+        record(
+            "WORKER_ERROR",
+            name if SAFE_WORKER_CLASS.fullmatch(name) else "OtherException",
+        )
         record("WORKER_ERROR_PHASE", phase)
         code = next(
             (
@@ -965,14 +1029,18 @@ def execute(
 ) -> dict[str, object]:
     _require(external_control_verified, "independent lifecycle control not verified")
     _require(approval.source_sha == sha, "approval source mismatch")
-    _require(datetime.now(UTC) < approval.expires_utc, "approval expired before execution")
+    _require(
+        datetime.now(UTC) < approval.expires_utc, "approval expired before execution"
+    )
     if isinstance(control, BoundedModalControl):
         # Real workspace hydration happens inside the one-shot worker's deadline
         # before image/App construction. Never hydrate in the parent.
         return control.run_once(approval)
     observed = control.identify(approval)
     _require(observed == approval.workspace, "client-bound workspace identity mismatch")
-    _require(datetime.now(UTC) < approval.expires_utc, "approval expired before resources")
+    _require(
+        datetime.now(UTC) < approval.expires_utc, "approval expired before resources"
+    )
     return control.run_once(approval)
 
 
@@ -998,7 +1066,8 @@ def _safe_worker_error(value: object) -> dict[str, object] | None:
     )
     assert isinstance(value, dict)
     _require(
-        type(value["class"]) is str and bool(SAFE_WORKER_CLASS.fullmatch(value["class"])),
+        type(value["class"]) is str
+        and bool(SAFE_WORKER_CLASS.fullmatch(value["class"])),
         "invalid worker class",
     )
     if "phase" in value:
@@ -1013,7 +1082,8 @@ def _safe_worker_error(value: object) -> dict[str, object] | None:
         )
     if "child_exit_code" in value:
         _require(
-            type(value["child_exit_code"]) is int and -255 <= value["child_exit_code"] <= 255,
+            type(value["child_exit_code"]) is int
+            and -255 <= value["child_exit_code"] <= 255,
             "invalid child exit code",
         )
     return dict(value)
@@ -1022,10 +1092,14 @@ def _safe_worker_error(value: object) -> dict[str, object] | None:
 def _public_result(result: dict[str, object], expected_sha: str) -> dict[str, object]:
     """Publish only verified execution evidence, separately from lifecycle status."""
     _require(type(result) is dict, "invalid parent result")
-    _require(result.get("status") in {"BLOCKED", "SYNTHETIC_REHEARSAL_CONFIRMED"},
-             "invalid overall status")
-    _require(isinstance(expected_sha, str) and bool(HEX40.fullmatch(expected_sha)),
-             "trusted expected source SHA required")
+    _require(
+        result.get("status") in {"BLOCKED", "SYNTHETIC_REHEARSAL_CONFIRMED"},
+        "invalid overall status",
+    )
+    _require(
+        isinstance(expected_sha, str) and bool(HEX40.fullmatch(expected_sha)),
+        "trusted expected source SHA required",
+    )
     safe: dict[str, object] = {"status": result["status"]}
     for key in ("execution_status", "lifecycle_status", "provider_removal"):
         value = result.get(key)
@@ -1039,35 +1113,63 @@ def _public_result(result: dict[str, object], expected_sha: str) -> dict[str, ob
             safe[key] = value
     app_id = result.get("app_id")
     if app_id is not None:
-        _require(type(app_id) is str and bool(APP_ID.fullmatch(app_id)), "unsafe App ID")
+        _require(
+            type(app_id) is str and bool(APP_ID.fullmatch(app_id)), "unsafe App ID"
+        )
         safe["app_id"] = app_id
     for key in ("observed_phases", "cleanup_errors", "cleanup_warnings"):
         value = result.get(key)
         if value is not None:
-            _require(type(value) is list and len(value) <= 128, "unsafe diagnostic sequence")
+            _require(
+                type(value) is list and len(value) <= 128, "unsafe diagnostic sequence"
+            )
             accepted = (
                 JOURNAL_PHASES | {"MALFORMED_RECORD", "INVALID_APP_ID"}
-                if key == "observed_phases" else {
-                    "CALL_CANCEL_ERROR", "INVALID_JOURNAL", "INVALID_APP_ID", "APP_ID_UNKNOWN",
-                    "CONTROL_PLANE_TIMEOUT", "WORKER_NONZERO_OR_TERMINATED",
-                    "RESULT_UNVERIFIED", "NO_RESULT", "INITIATOR_KEYBOARD_INTERRUPT",
-                    "INTERRUPT_DURING_WORKER_REAP", "INTERRUPT_DURING_STOP_OBSERVATION",
-                    "PUBLIC_EVIDENCE_VALIDATION_FAILED", "list:deadline",
-                    "list:nonzero", "list:invalid_json", "list:invalid_schema",
-                    "list:invalid_row_schema", "list:exact_id_not_found_or_duplicate",
-                    "list:terminal_or_tasks_unconfirmed", "stop:deadline", "stop:nonzero",
+                if key == "observed_phases"
+                else {
+                    "CALL_CANCEL_ERROR",
+                    "INVALID_JOURNAL",
+                    "INVALID_APP_ID",
+                    "APP_ID_UNKNOWN",
+                    "CONTROL_PLANE_TIMEOUT",
+                    "WORKER_NONZERO_OR_TERMINATED",
+                    "RESULT_UNVERIFIED",
+                    "NO_RESULT",
+                    "INITIATOR_KEYBOARD_INTERRUPT",
+                    "INTERRUPT_DURING_WORKER_REAP",
+                    "INTERRUPT_DURING_STOP_OBSERVATION",
+                    "PUBLIC_EVIDENCE_VALIDATION_FAILED",
+                    "list:deadline",
+                    "list:nonzero",
+                    "list:invalid_json",
+                    "list:invalid_schema",
+                    "list:invalid_row_schema",
+                    "list:exact_id_not_found_or_duplicate",
+                    "list:terminal_or_tasks_unconfirmed",
+                    "stop:deadline",
+                    "stop:nonzero",
                 }
             )
             allowed_prefix = ("KILL_GROUP:", "stop:", "list:")
             for entry in value:
                 _require(type(entry) is str and len(entry) <= 96, "unsafe diagnostic")
-                _require(entry in accepted or (
-                    key != "observed_phases" and entry.startswith(allowed_prefix)
-                    and re.fullmatch(r"(?:stop|list|KILL_GROUP):[A-Za-z][A-Za-z0-9_]{0,63}", entry)
-                ), "unknown diagnostic")
+                _require(
+                    entry in accepted
+                    or (
+                        key != "observed_phases"
+                        and entry.startswith(allowed_prefix)
+                        and re.fullmatch(
+                            r"(?:stop|list|KILL_GROUP):[A-Za-z][A-Za-z0-9_]{0,63}",
+                            entry,
+                        )
+                    ),
+                    "unknown diagnostic",
+                )
             safe[key] = value
     if "initiator_interrupted" in result:
-        _require(type(result["initiator_interrupted"]) is bool, "invalid interrupt flag")
+        _require(
+            type(result["initiator_interrupted"]) is bool, "invalid interrupt flag"
+        )
         safe["initiator_interrupted"] = result["initiator_interrupted"]
     if "worker_error" in result:
         safe["worker_error"] = _safe_worker_error(result["worker_error"])
@@ -1081,8 +1183,10 @@ def _public_result(result: dict[str, object], expected_sha: str) -> dict[str, ob
         call_id = envelope["call_id"]
         _require(
             envelope["source_sha"] == expected_sha
-            and type(call_id) is str and bool(CALL_ID.fullmatch(call_id))
-            and type(app_id) is str and envelope["app_id"] == app_id
+            and type(call_id) is str
+            and bool(CALL_ID.fullmatch(call_id))
+            and type(app_id) is str
+            and envelope["app_id"] == app_id
             and result.get("call_id") == call_id
             and result.get("execution_status") == "ACCEPTED"
             and result.get("initiator_interrupted") is not True,
@@ -1092,8 +1196,10 @@ def _public_result(result: dict[str, object], expected_sha: str) -> dict[str, ob
         safe["call_id"] = call_id
         safe["rehearsal"] = envelope["rehearsal"]
     else:
-        _require(result.get("execution_status") != "ACCEPTED",
-                 "accepted execution has no validated envelope")
+        _require(
+            result.get("execution_status") != "ACCEPTED",
+            "accepted execution has no validated envelope",
+        )
         _require(result.get("call_id") is None, "unvalidated call ID")
     if result["status"] == "SYNTHETIC_REHEARSAL_CONFIRMED":
         _require(
@@ -1150,7 +1256,9 @@ def main(argv: list[str] | None = None) -> int:
                 and not args.result_file.is_symlink(),
                 "invalid worker output paths",
             )
-            approval = load_approval(args.approval_file, args.approval_sha256, args.expected_sha)
+            approval = load_approval(
+                args.approval_file, args.approval_sha256, args.expected_sha
+            )
             _require(
                 args.independent_control_receipt == approval.external_control_id,
                 "lifecycle receipt mismatch",
@@ -1188,13 +1296,17 @@ def main(argv: list[str] | None = None) -> int:
             args.approval_file is not None and args.approval_sha256 is not None,
             "separate owner approval required",
         )
-        approval = load_approval(args.approval_file, args.approval_sha256, args.expected_sha)
+        approval = load_approval(
+            args.approval_file, args.approval_sha256, args.expected_sha
+        )
         _require(
             args.independent_control_receipt == approval.external_control_id,
             "independent control authority receipt missing",
         )
         _require(
-            args.journal is None and args.result_file is None and args.internal_owner_nonce is None,
+            args.journal is None
+            and args.result_file is None
+            and args.internal_owner_nonce is None,
             "owner-only worker flags prohibited",
         )
         _require_credential_route()
@@ -1218,19 +1330,34 @@ def main(argv: list[str] | None = None) -> int:
                 "execution_status": "UNVERIFIED",
                 "cleanup_errors": ["PUBLIC_EVIDENCE_VALIDATION_FAILED"],
             }
-            if result.get("provider_removal") in {"UNKNOWN", "STOPPED_CONFIRMED_BY_LIST"}:
+            if result.get("provider_removal") in {
+                "UNKNOWN",
+                "STOPPED_CONFIRMED_BY_LIST",
+            }:
                 blocked["provider_removal"] = result["provider_removal"]
             candidate_app = result.get("app_id")
             if type(candidate_app) is str and APP_ID.fullmatch(candidate_app):
                 blocked["app_id"] = candidate_app
-            print(json.dumps(_public_result(blocked, args.expected_sha), sort_keys=True))
+            print(
+                json.dumps(_public_result(blocked, args.expected_sha), sort_keys=True)
+            )
             return 2
         print(json.dumps(visible, sort_keys=True))
         return 0 if result.get("status") == "SYNTHETIC_REHEARSAL_CONFIRMED" else 2
     except LaunchInterrupted as interrupted:
-        print(json.dumps(_public_result(interrupted.evidence, args.expected_sha), sort_keys=True))
+        print(
+            json.dumps(
+                _public_result(interrupted.evidence, args.expected_sha), sort_keys=True
+            )
+        )
         return 130
-    except (LaunchBlocked, OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+    except (
+        LaunchBlocked,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+        subprocess.SubprocessError,
+    ):
         print(json.dumps({"status": "DORMANT_LAUNCH_BLOCKED"}))
         return 2
 
