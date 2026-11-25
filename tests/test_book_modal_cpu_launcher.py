@@ -1083,14 +1083,24 @@ def test_reached_main_scoped_action_success_blocked_interrupt(
     monkeypatch.setattr(launcher.BoundedModalControl, "run_once", FakeBounded.run_once)
     original_init = launcher.BoundedModalControl.__init__
 
-    def inert_init(self: launcher.BoundedModalControl, approval_path: Path, digest_arg: str) -> None:
+    def inert_init(
+        self: launcher.BoundedModalControl, approval_path: Path, digest_arg: str
+    ) -> None:
         seen.append("bounded-parent")
         original_init(self, approval_path, digest_arg)
 
     monkeypatch.setattr(launcher.BoundedModalControl, "__init__", inert_init)
-    args = ["--execute", "--expected-sha", SHA, "--approval-file", str(path),
-            "--approval-sha256", digest, "--independent-control-receipt",
-            "independent-ctrl-123"]
+    args = [
+        "--execute",
+        "--expected-sha",
+        SHA,
+        "--approval-file",
+        str(path),
+        "--approval-sha256",
+        digest,
+        "--independent-control-receipt",
+        "independent-ctrl-123",
+    ]
     assert launcher.main(args) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "SYNTHETIC_REHEARSAL_CONFIRMED"
@@ -1111,15 +1121,21 @@ def test_reached_main_scoped_action_success_blocked_interrupt(
         {"test.json": "b" * 64}, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("utf-8")
     assert output["rehearsal"]["artifact_inventory_count"] == 1
-    assert output["rehearsal"]["artifact_inventory_sha256"] == hashlib.sha256(
-        expected_inventory
-    ).hexdigest()
+    assert (
+        output["rehearsal"]["artifact_inventory_sha256"]
+        == hashlib.sha256(expected_inventory).hexdigest()
+    )
     assert "artifact_sha256" not in output["rehearsal"]
     assert seen == ["bounded-parent", "worker-run"]
 
-    def blocked(self: launcher.BoundedModalControl, _approval: launcher.Approval) -> dict[str, object]:
-        return {"status": "BLOCKED", "provider_removal": "UNKNOWN",
-                "cleanup_errors": ["APP_ID_UNKNOWN"]}
+    def blocked(
+        self: launcher.BoundedModalControl, _approval: launcher.Approval
+    ) -> dict[str, object]:
+        return {
+            "status": "BLOCKED",
+            "provider_removal": "UNKNOWN",
+            "cleanup_errors": ["APP_ID_UNKNOWN"],
+        }
 
     monkeypatch.setattr(launcher.BoundedModalControl, "run_once", blocked)
     assert launcher.main(args) == 2
@@ -1127,9 +1143,12 @@ def test_reached_main_scoped_action_success_blocked_interrupt(
     assert blocked_output["status"] == "BLOCKED"
     assert "rehearsal" not in blocked_output
 
-    def interrupted(self: launcher.BoundedModalControl, _approval: launcher.Approval) -> dict[str, object]:
-        raise launcher.LaunchInterrupted({"status": "BLOCKED",
-                                         "cleanup_errors": ["INITIATOR_KEYBOARD_INTERRUPT"]})
+    def interrupted(
+        self: launcher.BoundedModalControl, _approval: launcher.Approval
+    ) -> dict[str, object]:
+        raise launcher.LaunchInterrupted(
+            {"status": "BLOCKED", "cleanup_errors": ["INITIATOR_KEYBOARD_INTERRUPT"]}
+        )
 
     monkeypatch.setattr(launcher.BoundedModalControl, "run_once", interrupted)
     assert launcher.main(args) == 130
@@ -1160,20 +1179,32 @@ def test_reached_internal_worker_requires_scoped_inputs_before_sdk(
         return 0
 
     monkeypatch.setattr(launcher, "_internal_worker", fake_internal)
-    args = ["--internal-worker", "--expected-sha", SHA,
-            "--approval-file", str(path), "--approval-sha256", digest,
-            "--independent-control-receipt", "independent-ctrl-123",
-            "--journal", str(journal), "--result-file", str(result),
-            "--internal-owner-nonce", nonce]
+    args = [
+        "--internal-worker",
+        "--expected-sha",
+        SHA,
+        "--approval-file",
+        str(path),
+        "--approval-sha256",
+        digest,
+        "--independent-control-receipt",
+        "independent-ctrl-123",
+        "--journal",
+        str(journal),
+        "--result-file",
+        str(result),
+        "--internal-owner-nonce",
+        nonce,
+    ]
     assert launcher.main(args) == 0
     assert events == ["identity-before-resource"]
     for bad_args in (
         [x for x in args if x != "--internal-owner-nonce" and x != nonce],
         [
-            *args[:args.index("--journal")],
+            *args[: args.index("--journal")],
             "--journal",
             str(tmp_path / "other.jsonl"),
-            *args[args.index("--result-file"):],
+            *args[args.index("--result-file") :],
         ],
         [*args[:-1], "b" * 64],
     ):
@@ -1242,9 +1273,22 @@ def test_scoped_approval_rejects_paid_and_generic_before_client(
         {"expires_utc": "2000-01-01T00:00:00Z"},
     ):
         path, digest = _manifest(tmp_path, **bad)
-        assert launcher.main(["--execute", "--expected-sha", SHA,
-                              "--approval-file", str(path), "--approval-sha256", digest,
-                              "--independent-control-receipt", "independent-ctrl-123"]) == 2
+        assert (
+            launcher.main(
+                [
+                    "--execute",
+                    "--expected-sha",
+                    SHA,
+                    "--approval-file",
+                    str(path),
+                    "--approval-sha256",
+                    digest,
+                    "--independent-control-receipt",
+                    "independent-ctrl-123",
+                ]
+            )
+            == 2
+        )
     assert created == []
     assert "DORMANT_LAUNCH_BLOCKED" in capsys.readouterr().out
 
@@ -1326,7 +1370,9 @@ def test_main_publication_failure_preserves_confirmed_cleanup(
     monkeypatch.setenv("MODAL_TOKEN_SECRET", "inert-value")
     monkeypatch.delenv("MODAL_PROFILE", raising=False)
 
-    def fake_run(self: launcher.BoundedModalControl, _approval: launcher.Approval) -> dict[str, object]:
+    def fake_run(
+        self: launcher.BoundedModalControl, _approval: launcher.Approval
+    ) -> dict[str, object]:
         report = _valid_child_output()
         report["artifact_sha256"] = {"../invalid.json": "a" * 64}
         return {
@@ -1340,13 +1386,22 @@ def test_main_publication_failure_preserves_confirmed_cleanup(
         }
 
     monkeypatch.setattr(launcher.BoundedModalControl, "run_once", fake_run)
-    assert launcher.main(
-        [
-            "--execute", "--expected-sha", SHA, "--approval-file", str(path),
-            "--approval-sha256", digest, "--independent-control-receipt",
-            "independent-ctrl-123",
-        ]
-    ) == 2
+    assert (
+        launcher.main(
+            [
+                "--execute",
+                "--expected-sha",
+                SHA,
+                "--approval-file",
+                str(path),
+                "--approval-sha256",
+                digest,
+                "--independent-control-receipt",
+                "independent-ctrl-123",
+            ]
+        )
+        == 2
+    )
     observed = json.loads(capsys.readouterr().out)
     assert observed["status"] == "BLOCKED"
     assert observed["provider_removal"] == "STOPPED_CONFIRMED_BY_LIST"

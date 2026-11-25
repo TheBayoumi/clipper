@@ -137,7 +137,9 @@ def load_approval(path: Path, digest: str, sha: str, *, now: datetime | None = N
         "execution_permission",
     }
     _require(set(data) == expected, "approval fields mismatch")
-    _require(data["schema"] == "clipper-modal-public-synthetic-approval-v2", "approval schema mismatch")
+    _require(
+        data["schema"] == "clipper-modal-public-synthetic-approval-v2", "approval schema mismatch"
+    )
     _require(data["intent"] == INTENT, "wrong operation authorized")
     _require(data["execution_permission"] is True, "no explicit permission")
     _require(
@@ -150,12 +152,18 @@ def load_approval(path: Path, digest: str, sha: str, *, now: datetime | None = N
             "invalid or missing approval " + key,
         )
     _require(data["workspace"] == "mahmoud-bayoumi-mm", "workspace scope mismatch")
-    _require(data["credential_route"] == "actions-existing-secret-route",
-             "Actions-only credential route required")
+    _require(
+        data["credential_route"] == "actions-existing-secret-route",
+        "Actions-only credential route required",
+    )
     _require(data["included_credit_only"] is True, "included-credit-only scope required")
     _require(data["paid_overage_authorized"] is False, "paid overage prohibited")
-    _require(data["owner_request_ref"] == "2026-11-25T11:09:05+02:00", "owner request reference mismatch")
-    _require(data["credit_confirmation_ref"] == "2026-11-25T15:00:33+02:00", "credit reference mismatch")
+    _require(
+        data["owner_request_ref"] == "2026-11-25T11:09:05+02:00", "owner request reference mismatch"
+    )
+    _require(
+        data["credit_confirmation_ref"] == "2026-11-25T15:00:33+02:00", "credit reference mismatch"
+    )
     try:
         expiry = datetime.fromisoformat(data["expires_utc"].replace("Z", "+00:00"))
     except (ValueError, TypeError, AttributeError) as exc:
@@ -702,8 +710,10 @@ def _public_result(result: dict[str, object]) -> dict[str, object]:
     assert isinstance(report, dict)
 
     hashes = report.get("artifact_sha256")
-    _require(isinstance(hashes, dict) and 0 < len(hashes) <= 512,
-             "synthetic artifact inventory count invalid")
+    _require(
+        isinstance(hashes, dict) and 0 < len(hashes) <= 512,
+        "synthetic artifact inventory count invalid",
+    )
     for name, digest in hashes.items():
         _require(
             isinstance(name, str)
@@ -761,9 +771,11 @@ def main(argv: list[str] | None = None) -> int:
         local_source(checkout, args.expected_sha)
         if args.internal_worker:
             _require(
-                not args.execute and args.approval_file is not None
+                not args.execute
+                and args.approval_file is not None
                 and args.approval_sha256 is not None
-                and args.journal is not None and args.result_file is not None,
+                and args.journal is not None
+                and args.result_file is not None,
                 "worker approval and output paths required",
             )
             _require(
@@ -828,8 +840,7 @@ def main(argv: list[str] | None = None) -> int:
             "independent control authority receipt missing",
         )
         _require(
-            args.journal is None and args.result_file is None
-            and args.internal_owner_nonce is None,
+            args.journal is None and args.result_file is None and args.internal_owner_nonce is None,
             "owner-only worker flags prohibited",
         )
         _require_credential_route()
