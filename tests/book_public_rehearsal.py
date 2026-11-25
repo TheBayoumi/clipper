@@ -564,9 +564,11 @@ def main(argv: list[str] | None = None) -> int:
         sys.path[:] = [
             source_path,
             fixture_path,
-            *[path for path in sys.path if Path(path or ".").resolve() not in {
-                Path(source_path), Path(fixture_path)
-            }],
+            *[
+                path
+                for path in sys.path
+                if Path(path or ".").resolve() not in {Path(source_path), Path(fixture_path)}
+            ],
         ]
         result = rehearse(args.fresh_root, args.expected_sha)
         result["source_pin"] = "VERIFIED_CLEAN_LOCAL_GIT_HEAD"

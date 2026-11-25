@@ -280,9 +280,7 @@ def test_dynamic_import_guards_reject_fake_torch_before_loader() -> None:
             events.append("executed")
 
     class FakeFinder(importlib.abc.MetaPathFinder):
-        def find_spec(
-            self, fullname: str, path: object = None, target: object = None
-        ) -> object:
+        def find_spec(self, fullname: str, path: object = None, target: object = None) -> object:
             if fullname == "torch":
                 events.append("foreign-finder")
                 return importlib.machinery.ModuleSpec(fullname, FakeLoader())
