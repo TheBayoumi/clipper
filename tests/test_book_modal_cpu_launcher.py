@@ -459,8 +459,87 @@ def test_stop_and_list_terminal_evidence_requires_exact_id_zero_tasks() -> None:
     confirmed, errors = launcher._stop_and_observe(
         app_id, "qualification", time.monotonic() + 10, runner=failed_stop
     )
-    assert confirmed is False and "stop:nonzero" in errors
+    assert confirmed is True and errors == []
     assert commands == [list_cmd, stop_cmd, list_cmd]
+
+
+@pytest.mark.parametrize(
+    ("states", "expected"),
+    [
+        ([("ephemeral", "1"), ("ephemeral", "1"), ("stopped", "0")], True),
+        ([("ephemeral", "1"), ("ephemeral", "1"), ("ephemeral", "1"), ("ephemeral", "1")], False),
+        ([("ephemeral", "1"), ("stopped", "1"), ("stopped", "1"), ("stopped", "1")], False),
+        ([("ephemeral", "1"), ("stopped", True)], False),
+    ],
+)
+def test_bounded_lifecycle_reobservation_without_retry(
+    monkeypatch: pytest.MonkeyPatch, states: list[tuple[str, object]], expected: bool
+) -> None:
+    app_id = "ap-" + "A" * 22
+    commands: list[str] = []
+    sequence = iter(states)
+    monkeypatch.setattr(launcher.time, "sleep", lambda _delay: None)
+
+    def fake_cli(argv: list[str], **_kw: object) -> SimpleNamespace:
+        commands.append(argv[2])
+        if argv[2] == "stop":
+            return SimpleNamespace(returncode=1, stdout="")
+        state, tasks = next(sequence)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(
+            [{"app_id": app_id, "state": state, "tasks": tasks}]
+        ))
+
+    warnings: list[str] = []
+    confirmed, errors = launcher._stop_and_observe(
+        app_id, "main", time.monotonic() + 10, runner=fake_cli, warnings=warnings
+    )
+    assert confirmed is expected
+    assert commands.count("stop") == 1
+    assert (warnings == ["stop:nonzero"]) if expected else (bool(errors) and warnings == [])
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [{"app_id": "ap-" + "B" * 22, "state": "stopped", "tasks": "0"}],
+        [{"app_id": "ap-" + "A" * 22, "state": "stopped", "tasks": "0"}] * 2,
+        [{"app_id": "ap-" + "A" * 22, "state": "stopped", "tasks": True}],
+        [{"app_id": "ap-" + "A" * 22, "state": "stopped", "tasks": 0}],
+    ],
+)
+def test_missing_duplicate_wrong_or_malformed_terminal_fails_without_stop(rows: list[object]) -> None:
+    commands: list[str] = []
+
+    def fake_cli(argv: list[str], **_kw: object) -> SimpleNamespace:
+        commands.append(argv[2])
+        return SimpleNamespace(returncode=0, stdout=json.dumps(rows))
+
+    assert launcher._stop_and_observe(
+        "ap-" + "A" * 22, "main", time.monotonic() + 2, runner=fake_cli
+    )[0] is False
+    assert commands == ["list"]
+
+
+def test_stop_timeout_does_not_claim_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[str] = []
+    monkeypatch.setattr(launcher.time, "sleep", lambda _delay: None)
+    app_id = "ap-" + "A" * 22
+
+    def fake_cli(argv: list[str], **_kw: object) -> SimpleNamespace:
+        commands.append(argv[2])
+        if argv[2] == "stop":
+            raise subprocess.TimeoutExpired("mock-stop", 0.1)
+        return SimpleNamespace(returncode=0, stdout=json.dumps([
+            {"app_id": app_id, "state": "ephemeral", "tasks": "1"}
+        ]))
+
+    confirmed, errors = launcher._stop_and_observe(
+        app_id, "main", time.monotonic() + 2, runner=fake_cli
+    )
+    assert not confirmed
+    assert "stop:TimeoutExpired" in errors
+    assert commands.count("stop") == 1
 
 
 def test_build_stall_retains_unknown_cleanup_without_app_id(
@@ -497,7 +576,7 @@ def test_build_stall_retains_unknown_cleanup_without_app_id(
     assert "CONTROL_PLANE_TIMEOUT" in outcome["cleanup_errors"]
 
 
-def test_stop_failure_retains_exact_app_id_and_blocks(tmp_path: Path) -> None:
+def test_nonzero_stop_then_terminal_preserves_verified_execution(tmp_path: Path) -> None:
     path, digest = _manifest(tmp_path)
     approval = launcher.load_approval(path, digest, SHA)
     recorded: list[list[str]] = []
@@ -518,9 +597,12 @@ def test_stop_failure_retains_exact_app_id_and_blocks(tmp_path: Path) -> None:
         launcher._journal(journal, "APP_RUN_BEGIN")
         launcher._journal(journal, "APP_ID", "ap-CCCCCCCCCCCCCCCCCCCCCC")
         launcher._journal(journal, "CALL_ID", "fc-synthetic-known")
+        launcher._journal(journal, "GET_BEGIN", "fc-synthetic-known")
+        launcher._journal(journal, "RESULT_ACCEPTED", "fc-synthetic-known")
         result_file.write_text(
             json.dumps(
                 {
+                    "source_sha": SHA,
                     "rehearsal": launcher._compact_rehearsal(
                         {**_valid_child_output(), "artifact_sha256": {"fixture.json": "a" * 64}},
                         SHA,
@@ -552,11 +634,94 @@ def test_stop_failure_retains_exact_app_id_and_blocks(tmp_path: Path) -> None:
         popen=fake_popen,
         runner=fake_cli,
     )
-    assert outcome["status"] == "BLOCKED"
+    assert outcome["status"] == "SYNTHETIC_REHEARSAL_CONFIRMED"
     assert outcome["app_id"] == "ap-CCCCCCCCCCCCCCCCCCCCCC"
-    assert outcome["provider_removal"] == "UNKNOWN"
-    assert "stop:nonzero" in outcome["cleanup_errors"]
+    assert outcome["provider_removal"] == "STOPPED_CONFIRMED_BY_LIST"
+    assert outcome["execution_status"] == "ACCEPTED"
+    assert outcome["cleanup_warnings"] == ["stop:nonzero"]
+    assert outcome["cleanup_errors"] == []
     assert len(recorded) == 3
+    assert launcher._public_result(outcome, SHA)["rehearsal"]["source_sha"] == SHA
+
+
+def test_worker_compact_survives_cleanup_unknown_without_promoting_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, digest = _manifest(tmp_path)
+    approval = launcher.load_approval(path, digest, SHA)
+    app_id = "ap-" + "C" * 22
+    call_id = "fc-synthetic-known"
+    monkeypatch.setattr(launcher.time, "sleep", lambda _delay: None)
+    counts = {"stop": 0, "list": 0}
+
+    class Finished:
+        pid = 1111
+        returncode = 0
+
+        def wait(self, **_kw: object) -> int:
+            return 0
+
+        def poll(self) -> int:
+            return 0
+
+    def fake_popen(argv: list[str], **_kw: object) -> Finished:
+        journal = Path(argv[argv.index("--journal") + 1])
+        result_file = Path(argv[argv.index("--result-file") + 1])
+        for phase, identifier in (
+            ("APP_ID", app_id), ("CALL_ID", call_id),
+            ("GET_BEGIN", call_id), ("RESULT_ACCEPTED", call_id),
+        ):
+            launcher._journal(journal, phase, identifier)
+        full = _valid_child_output()
+        full["artifact_sha256"] = {"fixture.json": "a" * 64}
+        result_file.write_text(json.dumps({
+            "source_sha": SHA, "app_id": app_id, "call_id": call_id,
+            "rehearsal": launcher._compact_rehearsal(full, SHA),
+        }))
+        return Finished()
+
+    def fake_cli(argv: list[str], **_kw: object) -> SimpleNamespace:
+        kind = argv[2]
+        counts[kind] += 1
+        if kind == "stop":
+            return SimpleNamespace(returncode=1, stdout="")
+        return SimpleNamespace(returncode=0, stdout=json.dumps([
+            {"app_id": app_id, "state": "stopping", "tasks": "1"}
+        ]))
+
+    result = launcher._bounded_run(
+        approval, path, digest, deadline_seconds=10,
+        popen=fake_popen, runner=fake_cli,
+    )
+    assert counts == {"stop": 1, "list": 4}
+    assert result["status"] == "BLOCKED"
+    assert result["execution_status"] == "ACCEPTED"
+    assert result["lifecycle_status"] == "UNKNOWN"
+    assert result["provider_removal"] == "UNKNOWN"
+    assert "stop:nonzero" in result["cleanup_errors"]
+    public = launcher._public_result(result, SHA)
+    assert public["status"] == "BLOCKED"
+    assert public["execution_status"] == "ACCEPTED"
+    assert public["call_id"] == call_id
+    assert public["rehearsal"] == result["result"]["rehearsal"]
+    assert "worker_diagnostics" not in public
+
+
+@pytest.mark.parametrize("phase", ["CALL_ID", "GET_BEGIN", "RESULT_ACCEPTED"])
+def test_journal_call_binding_required_for_public_execution(
+    tmp_path: Path, phase: str
+) -> None:
+    journal = tmp_path / "journal.jsonl"
+    app_id, call_id = "ap-" + "A" * 22, "fc-synthetic-known"
+    launcher._journal(journal, "APP_ID", app_id)
+    for candidate in ("CALL_ID", "GET_BEGIN", "RESULT_ACCEPTED"):
+        if candidate != phase:
+            launcher._journal(journal, candidate, call_id)
+    assert launcher._read_accepted_call_id(journal, app_id) is None
+    launcher._journal(journal, phase, call_id)
+    assert launcher._read_accepted_call_id(journal, app_id) == call_id
+    launcher._journal(journal, "CALL_ID", "fc-mismatched")
+    assert launcher._read_accepted_call_id(journal, app_id) is None
 
 
 def test_live_cli_cannot_spend_on_receipt_string_alone(
@@ -1032,7 +1197,7 @@ def test_journal_valid_app_id_then_nonobject_json_keeps_cleanup_and_interrupt(
 
 
 @pytest.mark.parametrize("initial_kind", ["nonzero", "invalid_json", "missing"])
-def test_initial_inconclusive_list_still_stops_exact_id_and_retains_uncertainty(
+def test_initial_inconclusive_list_does_not_stop_unverified_app(
     initial_kind: str,
 ) -> None:
     app_id = "ap-" + "A" * 22
@@ -1057,11 +1222,7 @@ def test_initial_inconclusive_list_still_stops_exact_id_and_retains_uncertainty(
     )
     assert confirmed is False
     assert errors
-    assert commands == [
-        ["modal", "app", "list", "--json", "--env", "qualification"],
-        ["modal", "app", "stop", "-y", "--env", "qualification", app_id],
-        ["modal", "app", "list", "--json", "--env", "qualification"],
-    ]
+    assert commands == [["modal", "app", "list", "--json", "--env", "qualification"]]
 
 
 def test_reached_main_scoped_action_success_blocked_interrupt(
@@ -1086,12 +1247,18 @@ def test_reached_main_scoped_action_success_blocked_interrupt(
             evidence = launcher._compact_rehearsal(full, SHA)
             return {
                 "status": "SYNTHETIC_REHEARSAL_CONFIRMED",
+                "execution_status": "ACCEPTED",
+                "lifecycle_status": "TERMINAL_CONFIRMED",
                 "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
                 "app_id": "ap-" + "A" * 22,
+                "call_id": "fc-synthetic-known",
                 "observed_phases": [],
                 "cleanup_errors": [],
                 "initiator_interrupted": False,
-                "result": {"rehearsal": evidence, "unapproved_field": "marker-not-for-output"},
+                "result": {
+                    "source_sha": SHA, "app_id": "ap-" + "A" * 22,
+                    "call_id": "fc-synthetic-known", "rehearsal": evidence,
+                },
                 "unapproved_field": "marker-not-for-output",
             }
 
@@ -1336,8 +1503,15 @@ def test_actual_public_rehearsal_inventory_sanitized_end_to_end(tmp_path: Path) 
     result = launcher._public_result(
         {
             "status": "SYNTHETIC_REHEARSAL_CONFIRMED",
+            "execution_status": "ACCEPTED",
+            "lifecycle_status": "TERMINAL_CONFIRMED",
             "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
-            "result": {"rehearsal": compact},
+            "app_id": "ap-" + "A" * 22,
+            "call_id": "fc-synthetic-known",
+            "result": {
+                "source_sha": source_sha, "app_id": "ap-" + "A" * 22,
+                "call_id": "fc-synthetic-known", "rehearsal": compact,
+            },
         },
         source_sha,
     )
@@ -1477,6 +1651,81 @@ def test_compact_wire_contract_rejects_extra_nested_and_wrong_types() -> None:
             )
 
 
+def test_blocked_lifecycle_retains_only_verified_compact_evidence() -> None:
+    report = _valid_child_output()
+    report["artifact_sha256"] = {"fixture.json": "a" * 64}
+    compact = launcher._compact_rehearsal(report, SHA)
+    app_id, call_id = "ap-" + "A" * 22, "fc-synthetic-known"
+    blocked = {
+        "status": "BLOCKED",
+        "execution_status": "ACCEPTED",
+        "lifecycle_status": "UNKNOWN",
+        "provider_removal": "UNKNOWN",
+        "app_id": app_id,
+        "call_id": call_id,
+        "cleanup_errors": ["list:terminal_or_tasks_unconfirmed"],
+        "result": {
+            "source_sha": SHA, "app_id": app_id, "call_id": call_id,
+            "rehearsal": compact,
+        },
+        "worker_diagnostics": {"secret": "must-not-publish"},
+    }
+    public = launcher._public_result(blocked, SHA)
+    assert public["status"] == "BLOCKED"
+    assert public["execution_status"] == "ACCEPTED"
+    assert public["lifecycle_status"] == "UNKNOWN"
+    assert public["call_id"] == call_id
+    assert public["rehearsal"] == compact
+    assert "secret" not in json.dumps(public)
+    for change in (
+        {"call_id": "fc-wrong-id"},
+        {"app_id": "ap-invalid"},
+        {"result": {**blocked["result"], "call_id": "fc-wrong-id"}},
+        {"result": {**blocked["result"], "source_sha": "b" * 40}},
+        {"result": {**blocked["result"], "rehearsal": {
+            **compact, "tracks": {**compact["tracks"], "synthetic_test_review": {
+                "status": "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED",
+                "publish_eligible": 0,
+            }}
+        }}},
+        {"initiator_interrupted": True},
+    ):
+        with pytest.raises(launcher.LaunchBlocked):
+            launcher._public_result({**blocked, **change}, SHA)
+    with pytest.raises(launcher.LaunchBlocked):
+        launcher._public_result({
+            **blocked, "status": "SYNTHETIC_REHEARSAL_CONFIRMED"
+        }, SHA)
+
+
+def test_invalid_publication_fallback_does_not_recurse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path, digest = _manifest(tmp_path)
+    monkeypatch.setattr(launcher, "local_source", lambda *_args: None)
+    monkeypatch.setenv("MODAL_TOKEN_ID", "inert")
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", "inert")
+    monkeypatch.delenv("MODAL_PROFILE", raising=False)
+
+    def invalid(*_args: object) -> dict[str, object]:
+        return {
+            "status": "BLOCKED", "app_id": "ap-" + "A" * 22,
+            "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
+            "result": {"untrusted": "secret"},
+        }
+
+    monkeypatch.setattr(launcher.BoundedModalControl, "run_once", invalid)
+    assert launcher.main([
+        "--execute", "--expected-sha", SHA, "--approval-file", str(path),
+        "--approval-sha256", digest,
+        "--independent-control-receipt", "independent-ctrl-123",
+    ]) == 2
+    visible = json.loads(capsys.readouterr().out)
+    assert visible["status"] == "BLOCKED"
+    assert visible["provider_removal"] == "STOPPED_CONFIRMED_BY_LIST"
+    assert "secret" not in json.dumps(visible)
+
+
 def test_public_report_rejects_self_consistent_untrusted_source_sha() -> None:
     full = _valid_child_output()
     full["artifact_sha256"] = {"fixture.json": "a" * 64}
@@ -1489,7 +1738,13 @@ def test_public_report_rejects_self_consistent_untrusted_source_sha() -> None:
             {
                 "status": "SYNTHETIC_REHEARSAL_CONFIRMED",
                 "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
-                "result": {"rehearsal": compact},
+                "execution_status": "ACCEPTED",
+                "app_id": "ap-" + "A" * 22,
+                "call_id": "fc-synthetic-known",
+                "result": {
+                    "source_sha": forged_sha, "app_id": "ap-" + "A" * 22,
+                    "call_id": "fc-synthetic-known", "rehearsal": compact,
+                },
             },
             SHA,
         )
@@ -1516,7 +1771,7 @@ def test_worker_error_safe_metadata_and_bounded_journal(tmp_path: Path) -> None:
             "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
             "app_id": "ap-" + "A" * 22,
             "worker_error": launcher._read_worker_error(ledger),
-            "result": {"secret_raw_payload": "not-released"},
+            "result": None,
         },
         SHA,
     )

@@ -26,6 +26,7 @@ SOURCE_URL = "https://github.com/TheBayoumi/clipper.git"
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 APP_ID = re.compile(r"ap-[A-Za-z0-9]{22}\Z")
+CALL_ID = re.compile(r"fc-[A-Za-z0-9_-]{3,128}\Z")
 INTENT = "PUBLIC_SYNTHETIC_MODEL_FREE_BOOK_REHEARSAL"
 LIMITS = {
     "cpu": (1, 1),
@@ -597,17 +598,43 @@ def _read_worker_error(path: Path) -> dict[str, object] | None:
     return found if "class" in found else None
 
 
+def _read_accepted_call_id(path: Path, app_id: str | None) -> str | None:
+    """Require one matching journal call ID and its accepted-result phase."""
+    if app_id is None or not APP_ID.fullmatch(app_id):
+        return None
+    if not path.is_file() or path.stat().st_size > 65536:
+        return None
+    try:
+        entries = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if len(entries) > 512 or not all(type(entry) is dict for entry in entries):
+        return None
+    expected = None
+    for phase in ("CALL_ID", "GET_BEGIN", "RESULT_ACCEPTED"):
+        ids = [entry.get("id") for entry in entries if entry.get("phase") == phase]
+        if len(ids) != 1 or type(ids[0]) is not str or not CALL_ID.fullmatch(ids[0]):
+            return None
+        if expected is not None and expected != ids[0]:
+            return None
+        expected = ids[0]
+    app_ids = [entry.get("id") for entry in entries if entry.get("phase") == "APP_ID"]
+    return expected if app_ids == [app_id] else None
+
+
 def _stop_and_observe(
     app_id: str,
     environment: str,
     deadline: float,
     runner: Any = subprocess.run,
+    *,
+    warnings: list[str] | None = None,
 ) -> tuple[bool, list[str]]:
-    """Observe exact App ID first; stop only when a known App is not terminal."""
+    """One exact-ID stop at most; bounded terminal reobservation shares the deadline."""
     if not APP_ID.fullmatch(app_id):
         return False, ["INVALID_APP_ID"]
 
-    errors: list[str] = []
+    local_warnings: list[str] = []
     list_command = ["modal", "app", "list", "--json", "--env", environment]
 
     def observe() -> tuple[bool | None, str | None]:
@@ -632,22 +659,24 @@ def _stop_and_observe(
         if len(matches) != 1:
             return None, "list:exact_id_not_found_or_duplicate"
         row = matches[0]
-        if row.get("state") == "stopped" and row.get("tasks") == "0":
-            return True, None
-        if not isinstance(row.get("state"), str) or not isinstance(row.get("tasks"), str):
+        state, tasks = row.get("state"), row.get("tasks")
+        if type(state) is not str or type(tasks) is not str or len(state) > 40:
             return None, "list:invalid_row_schema"
+        if not tasks.isascii() or not tasks.isdecimal() or len(tasks) > 16:
+            return None, "list:invalid_row_schema"
+        if state == "stopped" and tasks == "0":
+            return True, None
         return False, None
 
-    terminal, failure = observe()
-    if failure is not None:
-        errors.append(failure)
-    elif terminal is True:
-        # Only positive exact-ID stopped evidence permits skipping stop.
+    terminal, issue = observe()
+    if issue:
+        return False, [issue]
+    if terminal:
         return True, []
+
     remaining = min(8.0, deadline - time.monotonic())
     if remaining <= 0:
-        errors.append("stop:deadline")
-        return False, errors
+        return False, ["stop:deadline"]
     try:
         response = runner(
             ["modal", "app", "stop", "-y", "--env", environment, app_id],
@@ -657,16 +686,37 @@ def _stop_and_observe(
             timeout=remaining,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        errors.append("stop:" + type(exc).__name__)
+        local_warnings.append("stop:" + type(exc).__name__)
     else:
         if response.returncode != 0:
-            errors.append("stop:nonzero")
-    terminal, failure = observe()
-    if failure is not None:
-        errors.append(failure)
-    elif terminal is not True:
-        errors.append("list:terminal_or_tasks_unconfirmed")
-    return terminal is True and not errors, errors
+            local_warnings.append("stop:nonzero")
+
+    # Maximum three post-stop reads with short positive sleeps; no new budget.
+    last_issue = "list:terminal_or_tasks_unconfirmed"
+    for attempt in range(3):
+        if attempt:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.2, remaining))
+        terminal, issue = observe()
+        if terminal is True:
+            if warnings is not None:
+                warnings.extend(local_warnings)
+            return True, []
+        if issue:
+            last_issue = issue
+            # An invalid or ambiguous exact-ID record cannot be healed by
+            # observing a different snapshot later.
+            if issue in {
+                "list:invalid_json", "list:invalid_schema",
+                "list:invalid_row_schema", "list:exact_id_not_found_or_duplicate",
+            }:
+                break
+        else:
+            last_issue = "list:terminal_or_tasks_unconfirmed"
+    return False, local_warnings + [last_issue]
+
 
 
 def _bounded_run(
@@ -742,6 +792,7 @@ def _bounded_run(
         app_id, phases = _read_journal(ledger)
         worker_error = _read_worker_error(ledger)
         confirmed = False
+        cleanup_warnings: list[str] = []
         cleanup_errors: list[str] = list(process_cleanup_errors)
         if "CALL_CANCEL_ERROR" in phases:
             cleanup_errors.append("CALL_CANCEL_ERROR")
@@ -752,7 +803,8 @@ def _bounded_run(
         if app_id is not None and "INVALID_APP_ID" not in phases:
             try:
                 confirmed, stop_errors = _stop_and_observe(
-                    app_id, approval.environment, deadline, runner=runner
+                    app_id, approval.environment, deadline, runner=runner,
+                    warnings=cleanup_warnings,
                 )
                 cleanup_errors.extend(stop_errors)
             except KeyboardInterrupt:
@@ -776,32 +828,60 @@ def _bounded_run(
                     "truncated": path.stat().st_size > len(prefix),
                 }
         output: dict[str, object] | None = None
+        accepted_call_id = _read_accepted_call_id(ledger, app_id)
         if result_file.is_file() and result_file.stat().st_size <= 220_000:
             try:
                 parsed = json.loads(result_file.read_text())
-                if isinstance(parsed, dict):
-                    output = parsed
-                    _validate_compact_report(output.get("rehearsal"), approval.source_sha)
-            except (ValueError, LaunchBlocked):
+                if type(parsed) is not dict or set(parsed) != {
+                    "source_sha", "app_id", "call_id", "rehearsal"
+                }:
+                    raise LaunchBlocked("unexpected result envelope")
+                if (
+                    parsed["source_sha"] != approval.source_sha
+                    or parsed["app_id"] != app_id
+                    or type(parsed["app_id"]) is not str
+                    or not APP_ID.fullmatch(parsed["app_id"])
+                    or type(parsed["call_id"]) is not str
+                    or parsed["call_id"] != accepted_call_id
+                    or not CALL_ID.fullmatch(parsed["call_id"])
+                ):
+                    raise LaunchBlocked("result identity does not match journal")
+                _validate_compact_report(parsed["rehearsal"], approval.source_sha)
+                if (
+                    proc.returncode != 0 or timed_out or interrupted
+                    or "INVALID_JOURNAL" in cleanup_errors
+                    or "INVALID_APP_ID" in cleanup_errors
+                ):
+                    raise LaunchBlocked("worker incomplete or journal unsafe")
+                output = parsed
+            except (ValueError, TypeError, UnicodeError, OSError, LaunchBlocked):
                 cleanup_errors.append("RESULT_UNVERIFIED")
         else:
             cleanup_errors.append("NO_RESULT")
+        execution_status = "ACCEPTED" if output is not None else "UNVERIFIED"
+        lifecycle_status = "TERMINAL_CONFIRMED" if confirmed else "UNKNOWN"
         result: dict[str, object] = {
             "status": "SYNTHETIC_REHEARSAL_CONFIRMED"
             if (confirmed and not cleanup_errors and output is not None)
             else "BLOCKED",
+            "execution_status": execution_status,
+            "lifecycle_status": lifecycle_status,
             "provider_removal": "STOPPED_CONFIRMED_BY_LIST" if confirmed else "UNKNOWN",
             "app_id": app_id,
+            "call_id": accepted_call_id if output is not None else None,
             "observed_phases": phases,
             "cleanup_errors": cleanup_errors,
+            "cleanup_warnings": cleanup_warnings,
             "worker_diagnostics": diagnostics,
-            "result": output if confirmed and not cleanup_errors else None,
+            "result": output,
             "initiator_interrupted": interrupted,
             "worker_error": worker_error,
         }
         if interrupted:
             result["status"] = "BLOCKED"
             result["result"] = None
+            result["execution_status"] = "UNVERIFIED"
+            result["call_id"] = None
             raise LaunchInterrupted(result)
         return result
 
@@ -928,31 +1008,90 @@ def _safe_worker_error(value: object) -> dict[str, object] | None:
 
 
 def _public_result(result: dict[str, object], expected_sha: str) -> dict[str, object]:
-    """Expose strictly validated compact evidence, never reconstruct proof."""
-    keys = (
-        "status",
-        "provider_removal",
-        "app_id",
-        "observed_phases",
-        "cleanup_errors",
-        "initiator_interrupted",
-        "worker_error",
-    )
-    safe = {key: result.get(key) for key in keys if key in result}
-    if "worker_error" in safe:
-        safe["worker_error"] = _safe_worker_error(safe["worker_error"])
-    if result.get("status") != "SYNTHETIC_REHEARSAL_CONFIRMED":
-        return safe
+    """Publish only verified execution evidence, separately from lifecycle status."""
+    _require(type(result) is dict, "invalid parent result")
+    _require(result.get("status") in {"BLOCKED", "SYNTHETIC_REHEARSAL_CONFIRMED"},
+             "invalid overall status")
+    _require(isinstance(expected_sha, str) and bool(HEX40.fullmatch(expected_sha)),
+             "trusted expected source SHA required")
+    safe: dict[str, object] = {"status": result["status"]}
+    for key in ("execution_status", "lifecycle_status", "provider_removal"):
+        value = result.get(key)
+        allowed = {
+            "execution_status": {"ACCEPTED", "UNVERIFIED"},
+            "lifecycle_status": {"TERMINAL_CONFIRMED", "UNKNOWN"},
+            "provider_removal": {"STOPPED_CONFIRMED_BY_LIST", "UNKNOWN"},
+        }[key]
+        if value is not None:
+            _require(type(value) is str and value in allowed, "unsafe outcome taxonomy")
+            safe[key] = value
+    app_id = result.get("app_id")
+    if app_id is not None:
+        _require(type(app_id) is str and bool(APP_ID.fullmatch(app_id)), "unsafe App ID")
+        safe["app_id"] = app_id
+    for key in ("observed_phases", "cleanup_errors", "cleanup_warnings"):
+        value = result.get(key)
+        if value is not None:
+            _require(type(value) is list and len(value) <= 128, "unsafe diagnostic sequence")
+            accepted = (
+                JOURNAL_PHASES | {"MALFORMED_RECORD", "INVALID_APP_ID"}
+                if key == "observed_phases" else {
+                    "CALL_CANCEL_ERROR", "INVALID_JOURNAL", "INVALID_APP_ID", "APP_ID_UNKNOWN",
+                    "CONTROL_PLANE_TIMEOUT", "WORKER_NONZERO_OR_TERMINATED",
+                    "RESULT_UNVERIFIED", "NO_RESULT", "INITIATOR_KEYBOARD_INTERRUPT",
+                    "INTERRUPT_DURING_WORKER_REAP", "INTERRUPT_DURING_STOP_OBSERVATION",
+                    "PUBLIC_EVIDENCE_VALIDATION_FAILED", "list:deadline",
+                    "list:nonzero", "list:invalid_json", "list:invalid_schema",
+                    "list:invalid_row_schema", "list:exact_id_not_found_or_duplicate",
+                    "list:terminal_or_tasks_unconfirmed", "stop:deadline", "stop:nonzero",
+                }
+            )
+            allowed_prefix = ("KILL_GROUP:", "stop:", "list:")
+            for entry in value:
+                _require(type(entry) is str and len(entry) <= 96, "unsafe diagnostic")
+                _require(entry in accepted or (
+                    key != "observed_phases" and entry.startswith(allowed_prefix)
+                    and re.fullmatch(r"(?:stop|list|KILL_GROUP):[A-Za-z][A-Za-z0-9_]{0,63}", entry)
+                ), "unknown diagnostic")
+            safe[key] = value
+    if "initiator_interrupted" in result:
+        _require(type(result["initiator_interrupted"]) is bool, "invalid interrupt flag")
+        safe["initiator_interrupted"] = result["initiator_interrupted"]
+    if "worker_error" in result:
+        safe["worker_error"] = _safe_worker_error(result["worker_error"])
     envelope = result.get("result")
-    _require(isinstance(envelope, dict), "accepted result envelope missing")
-    report = envelope.get("rehearsal")
-    _require(
-        isinstance(expected_sha, str) and bool(HEX40.fullmatch(expected_sha)),
-        "trusted expected source SHA required",
-    )
-    _validate_compact_report(report, expected_sha)
-    assert isinstance(report, dict)
-    safe["rehearsal"] = report
+    if envelope is not None:
+        _require(
+            type(envelope) is dict
+            and set(envelope) == {"source_sha", "app_id", "call_id", "rehearsal"},
+            "invalid execution envelope",
+        )
+        call_id = envelope["call_id"]
+        _require(
+            envelope["source_sha"] == expected_sha
+            and type(call_id) is str and bool(CALL_ID.fullmatch(call_id))
+            and type(app_id) is str and envelope["app_id"] == app_id
+            and result.get("call_id") == call_id
+            and result.get("execution_status") == "ACCEPTED"
+            and result.get("initiator_interrupted") is not True,
+            "unverified execution identity",
+        )
+        _validate_compact_report(envelope["rehearsal"], expected_sha)
+        safe["call_id"] = call_id
+        safe["rehearsal"] = envelope["rehearsal"]
+    else:
+        _require(result.get("execution_status") != "ACCEPTED",
+                 "accepted execution has no validated envelope")
+        _require(result.get("call_id") is None, "unvalidated call ID")
+    if result["status"] == "SYNTHETIC_REHEARSAL_CONFIRMED":
+        _require(
+            result.get("execution_status") == "ACCEPTED"
+            and result.get("lifecycle_status") == "TERMINAL_CONFIRMED"
+            and result.get("provider_removal") == "STOPPED_CONFIRMED_BY_LIST"
+            and not result.get("cleanup_errors")
+            and envelope is not None,
+            "overall success without full terminal execution",
+        )
     return safe
 
 
@@ -1060,12 +1199,18 @@ def main(argv: list[str] | None = None) -> int:
             prior = result.get("cleanup_errors")
             errors = list(prior) if isinstance(prior, list) else []
             errors.append("PUBLIC_EVIDENCE_VALIDATION_FAILED")
-            blocked = {
-                **result,
+            # Build an independently safe fallback; never revalidate the
+            # rejected envelope or raw diagnostics after publication fails.
+            blocked: dict[str, object] = {
                 "status": "BLOCKED",
-                "cleanup_errors": errors,
-                "result": None,
+                "execution_status": "UNVERIFIED",
+                "cleanup_errors": ["PUBLIC_EVIDENCE_VALIDATION_FAILED"],
             }
+            if result.get("provider_removal") in {"UNKNOWN", "STOPPED_CONFIRMED_BY_LIST"}:
+                blocked["provider_removal"] = result["provider_removal"]
+            candidate_app = result.get("app_id")
+            if type(candidate_app) is str and APP_ID.fullmatch(candidate_app):
+                blocked["app_id"] = candidate_app
             print(json.dumps(_public_result(blocked, args.expected_sha), sort_keys=True))
             return 2
         print(json.dumps(visible, sort_keys=True))

@@ -481,22 +481,29 @@ guard evidence, not a kernel-level sandbox guarantee. No production source,
 host authority, Modal runtime or deployment has been changed.
 
 
-## Scoped public-synthetic Modal CPU rehearsal (offline correction)
+## Scoped public-synthetic Modal CPU rehearsal (offline lifecycle correction)
 
-`tests/book_modal_cpu_launcher.py` retains inert `DORMANT_PLAN_ONLY`
-behavior and all original authorization, identity, single-container and
-fail-closed cleanup requirements. A historical, authorized public-synthetic
-CPU trial failed at the Modal SDK BlobCreate output-offload boundary
-(AuthError/HTTP 401); this does **not** establish a security-flag cause or
-a successful live end-to-end rehearsal. The exact App was independently
-confirmed stopped with zero tasks. All temporary workflows and activation
-requests have been removed; **no new live attempt is authorized**.
+The single approved model-free public synthetic CPU rehearsal (Actions
+45706539297) reached `RESULT_ACCEPTED` and returned a validated compact
+DTO. **Its Actions job was BLOCKED**, not green: the original lifecycle
+observation returned a nonzero stop result without confirmed stopped/zero-task
+evidence. Separate exact-App reconciliation (Actions 45707136210) later
+confirmed App `ap-nirChhIeShCg0vsWZnrrhi` already stopped with tasks `"0"`;
+no second function invocation or stop was required. The stop error's cause is
+unproven. All activation and reconciliation workflows and their request were
+removed.
 
-The repaired remote child validates the full public fixture output and
-returns a bounded fixed-schema DTO instead of the 97-entry artifact path/hash
-map. The DTO includes the canonical inventory hash/count, two review tracks
-and zero-call evidence; the worker, parent and CLI revalidate it independently.
-Offline protocol-4 pickle size is checked under 8,192 bytes; actual Modal
-SDK 1.5.5 serialization remains to be measured in a separate isolated probe
-after fixture generation. See
+The offline launcher correction distinguishes `execution_status=ACCEPTED`
+from `lifecycle_status=TERMINAL_CONFIRMED|UNKNOWN`. A separately validated
+compact DTO is retained on cleanup-only BLOCKED outcomes, but overall success
+still requires a complete worker and positive exact-ID stopped/zero-task
+confirmation. A bounded reobservation can settle a nonzero stop as a warning
+only on positive terminal evidence. No guessed IDs, raw provider output,
+private content or 97-path inventory is published. Existing limits and
+fail-closed protections remain unchanged.
+
+This qualifies neither full end-to-end book adaptation nor model quality;
+the earlier 20,646-byte serialized report was an offline reproduction, not
+a retained successful provider report. No provider action, inference,
+publication or paid overage is authorized by this code change. See
 [the scoped route and limitations](docs/BOOK_MODAL_CPU_DORMANT_ROUTE.md).
