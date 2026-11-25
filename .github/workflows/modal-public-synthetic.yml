@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 2
+          fetch-depth: 3
           persist-credentials: false
 
       - name: Validate one-commit one-file approved stage request (no secrets)
@@ -47,12 +47,21 @@ jobs:
               ).stdout.strip()
 
           marker = "acceptance/modal-public-synthetic/request.json"
+          workflow = ".github/workflows/modal-public-synthetic.yml"
+          approved_source_sha = "7e569303ca8c4b9e6c8a27a038c5870085fdb468"
           head = git("rev-parse", "HEAD")
           parent = git("rev-parse", "HEAD^")
+          source_base = git("rev-parse", "HEAD^^")
+          assert source_base == approved_source_sha, "unreviewed source base"
+          assert git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD^") == workflow, (
+              "staging commit must change workflow only"
+          )
           assert re.fullmatch(r"[0-9a-f]{40}", head)
           assert head == os.environ["ACTIVATION_SHA"]
           assert parent == os.environ["ACTIVATION_BEFORE"], "not a single-commit push"
-          assert git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD") == marker
+          assert git("diff-tree", "--no-commit-id", "--name-status", "-r", "HEAD") == (
+              "A\t" + marker
+          ), "activation must add only request file"
           assert subprocess.run(
               ["git", "cat-file", "-e", f"HEAD^:{marker}"],
               capture_output=True, check=False, timeout=10
