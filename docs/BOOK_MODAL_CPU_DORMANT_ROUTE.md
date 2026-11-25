@@ -53,8 +53,8 @@ They are a **configuration target**, not an instantiated object:
 
 | Function option | Candidate value | Evidence/constraint |
 | --- | --- | --- |
-| `cpu` | `1` | One CPU-only function |
-| `memory` | `512` | MiB request candidate, not a proven peak/limit; verify hard-limit semantics |
+| `cpu` | `(1,1)` | One requested and hard-limited physical CPU |
+| `memory` | `(512,512)` | MiB request and hard limit; remote overhead and OOM risk unmeasured |
 | `gpu` | `None` | No GPU |
 | `block_network` | `True` | Child network disabled |
 | `restrict_modal_access` | `True` | Child not allowed to access other Modal resources |
@@ -65,7 +65,7 @@ They are a **configuration target**, not an instantiated object:
 | `startup_timeout` | `60` | Seconds, separate from execution timeout |
 | `timeout` | `30` | Seconds, one execution; not a hard total-spend cap |
 | `secrets` / `volumes` / `network_file_systems` | Empty | No child credentials, persistent mounts or private input |
-| `include_source` | `True` for the Function | Ships only the public launcher function module needed by Modal; book code stays exclusively in the pinned public clone |
+| `include_source` | `False` for App and Function | No ambient host-source mount; the Function module is resolved from the public pinned image clone (unverified live) |
 | `scaledown_window` | `2` | Candidate short container scale-down, not an end-to-end cost cap |
 
 Source references:
@@ -76,8 +76,8 @@ Source references:
 
 The public reference is currently **latest**, not an independently
 executed pinned-1.5.5 signature verification. Confirm `modal==1.5.5`
-API behavior offline and exact image-build semantics before writing a
-launcher. `block_network` applies inside the remote Function; it does
+API behavior offline and exact image-build semantics before any
+live run. `block_network` applies inside the remote Function; it does
 **not** remove network, authentication or billing from the image-build and
 local control-plane processes. This is an application contract, not proof
 of a universal OS security boundary.
@@ -116,9 +116,9 @@ fail closed unless all hold:
 
 Modal documents `FunctionCall.cancel(terminate_containers=True)` and
 ephemeral `App.run()`; **neither is, by itself, independently verified
-deletion of every resource or hard spending containment**. A bounded
-control-plane supervisor and post-run reconciliation are therefore
-operational prerequisites, not implemented here. In particular, no
+deletion of every resource or hard spending containment**. A bounded local one-shot control-plane process and exact-ID stop/info
+attempts are now implemented; independently enforceable monetary budget
+containment and provider-confirmed deletion are not established. In particular, no
 unapproved new daemon, supervisor or host architecture is introduced.
 
 ## Execution/cleanup boundaries if a later request is authorized
@@ -200,8 +200,64 @@ the pinned source's PYTHONPATH; Modal tokens are not inherited by that
 child process. The Function launcher source itself is included for
 serialization; no project/media source is automatically mounted.
 
-The launcher currently returns `provider_removal=UNKNOWN_UNTIL_EXTERNAL_VERIFICATION`
-rather than inventing deletion confirmation. App context exit and
-FunctionCall cancellation are attempted, not proven provider termination.
+The bounded control-plane wrapper returns `provider_removal=UNKNOWN`
+when exact-ID stop and terminal provider status are not confirmed. App
+context exit and FunctionCall cancellation do not prove provider deletion.
+The live CLI remains blocked before SDK import by the unresolved budget gate.
 A separately staffed/independent exact-ID control-plane stop and cost
 reconciliation are still operational prerequisites to **any live run**.
+
+
+## LAUNCHER-FIX1314: bounded implementation, independent budget blocker
+
+The launcher now **implements a bounded one-shot process**, not a receipt-string
+substitute for lifecycle control. Once independently authorized (not currently),
+the operator process creates a **separate control-plane worker process** and
+monitors its entire image/App/build/startup/spawn/get/context-exit execution
+within a finite absolute local deadline (candidate 120 seconds). It writes
+`BUILD_BEGIN`, `APP_RUN_BEGIN`, exact `APP_ID`, `SPAWN_BEGIN`,
+`CALL_ID`, and `GET_BEGIN` phases to a fsynced local journal before
+subsequent blocking operations whenever those IDs are actually known. If
+the build stalls before an App ID exists, the result remains
+`APP_ID_UNKNOWN` and `BLOCKED`; it never invents a provider resource ID.
+
+At the deadline the parent kills the local worker process group, and when
+an exact App ID is known attempts the documented, explicit-environment
+`modal app stop -y --env ENV APP_ID` and
+`modal app info --json --env ENV APP_ID`, each with finite deadlines.
+Only both successful calls plus unambiguous terminal `state=stopped`
+are accepted as local stop confirmation. Missing ID, worker failure,
+malformed journal, cancel failure, stop error, unverifiable info schema
+or a timeout yield `status=BLOCKED`, with exact IDs and cleanup errors
+retained, and `provider_removal=UNKNOWN` if the stop observation fails.
+This is **not** universal provider deletion evidence. The CLI's default
+mode still has no SDK import or resource action. The bounded implementation
+is exercised only with fake controls in offline tests; no live run occurred.
+
+Function resource requests use **hard CPU and memory limit pairs**,
+`cpu=(1,1)`, `memory=(512,512)`, not merely requests that could burst
+beyond the reservation. The 512 MiB hard limit is a candidate; SDK
+runtime overhead has not been remotely verified. The Function has
+`include_source=False` with the module supplied by the anonymous pinned
+public clone in the image and a fixed `PYTHONPATH`; no automatic host
+test/module folder mount is intended. Modal serialization/import behavior
+on a live 1.5.5 Function remains unverified. The child uses a fresh
+temporary root, passes a **nonexistent** artifact subdirectory to the
+accepted rehearsal CLI, returns selected provenance/artifact evidence and
+discards temporary files on exit.
+
+**The unresolved cost gate is explicitly closed:** the current Starter
+workspace lacks independently enforceable account/environment cost budget
+authority verified for this route. A number in the manifest and a matching
+receipt string are **not** such authority. Therefore `--execute` explicitly
+fails before Modal client construction, even with matching approval strings.
+The bounded worker implementation is available for isolated fake tests,
+but cannot run live until a separately verified enforceable budget control
+and a review-approved gate are implemented. No billed operation is
+authorized.
+
+Reference: https://modal.com/docs/guide/resources (tuple resource limits),
+https://modal.com/docs/cli/latest/app (explicit-environment app stop/info).
+These currently published docs are not substitute for offline pinned
+Modal 1.5.5 compatibility tests. No GitHub workflow or launcher request
+file is introduced.

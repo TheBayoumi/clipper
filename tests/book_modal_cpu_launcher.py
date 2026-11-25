@@ -12,6 +12,8 @@ import os
 import re
 import subprocess
 import sys
+import signal
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -23,8 +25,8 @@ HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 INTENT = "PUBLIC_SYNTHETIC_MODEL_FREE_BOOK_REHEARSAL"
 LIMITS = {
-    "cpu": 1,
-    "memory": 512,
+    "cpu": (1, 1),
+    "memory": (512, 512),
     "gpu": None,
     "block_network": True,
     "restrict_modal_access": True,
@@ -35,7 +37,7 @@ LIMITS = {
     "retries": 0,
     "startup_timeout": 60,
     "timeout": 30,
-    "include_source": True,
+    "include_source": False,
     "scaledown_window": 2,
 }
 
@@ -134,16 +136,24 @@ def load_approval(path: Path, digest: str, sha: str, *, now: datetime | None = N
 
 def _remote_child(sha: str) -> dict[str, object]:
     """Only executed in a separately approved restricted CPU Function."""
-    import json as child_json
     import os as child_os
-    import subprocess as child_subprocess
     from pathlib import Path as ChildPath
 
     checkout = ChildPath("/opt/clipper")
-    output = ChildPath("/tmp/public-book-rehearsal")
+    # A new directory is created *within* the temporary container root;
+    # the rehearsal CLI demands a path that does not already exist.
+    with tempfile.TemporaryDirectory(prefix="clipper-") as fresh:
+        return _run_synthetic_child(checkout, ChildPath(fresh) / "artifacts", sha)
+
+
+def _run_synthetic_child(checkout: Path, output: Path, sha: str) -> dict[str, object]:
+    import json as child_json
+    import os as child_os
+    import subprocess as child_subprocess
+
     env = {"PATH": child_os.environ.get("PATH", "/usr/bin:/bin"),
            "PYTHONPATH": str(checkout / "src") + ":" + str(checkout / "tests"),
-           "HOME": "/tmp",
+           "HOME": str(output.parent),
            "PYTHONDONTWRITEBYTECODE": "1"}
     proc = child_subprocess.run(
         ["python", str(checkout / "tests" / "book_public_rehearsal.py"),
@@ -170,6 +180,9 @@ def _remote_child(sha: str) -> dict[str, object]:
         "artifact_sha256": payload["artifact_sha256"],
         "elapsed_seconds": payload["elapsed_seconds"],
         "peak_rss_kib_platform": payload["peak_rss_kib_platform"],
+        "real_model_calls": payload.get("real_model_calls"),
+        "network_calls": payload.get("network_calls"),
+        "publication_calls": payload.get("publication_calls"),
     }
 
 
@@ -199,11 +212,14 @@ class ModalControl:
         return str(workspace.name)
 
     def run_once(self, approval: Approval) -> dict[str, object]:
+        raise LaunchBlocked("control-plane work must run in bounded child; not directly")
+
+    def run_remote(self, approval: Approval, record: Any) -> dict[str, object]:
+        """Only internal bounded child may construct image and App."""
         modal, client = self._modal, self._client
         _require(modal is not None and client is not None, "identity not established")
-        # Image contains ONLY an anonymous public Git checkout at exact SHA.
-        # No local source/.git, credentials, secrets or private data are copied.
         sha = approval.source_sha
+        record("BUILD_BEGIN", "")
         clone = (
             "set -eu; export GIT_TERMINAL_PROMPT=0; "
             "git -c credential.helper= clone --no-checkout "
@@ -218,42 +234,245 @@ class ModalControl:
             .apt_install("git")
             .pip_install("PyYAML==6.0.3")
             .run_commands(clone)
+            .env({"PYTHONPATH": "/opt/clipper/tests"})
         )
-        # include_source is enabled only for this public launcher Function.
-        # The separately cloned book source is NOT mounted from the host.
+        # The public clone supplies the function module at /opt/clipper/tests.
+        # Neither App nor Function mounts the ambient host source.
         app = modal.App(include_source=False)
         function = app.function(image=image, **LIMITS)(_remote_child)
         call: Any = None
-        app_id: str | None = None
-        cleanup_confirmed = False
+        record("APP_RUN_BEGIN", "")
         try:
             with app.run(client=client, detach=False, environment_name=approval.environment):
                 app_id = getattr(app, "app_id", None)
-                _require(isinstance(app_id, str) and bool(app_id), "App id missing")
+                _require(isinstance(app_id, str) and bool(re.fullmatch(r"ap-[A-Za-z0-9-]+", app_id)),
+                         "App id missing")
+                record("APP_ID", app_id)
+                record("SPAWN_BEGIN", app_id)
                 call = function.spawn(sha)
                 call_id = getattr(call, "object_id", None)
-                _require(isinstance(call_id, str) and bool(call_id), "FunctionCall id missing")
-                output = call.get(timeout=35)
-                _require(isinstance(output, dict) and output.get("source_sha") == sha,
-                         "result source mismatch")
-                _require(output.get("publish_eligible") is False, "publish flag unexpected")
+                _require(isinstance(call_id, str) and bool(call_id),
+                         "FunctionCall id missing")
+                record("CALL_ID", call_id)
+                record("GET_BEGIN", call_id)
+                output = call.get(timeout=30)
+                _validate_child_report(output, sha)
+                record("RESULT_ACCEPTED", call_id)
                 return {"source_sha": sha, "app_id": app_id, "call_id": call_id,
-                        "rehearsal": output,
-                        "provider_removal": "UNKNOWN_UNTIL_EXTERNAL_VERIFICATION"}
+                        "rehearsal": output}
         finally:
             if call is not None:
                 try:
                     call.cancel(terminate_containers=True)
-                except Exception:
-                    pass  # External control plan must reconcile on error.
-            # App.run context exits as another cleanup attempt; this does not
-            # prove provider removal. No SUCCESS cleanup claim is made.
-            _ = cleanup_confirmed
+                    record("CALL_CANCEL_ATTEMPTED", str(getattr(call, "object_id", "")))
+                except Exception as exc:
+                    record("CALL_CANCEL_ERROR", type(exc).__name__)
+            # Exiting App.run may block; the parent owns the absolute deadline.
+
+
+def _validate_child_report(payload: object, sha: str) -> None:
+    _require(isinstance(payload, dict), "synthetic result not a dictionary")
+    assert isinstance(payload, dict)
+    _require(payload.get("source_sha") == sha
+             and payload.get("source_pin") == "VERIFIED_CLEAN_LOCAL_GIT_HEAD",
+             "synthetic source pin mismatch")
+    _require(payload.get("status") == "SYNTHETIC_CONTRACT_REHEARSAL_PASSED"
+             and payload.get("publish_eligible") is False, "synthetic status rejected")
+    tracks = payload.get("tracks")
+    _require(isinstance(tracks, dict), "synthetic tracks missing")
+    assert isinstance(tracks, dict)
+    _require(
+        isinstance(tracks.get("pause"), dict)
+        and tracks["pause"].get("status") == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW",
+        "human review gate missing",
+    )
+    follow = tracks.get("synthetic_test_review")
+    _require(
+        isinstance(follow, dict)
+        and follow.get("status") == "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED"
+        and follow.get("publish_eligible") is False,
+        "synthetic test continuation invalid",
+    )
+    proof = payload.get("zero_call_evidence")
+    _require(isinstance(proof, dict) and proof.get("attempts") == [],
+             "guard attempts not empty")
+    _require(payload.get("real_model_calls") == 0
+             and payload.get("network_calls") == 0
+             and payload.get("publication_calls") == 0,
+             "synthetic zero-call evidence invalid")
+
+
+def _journal(path: Path, phase: str, item: str = "") -> None:
+    """Durable minimal IDs/phase evidence; never tokens or source text."""
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"phase": phase, "id": item}, sort_keys=True) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _read_journal(path: Path) -> tuple[str | None, list[str]]:
+    app_id: str | None = None
+    phases: list[str] = []
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                phases.append("MALFORMED_RECORD")
+                continue
+            phase, identifier = entry.get("phase"), entry.get("id")
+            if not isinstance(phase, str) or not isinstance(identifier, str):
+                phases.append("MALFORMED_RECORD")
+                continue
+            phases.append(phase)
+            if phase == "APP_ID" and re.fullmatch(r"ap-[A-Za-z0-9-]+", identifier):
+                app_id = identifier
+    return app_id, phases
+
+
+def _stop_and_observe(app_id: str, environment: str, deadline: float,
+                      runner: Any = subprocess.run) -> tuple[bool, list[str]]:
+    errors: list[str] = []
+    for kind, command in (
+        ("stop", ["modal", "app", "stop", "-y", "--env", environment, app_id]),
+        ("info", ["modal", "app", "info", "--json", "--env", environment, app_id]),
+    ):
+        remaining = min(8.0, deadline - time.monotonic())
+        if remaining <= 0:
+            errors.append(kind + ":deadline")
+            return False, errors
+        try:
+            response = runner(command, check=False, text=True, capture_output=True,
+                              timeout=remaining)
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(kind + ":" + type(exc).__name__)
+            continue
+        if response.returncode != 0:
+            errors.append(kind + ":nonzero")
+            continue
+        if kind == "info":
+            try:
+                details = json.loads(response.stdout)
+            except (ValueError, TypeError):
+                errors.append("info:invalid_json")
+                continue
+            # No ambiguous provider state is accepted as terminal.
+            status = details.get("state") if isinstance(details, dict) else None
+            if isinstance(status, str) and status.lower() == "stopped" and not errors:
+                return True, []
+            errors.append("info:terminal_not_confirmed")
+    return False, errors
+
+
+def _bounded_run(approval: Approval, manifest_path: Path, digest: str,
+                 *, deadline_seconds: float = 120,
+                 popen: Any = subprocess.Popen,
+                 runner: Any = subprocess.run) -> dict[str, object]:
+    """One bounded control-plane process, plus bounded exact-ID stop/info."""
+    _require(0 < deadline_seconds <= 180, "unbounded control-plane deadline")
+    deadline = time.monotonic() + deadline_seconds
+    with tempfile.TemporaryDirectory(prefix="clipper-modal-owner-") as directory:
+        folder = Path(directory)
+        ledger, result_file = folder / "ids.jsonl", folder / "result.json"
+        command = [
+            sys.executable, str(Path(__file__).resolve()), "--internal-worker",
+            "--expected-sha", approval.source_sha,
+            "--approval-file", str(manifest_path), "--approval-sha256", digest,
+            "--journal", str(ledger), "--result-file", str(result_file),
+        ]
+        proc = popen(command, cwd=Path(__file__).resolve().parents[1],
+                     start_new_session=True, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL)
+        timed_out = False
+        process_cleanup_errors: list[str] = []
+        try:
+            proc.wait(timeout=max(0.1, deadline-time.monotonic()-20))
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        finally:
+            if proc.poll() is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (OSError, ProcessLookupError) as exc:
+                    process_cleanup_errors.append("KILL_GROUP:" + type(exc).__name__)
+                try:
+                    proc.wait(timeout=min(2.0, max(0.1, deadline-time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+        app_id, phases = _read_journal(ledger)
+        confirmed = False
+        cleanup_errors: list[str] = list(process_cleanup_errors)
+        if "CALL_CANCEL_ERROR" in phases:
+            cleanup_errors.append("CALL_CANCEL_ERROR")
+        if "MALFORMED_RECORD" in phases:
+            cleanup_errors.append("INVALID_JOURNAL")
+        if app_id is not None:
+            confirmed, cleanup_errors = _stop_and_observe(
+                app_id, approval.environment, deadline, runner=runner
+            )
+        else:
+            cleanup_errors.append("APP_ID_UNKNOWN")
+        if timed_out:
+            cleanup_errors.append("CONTROL_PLANE_TIMEOUT")
+        if proc.returncode != 0:
+            cleanup_errors.append("WORKER_NONZERO_OR_TERMINATED")
+        output: dict[str, object] | None = None
+        if result_file.is_file() and result_file.stat().st_size <= 220_000:
+            try:
+                parsed = json.loads(result_file.read_text())
+                if isinstance(parsed, dict):
+                    output = parsed
+                    _validate_child_report(output.get("rehearsal"), approval.source_sha)
+            except (ValueError, LaunchBlocked):
+                cleanup_errors.append("RESULT_UNVERIFIED")
+        else:
+            cleanup_errors.append("NO_RESULT")
+        return {
+            "status": "SYNTHETIC_REHEARSAL_CONFIRMED" if (
+                confirmed and not cleanup_errors and output is not None
+            ) else "BLOCKED",
+            "provider_removal": "STOPPED_CONFIRMED_BY_INFO" if confirmed else "UNKNOWN",
+            "app_id": app_id,
+            "observed_phases": phases,
+            "cleanup_errors": cleanup_errors,
+            "result": output if confirmed and not cleanup_errors else None,
+        }
+
+
+def _internal_worker(approval: Approval, journal: Path, result_file: Path) -> int:
+    controller = ModalControl()
+    try:
+        _require(controller.identify(approval) == approval.workspace, "workspace mismatch")
+        result = controller.run_remote(
+            approval, lambda phase, value: _journal(journal, phase, value)
+        )
+        result_file.write_text(json.dumps(result, sort_keys=True))
+        with result_file.open("rb") as f:
+            os.fsync(f.fileno())
+        return 0
+    except Exception as exc:
+        _journal(journal, "WORKER_ERROR", type(exc).__name__)
+        return 2
+
+
+class BoundedModalControl:
+    """Client identity before resources; image/build runs in a bounded subprocess."""
+
+    def __init__(self, manifest_path: Path, digest: str) -> None:
+        self.manifest_path = manifest_path
+        self.digest = digest
+        self._client = ModalControl()
+
+    def identify(self, approval: Approval) -> str:
+        return self._client.identify(approval)
+
+    def run_once(self, approval: Approval) -> dict[str, object]:
+        return _bounded_run(approval, self.manifest_path, self.digest)
 
 
 def execute(sha: str, approval: Approval, control: Control,
             *, external_control_verified: bool) -> dict[str, object]:
-    _require(external_control_verified, "independent lifecycle/cost control not verified")
+    _require(external_control_verified, "independent lifecycle control not verified")
     _require(approval.source_sha == sha, "approval source mismatch")
     _require(datetime.now(UTC) < approval.expires_utc, "approval expired before execution")
     observed = control.identify(approval)
@@ -269,13 +488,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--approval-file", type=Path)
     parser.add_argument("--approval-sha256")
     parser.add_argument("--independent-control-receipt")
+    # Internal-only child is only spawned by the bounded parent after approval.
+    parser.add_argument("--internal-worker", action="store_true", default=False)
+    parser.add_argument("--journal", type=Path)
+    parser.add_argument("--result-file", type=Path)
     args = parser.parse_args(argv)
     checkout = Path(__file__).resolve().parents[1]
     try:
         local_source(checkout, args.expected_sha)
+        if args.internal_worker:
+            _require(args.approval_file is not None and args.approval_sha256 is not None
+                     and args.journal is not None and args.result_file is not None,
+                     "internal worker authorization and output required")
+            approval = load_approval(args.approval_file, args.approval_sha256,
+                                     args.expected_sha)
+            return _internal_worker(approval, args.journal, args.result_file)
         if not args.execute:
             _require(not any((args.approval_file, args.approval_sha256,
-                              args.independent_control_receipt)),
+                              args.independent_control_receipt,
+                              args.journal, args.result_file)),
                      "plan mode accepts no execution/credential fields")
             print(json.dumps({"status": "DORMANT_PLAN_ONLY",
                               "source_sha": args.expected_sha,
@@ -299,11 +530,14 @@ def main(argv: list[str] | None = None) -> int:
         else:
             _require(bool(token_id) and bool(token_secret) and not profile,
                      "existing Actions token pair required without profile ambiguity")
-        # Client-bound Workspace.from_context() must still match the approval.
-        result = execute(args.expected_sha, approval, ModalControl(),
-                         external_control_verified=True)
-        print(json.dumps(result, sort_keys=True))
-        return 0
+        # A parsed dollar amount and a matching receipt string are not
+        # independently enforceable spend authority. The bounded subprocess
+        # and cleanup controls are implemented/testable offline, but a live
+        # budget guard is NOT supplied by the current Starter workspace.
+        # Reject BEFORE constructing any SDK/client or remote resource.
+        raise LaunchBlocked("independent enforceable account budget cap missing")
+        # No live execution branch is reachable until a separately reviewed
+        # authenticated budget control replaces the explicit blocker above.
     except (LaunchBlocked, OSError, ValueError, json.JSONDecodeError,
             subprocess.SubprocessError):
         print(json.dumps({"status": "DORMANT_LAUNCH_BLOCKED"}))

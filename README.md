@@ -496,3 +496,19 @@ Neither an approval document nor external controller exists in the repo;
 their strings are not cryptographic signature verification or a hard cost
 cap. Provider removal is UNKNOWN without external confirmation. See
 [the dormant route and restrictions](docs/BOOK_MODAL_CPU_DORMANT_ROUTE.md).
+
+
+### Bounded launcher correction candidate (LAUNCHER-FIX1314; UNQUALIFIED)
+
+The dormant launcher includes a bounded **local control-plane worker**
+and fsynced App/call identity journal, timed stop/info attempts using the
+explicit Modal environment, and fail-closed unknown cleanup reporting.
+Function resource requests are capped at `cpu=(1,1)` and
+`memory=(512,512)` with `include_source=False`; only the exact public
+Git clone is intended in the image. Child work uses a fresh temporary
+artifact root and validates both synthetic tracks, source pin and zero
+guard attempts. Offline SDK fakes cover the actual staged run and error
+paths. **The live `--execute` path is blocked before SDK construction
+because a manifest dollar amount/receipt does not enforce a hard total
+account budget.** Full exact-SHA tests/static/CI and review remain pending.
+No provider action is authorized.
