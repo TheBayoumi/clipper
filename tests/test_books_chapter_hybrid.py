@@ -807,7 +807,12 @@ def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(
     if configured:
         args["pipeline_config"] = pipeline_plan.template(selected.stem, "brief")
     waiting = chapter.evaluate_hybrid_chapter(runner, selected, section, **args)
-    assert waiting["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
+    assert waiting["status"] == (
+        "BRIEF_READY_UNREVIEWED" if configured else "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
+    )
+    if configured:
+        assert waiting["configured_stage_results"]["human_review"] == "REQUIRED_NEXT"
+        assert waiting["configured_execution_receipt_identity"]
     base = runner.root / "book-candidates"
     ledger = json.loads(
         next((base / "chapter-evaluations").glob("*/source-ledger.json")).read_bytes()
@@ -879,6 +884,26 @@ def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(
         )
         assert cached["final_result_identity"] == checkpoint["final_result_identity"]
         assert cached["configured_stage_results"]["script"] == "REUSED"
+        assert (
+            cached["configured_execution_receipt_identity"]
+            != (checkpoint["configured_execution_receipt_identity"])
+        )
+        receipt_key = cached["configured_execution_receipt_identity"]
+        receipt_path = (
+            base
+            / "chapter-evaluations"
+            / cached["chapter_scope_identity"]
+            / f"configured-execution-{receipt_key}.json"
+        )
+        receipt = json.loads(receipt_path.read_bytes())
+        assert chapter.content_fingerprint(receipt) == receipt_key
+        assert receipt["stage_results"]["script"] == "REUSED"
+        assert receipt["configuration_sha256"] == chapter.content_fingerprint(config)
+        assert receipt["configured_lineage"] == pipeline_plan.semantic_lineage(
+            config, pipeline_plan.registry()
+        )
+        assert receipt["source_policy"] == "STRICT_SELECTED_INPUT_ONLY_NO_ACQUISITION"
+        assert receipt["artifacts"]["final_result_identity"] == cached["final_result_identity"]
         assert calls == before
     if script_only:
         assert checkpoint["status"] == "TEST_DOUBLE_CHAPTER_SCRIPT_READY_UNREVIEWED"

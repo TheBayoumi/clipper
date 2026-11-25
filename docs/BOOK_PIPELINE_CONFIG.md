@@ -130,3 +130,19 @@ Only brief and script targets are supported in the evaluator integration.
 Other targets fail closed; narration and direction do not run. The script
 result remains unreviewed and nonpublishable. The local API is not a private
 host authorization mechanism or a Modal route.
+
+## Configured execution evidence
+
+Each successful configured brief, human-review pause or script invocation retains
+a content-addressed private execution receipt. It binds the exact configuration,
+semantic lineage, stage decisions, source and artifact identities. This receipt
+is separate from the stable script content artifact: replay can change invocation
+evidence from RAN to REUSED without changing the script identity.
+
+The brief target reports BRIEF_READY_UNREVIEWED and review REQUIRED_NEXT. It is
+not human-approved. The source stage always strictly imports the caller-supplied
+immutable selected bundle and never acquires source data. With source disabled,
+this is input reuse, not hidden source generation. Producer callbacks on disabled
+text stages are provenance bindings for exact native cache verification, never
+permission to invoke them. Human review disabled means reuse a matching actual
+attestation, never waive the review requirement.

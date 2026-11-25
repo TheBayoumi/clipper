@@ -2391,7 +2391,10 @@ def evaluate_hybrid_chapter(
                 if name not in configured_stages
             }
         )
+        # Source is an immutable supplied input, not an acquisition permission.
         configured_results["source"] = "REUSED"
+        configured_results["human_review"] = "REQUIRED_NEXT"
+        summary["configured_source_policy"] = "STRICT_SELECTED_INPUT_ONLY_NO_ACQUISITION"
         if "human_review" in configured_stages:
             configured_results["human_review"] = "AWAITING_HUMAN_REVIEW"
             configured_results["adaptation"] = "BLOCKED_HUMAN_REVIEW"
@@ -2402,6 +2405,33 @@ def evaluate_hybrid_chapter(
                 "configured_stage_results": configured_results,
             }
         )
+
+    def retain_configured_receipt() -> None:
+        if configured is None:
+            return
+        receipt = {
+            "schema": "clipper-configured-chapter-execution-receipt-v1",
+            "configuration_sha256": content_fingerprint(configured),
+            "configuration": configured,
+            "chapter_scope_identity": chapter_key,
+            "selected_source_bundle_sha256": verified.bundle_sha256,
+            "source_ledger_sha256": summary["source_ledger_sha256"],
+            "source_policy": "STRICT_SELECTED_INPUT_ONLY_NO_ACQUISITION",
+            "configured_lineage": configured_lineage,
+            "stage_results": dict(configured_results),
+            "status": summary["status"],
+            "artifacts": {
+                key: value
+                for key, value in summary.items()
+                if key.endswith(("_identity", "_identities", "_sha256"))
+                and key != "configured_execution_receipt_identity"
+            },
+            "publish_eligible": False,
+        }
+        receipt_key = content_fingerprint(receipt)
+        evaluation._store(root, base / f"configured-execution-{receipt_key}.json", receipt)
+        summary["configured_execution_receipt_identity"] = receipt_key
+
     if configured is None and not limits.brief_cpu:
         return summary
 
@@ -2658,8 +2688,11 @@ def evaluate_hybrid_chapter(
         }
     )
     if configured is not None and configured["targets"] == ["brief"]:
+        summary["status"] = "BRIEF_READY_UNREVIEWED"
+        retain_configured_receipt()
         return summary
     if review_file is None:
+        retain_configured_receipt()
         return summary
     try:
         review_bytes = evaluation._read(review_file, 250_000)
@@ -2777,17 +2810,20 @@ def evaluate_hybrid_chapter(
         }
         result_key = content_fingerprint(record)
         evaluation._store(root, base / f"chapter-result-{result_key}.json", record)
-        return {
-            **summary,
-            "status": (
-                "CHAPTER_SCRIPT_READY_UNREVIEWED"
-                if argument_origin == "ACTUAL_CPU_QWEN"
-                else "TEST_DOUBLE_CHAPTER_SCRIPT_READY_UNREVIEWED"
-            ),
-            "final_result_identity": result_key,
-            "semantic_intervention": "HUMAN_ATTESTED_NOT_INDEPENDENTLY_PROVEN",
-            "script_review": "UNREVIEWED",
-        }
+        summary.update(
+            {
+                "status": (
+                    "CHAPTER_SCRIPT_READY_UNREVIEWED"
+                    if argument_origin == "ACTUAL_CPU_QWEN"
+                    else "TEST_DOUBLE_CHAPTER_SCRIPT_READY_UNREVIEWED"
+                ),
+                "final_result_identity": result_key,
+                "semantic_intervention": "HUMAN_ATTESTED_NOT_INDEPENDENTLY_PROVEN",
+                "script_review": "UNREVIEWED",
+            }
+        )
+        retain_configured_receipt()
+        return summary
     audio: list[dict[str, Any]] | None = None
     audio_origin = "NO_AUDIO"
     narration_report_key: str | None = None
