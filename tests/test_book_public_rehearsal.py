@@ -134,22 +134,35 @@ def test_cli_requires_actual_checkout_pin_before_rehearsal(
     assert not fresh.exists()
 
 
-def test_cli_explicit_git_match_reports_verified_pin(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    def fake_git(argv: list[str], **_kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(
-            stdout=SHA + "\n" if "rev-parse" in argv else ""
-        )
-
-    monkeypatch.setattr(rehearsal.subprocess, "run", fake_git)
-    monkeypatch.setattr(
-        rehearsal,
-        "rehearse",
-        lambda _root, _sha: {"status": "SYNTHETIC_CONTRACT_REHEARSAL_PASSED"},
+def test_cli_explicit_git_match_reports_verified_pin(tmp_path: Path) -> None:
+    """A fresh subprocess avoids unrelated pytest modules preloaded in-process."""
+    checkout = Path(__file__).resolve().parents[1]
+    script = """
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+sys.path.insert(0, str(Path(sys.argv[1]) / "tests"))
+import book_public_rehearsal as rehearsal
+sha = "a" * 40
+def fake_git(argv, **_kwargs):
+    return SimpleNamespace(stdout=sha + "\\n" if "rev-parse" in argv else "")
+rehearsal.subprocess.run = fake_git
+rehearsal.rehearse = lambda _root, _sha: {
+    "status": "SYNTHETIC_CONTRACT_REHEARSAL_PASSED"
+}
+assert rehearsal.main(["--fresh-root", sys.argv[2], "--expected-sha", sha]) == 0
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(checkout), str(tmp_path / "new")],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
     )
-    assert rehearsal.main(["--fresh-root", str(tmp_path / "new"), "--expected-sha", SHA]) == 0
-    report = json.loads(capsys.readouterr().out)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    report = json.loads(result.stdout.strip())
     assert report["source_pin"] == "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
 
 

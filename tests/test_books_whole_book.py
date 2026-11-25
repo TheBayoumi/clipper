@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from public_book_fixture_support import ingested
+from public_book_fixture_support import ingested, synthetic_candidate as synthetic_candidate
 
 from clipper import cli
 from clipper.books import acquisition, constrained, mining, scripting, whole_book
