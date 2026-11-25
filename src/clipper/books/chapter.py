@@ -8,7 +8,7 @@ import math
 import os
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
@@ -20,6 +20,7 @@ from . import (
     chapter_hybrid,
     evaluation,
     narration,
+    pipeline_plan,
     scripting,
     selected_scope,
     whole_book,
@@ -1352,6 +1353,7 @@ def _stage(
     contract_version: str | None = None,
     safe_context_tokens: int | None = None,
     hybrid_request_identity: str | None = None,
+    configured_stage_limits: dict[str, object] | None = None,
 ) -> tuple[dict[str, Any], str, str, int]:
     """Reserve each irreversible provider attempt before calling any producer."""
     plan.validate()
@@ -1421,7 +1423,9 @@ def _stage(
                 "chapter_direction": DIRECTION_SCHEMA,
             }[stage],
             "request": request,
-            "stage_limits": {
+            "stage_limits": configured_stage_limits
+            if configured_stage_limits is not None
+            else {
                 "max_scenes": plan.max_scenes,
                 "max_words": plan.max_words,
                 "max_beats": plan.max_beats,
@@ -2179,6 +2183,7 @@ def evaluate_hybrid_chapter(
     on_stage_progress: Callable[[str, str | None], None] | None = None,
     token_counter: Callable[[list[dict[str, str]]], int] | None = None,
     script_only: bool = False,
+    pipeline_config: object | None = None,
 ) -> dict[str, object]:
     """One exact-source chapter argument, disjoint audits, reconciliation and human gate.
 
@@ -2190,6 +2195,105 @@ def evaluate_hybrid_chapter(
     if type(limits) is not ChapterPlan:
         raise ChapterStop("hybrid run plan must be the exact validated ChapterPlan")
     limits.validate()
+    configured = (
+        pipeline_plan.validate_config(pipeline_config, pipeline_plan.registry())
+        if pipeline_config is not None
+        else None
+    )
+    configured_lineage: dict[str, str] = {}
+    configured_stages: list[str] = []
+    configured_replay: set[str] = set()
+    configured_results: dict[str, str] = {}
+    if configured is not None:
+        if script_only is not False:
+            raise ChapterStop("configured targets cannot be combined with legacy script_only")
+        targets = configured["targets"]
+        if targets not in (["brief"], ["script"]):
+            raise ChapterStop("configured execution target unsupported")
+        if limits.direction_cpu or limits.kokoro_cpu:
+            raise ChapterStop("configured text execution cannot authorize downstream work")
+        specs = pipeline_plan.registry()
+        closure: set[str] = set()
+
+        def include(name: str) -> None:
+            if name not in closure:
+                closure.add(name)
+                for dependency in specs[name].dependencies:
+                    include(dependency)
+
+        for target in targets:
+            for name in pipeline_plan.TARGETS[target]:
+                include(name)
+        configured_stages = [
+            name
+            for name in pipeline_plan.ordered_stages(specs)
+            if name in closure and name != "source"
+        ]
+        configured_lineage = pipeline_plan.semantic_lineage(configured, pipeline_plan.registry())
+        entries = configured["stages"]
+        # Only canonical native cache replay is supported in this slice. Never
+        # treat a planner descriptor as a native validated Qwen artifact.
+        if any(entries[name]["input"] is not None for name in entries if name != "source"):
+            raise ChapterStop("configured native replay does not accept external text descriptors")
+        if entries["source"]["input"] is not None:
+            raise ChapterStop("configured execution requires canonical selected-source path")
+        new_work_seen = False
+        for name in configured_stages:
+            if name == "human_review":
+                if not entries[name]["enabled"] and review_file is None:
+                    raise ChapterReviewPending(
+                        "disabled human review requires existing attestation"
+                    )
+                continue
+            replay_stage = not entries[name]["enabled"] or (
+                expected_brief_identity is not None
+                and name in {"argument", "audits", "reconcile"}
+            )
+            if replay_stage:
+                if new_work_seen:
+                    raise ChapterStop("configured disabled stage requires replay-only prefix")
+                configured_replay.add(name)
+            else:
+                new_work_seen = True
+                permission = (
+                    limits.brief_cpu if name in {"argument", "audits", "reconcile"}
+                    else limits.adaptation_cpu if name == "adaptation"
+                    else limits.script_cpu
+                )
+                if not permission:
+                    raise ChapterHostBlocked("configured stage lacks explicit CPU permission")
+        if targets == ["brief"] and (
+            review_file is not None or expected_brief_identity is not None
+        ):
+            raise ChapterStop("configured brief target does not consume human review")
+        callbacks = {
+            "argument": argument_completion,
+            "audits": audit_completion,
+            "reconcile": reconcile_completion,
+            "adaptation": adaptation_completion,
+            "script": script_completion,
+        }
+        expected_actual = (
+            argument_completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
+            and scripting._local_chapter_completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
+        )
+        for name in configured_stages:
+            if name == "human_review":
+                continue
+            callback = callbacks[name]
+            if callback is None:
+                raise ChapterHostBlocked("configured stage requires explicit producer binding")
+            actual = (
+                callback is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
+                and scripting._local_chapter_completion
+                is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
+            )
+            if actual != expected_actual:
+                raise ChapterStop("configured stage producer provenance differs from argument")
+        if review_file is not None and expected_brief_identity is None:
+            raise ChapterStop("configured resume requires frozen brief identity")
+        if expected_brief_identity is not None and review_file is None:
+            raise ChapterReviewPending("configured resume requires explicit human review")
     if type(script_only) is not bool or (
         script_only
         and (
@@ -2202,6 +2306,8 @@ def evaluate_hybrid_chapter(
     ):
         raise ChapterStop("script-only route requires exact text stages and no downstream work")
     verified = selected_scope.import_chapter(runner.root, selected_scope_path)
+    if configured is not None and configured["source_sha256"] != verified.bundle_sha256:
+        raise ChapterStop("configured selected source digest mismatch")
     scoped, manifest_sha = evaluation._section_scope(
         runner,
         selected_scope_path,
@@ -2228,7 +2334,9 @@ def evaluate_hybrid_chapter(
         "source_boundary": verified.book.source_boundary,
         "recovery_status": verified.book.recovery_status,
         "linked_sections": list(verified.linked_section_ids),
-        "run_plan": limits.fingerprint,
+        "run_plan": (
+            limits.fingerprint if configured is None else "CONFIGURED_HYBRID_SOURCE_V1"
+        ),
     }
     if script_only:
         ledger_identity["terminal_contract"] = "SCRIPT_ONLY_V1"
@@ -2241,7 +2349,9 @@ def evaluate_hybrid_chapter(
             "contract": chapter_hybrid.BRIEF_SCHEMA,
             "source": ledger["ledger_sha256"],
             "scope": scoped.fingerprint,
-            "plan": limits.fingerprint,
+            "plan": (
+                limits.fingerprint if configured is None else "CONFIGURED_HYBRID_SOURCE_V1"
+            ),
         }
     )
     base = root / "chapter-evaluations" / chapter_key
@@ -2270,7 +2380,26 @@ def evaluate_hybrid_chapter(
         "visual_calls": 0,
         "automation_claim": "NOT_YET_GENERATED",
     }
-    if not limits.brief_cpu:
+    if configured is not None:
+        configured_results.update(
+            {
+                name: "NOT_REQUESTED" if entry["enabled"] else "DISABLED"
+                for name, entry in configured["stages"].items()
+                if name not in configured_stages
+            }
+        )
+        configured_results["source"] = "REUSED"
+        if "human_review" in configured_stages:
+            configured_results["human_review"] = "AWAITING_HUMAN_REVIEW"
+            configured_results["adaptation"] = "BLOCKED_HUMAN_REVIEW"
+            configured_results["script"] = "BLOCKED_HUMAN_REVIEW"
+        summary.update(
+            {
+                "configured_targets": configured["targets"],
+                "configured_stage_results": configured_results,
+            }
+        )
+    if configured is None and not limits.brief_cpu:
         return summary
 
     # A test callback never replaces pinned tokenizer proof for the actual CPU producer.
@@ -2283,6 +2412,12 @@ def evaluate_hybrid_chapter(
         # Resolve actual pinned public tokenizer/config BEFORE producer hashing:
         # the source journal and recovery must never depend on whether a
         # snapshot happened to be downloaded by a later stage.
+        if configured is not None and configured_replay:
+            # Cache-only tokenizer preflight must not fetch a public snapshot.
+            if scripting._cached_chapter_tokenizer_material().get("status") != (
+                "PINNED_PUBLIC_TOKENIZER"
+            ):
+                raise ChapterStop("configured replay requires retained pinned tokenizer")
         scripting._public_book_context()
         tokens = scripting._chapter_prompt_encoding
     elif token_counter is not None:
@@ -2294,11 +2429,27 @@ def evaluate_hybrid_chapter(
         ledger_sha256=ledger["ledger_sha256"],
         chapter_scope_sha256=manifest_sha,
         selected_bundle_sha256=verified.bundle_sha256,
-        plan_fingerprint=limits.fingerprint,
+        plan_fingerprint=(
+            limits.fingerprint
+            if configured is None
+            else content_fingerprint({"contract": "CONFIGURED_HYBRID_SOURCE_V1"})
+        ),
         model_producer=whole_book.hybrid_chapter_producer_material(),
     )
     producer_sha256 = chapter_hybrid.digest(producer)
     summary["producer_identity_sha256"] = producer_sha256
+
+    def stage_plan(name: str) -> ChapterPlan:
+        if configured is None:
+            return limits
+        semantic = configured["stages"][name]["semantic"]
+        return replace(
+            limits,
+            **{
+                ("max_attempts_per_stage" if key == "max_attempts" else key): value
+                for key, value in semantic.items()
+            },
+        )
 
     def stage(
         name: str,
@@ -2309,21 +2460,35 @@ def evaluate_hybrid_chapter(
         *,
         replay_only: bool = False,
     ) -> tuple[dict[str, Any], str, str, int]:
+        config_name = {"audit": "audits", "chapter_script": "script"}.get(
+            request_stage, request_stage
+        )
+        effective = stage_plan(config_name)
+        stage_producer = producer
+        local_limits: dict[str, object] | None = None
+        if configured is not None:
+            local_limits = configured["stages"][config_name]["semantic"]
+            stage_producer = {
+                **producer,
+                "configured_stage_lineage": configured_lineage[config_name],
+                "configured_stage_contract": "CONFIGURED_HYBRID_STAGE_V1",
+            }
+            replay_only = replay_only or config_name in configured_replay
         try:
             prepared, request_key, _count = chapter_hybrid.request(
                 request_stage,
                 payload,
-                output_tokens=limits.max_new_tokens,
+                output_tokens=effective.max_new_tokens,
                 token_count=tokens,
-                producer_identity=producer,
+                producer_identity=stage_producer,
             )
         except chapter_hybrid.HybridStop as error:
             raise ChapterStop("hybrid pinned-token request preflight refused") from error
-        return _stage(
+        result = _stage(
             root,
             name,
             payload,
-            limits,
+            effective,
             validate,
             completion,
             replay_only=replay_only,
@@ -2331,7 +2496,14 @@ def evaluate_hybrid_chapter(
             contract_version=f"clipper-hybrid-{request_stage}-v1",
             safe_context_tokens=chapter_hybrid.SAFE_CONTEXT_TOKENS,
             hybrid_request_identity=request_key,
+            configured_stage_limits=local_limits,
         )
+        if configured is not None:
+            if result[3] or configured_results.get(config_name) == "RAN":
+                configured_results[config_name] = "RAN"
+            else:
+                configured_results[config_name] = "REUSED"
+        return result
 
     replay = expected_brief_identity is not None
     projection = chapter_hybrid.projection(chapter_hybrid.validate_ledger(ledger))
@@ -2410,7 +2582,7 @@ def evaluate_hybrid_chapter(
 
     def validated_brief(raw: object) -> dict[str, Any]:
         result = chapter_hybrid.reconcile(raw, ledger, argument, audits)
-        if len(result["beats"]) > limits.max_beats:
+        if len(result["beats"]) > stage_plan("reconcile").max_beats:
             raise ChapterStop("hybrid coherent argument exceeds bounded grouped-beat capacity")
         return result
 
@@ -2482,6 +2654,8 @@ def evaluate_hybrid_chapter(
             ),
         }
     )
+    if configured is not None and configured["targets"] == ["brief"]:
+        return summary
     if review_file is None:
         return summary
     try:
@@ -2510,13 +2684,15 @@ def evaluate_hybrid_chapter(
             "publish_eligible": False,
         },
     )
+    if configured is not None:
+        configured_results["human_review"] = "HUMAN_ATTESTED"
     summary["human_review_sha256"] = review_sha
     summary["human_attested_beat_count"] = len(human["beat_decisions"])
     if on_resume_verified is not None:
         if not replay:
             raise ChapterStop("hybrid resume claim requires exact journaled brief")
         on_resume_verified()
-    if not limits.adaptation_cpu:
+    if configured is None and not limits.adaptation_cpu:
         return {**summary, "status": "AWAITING_EXPLICIT_CPU_CHAPTER_ADAPTATION"}
     if on_stage_progress is not None:
         on_stage_progress("ADAPTATION_IN_FLIGHT", None)
@@ -2533,13 +2709,13 @@ def evaluate_hybrid_chapter(
                 "Each beat retained with reason, qualification paraphrase and fiction label."
             ),
         },
-        lambda raw: chapter_hybrid.validate_adaptation(raw, brief, limits),
+        lambda raw: chapter_hybrid.validate_adaptation(raw, brief, stage_plan("adaptation")),
         adaptation_completion,
     )
     summary.update({"adaptation_identity": adapt_key, "adaptation_attempts": adapt_attempts})
     if on_stage_progress is not None:
         on_stage_progress("ADAPTATION_VERIFIED", adapt_key)
-    if not limits.script_cpu:
+    if configured is None and not limits.script_cpu:
         return {**summary, "status": "AWAITING_EXPLICIT_CPU_CHAPTER_SCRIPT"}
     if on_stage_progress is not None:
         on_stage_progress("SCRIPT_IN_FLIGHT", None)
@@ -2557,7 +2733,7 @@ def evaluate_hybrid_chapter(
                 "fiction labels. Preserve factual meaning; paraphrase is allowed."
             ),
         },
-        lambda raw: chapter_hybrid.validate_script(raw, treatment, brief, limits),
+        lambda raw: chapter_hybrid.validate_script(raw, treatment, brief, stage_plan("script")),
         script_completion,
     )
     summary.update(
@@ -2567,11 +2743,13 @@ def evaluate_hybrid_chapter(
             "script_attempts": script_attempts,
         }
     )
-    if script_only and any(origin != argument_origin for origin in (adapt_origin, script_origin)):
+    if (script_only or configured is not None) and any(
+        origin != argument_origin for origin in (adapt_origin, script_origin)
+    ):
         raise ChapterStop("hybrid script-only text stages have mismatched producer provenance")
     if on_stage_progress is not None:
         on_stage_progress("SCRIPT_VERIFIED", script_key)
-    if script_only:
+    if script_only or configured is not None:
         record = {
             "schema": "clipper-chapter-private-script-result-v1",
             "chapter_scope_identity": chapter_key,

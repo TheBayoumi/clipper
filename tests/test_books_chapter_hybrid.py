@@ -765,10 +765,12 @@ def test_model_free_hybrid_argument_audits_reconciliation_review_gate_and_replay
     miner.assert_not_called()
 
 
-@pytest.mark.parametrize("script_only", [False, True])
+@pytest.mark.parametrize("script_only,configured", [(False, False), (True, False), (True, True)])
 def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script_only: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script_only: bool, configured: bool
 ) -> None:
+    from clipper.books import pipeline_plan
+
     runner, selected, section = _selected_hybrid_source(tmp_path)
     fake_miner = Mock(side_effect=AssertionError("no mandatory per-unit mining"))
     monkeypatch.setattr(BookOrchestrator, "mine_candidate", fake_miner)
@@ -799,9 +801,11 @@ def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(
         "script_completion": producer("chapter_script"),
         "direction_completion": None if script_only else producer("chapter_direction"),
         "narration_producer": None if script_only else _hybrid_wav,
-        "script_only": script_only,
+        "script_only": script_only and not configured,
         "token_counter": lambda _messages: 1200,
     }
+    if configured:
+        args["pipeline_config"] = pipeline_plan.template(selected.stem, "brief")
     waiting = chapter.evaluate_hybrid_chapter(runner, selected, section, **args)
     assert waiting["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
     base = runner.root / "book-candidates"
@@ -835,6 +839,15 @@ def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(
     if script_only:
         monkeypatch.setattr(chapter, "_timings", downstream)
         monkeypatch.setattr(chapter, "_narrate", downstream)
+    if configured:
+        config = pipeline_plan.template(selected.stem, "script")
+        for name in ("argument", "audits", "reconcile", "human_review"):
+            config["stages"][name]["enabled"] = False
+        config["stages"]["narration"]["semantic"]["voice"] = "af_bella"
+        args["pipeline_config"] = config
+        args["plan"] = chapter.ChapterPlan(
+            adaptation_cpu=True, script_cpu=True, voice="af_bella"
+        )
     checkpoint = chapter.evaluate_hybrid_chapter(
         runner,
         selected,
@@ -843,6 +856,32 @@ def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(
         expected_brief_identity=waiting["brief_identity"],
         **args,
     )
+    if configured:
+        assert checkpoint["chapter_scope_identity"] == waiting["chapter_scope_identity"]
+        assert checkpoint["brief_identity"] == waiting["brief_identity"]
+        results = checkpoint["configured_stage_results"]
+        assert results["argument"] == "REUSED"
+        assert results["audits"] == "REUSED"
+        assert results["reconcile"] == "REUSED"
+        assert results["adaptation"] == "RAN"
+        assert results["script"] == "RAN"
+        assert results["narration"] == "DISABLED"
+        assert results["direction"] == "DISABLED"
+        for name in ("adaptation", "script"):
+            config["stages"][name]["enabled"] = False
+        args["plan"] = chapter.ChapterPlan()
+        before = list(calls)
+        cached = chapter.evaluate_hybrid_chapter(
+            runner,
+            selected,
+            section,
+            review_file=review_file,
+            expected_brief_identity=waiting["brief_identity"],
+            **args,
+        )
+        assert cached["final_result_identity"] == checkpoint["final_result_identity"]
+        assert cached["configured_stage_results"]["script"] == "REUSED"
+        assert calls == before
     if script_only:
         assert checkpoint["status"] == "TEST_DOUBLE_CHAPTER_SCRIPT_READY_UNREVIEWED"
         assert checkpoint["script_review"] == "UNREVIEWED"
@@ -1698,7 +1737,6 @@ def test_hybrid_producer_binding_reacts_to_tokenizer_template_and_generation_cha
     with monkeypatch.context() as patch:
         patch.setattr(hybrid.scripting, "SCRIPT_REVISION", "synthetic-new-revision")
         assert bound() != original
-
 
 @pytest.mark.parametrize(
     "case",
@@ -2662,3 +2700,35 @@ def test_hybrid_reserved_stage_rejects_invalid_output_before_any_attempt(
         )
     callback.assert_not_called()
     assert not list(tmp_path.rglob("started-*.json"))
+
+
+@pytest.mark.parametrize(
+    "case", ["wrong_source", "unsupported", "disabled_prefix", "disabled_late"]
+)
+def test_configured_hybrid_preflight_blocks_before_producer(tmp_path: Path, case: str) -> None:
+    from clipper.books import pipeline_plan
+
+    runner, selected, section = _selected_hybrid_source(tmp_path)
+    config = pipeline_plan.template(selected.stem, "brief")
+    if case == "wrong_source":
+        config["source_sha256"] = "0" * 64
+    elif case == "unsupported":
+        config["targets"] = ["video"]
+    elif case == "disabled_prefix":
+        config["stages"]["argument"]["enabled"] = False
+    else:
+        config["stages"]["reconcile"]["enabled"] = False
+    forbidden = Mock(side_effect=AssertionError("provider called before preflight"))
+    with pytest.raises(chapter.ChapterStop):
+        chapter.evaluate_hybrid_chapter(
+            runner,
+            selected,
+            section,
+            plan=chapter.ChapterPlan(brief_cpu=True),
+            pipeline_config=config,
+            argument_completion=forbidden,
+            audit_completion=forbidden,
+            reconcile_completion=forbidden,
+            token_counter=lambda _: 1200,
+        )
+    forbidden.assert_not_called()

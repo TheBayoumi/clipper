@@ -1,8 +1,9 @@
 # Configurable chapter pipeline: offline planning v1
 
-This is a planning boundary, not an execution adapter. It neither authorizes
-nor starts inference, downloads weights, creates Modal resources, or publishes.
-The existing chapter evaluator and Codespace protections are unchanged.
+The CLI remains a planning boundary and neither authorizes nor starts inference,
+downloads weights, creates Modal resources, or publishes. The existing hybrid
+evaluator also accepts a bounded configured text policy through its Python API.
+Legacy evaluator calls and Codespace protections remain unchanged.
 
 ## Operator commands
 
@@ -95,5 +96,34 @@ not independent semantic certification.
 Existing-video clipping and legacy Episode orchestration are separate and are
 not made configurable by this change. Provider selection is pinned in the
 registry; alternate providers and host/resource authority are not yet wired.
-Execution integration, private checkpoint IO and the Modal adapter remain
+Full execution integration, private checkpoint IO and the Modal adapter remain
 separate follow-up work. No runtime or cost qualification is implied.
+
+## Bounded configured hybrid evaluator API
+
+The existing `chapter.evaluate_hybrid_chapter` accepts optional
+`pipeline_config=template(bundle_sha256, "brief")` or the "script" target.
+Pass the existing canonical selected bundle and section manifest paths, the
+existing explicit ChapterPlan CPU permissions, and explicit producer bindings.
+Configuration never grants CPU permissions. The CLI remains dry-run-only.
+
+For a reviewed script resume, retain the exact returned brief identity and
+the human review file. Use the script target, disable argument, audits and
+reconcile for native cache-only replay, and pass expected_brief_identity and
+review_file. Human review remains mandatory even if its stage is disabled.
+Only the replay-only prefix followed by enabled work is supported; a disabled
+stage after a potentially new stage is rejected before any producer call.
+A missing or invalid native cache in the replay prefix fails closed.
+
+Configured source identity is versioned separately from legacy source identity.
+Each configured request binds its stage semantic lineage and relevant limits.
+Target selection, CPU permission flags and unrelated voice settings do not
+enter those configured text keys. The existing raw validator, attempt
+reservation, EOS and provenance checks remain authoritative. No legacy cache
+migration or external text descriptor import is performed. Canonical native
+cache replay is not the same as the CLI descriptor verifier.
+
+Only brief and script targets are supported in the evaluator integration.
+Other targets fail closed; narration and direction do not run. The script
+result remains unreviewed and nonpublishable. The local API is not a private
+host authorization mechanism or a Modal route.
