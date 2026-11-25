@@ -35,7 +35,7 @@ jobs:
           timeout --signal=TERM --kill-after=10s 120s python -I - <<'PY'
           import asyncio
           import contextlib
-          import inspect
+          import inspect as inspect_module
           from datetime import datetime, timezone
           import json
           import os
@@ -163,7 +163,7 @@ jobs:
 
               # Modal versions expose a stream or awaitable response for this RPC.
               stream = async_client.stub.AppFetchLogs(request)
-              if inspect.isawaitable(stream):
+              if inspect_module.isawaitable(stream):
                   stream = await asyncio.wait_for(stream, timeout=24)
               if hasattr(stream, "__aiter__"):
                   async for message in stream:
