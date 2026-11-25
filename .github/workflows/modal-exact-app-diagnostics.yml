@@ -59,13 +59,38 @@ jobs:
           FRAME = re.compile(
               r'^\s*File "([^"\r\n]{1,512})", line ([0-9]{1,7}), in ([A-Za-z_][A-Za-z0-9_]{0,127})\s*$'
           )
-          SAFE_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
-          ERROR = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]{0,127}):(?:\s*(.*))?$")
-          KNOWN_ERRORS = {
-              "MemoryError", "TimeoutError", "ModuleNotFoundError",
-              "ImportError", "RuntimeError", "TypeError", "ValueError",
-              "AttributeError", "KeyError", "FileNotFoundError",
-              "AssertionError", "OSError", "SystemExit",
+          # Only structured names/categories/hashes escape; no arbitrary log text.
+          PREFIX = re.compile(
+              r"^(?:(?:\[)?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}"
+              r"(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?(?:\])?\s*)?"
+              r"(?:\[[A-Za-z0-9_.:-]{1,60}\]\s*|"
+              r"(?:INFO|ERROR|WARNING|DEBUG|CRITICAL)[: ]+)*"
+          )
+          # Qualified Python class followed by optional colon/message, not freeform text.
+          EXCEPTION = re.compile(
+              r"(?<![A-Za-z0-9_.])"
+              r"([A-Za-z_][A-Za-z0-9_]{0,63}\.){0,5}"
+              r"([A-Za-z_][A-Za-z0-9_]{0,127}(?:Error|Exception)|"
+              r"MemoryError|TimeoutError|ImportError|"
+              r"NotFound|PermissionDenied|ResourceExhausted|DeadlineExceeded|"
+              r"Unauthenticated|InvalidArgument|FailedPrecondition|"
+              r"Unavailable|InternalError|ModalError|ExecutionError)"
+              r"(?=\s*(?::|$|\(|\[))"
+          )
+          GRPC = re.compile(
+              r"\b(?:StatusCode\.)"
+              r"(PERMISSION_DENIED|RESOURCE_EXHAUSTED|DEADLINE_EXCEEDED|"
+              r"UNAVAILABLE|UNAUTHENTICATED|NOT_FOUND|INVALID_ARGUMENT|"
+              r"FAILED_PRECONDITION|INTERNAL|CANCELLED|UNKNOWN)\b"
+          )
+          CATEGORY_PATTERNS = {
+              "DENIED_NETWORK": re.compile(r"\b(?:network (?:access )?blocked|blocked network|network denied)\b", re.I),
+              "PERMISSION_DENIED": re.compile(r"\bpermission[ _-]?denied\b", re.I),
+              "DESERIALIZATION_OR_IMPORT": re.compile(r"\b(?:deserializ(?:e|ation)|cannot import name|no module named|module not found|modulenotfounderror)\b", re.I),
+              "OUTPUT_SERIALIZATION": re.compile(r"\b(?:pickl(?:e|ing)|serializ(?:e|ation) (?:output|result)|output (?:serializ(?:e|ation)|packag(?:e|ing)))\b", re.I),
+              "RESOURCE_EXHAUSTED": re.compile(r"\bresource[ _-]?exhausted\b", re.I),
+              "DEADLINE_EXCEEDED": re.compile(r"\bdeadline[ _-]?exceeded\b", re.I),
+              "NETWORK_UNREACHABLE": re.compile(r"\b(?:network is unreachable|network unreachable|enetunreach)\b", re.I),
           }
           FIXED_RUNTIME = {"synthetic child failed; full output withheld"}
           evidence = {
@@ -81,6 +106,8 @@ jobs:
               "exceptions": [],
               "categories": [],
               "log_sha256": None,
+              "unclassified_error_line_hashes": [],
+              "grpc_status": [],
           }
 
           def output():
@@ -98,39 +125,58 @@ jobs:
               return ANSI.sub("", data)
 
           def classify(line):
+              line = PREFIX.sub("", line, count=1).strip()
+              # Traceback frames: allow filename/line/function only, no source excerpts.
               frame = FRAME.fullmatch(line)
               if frame and len(evidence["frames"]) < 20:
                   file_name = frame.group(1).replace("\\", "/").rsplit("/", 1)[-1]
                   if re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", file_name):
                       evidence["frames"].append({
-                          "file": file_name, "line": int(frame.group(2)),
+                          "file": file_name,
+                          "line": int(frame.group(2)),
                           "function": frame.group(3),
                       })
                   return
-              match = ERROR.fullmatch(line.strip())
-              if not match:
-                  return
-              name, message = match.group(1), match.group(2) or ""
-              if name not in KNOWN_ERRORS or len(evidence["exceptions"]) >= 8:
-                  return
-              entry = {"class": name}
-              if name == "ModuleNotFoundError":
-                  module = re.fullmatch(r"No module named ['\"]([A-Za-z_][A-Za-z0-9_.]{0,127})['\"]", message)
-                  if module:
-                      entry["module"] = module.group(1)
-                  else:
-                      entry["message_sha256"] = hashlib.sha256(message.encode()).hexdigest()
-              elif name == "ImportError":
-                  imported = re.match(r"cannot import name ['\"]([A-Za-z_][A-Za-z0-9_]{0,127})['\"]", message)
-                  if imported:
-                      entry["import_name"] = imported.group(1)
-                  else:
-                      entry["message_sha256"] = hashlib.sha256(message.encode()).hexdigest()
-              elif name == "RuntimeError" and message in FIXED_RUNTIME:
-                  entry["known_message"] = message
-              elif message:
-                  entry["message_sha256"] = hashlib.sha256(message.encode()).hexdigest()
-              evidence["exceptions"].append(entry)
+
+              for category, pattern in CATEGORY_PATTERNS.items():
+                  if pattern.search(line) and category not in evidence["categories"]:
+                      evidence["categories"].append(category)
+              for status in GRPC.findall(line):
+                  if status not in evidence["grpc_status"] and len(evidence["grpc_status"]) < 12:
+                      evidence["grpc_status"].append(status)
+
+              match = EXCEPTION.search(line)
+              if match and len(evidence["exceptions"]) < 32:
+                  qualified = match.group(0).strip()
+                  name = qualified.rsplit(".", 1)[-1]
+                  # Hash only the bounded text after the matched exception.
+                  suffix = line[match.end():].strip()
+                  if suffix.startswith(":"):
+                      suffix = suffix[1:].strip()
+                  entry = {"class": qualified}
+                  if name == "ModuleNotFoundError":
+                      module = re.fullmatch(r"No module named \W([A-Za-z_][A-Za-z0-9_.]{0,127})\W", suffix)
+                      if module:
+                          entry["module"] = module.group(1)
+                  elif name == "ImportError":
+                      imported = re.match(r"cannot import name \W([A-Za-z_][A-Za-z0-9_]{0,127})\W", suffix)
+                      if imported:
+                          entry["import_name"] = imported.group(1)
+                  elif name == "RuntimeError" and suffix in FIXED_RUNTIME:
+                      entry["known_message"] = suffix
+                  if suffix and "known_message" not in entry:
+                      entry["message_sha256"] = hashlib.sha256(suffix.encode()).hexdigest()
+                  evidence["exceptions"].append(entry)
+              elif (
+                  ("Error" in line or "Exception" in line or "Traceback" in line)
+                  and len(evidence["unclassified_error_line_hashes"]) < 16
+              ):
+                  evidence["unclassified_error_line_hashes"].append({
+                      "sha256": hashlib.sha256(line.encode()).hexdigest(),
+                      "contains_error": "Error" in line,
+                      "contains_exception": "Exception" in line,
+                      "contains_traceback": "Traceback" in line,
+                  })
 
           try:
               if not os.environ.get("MODAL_TOKEN_ID") or not os.environ.get("MODAL_TOKEN_SECRET"):
