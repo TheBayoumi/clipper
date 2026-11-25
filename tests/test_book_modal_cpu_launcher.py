@@ -390,14 +390,14 @@ def test_actual_run_remote_call_failure_records_cancel_and_never_succeeds(
     assert "app-exit" in events
 
 
-def test_stop_and_info_provider_confirmation_requires_both(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stop_and_list_terminal_evidence_requires_exact_id_zero_tasks() -> None:
     commands: list[list[str]] = []
 
     def fake_cli(argv: list[str], **_kw: object) -> SimpleNamespace:
         commands.append(argv)
         if "stop" in argv:
             return SimpleNamespace(returncode=0, stdout="")
-        return SimpleNamespace(returncode=0, stdout=json.dumps({"state": "stopped"}))
+        return SimpleNamespace(returncode=0, stdout=json.dumps([{"app_id": "ap-synthetic-1", "state": "stopped", "tasks": "0"}]))
 
     result = launcher._stop_and_observe(
         "ap-synthetic-1", "qualification", time.monotonic() + 10,
@@ -410,7 +410,7 @@ def test_stop_and_info_provider_confirmation_requires_both(monkeypatch: pytest.M
     def failed_stop(argv: list[str], **_kw: object) -> SimpleNamespace:
         if "stop" in argv:
             return SimpleNamespace(returncode=1, stdout="")
-        return SimpleNamespace(returncode=0, stdout=json.dumps({"state": "stopped"}))
+        return SimpleNamespace(returncode=0, stdout=json.dumps([{"app_id": "ap-synthetic-1", "state": "stopped", "tasks": "0"}]))
 
     confirmed, errors = launcher._stop_and_observe(
         "ap-synthetic-1", "qualification", time.monotonic() + 10,
@@ -481,7 +481,7 @@ def test_stop_failure_retains_exact_app_id_and_blocks(tmp_path: Path) -> None:
         recorded.append(argv)
         if "stop" in argv:
             return SimpleNamespace(returncode=1, stdout="")
-        return SimpleNamespace(returncode=0, stdout=json.dumps({"state": "stopped"}))
+        return SimpleNamespace(returncode=0, stdout=json.dumps([{"app_id": "ap-synthetic-known", "state": "stopped", "tasks": "0"}]))
 
     outcome = launcher._bounded_run(
         approval, path, digest, deadline_seconds=10,
@@ -545,3 +545,100 @@ def test_internal_worker_cannot_bypass_budget_gate(
     ]) == 2
     assert called == []
     assert json.loads(capsys.readouterr().out)["status"] == "DORMANT_LAUNCH_BLOCKED"
+
+
+def test_list_unknown_and_mismatched_states_never_claim_stop() -> None:
+    for rows in (
+        [],
+        [{"app_id": "ap-other", "state": "stopped", "tasks": "0"}],
+        [{"app_id": "ap-a", "state": "stopping...", "tasks": "0"}],
+        [{"app_id": "ap-a", "state": "stopped", "tasks": "1"}],
+        [{"app_id": "ap-a", "state": "stopped"}],
+        [{"app_id": "ap-a", "state": "stopped", "tasks": "0"}] * 2,
+        {"app_id": "ap-a", "state": "stopped", "tasks": "0"},
+    ):
+        def fake_cli(argv: list[str], **_kw: object) -> SimpleNamespace:
+            if "stop" in argv:
+                return SimpleNamespace(returncode=0, stdout="")
+            return SimpleNamespace(returncode=0, stdout=json.dumps(rows))
+
+        confirmed, errors = launcher._stop_and_observe(
+            "ap-a", "qualification", time.monotonic() + 10, runner=fake_cli
+        )
+        assert confirmed is False
+        assert errors
+
+
+def test_stop_preserves_prior_cancel_and_journal_failures(tmp_path: Path) -> None:
+    path, digest = _manifest(tmp_path)
+    approval = launcher.load_approval(path, digest, SHA)
+
+    class Finished:
+        returncode = 2
+        pid = 9992
+
+        def poll(self) -> int:
+            return 2
+
+        def wait(self, **_kw: object) -> int:
+            return 2
+
+    def fake_popen(argv: list[str], **_kw: object) -> Finished:
+        ledger = Path(argv[argv.index("--journal") + 1])
+        launcher._journal(ledger, "APP_ID", "ap-a")
+        launcher._journal(ledger, "CALL_CANCEL_ERROR", "RuntimeError")
+        with ledger.open("a", encoding="utf-8") as stream:
+            stream.write("not json\\n")
+        return Finished()
+
+    def fake_cli(argv: list[str], **_kw: object) -> SimpleNamespace:
+        if "stop" in argv:
+            return SimpleNamespace(returncode=0, stdout="")
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps([{"app_id": "ap-a", "state": "stopped", "tasks": "0"}]),
+        )
+
+    output = launcher._bounded_run(
+        approval, path, digest, deadline_seconds=10,
+        popen=fake_popen, runner=fake_cli,
+    )
+    assert output["status"] == "BLOCKED"
+    assert "CALL_CANCEL_ERROR" in output["cleanup_errors"]
+    assert "INVALID_JOURNAL" in output["cleanup_errors"]
+    assert "WORKER_NONZERO_OR_TERMINATED" in output["cleanup_errors"]
+    assert "NO_RESULT" in output["cleanup_errors"]
+    assert output["app_id"] == "ap-a"
+    assert output["provider_removal"] == "STOPPED_CONFIRMED_BY_LIST"
+
+
+def test_parent_retains_bounded_diagnostics_only(tmp_path: Path) -> None:
+    path, digest = _manifest(tmp_path)
+    approval = launcher.load_approval(path, digest, SHA)
+    sensitive = b"inert-private-diagnostic-test-marker"
+
+    class Finished:
+        pid = 4242
+        returncode = 2
+
+        def poll(self) -> int:
+            return 2
+
+        def wait(self, **_kw: object) -> int:
+            return 2
+
+    def fake_popen(argv: list[str], **kw: object) -> Finished:
+        kw["stdout"].write(sensitive)
+        kw["stderr"].write(sensitive)
+        return Finished()
+
+    output = launcher._bounded_run(
+        approval, path, digest, deadline_seconds=10,
+        popen=fake_popen,
+    )
+    assert output["status"] == "BLOCKED"
+    for part in ("stdout", "stderr"):
+        evidence = output["worker_diagnostics"][part]
+        assert evidence["size_bytes"] == len(sensitive)
+        assert evidence["bounded_prefix_sha256"] == hashlib.sha256(sensitive).hexdigest()
+    assert sensitive.decode() not in json.dumps(output)

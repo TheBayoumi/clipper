@@ -10,9 +10,9 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
-import signal
 import tempfile
 import time
 from dataclasses import dataclass
@@ -240,14 +240,16 @@ class ModalControl:
         # Neither App nor Function mounts the ambient host source.
         app = modal.App(include_source=False)
         function = app.function(image=image, **LIMITS)(_remote_child)
-        call: Any = None
         record("APP_RUN_BEGIN", "")
-        try:
-            with app.run(client=client, detach=False, environment_name=approval.environment):
-                app_id = getattr(app, "app_id", None)
-                _require(isinstance(app_id, str) and bool(re.fullmatch(r"ap-[A-Za-z0-9-]+", app_id)),
-                         "App id missing")
-                record("APP_ID", app_id)
+        # Context-entry can create an App before its ID is returned: the
+        # parent retains BUILD/APP_RUN_BEGIN with unknown resource identity.
+        with app.run(client=client, detach=False, environment_name=approval.environment):
+            app_id = getattr(app, "app_id", None)
+            _require(isinstance(app_id, str) and bool(re.fullmatch(r"ap-[A-Za-z0-9-]+", app_id)),
+                     "App id missing")
+            record("APP_ID", app_id)
+            call: Any = None
+            try:
                 record("SPAWN_BEGIN", app_id)
                 call = function.spawn(sha)
                 call_id = getattr(call, "object_id", None)
@@ -260,14 +262,14 @@ class ModalControl:
                 record("RESULT_ACCEPTED", call_id)
                 return {"source_sha": sha, "app_id": app_id, "call_id": call_id,
                         "rehearsal": output}
-        finally:
-            if call is not None:
-                try:
-                    call.cancel(terminate_containers=True)
-                    record("CALL_CANCEL_ATTEMPTED", str(getattr(call, "object_id", "")))
-                except Exception as exc:
-                    record("CALL_CANCEL_ERROR", type(exc).__name__)
-            # Exiting App.run may block; the parent owns the absolute deadline.
+            finally:
+                # Cancellation runs BEFORE potentially blocking __exit__.
+                if call is not None:
+                    try:
+                        call.cancel(terminate_containers=True)
+                        record("CALL_CANCEL_ATTEMPTED", str(getattr(call, "object_id", "")))
+                    except Exception as exc:
+                        record("CALL_CANCEL_ERROR", type(exc).__name__)
 
 
 def _validate_child_report(payload: object, sha: str) -> None:
@@ -330,37 +332,62 @@ def _read_journal(path: Path) -> tuple[str | None, list[str]]:
     return app_id, phases
 
 
-def _stop_and_observe(app_id: str, environment: str, deadline: float,
-                      runner: Any = subprocess.run) -> tuple[bool, list[str]]:
+def _stop_and_observe(
+    app_id: str,
+    environment: str,
+    deadline: float,
+    runner: Any = subprocess.run,
+) -> tuple[bool, list[str]]:
+    """Stop by exact ID, then require exact stopped row from supported app list.
+
+    Modal 1.5.5 has app stop/list, NOT app info. The current public CLI
+    formats list --json as [{app_id, state, tasks, ...}]. Unverified or
+    version-divergent schemas are never interpreted as terminal success.
+    """
     errors: list[str] = []
-    for kind, command in (
+    commands = (
         ("stop", ["modal", "app", "stop", "-y", "--env", environment, app_id]),
-        ("info", ["modal", "app", "info", "--json", "--env", environment, app_id]),
-    ):
+        ("list", ["modal", "app", "list", "--json", "--limit", "0", "--env", environment]),
+    )
+    stopped = False
+    for kind, command in commands:
         remaining = min(8.0, deadline - time.monotonic())
         if remaining <= 0:
             errors.append(kind + ":deadline")
             return False, errors
         try:
-            response = runner(command, check=False, text=True, capture_output=True,
-                              timeout=remaining)
+            response = runner(
+                command, check=False, text=True, capture_output=True, timeout=remaining
+            )
         except (OSError, subprocess.SubprocessError) as exc:
             errors.append(kind + ":" + type(exc).__name__)
             continue
         if response.returncode != 0:
             errors.append(kind + ":nonzero")
             continue
-        if kind == "info":
-            try:
-                details = json.loads(response.stdout)
-            except (ValueError, TypeError):
-                errors.append("info:invalid_json")
-                continue
-            # No ambiguous provider state is accepted as terminal.
-            status = details.get("state") if isinstance(details, dict) else None
-            if isinstance(status, str) and status.lower() == "stopped" and not errors:
-                return True, []
-            errors.append("info:terminal_not_confirmed")
+        if kind == "stop":
+            stopped = True
+            continue
+        try:
+            rows = json.loads(response.stdout)
+        except (ValueError, TypeError):
+            errors.append("list:invalid_json")
+            continue
+        if not isinstance(rows, list):
+            errors.append("list:invalid_schema")
+            continue
+        matches = [
+            item for item in rows
+            if isinstance(item, dict) and item.get("app_id") == app_id
+        ]
+        if len(matches) != 1:
+            errors.append("list:exact_id_not_found_or_duplicate")
+            continue
+        row = matches[0]
+        if (row.get("state") == "stopped" and row.get("tasks") == "0"
+                and stopped and not errors):
+            return True, []
+        errors.append("list:terminal_or_tasks_unconfirmed")
     return False, errors
 
 
@@ -374,15 +401,20 @@ def _bounded_run(approval: Approval, manifest_path: Path, digest: str,
     with tempfile.TemporaryDirectory(prefix="clipper-modal-owner-") as directory:
         folder = Path(directory)
         ledger, result_file = folder / "ids.jsonl", folder / "result.json"
+        stdout_file, stderr_file = folder / "worker.stdout", folder / "worker.stderr"
         command = [
             sys.executable, str(Path(__file__).resolve()), "--internal-worker",
             "--expected-sha", approval.source_sha,
             "--approval-file", str(manifest_path), "--approval-sha256", digest,
             "--journal", str(ledger), "--result-file", str(result_file),
         ]
-        proc = popen(command, cwd=Path(__file__).resolve().parents[1],
-                     start_new_session=True, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL)
+        # Capture only bounded diagnostic digests/sizes; never expose raw
+        # stdout/stderr, which might contain provider or environment details.
+        with stdout_file.open("wb") as stdout_sink, stderr_file.open("wb") as stderr_sink:
+            proc = popen(
+                command, cwd=Path(__file__).resolve().parents[1],
+                start_new_session=True, stdout=stdout_sink, stderr=stderr_sink
+            )
         timed_out = False
         process_cleanup_errors: list[str] = []
         try:
@@ -407,15 +439,27 @@ def _bounded_run(approval: Approval, manifest_path: Path, digest: str,
         if "MALFORMED_RECORD" in phases:
             cleanup_errors.append("INVALID_JOURNAL")
         if app_id is not None:
-            confirmed, cleanup_errors = _stop_and_observe(
+            confirmed, stop_errors = _stop_and_observe(
                 app_id, approval.environment, deadline, runner=runner
             )
+            cleanup_errors.extend(stop_errors)
         else:
             cleanup_errors.append("APP_ID_UNKNOWN")
         if timed_out:
             cleanup_errors.append("CONTROL_PLANE_TIMEOUT")
         if proc.returncode != 0:
             cleanup_errors.append("WORKER_NONZERO_OR_TERMINATED")
+        diagnostics: dict[str, dict[str, object]] = {}
+        for label, path in (("stdout", stdout_file), ("stderr", stderr_file)):
+            if path.exists():
+                with path.open("rb") as stream:
+                    prefix = stream.read(4096)
+                diagnostics[label] = {
+                    "size_bytes": path.stat().st_size,
+                    "bounded_prefix_sha256": hashlib.sha256(prefix).hexdigest(),
+                    "prefix_bytes_hashed": len(prefix),
+                    "truncated": path.stat().st_size > len(prefix),
+                }
         output: dict[str, object] | None = None
         if result_file.is_file() and result_file.stat().st_size <= 220_000:
             try:
@@ -431,10 +475,11 @@ def _bounded_run(approval: Approval, manifest_path: Path, digest: str,
             "status": "SYNTHETIC_REHEARSAL_CONFIRMED" if (
                 confirmed and not cleanup_errors and output is not None
             ) else "BLOCKED",
-            "provider_removal": "STOPPED_CONFIRMED_BY_INFO" if confirmed else "UNKNOWN",
+            "provider_removal": "STOPPED_CONFIRMED_BY_LIST" if confirmed else "UNKNOWN",
             "app_id": app_id,
             "observed_phases": phases,
             "cleanup_errors": cleanup_errors,
+            "worker_diagnostics": diagnostics,
             "result": output if confirmed and not cleanup_errors else None,
         }
 

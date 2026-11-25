@@ -270,3 +270,51 @@ independently enforceable spend authority is implemented and reviewed.
 The private worker's actual SDK logic remains available for isolated
 fake-unit verification, but **no CLI path currently permits resource
 allocation**.
+
+
+## LAUNCHER-CORRECT1326: offline lifecycle evidence correction
+
+Cancellation now occurs **within** the live `app.run()` context
+before its potentially blocking exit. Exact App/call identities and
+phase transitions are appended to an fsynced journal before later
+blocking operations when the SDK has actually returned those IDs.
+App creation may begin during context entry before any App ID can be
+observed. In that case `APP_RUN_BEGIN` and the worker failure/deadline
+remain durable but provider identity/removal is **UNKNOWN**, never
+guessed or reported successful.
+
+The bounded parent **accumulates** earlier worker/journal/cancellation,
+timeout and cleanup errors rather than replacing them with the
+result of a later stop attempt. Worker stdout/stderr are captured in
+temporary local files and represented in the result only by bounded
+4 KiB-prefix SHA-256 hashes, total byte counts and truncation flags,
+not raw log strings or credential-bearing provider output. These
+temporary files are destroyed after producing the local report.
+
+The independently inspected **Modal 1.5.5** CLI source has `modal app
+stop` and `modal app list` but **no `modal app info`**, so the
+unsupported info command was removed. The proposed conservative
+terminal probe issues:
+
+```text
+modal app stop -y --env ENV EXACT_APP_ID
+modal app list --json --limit 0 --env ENV
+```
+
+It only accepts a single row matching the exact App ID with
+`state="stopped"`, `tasks="0"`, both CLI commands succeeding and
+no earlier errors. Absent rows, mismatched IDs, duplicates,
+malformed JSON, nonzero tasks, unsupported state fields and
+stop/observation errors are **UNKNOWN/BLOCKED**. The JSON list
+schema was cross-checked against public Modal client source for the
+same command; **the precise pinned-1.5.5 JSON output must still
+be independently verified** before any live use. Never treat
+missing rows as deletion. The result label is
+`STOPPED_CONFIRMED_BY_LIST`, meaning only this narrow CLI
+observation—not absolute resource deletion or cost closure.
+
+The accepted synthetic rehearsal and production infrastructure owner
+remain unchanged. Both `--execute` and `--internal-worker` remain
+explicitly disabled by the unresolved spending-authority gate. This
+is an offline engineering implementation candidate only; no
+provider, credentials, App, image, resource or spend action occurred.
