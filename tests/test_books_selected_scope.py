@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
-from public_book_fixture_support import _bundle
+from public_book_fixture_support import _bundle, ingested
 
 from clipper.books import chapter, evaluation, scripting, selected_scope, whole_book
 from clipper.books.orchestrator import BookOrchestrator

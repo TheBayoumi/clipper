@@ -9,7 +9,6 @@ import json
 import subprocess
 import sys
 import tarfile
-import wave
 from pathlib import Path
 from unittest.mock import Mock
 

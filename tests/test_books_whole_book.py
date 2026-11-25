@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
-import zipfile
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from public_book_fixture_support import ingested, synthetic_candidate
+from public_book_fixture_support import ingested
 
 from clipper import cli
 from clipper.books import acquisition, constrained, mining, scripting, whole_book
@@ -27,9 +25,6 @@ from clipper.books.contracts import (
 from clipper.books.orchestrator import BookOrchestrator, BookRunError
 from clipper.dag import DagStore
 from clipper.stage_contracts import content_fingerprint
-
-BASE = Path(__file__).resolve().parents[1] / "niches/book-source-candidates-v1.json"
-
 
 def response_for(unit: whole_book.WorkUnit, *, count: int = 1) -> dict[str, object]:
     spans = constrained.span_pool(unit.text, unit.evidence_field)["spans"]
