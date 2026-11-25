@@ -519,3 +519,29 @@ def test_live_cli_cannot_spend_on_receipt_string_alone(
     ]) == 2
     assert created == []
     assert json.loads(capsys.readouterr().out)["status"] == "DORMANT_LAUNCH_BLOCKED"
+
+
+def test_internal_worker_cannot_bypass_budget_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path, digest = _manifest(tmp_path)
+    monkeypatch.setattr(launcher, "local_source", lambda _root, _sha: None)
+    called: list[str] = []
+
+    def forbidden(*_args: object, **_kwargs: object) -> Any:
+        called.append("sdk")
+        raise AssertionError("internal worker bypassed budget")
+
+    monkeypatch.setattr(launcher, "_internal_worker", forbidden)
+    assert launcher.main([
+        "--internal-worker",
+        "--expected-sha", SHA,
+        "--approval-file", str(path),
+        "--approval-sha256", digest,
+        "--journal", str(tmp_path / "journal.jsonl"),
+        "--result-file", str(tmp_path / "result.json"),
+    ]) == 2
+    assert called == []
+    assert json.loads(capsys.readouterr().out)["status"] == "DORMANT_LAUNCH_BLOCKED"

@@ -497,12 +497,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         local_source(checkout, args.expected_sha)
         if args.internal_worker:
-            _require(args.approval_file is not None and args.approval_sha256 is not None
-                     and args.journal is not None and args.result_file is not None,
-                     "internal worker authorization and output required")
-            approval = load_approval(args.approval_file, args.approval_sha256,
-                                     args.expected_sha)
-            return _internal_worker(approval, args.journal, args.result_file)
+            # The worker is an implementation detail, not a second user
+            # entrypoint. The current workspace cannot enforce the approved
+            # dollar cap. Do not allow a direct worker invocation to bypass
+            # the outer --execute blocker by supplying its arguments.
+            raise LaunchBlocked("internal worker disabled pending hard budget gate")
         if not args.execute:
             _require(not any((args.approval_file, args.approval_sha256,
                               args.independent_control_receipt,

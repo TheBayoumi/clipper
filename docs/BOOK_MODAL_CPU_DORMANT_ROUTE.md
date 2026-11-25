@@ -261,3 +261,12 @@ https://modal.com/docs/cli/latest/app (explicit-environment app stop/info).
 These currently published docs are not substitute for offline pinned
 Modal 1.5.5 compatibility tests. No GitHub workflow or launcher request
 file is introduced.
+
+
+**Additional direct-worker containment:** `--internal-worker` is **not**
+an alternate permitted entrypoint. It is explicitly blocked even if a
+caller supplies forged manifest/receipt/file arguments, until the same
+independently enforceable spend authority is implemented and reviewed.
+The private worker's actual SDK logic remains available for isolated
+fake-unit verification, but **no CLI path currently permits resource
+allocation**.
