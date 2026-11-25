@@ -435,8 +435,8 @@ def _public_cpu_smoke_phase(phase: str) -> None:
             path.chmod(0o600)
 
 
-@lru_cache(maxsize=1)
-def _public_book_context() -> tuple[Any, int]:
+@lru_cache(maxsize=2)
+def _public_book_context(*, local_files_only: bool = False) -> tuple[Any, int]:
     """Validate pinned public-only tokenizer/config before loading book weights."""
     from . import constrained
 
@@ -445,7 +445,7 @@ def _public_book_context() -> tuple[Any, int]:
         transformers = importlib.import_module("transformers")
     except ImportError as exc:
         raise PinnedQwenSnapshotError("pinned public book tokenizer runtime missing") from exc
-    offline = any(
+    offline = local_files_only or any(
         os.environ.get(key, "").strip().casefold() in {"1", "true", "yes", "on"}
         for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
     )
@@ -490,6 +490,8 @@ def _public_book_context() -> tuple[Any, int]:
             constrained.PINNED_TOKENIZER_SHA256
         ):
             raise PinnedQwenSnapshotError("pinned public tokenizer hash mismatch")
+        if local_files_only and any(not (snapshot / name).is_file() for name in public):
+            raise PinnedQwenSnapshotError("complete pinned public tokenizer unavailable offline")
         model_config = json.loads((snapshot / "config.json").read_text(encoding="utf-8"))
         tokenizer_config = json.loads(
             (snapshot / "tokenizer_config.json").read_text(encoding="utf-8")
@@ -729,7 +731,9 @@ def _cached_chapter_tokenizer_material() -> dict[str, str]:
         return {"status": "TOKENIZER_CONFIG_UNVERIFIED"}
 
 
-def _chapter_context_tokens(request: dict[str, object]) -> int:
+def _chapter_context_tokens(
+    request: dict[str, object], *, tokenizer_context: tuple[Any, int] | None = None
+) -> int:
     """Preflight the full real chapter chat with the pinned tokenizer, before weights."""
     if (
         request.get("model") != SCRIPT_MODEL
@@ -740,7 +744,7 @@ def _chapter_context_tokens(request: dict[str, object]) -> int:
         or not 1024 <= cast(int, request["max_new_tokens"]) <= 8192
     ):
         raise NicheVideoError("chapter pinned model request or output budget mismatch")
-    tokenizer, limit = _public_book_context()
+    tokenizer, limit = _public_book_context() if tokenizer_context is None else tokenizer_context
     try:
         if "verified_input_encoding" in request:
             encoded = _chapter_prompt_encoding(

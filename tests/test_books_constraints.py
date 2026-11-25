@@ -995,3 +995,85 @@ def test_full_context_preflight_rejects_malformed_public_encodings() -> None:
         constrained.check_prompt_context(request, Encoded([1]), 960)
     with pytest.raises(constrained.ConstraintError, match="preflight failed"):
         constrained.check_prompt_context({"max_new_tokens": 960}, Encoded([1]), 40_960)
+
+
+@pytest.mark.parametrize("fault", ["none", "partial", "missing", "stale"])
+def test_explicit_replay_tokenizer_never_downloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    snapshot = tmp_path / "models--Qwen--Qwen3-1.7B" / "snapshots" / scripting.SCRIPT_REVISION
+    snapshot.mkdir(parents=True)
+    tokenizer_bytes = b'{"synthetic":"offline-only"}'
+    for name in (
+        "added_tokens.json",
+        "config.json",
+        "generation_config.json",
+        "merges.txt",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json",
+    ):
+        (snapshot / name).write_text("{}", encoding="utf-8")
+    (snapshot / "tokenizer.json").write_bytes(tokenizer_bytes)
+    (snapshot / "config.json").write_text('{"max_position_embeddings":40960}')
+    (snapshot / "tokenizer_config.json").write_text('{"model_max_length":131072}')
+    if fault == "partial":
+        (snapshot / "vocab.json").unlink()
+    if fault == "stale":
+        (snapshot / "tokenizer.json").write_bytes(b"changed")
+    calls: list[bool] = []
+
+    def download(**kwargs: Any) -> str:
+        calls.append(kwargs["local_files_only"])
+        assert kwargs["local_files_only"] is True
+        if fault == "missing":
+            raise OSError("no retained snapshot")
+        return str(snapshot)
+
+    tokenizer = SimpleNamespace(model_max_length=131072)
+    load = Mock(return_value=tokenizer)
+    original = scripting.importlib.import_module
+
+    def imports(name: str) -> Any:
+        if name == "huggingface_hub":
+            return SimpleNamespace(snapshot_download=download)
+        if name == "transformers":
+            return SimpleNamespace(AutoTokenizer=SimpleNamespace(from_pretrained=load))
+        return original(name)
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+    monkeypatch.setattr(scripting.importlib, "import_module", imports)
+    monkeypatch.setattr(
+        constrained, "PINNED_TOKENIZER_SHA256", hashlib.sha256(tokenizer_bytes).hexdigest()
+    )
+    scripting._public_book_context.cache_clear()
+    try:
+        if fault == "none":
+            assert scripting._public_book_context(local_files_only=True) == (tokenizer, 40960)
+            load.assert_called_once_with(snapshot, local_files_only=True)
+        else:
+            with pytest.raises(scripting.PinnedQwenSnapshotError):
+                scripting._public_book_context(local_files_only=True)
+            load.assert_not_called()
+    finally:
+        scripting._public_book_context.cache_clear()
+    assert calls == [True]
+
+
+def test_replay_context_token_count_uses_retained_tokenizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    forbidden = Mock(side_effect=AssertionError("network-capable context must not run"))
+    monkeypatch.setattr(scripting, "_public_book_context", forbidden)
+    tokenizer = SimpleNamespace(apply_chat_template=lambda *a, **kw: [10, 20, 30])
+    request = {
+        "model": scripting.SCRIPT_MODEL,
+        "revision": scripting.SCRIPT_REVISION,
+        "seed": 42,
+        "max_new_tokens": 1024,
+        "messages": [],
+    }
+    assert scripting._chapter_context_tokens(request, tokenizer_context=(tokenizer, 40960)) == 3
+    forbidden.assert_not_called()

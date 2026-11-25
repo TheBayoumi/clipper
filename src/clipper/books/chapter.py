@@ -9,6 +9,7 @@ import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
@@ -1354,6 +1355,7 @@ def _stage(
     safe_context_tokens: int | None = None,
     hybrid_request_identity: str | None = None,
     configured_stage_limits: dict[str, object] | None = None,
+    tokenizer_context: tuple[Any, int] | None = None,
 ) -> tuple[dict[str, Any], str, str, int]:
     """Reserve each irreversible provider attempt before calling any producer."""
     plan.validate()
@@ -1401,7 +1403,11 @@ def _stage(
     if real_qwen:
         # Public tokenizer only, before the first irreversible owner reservation.
         try:
-            prompt_tokens = scripting._chapter_context_tokens(request)
+            prompt_tokens = (
+                scripting._chapter_context_tokens(request)
+                if tokenizer_context is None
+                else scripting._chapter_context_tokens(request, tokenizer_context=tokenizer_context)
+            )
         except scripting.NicheVideoError:
             raise ChapterStop(
                 "full real chapter request does not fit pinned token context"
@@ -2404,21 +2410,18 @@ def evaluate_hybrid_chapter(
         argument_completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
         and scripting._local_chapter_completion is scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
     )
+    retained_context: tuple[Any, int] | None = None
     tokens: Callable[[list[dict[str, str]]], int | dict[str, object]]
     if authentic:
         # Resolve actual pinned public tokenizer/config BEFORE producer hashing:
         # the source journal and recovery must never depend on whether a
         # snapshot happened to be downloaded by a later stage.
-        # Cache-only tokenizer preflight must not fetch a public snapshot.
-        if (
-            configured is not None
-            and configured_replay
-            and scripting._cached_chapter_tokenizer_material().get("status")
-            != "PINNED_PUBLIC_TOKENIZER"
-        ):
-            raise ChapterStop("configured replay requires retained pinned tokenizer")
-        scripting._public_book_context()
-        tokens = scripting._chapter_prompt_encoding
+        if configured is not None and configured_replay:
+            retained_context = scripting._public_book_context(local_files_only=True)
+            tokens = partial(scripting._chapter_prompt_encoding, tokenizer=retained_context[0])
+        else:
+            scripting._public_book_context()
+            tokens = scripting._chapter_prompt_encoding
     elif token_counter is not None:
         tokens = token_counter
     else:
@@ -2496,6 +2499,7 @@ def evaluate_hybrid_chapter(
             safe_context_tokens=chapter_hybrid.SAFE_CONTEXT_TOKENS,
             hybrid_request_identity=request_key,
             configured_stage_limits=local_limits,
+            tokenizer_context=retained_context,
         )
         if configured is not None:
             if result[3] or configured_results.get(config_name) == "RAN":
