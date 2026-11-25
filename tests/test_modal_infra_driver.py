@@ -607,119 +607,6 @@ def test_driver_pending_cancel_when_owner_already_done_is_blocked(
     assert original_handlers == (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
 
 
-@pytest.mark.skipif(
-    os.name != "posix" or not hasattr(signal, "SIGUSR1"),
-    reason="Real SIGUSR1 subprocess regression requires POSIX",
-)
-@pytest.mark.parametrize("repeat_during_cleanup", [False, True])
-def test_driver_outer_host_sigusr1_exception_retains_late_owner(
-    tmp_path: Path, repeat_during_cleanup: bool
-) -> None:
-    # Separate process: a real host KeyboardInterrupt must never escape into pytest.
-    script = """
-import json
-import os
-import signal
-import sys
-import threading
-import time
-from pathlib import Path
-
-sys.path.insert(0, sys.argv[2])
-import clipper.modal_infra_driver as driver
-from test_modal_infra_driver import FakeSDKState, _intent
-
-state = FakeSDKState()
-state.hold_create = True
-state.release_create.clear()
-state.hold_terminate = bool(int(sys.argv[3]))
-if state.hold_terminate:
-    state.release_terminate.clear()
-raised = []
-opened = []
-original_ledger = driver.Ledger
-class CheckedLedger(original_ledger):
-    def __init__(self, path):
-        super().__init__(path)
-        opened.append(self._fd)
-driver.Ledger = CheckedLedger
-
-def hostile_handler(_signum, _frame):
-    raised.append("host")
-    raise KeyboardInterrupt("injected host SIGUSR1")
-
-before_int = signal.getsignal(signal.SIGINT)
-before_term = signal.getsignal(signal.SIGTERM)
-before_usr = signal.signal(signal.SIGUSR1, hostile_handler)
-
-def interrupt():
-    assert state.entered_create.wait(3), "create not entered"
-    os.kill(os.getpid(), signal.SIGUSR1)
-    time.sleep(0.08)
-    state.release_create.set()
-    if state.hold_terminate:
-        assert state.entered_terminate.wait(3), "terminate not entered"
-        os.kill(os.getpid(), signal.SIGUSR1)
-        time.sleep(0.08)
-        state.release_terminate.set()
-
-worker = threading.Thread(target=interrupt, daemon=True)
-worker.start()
-try:
-    try:
-        driver.run_infrastructure_experiment(
-            state.sdk,
-            state.client,
-            _intent(),
-            Path(sys.argv[1]) / "ledger.jsonl",
-            decision_seconds=0.01,
-            reconciliation_seconds=0.01,
-        )
-    except KeyboardInterrupt as exc:
-        assert str(exc) == "injected host SIGUSR1"
-    else:
-        raise AssertionError("original host interrupt swallowed")
-finally:
-    state.release_create.set()
-    state.release_terminate.set()
-    worker.join(timeout=4)
-    signal.signal(signal.SIGUSR1, before_usr)
-assert not worker.is_alive()
-assert len(raised) == (2 if state.hold_terminate else 1)
-assert len(state.sandboxes) == 1
-assert "terminate_sb-driver-1" in state.events
-assert "poll_sb-driver-1" in state.events
-assert state.events[-2:] == ["volume_exit", "app_exit"]
-assert signal.getsignal(signal.SIGINT) == before_int
-assert signal.getsignal(signal.SIGTERM) == before_term
-for fd in opened:
-    try:
-        os.fstat(fd)
-    except OSError:
-        pass
-    else:
-        raise AssertionError("ledger descriptor leaked")
-print(json.dumps({"events": state.events, "raised": len(raised)}))
-"""
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            script,
-            str(tmp_path),
-            str(Path(__file__).resolve().parent),
-            "1" if repeat_during_cleanup else "0",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=False,
-    )
-    assert completed.returncode == 0, (completed.stdout, completed.stderr)
-    observed = json.loads(completed.stdout.strip().splitlines()[-1])
-    assert observed["raised"] == (2 if repeat_during_cleanup else 1)
-
-
 @pytest.mark.skipif(os.name != "posix", reason="Signal restoration requires POSIX")
 @pytest.mark.parametrize(
     ("moment", "expected_status"),
@@ -768,21 +655,17 @@ def test_driver_sigterm_handoff_is_per_signal_not_joint(
     assert len(state.sandboxes) == 2
 
 
+
 @pytest.mark.skipif(
     os.name != "posix" or not hasattr(signal, "SIGUSR1"),
-    reason="Real SIGUSR1 subprocess regression requires POSIX",
+    reason="Real SIGUSR1 subprocess contract requires POSIX",
 )
-def test_driver_second_host_exception_at_stop_entry_retains_first_and_cleans(
-    tmp_path: Path,
-) -> None:
-    # Two real SIGUSR1 deliveries: second occurs BEFORE request_stop's side effect.
+def test_driver_rejects_actual_callable_sigusr1_before_any_work(tmp_path: Path) -> None:
+    """Real installed throwing handler must be rejected, not executed or replaced."""
     script = """
 import json
-import os
 import signal
 import sys
-import threading
-import time
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[2])
@@ -790,89 +673,189 @@ import clipper.modal_infra_driver as driver
 from test_modal_infra_driver import FakeSDKState, _intent
 
 state = FakeSDKState()
-state.hold_create = True
-state.release_create.clear()
-opened = []
-real_ledger = driver.Ledger
-class CheckedLedger(real_ledger):
-    def __init__(self, path):
-        super().__init__(path)
-        opened.append(self._fd)
-driver.Ledger = CheckedLedger
+attempts = []
+class ForbiddenLedger:
+    def __init__(self, *_args, **_kwargs):
+        attempts.append("ledger")
+        raise AssertionError("ledger constructed")
+class ForbiddenRunner:
+    def __init__(self, *_args, **_kwargs):
+        attempts.append("runner")
+        raise AssertionError("runner started")
+driver.Ledger = ForbiddenLedger
+driver.asyncio.Runner = ForbiddenRunner
+real_signal = signal.signal
 
-seen = []
-def hostile_handler(_signum, _frame):
-    label = "host" + str(len(seen) + 1)
-    seen.append(label)
-    raise KeyboardInterrupt(label)
+def no_handler_install(signum, handler):
+    if signum in (signal.SIGINT, signal.SIGTERM):
+        attempts.append("owned_handler_mutation")
+        raise AssertionError("owned handler changed")
+    return real_signal(signum, handler)
 
-before_int = signal.getsignal(signal.SIGINT)
-before_term = signal.getsignal(signal.SIGTERM)
-before_usr = signal.signal(signal.SIGUSR1, hostile_handler)
-real_stop = driver.QualificationOwner.request_stop
-stop_entries = []
-def interrupt_stop(self):
-    stop_entries.append("entered")
-    if len(stop_entries) == 1:
-        os.kill(os.getpid(), signal.SIGUSR1)
-    return real_stop(self)
-driver.QualificationOwner.request_stop = interrupt_stop
+def throwing(_signum, _frame):
+    attempts.append("throwing_host_handler_executed")
+    raise KeyboardInterrupt("unacceptable SIGUSR1 execution")
 
-def deliver_first():
-    assert state.entered_create.wait(3), "create not entered"
-    os.kill(os.getpid(), signal.SIGUSR1)
-    time.sleep(0.08)
-    state.release_create.set()
-
-worker = threading.Thread(target=deliver_first, daemon=True)
-worker.start()
+previous = real_signal(signal.SIGUSR1, throwing)
+before = (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+driver.signal.signal = no_handler_install
 try:
     try:
         driver.run_infrastructure_experiment(
-            state.sdk,
-            state.client,
-            _intent(),
-            Path(sys.argv[1]) / "ledger.jsonl",
-            decision_seconds=0.01,
-            reconciliation_seconds=0.01,
+            state.sdk, state.client, _intent(), Path(sys.argv[1]) / "journal"
         )
-    except KeyboardInterrupt as exc:
-        assert str(exc) == "host1", str(exc)
+    except RuntimeError as exc:
+        assert "Unsupported host signal contract" in str(exc)
     else:
-        raise AssertionError("original host1 exception swallowed")
+        raise AssertionError("callable host signal unexpectedly accepted")
+    assert signal.getsignal(signal.SIGUSR1) is throwing
+    assert before == (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+    assert attempts == [], attempts
+    assert state.events == [], state.events
+    assert state.sandboxes == []
+    assert not (Path(sys.argv[1]) / "journal").exists()
 finally:
-    state.release_create.set()
-    worker.join(timeout=4)
-    signal.signal(signal.SIGUSR1, before_usr)
-    driver.QualificationOwner.request_stop = real_stop
-
-assert not worker.is_alive()
-assert seen == ["host1", "host2"], seen
-assert len(stop_entries) >= 2
-assert len(state.sandboxes) == 1
-assert "terminate_sb-driver-1" in state.events, state.events
-assert "poll_sb-driver-1" in state.events, state.events
-assert state.events.index("create_return") < state.events.index("terminate_sb-driver-1")
-assert state.events.index("poll_sb-driver-1") < state.events.index("volume_exit")
-assert state.events[-2:] == ["volume_exit", "app_exit"]
-assert signal.getsignal(signal.SIGINT) == before_int
-assert signal.getsignal(signal.SIGTERM) == before_term
-for fd in opened:
-    try:
-        os.fstat(fd)
-    except OSError:
-        pass
-    else:
-        raise AssertionError("ledger descriptor leaked")
-print(json.dumps({"seen": seen, "events": state.events}))
+    driver.signal.signal = real_signal
+    real_signal(signal.SIGUSR1, previous)
+print(json.dumps({"rejected": True}))
 """
     completed = subprocess.run(
         [sys.executable, "-c", script, str(tmp_path), str(Path(__file__).resolve().parent)],
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=12,
         check=False,
     )
     assert completed.returncode == 0, (completed.stdout, completed.stderr)
-    evidence = json.loads(completed.stdout.strip().splitlines()[-1])
-    assert evidence["seen"] == ["host1", "host2"]
+    assert json.loads(completed.stdout.strip().splitlines()[-1])["rejected"] is True
+
+
+@pytest.mark.parametrize("which", ["owned", "other"])
+@pytest.mark.parametrize("value", [None, object()])
+def test_driver_rejects_unknown_signal_dispositions_before_side_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, which: str, value: object
+) -> None:
+    state = FakeSDKState()
+    inspected = signal.SIGTERM if which == "owned" else signal.SIGUSR1
+    actual_getsignal = signal.getsignal
+    modified: list[object] = []
+
+    def fake_getsignal(signum: signal.Signals) -> object:
+        if signum == inspected:
+            return value
+        return actual_getsignal(signum)
+
+    def no_mutation(*args: object) -> None:
+        modified.append(args)
+        raise AssertionError("changed handler before preflight")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(driver.signal, "getsignal", fake_getsignal)
+        patch.setattr(driver.signal, "signal", no_mutation)
+        with pytest.raises(RuntimeError, match="Unsupported host signal contract"):
+            driver.run_infrastructure_experiment(
+                state.sdk, state.client, _intent(), tmp_path / "journal"
+            )
+    assert modified == []
+    assert state.events == []
+    assert not (tmp_path / "journal").exists()
+
+
+@pytest.mark.parametrize("failure", ["valid_signals", "getsignal", "mask", "blocked"])
+def test_driver_signal_preflight_fails_closed_without_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    state = FakeSDKState()
+    touched: list[str] = []
+    original_signal = signal.signal
+    original_valid = signal.valid_signals
+    original_get = signal.getsignal
+    original_mask = signal.pthread_sigmask
+
+    def fail(*_args: object) -> Any:
+        raise OSError("synthetic inspection failure")
+
+    def fake_get(signum: signal.Signals) -> object:
+        if signum == signal.SIGTERM:
+            return fail()
+        return original_get(signum)
+
+    def mask(*args: object) -> Any:
+        if failure == "blocked":
+            assert args == (signal.SIG_BLOCK, set())
+            return {signal.SIGINT, signal.SIGTERM}
+        return original_mask(*args)
+
+    def spy_signal(signum: signal.Signals, handler: object) -> Any:
+        touched.append("signal")
+        return original_signal(signum, handler)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(driver.signal, "signal", spy_signal)
+        if failure == "valid_signals":
+            patch.setattr(driver.signal, "valid_signals", fail)
+        elif failure == "getsignal":
+            patch.setattr(driver.signal, "getsignal", fake_get)
+        else:
+            patch.setattr(driver.signal, "pthread_sigmask", fail if failure == "mask" else mask)
+        with pytest.raises(RuntimeError, match="Unsupported host signal contract"):
+            driver.run_infrastructure_experiment(
+                state.sdk, state.client, _intent(), tmp_path / "journal"
+            )
+    assert touched == []
+    assert state.events == []
+    assert not (tmp_path / "journal").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX signal contract")
+def test_driver_owned_callable_handlers_are_allowed_and_restored(tmp_path: Path) -> None:
+    state = FakeSDKState()
+    old_int = signal.getsignal(signal.SIGINT)
+    old_term = signal.getsignal(signal.SIGTERM)
+
+    def owned_handler(_signum: int, _frame: object) -> None:
+        pass
+
+    try:
+        signal.signal(signal.SIGINT, owned_handler)
+        signal.signal(signal.SIGTERM, owned_handler)
+        result = driver.run_infrastructure_experiment(
+            state.sdk, state.client, _intent(), tmp_path / "journal"
+        )
+        assert result["status"] == "SUCCESS"
+        assert driver.result_exit_code(result) == 0
+        assert signal.getsignal(signal.SIGINT) is owned_handler
+        assert signal.getsignal(signal.SIGTERM) is owned_handler
+        assert len(state.sandboxes) == 2
+    finally:
+        signal.signal(signal.SIGINT, old_int)
+        signal.signal(signal.SIGTERM, old_term)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX signal contract")
+def test_driver_partial_install_failure_restores_first_owned_handler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = FakeSDKState()
+    original_signal = signal.signal
+    before_int = signal.getsignal(signal.SIGINT)
+    before_term = signal.getsignal(signal.SIGTERM)
+    actions: list[signal.Signals] = []
+
+    def fail_second(signum: signal.Signals, handler: object) -> Any:
+        actions.append(signum)
+        if signum == signal.SIGTERM and callable(handler):
+            raise OSError("synthetic second handler install failure")
+        return original_signal(signum, handler)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(driver.signal, "signal", fail_second)
+        with pytest.raises(OSError, match="synthetic second"):
+            driver.run_infrastructure_experiment(
+                state.sdk, state.client, _intent(), tmp_path / "journal"
+            )
+    assert actions == [signal.SIGINT, signal.SIGTERM, signal.SIGINT]
+    assert before_int == signal.getsignal(signal.SIGINT)
+    assert before_term == signal.getsignal(signal.SIGTERM)
+    assert state.events == []
+    assert not (tmp_path / "journal").exists()

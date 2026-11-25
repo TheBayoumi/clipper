@@ -284,3 +284,38 @@ An inert subprocess test sends two actual SIGUSR1 signals, injecting the
 second at the first STOP-entry boundary, then verifies the first exception,
 late create return, sandbox termination/poll, context exit, descriptor closure
 and signal restoration. The qualified owner module is unchanged.
+
+
+## Candidate 0231: explicit reject-before-work host signal contract (UNQUALIFIED)
+
+The driver supports only a bounded **POSIX main-thread host** where
+`signal.valid_signals()` can be inspected before any SDKBackend construction,
+Ledger creation, owned-handler mutation or Runner startup. SIGKILL and SIGSTOP
+are excluded because they are uncatchable. For **other catchable signals**,
+only `SIG_DFL` and `SIG_IGN` dispositions are accepted: every callable,
+`None`, unknown value and inspection error fails closed. This check never
+executes or inspects the body of a callable handler. Owned SIGINT/SIGTERM
+may be callable or `SIG_DFL`/`SIG_IGN` because they are replaced temporarily
+and restored; unknown or `None` values are not considered restorable.
+`signal.pthread_sigmask(signal.SIG_BLOCK, set())` reads the current main-thread
+mask without unblocking it; either owned signal blocked, or unsupported/error
+mask inspection, rejects entry. The host must keep all dispositions and masks
+stable throughout the run, including native extensions. Preflight is a
+**snapshot**, not continuous enforcement or proof of arbitrary signal safety.
+
+**The earlier 0123/0154 arbitrary-host-exception and repeated SIGUSR1 handler
+guarantees are explicitly WITHDRAWN and their acceptance tests superseded.**
+Custom SIGUSR1/other catchable handlers are rejected *before work*; the driver
+does not rewrite, remove or silence them. No repeated host-exception retry
+supervisor is installed. Supported controlled SIGINT/SIGTERM STOP, public
+caller cancellation, late-handle reconciliation, durable journal boundaries,
+and per-signal restoration remain. Fatal default signal dispositions, process
+death, SIGKILL, native crashes and noncooperative remote calls remain outside
+the lifecycle guarantee. A parameter string or existing SDK/client reference
+is never authorization for live provider work.
+
+Verification requires exact-SHA Ruff, mypy, focused tests, full CI with the
+unchanged 95% gate, and a fresh independent review; this driver is UNQUALIFIED.
+The red 3.11 job in CI 45513884614 is historical evidence, **not** attributed
+to the independent SIGUSR1 settlement probe without evidence of the same cause.
+Python signal reference: https://docs.python.org/3/library/signal.html

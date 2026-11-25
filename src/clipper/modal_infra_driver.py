@@ -17,6 +17,38 @@ from typing import Any
 from clipper.modal_infra_qualification import Intent, Ledger, QualificationOwner, SDKBackend
 
 
+def _preflight_host_signals() -> dict[signal.Signals, Any]:
+    """Fail closed on unsupported dispositions or blocked owned signals."""
+    owned = (signal.SIGINT, signal.SIGTERM)
+    previous: dict[signal.Signals, Any] = {}
+    try:
+        available = signal.valid_signals()
+        if any(signum not in available for signum in owned):
+            raise ValueError("Missing owned signal")
+        for signum in sorted(available, key=int):
+            if signum in (signal.SIGKILL, signal.SIGSTOP):
+                continue
+            disposition = signal.getsignal(signum)
+            if signum in owned:
+                if (
+                    disposition is not signal.SIG_DFL
+                    and disposition is not signal.SIG_IGN
+                    and not callable(disposition)
+                ):
+                    raise ValueError(f"Unrestorable owned signal: {signum}")
+                previous[signum] = disposition
+            elif disposition is not signal.SIG_DFL and disposition is not signal.SIG_IGN:
+                # Reject callable, None, and unknown values; never execute handlers.
+                raise ValueError(f"Unsupported host signal: {signum}")
+        # Empty SIG_BLOCK input reads the main-thread mask without unblocking.
+        blocked = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        if any(signum in blocked for signum in owned):
+            raise ValueError("Owned signal blocked")
+    except Exception as exc:
+        raise RuntimeError("Unsupported host signal contract") from exc
+    return previous
+
+
 def result_exit_code(result: dict[str, object]) -> int:
     """Map only live owner-acknowledged success to a successful process status."""
     if (
@@ -38,10 +70,10 @@ def run_infrastructure_experiment(
     decision_seconds: float = 8,
     reconciliation_seconds: float = 16,
 ) -> dict[str, object]:
-    """Own one event loop, private ledger, and POSIX signals until owner terminal.
+    """Own one event loop and controlled POSIX signal lifecycle.
 
-    Only an external, independently authorized host wrapper may supply an
-    existing explicit SDK/client. This function grants no account/spend authority.
+    Host dispositions and masks must remain stable throughout the run. Only
+    explicit injected SDK/client handles are accepted; no spend authority.
     """
     if os.name != "posix" or threading.current_thread() is not threading.main_thread():
         raise RuntimeError("Driver requires POSIX main-thread signal ownership")
@@ -61,12 +93,8 @@ def run_infrastructure_experiment(
         or reconciliation_seconds <= 0
     ):
         raise ValueError("Finite positive observation budgets required")
+    previous = _preflight_host_signals()
     backend = SDKBackend(sdk, client, intent.environment)
-
-    previous = {
-        signal.SIGINT: signal.getsignal(signal.SIGINT),
-        signal.SIGTERM: signal.getsignal(signal.SIGTERM),
-    }
     installed: list[signal.Signals] = []
     owner: QualificationOwner | None = None
     stop_requested = False
@@ -134,26 +162,7 @@ def run_infrastructure_experiment(
             installed.append(signum)
         ledger = Ledger(ledger_path)
         with asyncio.Runner() as runner:
-            try:
-                result = runner.run(exercise())
-            except BaseException:
-                # A host handler may throw outside exercise(), bypassing its
-                # cancellation handling. Retain the SAME runner/owner until
-                # terminal reconciliation; do not let Runner.close cancel it.
-                if owner is not None and owner.task is not None:
-                    while not owner.task.done():
-                        try:
-                            # STOP entry is also interruptible by a pre-existing
-                            # host handler. Retain the original outer exception
-                            # and retry the entire transition on this Runner.
-                            owner.request_stop()
-                            runner.run(owner.terminal())
-                        except BaseException:
-                            # A failed/cancelled owner task is terminal, not a
-                            # reason to retry indefinitely.
-                            if owner.task.done():
-                                break
-                raise
+            result = runner.run(exercise())
     finally:
         # Ledger remains open through terminal reconciliation. Noncooperative
         # SDK calls may block indefinitely; this is not a hard provider deadline.
@@ -164,9 +173,8 @@ def run_infrastructure_experiment(
             for signum in reversed(installed):
                 signal.signal(signum, previous[signum])
 
-    # Ledger closes before SIGTERM and SIGINT restoration. Signal ownership
-    # transfers individually at each handler restoration, not atomically.
-    # After restoration, that signal's prior disposition belongs to the caller.
+    # Ledger closes before sequential SIGTERM and SIGINT restoration.
+    # Per-signal handoff is not atomic; host signal contract must remain stable.
     interrupted = stop_requested or observation_cancelled
     outcome = dict(result)
     outcome["owner_status"] = result["status"]

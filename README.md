@@ -422,3 +422,16 @@ the original owner for reconciliation on that **same Runner**, then propagate.
 SIGINT/SIGTERM ownership transfers separately when each former disposition
 is restored, not at one atomic joint handoff. See the qualification document
 for inert subprocess interruption tests and remaining limitations.
+
+
+### Explicit host signal contract (driver candidate UNQUALIFIED)
+
+The driver now fails closed **before** ledger/SDKBackend/context/handler/Runner
+work unless a POSIX main-thread host has inspectable dispositions and
+unblocked SIGINT/SIGTERM. All *other catchable* signals must be SIG_DFL or
+SIG_IGN (no custom callable, None or unknown values); owned SIGINT/SIGTERM
+may additionally have restorable callable handlers. Inspection failures reject
+without changing host handlers or masks. The host must keep this state stable.
+The earlier arbitrary-host-handler exception/retry guarantee is **withdrawn**.
+See [the exact host contract](docs/modal_cpu_infra_offline_qualification.md).
+No live provider approval or account bootstrap is provided.
