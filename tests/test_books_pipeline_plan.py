@@ -26,8 +26,11 @@ def _input(config, root, name, body, dependencies=()):
     entry["input"] = {
         "schema": plan.DESCRIPTOR_SCHEMA,
         "identity": plan.stage_input_identity(
-            name, plan.registry()[name], config["source_sha256"],
-            entry["semantic"], dependencies,
+            name,
+            plan.registry()[name],
+            config["source_sha256"],
+            entry["semantic"],
+            dependencies,
             tuple(lineage[dep] for dep in specs[name].dependencies),
         ),
         "output_sha256": hashlib.sha256(body).hexdigest(),
@@ -71,13 +74,11 @@ def test_exact_reuse_and_dependency_invalidation(tmp_path: Path) -> None:
     hashes = {}
     for name in ("source", "argument", "audits", "reconcile", "human_review"):
         deps = plan.registry()[name].dependencies
-        hashes[name] = _input(
-            config, tmp_path, name, name.encode(), tuple(hashes[d] for d in deps)
-        )
+        hashes[name] = _input(config, tmp_path, name, name.encode(), tuple(hashes[d] for d in deps))
         config["stages"][name]["enabled"] = False
 
-        def verify(raw, descriptor, inputs, expected=name.encode(), names=deps):
-            return raw == expected and tuple(inputs) == names
+        def verify(raw, descriptor, inputs, expected=name, names=deps):
+            return raw == expected.encode() and tuple(inputs) == names
 
         checks[name] = verify
     result = _rows(plan.resolve(config, tmp_path, verifiers=checks))
@@ -90,15 +91,17 @@ def test_exact_reuse_and_dependency_invalidation(tmp_path: Path) -> None:
     assert brief["reconcile"]["identity"] == result["reconcile"]["identity"]
     config["stages"]["narration"]["semantic"]["voice"] = "af_bella"
     unrelated = _rows(plan.resolve(config, tmp_path, verifiers=checks))
-    assert unrelated["reconcile"]["semantic_lineage_sha256"] == (
-        brief["reconcile"]["semantic_lineage_sha256"]
+    assert (
+        unrelated["reconcile"]["semantic_lineage_sha256"]
+        == (brief["reconcile"]["semantic_lineage_sha256"])
     )
     config["stages"]["argument"]["semantic"]["max_new_tokens"] = 2048
     changed = _rows(plan.resolve(config, tmp_path, verifiers=checks))
     assert changed["argument"]["reason"] == "INPUT_IDENTITY_MISMATCH"
     assert changed["reconcile"]["status"] == "BLOCKED_DEPENDENCY"
-    assert changed["reconcile"]["semantic_lineage_sha256"] != (
-        brief["reconcile"]["semantic_lineage_sha256"]
+    assert (
+        changed["reconcile"]["semantic_lineage_sha256"]
+        != (brief["reconcile"]["semantic_lineage_sha256"])
     )
     config["source_sha256"] = "b" * 64
     changed_source = _rows(plan.resolve(config, tmp_path, verifiers=checks))
@@ -124,16 +127,19 @@ def test_unported_targets_explicit(tmp_path: Path, target: str) -> None:
     assert report["status"] == "PLAN_BLOCKED"
 
 
-@pytest.mark.parametrize("mutation", [
-    lambda c: c["stages"].update(unknown={}),
-    lambda c: c["stages"]["argument"].update(enabled=1),
-    lambda c: c["stages"]["argument"]["semantic"].update(unknown=True),
-    lambda c: c["stages"]["argument"]["semantic"].update(max_attempts=3),
-    lambda c: c.update(targets=["script", "script"]),
-    lambda c: c.update(targets=["unknown"]),
-    lambda c: c["stages"]["source"].update(input={"validated": True}),
-    lambda c: c["stages"].pop("source"),
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda c: c["stages"].update(unknown={}),
+        lambda c: c["stages"]["argument"].update(enabled=1),
+        lambda c: c["stages"]["argument"]["semantic"].update(unknown=True),
+        lambda c: c["stages"]["argument"]["semantic"].update(max_attempts=3),
+        lambda c: c.update(targets=["script", "script"]),
+        lambda c: c.update(targets=["unknown"]),
+        lambda c: c["stages"]["source"].update(input={"validated": True}),
+        lambda c: c["stages"].pop("source"),
+    ],
+)
 def test_strict_config(tmp_path: Path, mutation) -> None:
     config = plan.template("a" * 64)
     assert plan.strict_json(json.dumps(config).encode()) == config
@@ -142,11 +148,14 @@ def test_strict_config(tmp_path: Path, mutation) -> None:
         plan.resolve(config, tmp_path)
 
 
-@pytest.mark.parametrize("specs", [
-    {"x": plan.StageSpec(("x",), "x", "none")},
-    {"x": plan.StageSpec(("y",), "x", "none")},
-    {"x": plan.StageSpec(("y", "y"), "x", "none"), "y": plan.StageSpec((), "y", "none")},
-])
+@pytest.mark.parametrize(
+    "specs",
+    [
+        {"x": plan.StageSpec(("x",), "x", "none")},
+        {"x": plan.StageSpec(("y",), "x", "none")},
+        {"x": plan.StageSpec(("y", "y"), "x", "none"), "y": plan.StageSpec((), "y", "none")},
+    ],
+)
 def test_invalid_graph(specs) -> None:
     with pytest.raises(plan.PlanError):
         plan.ordered_stages(specs)
@@ -159,10 +168,16 @@ def test_cli_offline(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None
     configure_books_parser(parser.add_subparsers())
     config_path = tmp_path / "plan.json"
     config_path.write_text(json.dumps(plan.template("a" * 64)), encoding="utf-8")
-    args = parser.parse_args([
-        "books", "pipeline-plan", "--config", str(config_path),
-        "--artifact-root", str(tmp_path),
-    ])
+    args = parser.parse_args(
+        [
+            "books",
+            "pipeline-plan",
+            "--config",
+            str(config_path),
+            "--artifact-root",
+            str(tmp_path),
+        ]
+    )
     assert dispatch_books(args) == 1
     report = json.loads(capsys.readouterr().out)
     assert report["mode"] == "DRY_RUN_ONLY"

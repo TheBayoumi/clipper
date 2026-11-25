@@ -41,9 +41,14 @@ class StageSpec:
 
 def registry() -> dict[str, StageSpec]:
     """Data only: no model/provider imports, factories or initialization."""
+
     def text(deps: tuple[str, ...], schema: str, *limits: str) -> StageSpec:
         return StageSpec(
-            deps, schema, "pinned-qwen-cpu", model=MODEL, revision=REVISION,
+            deps,
+            schema,
+            "pinned-qwen-cpu",
+            model=MODEL,
+            revision=REVISION,
             limit_fields=("max_new_tokens", "max_attempts", "max_runtime_seconds", *limits),
         )
 
@@ -62,16 +67,25 @@ def registry() -> dict[str, StageSpec]:
         ),
         "script": text(
             ("reconcile", "human_review", "adaptation"),
-            "clipper-chapter-script-graph-v1", "max_scenes", "max_words", "max_beats",
+            "clipper-chapter-script-graph-v1",
+            "max_scenes",
+            "max_words",
+            "max_beats",
         ),
         "narration": StageSpec(
-            ("script",), "kokoro-24khz-wav-v1", "kokoro-cpu",
-            model="hexgrad/Kokoro-82M", revision="v1.0", limit_fields=("voice",),
+            ("script",),
+            "kokoro-24khz-wav-v1",
+            "kokoro-cpu",
+            model="hexgrad/Kokoro-82M",
+            revision="v1.0",
+            limit_fields=("voice",),
         ),
         "direction": text(
             ("script", "adaptation", "source", "reconcile"),
             "clipper-chapter-continuity-shots-v2",
-            "max_scenes", "max_words", "max_shots_per_scene",
+            "max_scenes",
+            "max_words",
+            "max_shots_per_scene",
         ),
         "visuals": StageSpec(("direction",), "unported-book-visuals", "none", "UNSUPPORTED"),
         "video": StageSpec(("visuals", "narration"), "unported-book-video", "none", "UNSUPPORTED"),
@@ -179,23 +193,34 @@ def _descriptor(value: object) -> None:
     )
     path = Path(value["path"])
     require(
-        bool(path.parts) and not path.is_absolute()
+        bool(path.parts)
+        and not path.is_absolute()
         and all(part not in {"..", "."} for part in path.parts)
-        and "\\" not in value["path"] and path.as_posix() == value["path"],
+        and "\\" not in value["path"]
+        and path.as_posix() == value["path"],
         "input descriptor path must be relative and canonical",
     )
     identity = value["identity"]
     require(
-        set(identity) == {
-            "stage_name", "source_hash", "contract_hash", "dependency_output_hashes",
-            "model_revision", "decoding_parameters", "relevant_policy_hash", "cache_key",
+        set(identity)
+        == {
+            "stage_name",
+            "source_hash",
+            "contract_hash",
+            "dependency_output_hashes",
+            "model_revision",
+            "decoding_parameters",
+            "relevant_policy_hash",
+            "cache_key",
         }
         and all(is_digest(identity[key]) for key in ("source_hash", "contract_hash", "cache_key"))
         and isinstance(identity["dependency_output_hashes"], list)
         and all(is_digest(item) for item in identity["dependency_output_hashes"])
         and isinstance(identity["decoding_parameters"], dict)
         and (identity["model_revision"] is None or isinstance(identity["model_revision"], str))
-        and (identity["relevant_policy_hash"] is None or is_digest(identity["relevant_policy_hash"])),
+        and (
+            identity["relevant_policy_hash"] is None or is_digest(identity["relevant_policy_hash"])
+        ),
         "input stage identity malformed",
     )
 
@@ -206,12 +231,14 @@ def validate_config(raw: object, specs: Mapping[str, StageSpec]) -> dict[str, An
         raise PlanError("pipeline config object required")
     require(
         set(raw) == {"schema", "source_sha256", "targets", "stages"}
-        and raw["schema"] == SCHEMA and is_digest(raw["source_sha256"]),
+        and raw["schema"] == SCHEMA
+        and is_digest(raw["source_sha256"]),
         "pipeline config schema mismatch",
     )
     targets = raw["targets"]
     require(
-        isinstance(targets, list) and bool(targets)
+        isinstance(targets, list)
+        and bool(targets)
         and all(isinstance(item, str) and item in TARGETS for item in targets)
         and len(set(targets)) == len(targets),
         "unknown or duplicate output target",
@@ -221,8 +248,10 @@ def validate_config(raw: object, specs: Mapping[str, StageSpec]) -> dict[str, An
     for name, spec in specs.items():
         entry = stages[name]
         require(
-            isinstance(entry, dict) and set(entry) == {"enabled", "semantic", "input"}
-            and type(entry["enabled"]) is bool and isinstance(entry["semantic"], dict),
+            isinstance(entry, dict)
+            and set(entry) == {"enabled", "semantic", "input"}
+            and type(entry["enabled"]) is bool
+            and isinstance(entry["semantic"], dict),
             "invalid stage configuration",
         )
         semantic = entry["semantic"]
@@ -256,14 +285,15 @@ def stage_input_identity(
         {"dependency_semantic_lineage": list(dependency_lineage)},
     )
     return stage_identity(
-        contract, source_hash=source, dependency_output_hashes=dependencies,
-        model_revision=spec.revision, decoding_parameters=semantic,
+        contract,
+        source_hash=source,
+        dependency_output_hashes=dependencies,
+        model_revision=spec.revision,
+        decoding_parameters=semantic,
     ).to_dict()
 
 
-def semantic_lineage(
-    config: dict[str, Any], specs: Mapping[str, StageSpec]
-) -> dict[str, str]:
+def semantic_lineage(config: dict[str, Any], specs: Mapping[str, StageSpec]) -> dict[str, str]:
     """Bind transitive semantic changes even when regenerated output bytes coincide."""
     lineage: dict[str, str] = {}
     for name in ordered_stages(specs):
@@ -278,8 +308,11 @@ def semantic_lineage(
 
 
 def _verify(
-    root: Path, descriptor: dict[str, Any], identity: dict[str, object],
-    verifier: Verifier | None, dependencies: Mapping[str, bytes],
+    root: Path,
+    descriptor: dict[str, Any],
+    identity: dict[str, object],
+    verifier: Verifier | None,
+    dependencies: Mapping[str, bytes],
 ) -> tuple[bytes | None, str]:
     if descriptor["identity"] != identity:
         return None, "INPUT_IDENTITY_MISMATCH"
@@ -335,30 +368,42 @@ def resolve(
         entry = doc["stages"][name]
         deps = spec.dependencies
         row: dict[str, Any] = {
-            "stage": name, "enabled": entry["enabled"], "requested": name in requested,
-            "dependencies": list(deps), "support": spec.support, "provider": spec.provider,
-            "identity": None, "output_sha256": None, "semantic_lineage_sha256": lineage[name],
+            "stage": name,
+            "enabled": entry["enabled"],
+            "requested": name in requested,
+            "dependencies": list(deps),
+            "support": spec.support,
+            "provider": spec.provider,
+            "identity": None,
+            "output_sha256": None,
+            "semantic_lineage_sha256": lineage[name],
             "human_attestation": "REQUIRED_NOT_ATTESTED" if name == "human_review" else None,
         }
         rows[name] = row
         if name not in requested:
-            row.update(status="DISABLED" if not entry["enabled"] else "NOT_REQUESTED",
-                       reason="OUTSIDE_TARGET_CLOSURE")
+            row.update(
+                status="DISABLED" if not entry["enabled"] else "NOT_REQUESTED",
+                reason="OUTSIDE_TARGET_CLOSURE",
+            )
             continue
         if spec.support != "IMPLEMENTED":
             row.update(status="UNSUPPORTED", reason="BOOK_STAGE_NOT_IMPLEMENTED")
             continue
         blocked = [dep for dep in deps if rows[dep]["status"] not in {"RUN", "REUSE"}]
         if blocked:
-            row.update(status="BLOCKED_DEPENDENCY", reason="UPSTREAM_UNAVAILABLE",
-                       blocked_by=blocked)
+            row.update(
+                status="BLOCKED_DEPENDENCY", reason="UPSTREAM_UNAVAILABLE", blocked_by=blocked
+            )
             continue
         # RUN is a future action, not an output. Never invent dependency output hashes.
         pending = [dep for dep in deps if dep not in verified]
         identity = None
         if not pending:
             identity = stage_input_identity(
-                name, spec, doc["source_sha256"], entry["semantic"],
+                name,
+                spec,
+                doc["source_sha256"],
+                entry["semantic"],
                 tuple(rows[dep]["output_sha256"] for dep in deps),
                 tuple(lineage[dep] for dep in deps),
             )
@@ -366,7 +411,10 @@ def resolve(
         descriptor = entry["input"]
         if descriptor is not None and identity is not None:
             raw, reason = _verify(
-                root, descriptor, identity, checks.get(name),
+                root,
+                descriptor,
+                identity,
+                checks.get(name),
                 {dep: verified[dep] for dep in deps},
             )
             if raw is not None:
@@ -387,8 +435,11 @@ def resolve(
                 reason="HUMAN_ATTESTATION_REQUIRED",
             )
         elif descriptor is not None:
-            row.update(status="BLOCKED_DEPENDENCY", reason="INPUT_DEPENDENCIES_NOT_VERIFIED",
-                       blocked_by=pending)
+            row.update(
+                status="BLOCKED_DEPENDENCY",
+                reason="INPUT_DEPENDENCIES_NOT_VERIFIED",
+                blocked_by=pending,
+            )
         elif not entry["enabled"]:
             row.update(status="BLOCKED_DEPENDENCY", reason="DISABLED_WITHOUT_VALIDATED_INPUT")
         elif spec.provider == "owner-input":
@@ -397,10 +448,15 @@ def resolve(
             row.update(status="RUN", reason="PLANNED_ONLY", identity_pending_on=pending)
     terminal = [rows[name]["status"] for target in targets for name in TARGETS[target]]
     return {
-        "schema": REPORT_SCHEMA, "mode": "DRY_RUN_ONLY", "execution_authorized": False,
-        "publish_eligible": False, "targets": targets, "source_sha256": doc["source_sha256"],
+        "schema": REPORT_SCHEMA,
+        "mode": "DRY_RUN_ONLY",
+        "execution_authorized": False,
+        "publish_eligible": False,
+        "targets": targets,
+        "source_sha256": doc["source_sha256"],
         "configuration_sha256": content_fingerprint(doc),
-        "status": "PLAN_RESOLVED" if all(x in {"RUN", "REUSE"} for x in terminal)
+        "status": "PLAN_RESOLVED"
+        if all(x in {"RUN", "REUSE"} for x in terminal)
         else "PLAN_BLOCKED",
         "ordered_stages": list(rows.values()),
     }
@@ -462,7 +518,7 @@ def verify_selected_source(
         path.write_bytes(raw)
         path.chmod(0o600)
         verified = selected_scope.import_chapter(root, path)
-        return verified.bundle_sha256 == descriptor["output_sha256"]
+        return bool(verified.bundle_sha256 == descriptor["output_sha256"])
 
 
 def plan_file(config: Path, artifact_root: Path) -> dict[str, object]:
