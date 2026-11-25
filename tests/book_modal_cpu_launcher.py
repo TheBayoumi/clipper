@@ -1,0 +1,314 @@
+"""Dormant, explicitly authorized, model-free Modal CPU rehearsal launcher.
+
+Default CLI only verifies local source and prints a plan: no Modal import.
+Live execute is separately authorized, currently not approved. No workflow.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Protocol
+
+SOURCE_URL = "https://github.com/TheBayoumi/clipper.git"
+HEX40 = re.compile(r"[0-9a-f]{40}\Z")
+HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+INTENT = "PUBLIC_SYNTHETIC_MODEL_FREE_BOOK_REHEARSAL"
+LIMITS = {
+    "cpu": 1,
+    "memory": 512,
+    "gpu": None,
+    "block_network": True,
+    "restrict_modal_access": True,
+    "single_use_containers": True,
+    "max_containers": 1,
+    "min_containers": 0,
+    "buffer_containers": 0,
+    "retries": 0,
+    "startup_timeout": 60,
+    "timeout": 30,
+    "include_source": True,
+    "scaledown_window": 2,
+}
+
+
+class LaunchBlocked(RuntimeError):
+    """No resources may be allocated for this request."""
+
+
+def _require(ok: bool, reason: str) -> None:
+    if not ok:
+        raise LaunchBlocked(reason)
+
+
+def _json(path: Path, limit: int = 8192) -> dict[str, Any]:
+    _require(path.is_file() and not path.is_symlink(), "approval must be a regular local file")
+    _require(path.stat().st_size <= limit, "approval file exceeds limit")
+    raw = path.read_bytes()
+    data = json.loads(raw)
+    _require(isinstance(data, dict), "approval must be a JSON object")
+    return data
+
+
+def _git(checkout: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(checkout), *args],
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    return result.stdout.strip()
+
+
+def local_source(checkout: Path, sha: str) -> None:
+    _require(bool(HEX40.fullmatch(sha)), "explicit full source SHA required")
+    _require(checkout.resolve() == Path(__file__).resolve().parents[1], "launcher must use own checkout")
+    _require(_git(checkout, "rev-parse", "HEAD") == sha, "source checkout SHA differs")
+    _require(not _git(checkout, "status", "--porcelain=v1", "--untracked-files=all"),
+             "source checkout is not clean")
+    _require((checkout / "tests" / "book_public_rehearsal.py").is_file(),
+             "rehearsal entrypoint missing")
+
+
+@dataclass(frozen=True)
+class Approval:
+    source_sha: str
+    workspace: str
+    environment: str
+    credential_route: str
+    expires_utc: datetime
+    cost_ceiling_usd: str
+    external_control_id: str
+
+
+def load_approval(path: Path, digest: str, sha: str, *, now: datetime | None = None) -> Approval:
+    _require(bool(HEX64.fullmatch(digest)), "out-of-band approval file SHA-256 required")
+    raw = path.read_bytes() if path.is_file() and not path.is_symlink() else b""
+    _require(0 < len(raw) <= 8192, "missing or invalid external approval")
+    _require(hashlib.sha256(raw).hexdigest() == digest, "approval digest mismatch")
+    data = _json(path)
+    expected = {
+        "schema", "intent", "source_sha", "workspace", "environment",
+        "credential_route", "expires_utc", "cost_ceiling_usd",
+        "external_control_id", "execution_permission",
+    }
+    _require(set(data) == expected, "approval fields mismatch")
+    _require(data["schema"] == "clipper-modal-book-launch-approval-v1", "approval schema mismatch")
+    _require(data["intent"] == INTENT, "wrong operation authorized")
+    _require(data["execution_permission"] is True, "no explicit permission")
+    _require(isinstance(data["source_sha"], str) and data["source_sha"] == sha,
+             "approval SHA mismatch")
+    for key in ("workspace", "environment", "credential_route", "external_control_id"):
+        value = data[key]
+        _require(isinstance(value, str) and bool(re.fullmatch(r"[A-Za-z0-9_.:/-]{3,128}", value)),
+                 "invalid or missing approval " + key)
+    _require(
+        data["credential_route"] in {"explicit-modal-profile", "actions-existing-secret-route"},
+        "unapproved credential route",
+    )
+    _require(isinstance(data["cost_ceiling_usd"], str) and bool(
+        re.fullmatch(r"(?:0|[1-9][0-9]{0,3})\.[0-9]{2}", data["cost_ceiling_usd"])
+    ) and float(data["cost_ceiling_usd"]) > 0, "explicit positive cost cap required")
+    try:
+        expiry = datetime.fromisoformat(data["expires_utc"].replace("Z", "+00:00"))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise LaunchBlocked("invalid UTC approval expiry") from exc
+    _require(expiry.tzinfo is not None and expiry.utcoffset().total_seconds() == 0,
+             "approval expiry must be UTC")
+    current = now if now is not None else datetime.now(UTC)
+    _require(current < expiry, "approval expired")
+    _require((expiry-current).total_seconds() <= 3600, "approval exceeds one-hour validity")
+    return Approval(sha, data["workspace"], data["environment"],
+                    data["credential_route"], expiry,
+                    data["cost_ceiling_usd"], data["external_control_id"])
+
+
+def _remote_child(sha: str) -> dict[str, object]:
+    """Only executed in a separately approved restricted CPU Function."""
+    import json as child_json
+    import os as child_os
+    import subprocess as child_subprocess
+    from pathlib import Path as ChildPath
+
+    checkout = ChildPath("/opt/clipper")
+    output = ChildPath("/tmp/public-book-rehearsal")
+    env = {"PATH": child_os.environ.get("PATH", "/usr/bin:/bin"),
+           "PYTHONPATH": str(checkout / "src") + ":" + str(checkout / "tests"),
+           "HOME": "/tmp",
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    proc = child_subprocess.run(
+        ["python", str(checkout / "tests" / "book_public_rehearsal.py"),
+         "--fresh-root", str(output), "--expected-sha", sha],
+        cwd=checkout, env=env, capture_output=True, text=True,
+        check=False, timeout=25,
+    )
+    if proc.returncode != 0 or len(proc.stdout) > 220_000:
+        raise RuntimeError("synthetic child failed; full output withheld")
+    payload = child_json.loads(proc.stdout)
+    if not isinstance(payload, dict) or payload.get("source_sha") != sha:
+        raise RuntimeError("unexpected synthetic result identity")
+    if (payload.get("status") != "SYNTHETIC_CONTRACT_REHEARSAL_PASSED"
+            or payload.get("publish_eligible") is not False
+            or payload.get("source_pin") != "VERIFIED_CLEAN_LOCAL_GIT_HEAD"):
+        raise RuntimeError("synthetic result not accepted")
+    return {
+        "source_sha": sha,
+        "status": payload["status"],
+        "source_pin": payload["source_pin"],
+        "publish_eligible": False,
+        "tracks": payload["tracks"],
+        "zero_call_evidence": payload["zero_call_evidence"],
+        "artifact_sha256": payload["artifact_sha256"],
+        "elapsed_seconds": payload["elapsed_seconds"],
+        "peak_rss_kib_platform": payload["peak_rss_kib_platform"],
+    }
+
+
+class Control(Protocol):
+    def identify(self, approval: Approval) -> str: ...
+    def run_once(self, approval: Approval) -> dict[str, object]: ...
+
+
+class ModalControl:
+    """Imported/constructed only after ALL local approval/identity prerequisites."""
+
+    def __init__(self) -> None:
+        self._modal: Any = None
+        self._client: Any = None
+
+    def identify(self, approval: Approval) -> str:
+        # Does not create App/Image/Function. Credentials must already be explicitly selected.
+        import modal
+
+        from importlib.metadata import version
+
+        _require(version("modal") == "1.5.5", "Modal SDK must be exactly 1.5.5")
+        client = modal.Client.from_env()
+        workspace = modal.Workspace.from_context(client=client)
+        workspace.hydrate(client=client)
+        self._modal, self._client = modal, client
+        return str(workspace.name)
+
+    def run_once(self, approval: Approval) -> dict[str, object]:
+        modal, client = self._modal, self._client
+        _require(modal is not None and client is not None, "identity not established")
+        # Image contains ONLY an anonymous public Git checkout at exact SHA.
+        # No local source/.git, credentials, secrets or private data are copied.
+        sha = approval.source_sha
+        clone = (
+            "set -eu; export GIT_TERMINAL_PROMPT=0; "
+            "git -c credential.helper= clone --no-checkout "
+            + SOURCE_URL + " /opt/clipper; "
+            "git -C /opt/clipper checkout --detach " + sha + "; "
+            "test \"$(git -C /opt/clipper rev-parse HEAD)\" = " + sha + "; "
+            "test -z \"$(git -C /opt/clipper status --porcelain=v1 --untracked-files=all)\"; "
+            "test -f /opt/clipper/tests/book_public_rehearsal.py"
+        )
+        image = (
+            modal.Image.debian_slim(python_version="3.11")
+            .apt_install("git")
+            .pip_install("PyYAML==6.0.3")
+            .run_commands(clone)
+        )
+        # include_source is enabled only for this public launcher Function.
+        # The separately cloned book source is NOT mounted from the host.
+        app = modal.App(include_source=False)
+        function = app.function(image=image, **LIMITS)(_remote_child)
+        call: Any = None
+        app_id: str | None = None
+        cleanup_confirmed = False
+        try:
+            with app.run(client=client, detach=False, environment_name=approval.environment):
+                app_id = getattr(app, "app_id", None)
+                _require(isinstance(app_id, str) and bool(app_id), "App id missing")
+                call = function.spawn(sha)
+                call_id = getattr(call, "object_id", None)
+                _require(isinstance(call_id, str) and bool(call_id), "FunctionCall id missing")
+                output = call.get(timeout=35)
+                _require(isinstance(output, dict) and output.get("source_sha") == sha,
+                         "result source mismatch")
+                _require(output.get("publish_eligible") is False, "publish flag unexpected")
+                return {"source_sha": sha, "app_id": app_id, "call_id": call_id,
+                        "rehearsal": output,
+                        "provider_removal": "UNKNOWN_UNTIL_EXTERNAL_VERIFICATION"}
+        finally:
+            if call is not None:
+                try:
+                    call.cancel(terminate_containers=True)
+                except Exception:
+                    pass  # External control plan must reconcile on error.
+            # App.run context exits as another cleanup attempt; this does not
+            # prove provider removal. No SUCCESS cleanup claim is made.
+            _ = cleanup_confirmed
+
+
+def execute(sha: str, approval: Approval, control: Control,
+            *, external_control_verified: bool) -> dict[str, object]:
+    _require(external_control_verified, "independent lifecycle/cost control not verified")
+    _require(approval.source_sha == sha, "approval source mismatch")
+    _require(datetime.now(UTC) < approval.expires_utc, "approval expired before execution")
+    observed = control.identify(approval)
+    _require(observed == approval.workspace, "client-bound workspace identity mismatch")
+    _require(datetime.now(UTC) < approval.expires_utc, "approval expired before resources")
+    return control.run_once(approval)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--expected-sha", required=True)
+    parser.add_argument("--execute", action="store_true", default=False)
+    parser.add_argument("--approval-file", type=Path)
+    parser.add_argument("--approval-sha256")
+    parser.add_argument("--independent-control-receipt")
+    args = parser.parse_args(argv)
+    checkout = Path(__file__).resolve().parents[1]
+    try:
+        local_source(checkout, args.expected_sha)
+        if not args.execute:
+            _require(not any((args.approval_file, args.approval_sha256,
+                              args.independent_control_receipt)),
+                     "plan mode accepts no execution/credential fields")
+            print(json.dumps({"status": "DORMANT_PLAN_ONLY",
+                              "source_sha": args.expected_sha,
+                              "intent": INTENT, "function_limits": LIMITS,
+                              "credential_or_modal_import": False}, sort_keys=True))
+            return 0
+        _require(args.approval_file is not None and args.approval_sha256 is not None,
+                 "separate owner approval required")
+        approval = load_approval(args.approval_file, args.approval_sha256, args.expected_sha)
+        _require(
+            args.independent_control_receipt == approval.external_control_id,
+            "independent control authority receipt missing",
+        )
+        # Fail closed on implicit/ambiguous credential sources before importing Modal.
+        profile = os.environ.get("MODAL_PROFILE", "")
+        token_id = os.environ.get("MODAL_TOKEN_ID", "")
+        token_secret = os.environ.get("MODAL_TOKEN_SECRET", "")
+        if approval.credential_route == "explicit-modal-profile":
+            _require(bool(profile) and not token_id and not token_secret,
+                     "explicit profile required without environment token overrides")
+        else:
+            _require(bool(token_id) and bool(token_secret) and not profile,
+                     "existing Actions token pair required without profile ambiguity")
+        # Client-bound Workspace.from_context() must still match the approval.
+        result = execute(args.expected_sha, approval, ModalControl(),
+                         external_control_verified=True)
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    except (LaunchBlocked, OSError, ValueError, json.JSONDecodeError,
+            subprocess.SubprocessError):
+        print(json.dumps({"status": "DORMANT_LAUNCH_BLOCKED"}))
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

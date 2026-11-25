@@ -1,8 +1,11 @@
 # Dormant Modal CPU book-rehearsal route — NO EXECUTION AUTHORITY
 
-**Status: BLOCKED / PREPARATION-ONLY.** This is a future integration
-contract, NOT a runnable launcher, Modal client, deployment, App definition,
-Actions workflow, run request, or approval. No account, credential, resource,
+**Status: DORMANT IMPLEMENTED / NO EXECUTION AUTHORITY.** The repository
+contains a real opt-in launcher at `tests/book_modal_cpu_launcher.py` and
+inert fake-only tests at `tests/test_book_modal_cpu_launcher.py`. The default
+`plan` mode does not import Modal, read credentials or allocate resources.
+`--execute` is a separate strictly gated route and is NOT authorized today.
+There is no deployed App, Actions workflow, run request or approval. No account, credential, resource,
 image build, workflow or provider has been accessed. The original qualified
 infrastructure owner/driver and the Codespace private chapter host are
 unchanged and are **not** interchangeable with this public synthetic rehearsal.
@@ -33,16 +36,15 @@ SHA `6162ca6`; this does not establish remote limits.
 
 ### Unresolved source-image boundary
 
-**No image build is authorized.** Before a build recipe is committed,
-an independent reviewer must establish a credential-safe and provenance-safe
-way to put the complete clean checkout in the image. If the repository
-requires authentication, **do not embed a GitHub token, .git/config
-credential, host key, private source, artifact, or CI secret in any image
-layer** or copy a credential-bearing `.git` tree. An unauthenticated public
-Git checkout at the pinned commit would be preferable if actually
-accessible; public availability has **not** been established here. A
-source archive without a real clean Git checkout cannot satisfy the
-existing CLI pin preflight, and fabricating a Git HEAD is prohibited.
+**No image build has been authorized or performed.** The implemented
+candidate builds from the **public unauthenticated** GitHub HTTPS source
+`https://github.com/TheBayoumi/clipper.git`, checks out the explicit exact
+SHA, validates Git HEAD and a clean worktree and installs Python 3.11,
+Git and PyYAML 6.0.3. It does NOT copy the local Git tree or credentials,
+and sets `GIT_TERMINAL_PROMPT=0` with Git credential helpers disabled.
+Public cloning has been independently reported available; a live Modal
+image build and its costs remain **untested**. A source archive without
+the real clean Git checkout cannot satisfy the child CLI.
 
 ## SDK options to validate offline against pinned Modal 1.5.5
 
@@ -63,7 +65,8 @@ They are a **configuration target**, not an instantiated object:
 | `startup_timeout` | `60` | Seconds, separate from execution timeout |
 | `timeout` | `30` | Seconds, one execution; not a hard total-spend cap |
 | `secrets` / `volumes` / `network_file_systems` | Empty | No child credentials, persistent mounts or private input |
-| `include_source` | `False` | No automatic extra host source copying; image proof must be explicit |
+| `include_source` | `True` for the Function | Ships only the public launcher function module needed by Modal; book code stays exclusively in the pinned public clone |
+| `scaledown_window` | `2` | Candidate short container scale-down, not an end-to-end cost cap |
 
 Source references:
 - https://modal.com/docs/sdk/py/latest/App
@@ -132,12 +135,10 @@ startup waits and cleanup are *outside* the 30-second Function execution
 limit. No retry and no retained paid idle container may be assumed
 without observing the provider state.
 
-**No Actions workflow** has been added: no `push`, `pull_request`,
-`schedule`, `workflow_run`, `workflow_dispatch` or run-request file
-is introduced by this preparation. This prevents incidental execution
-during routine CI or PR activity. An eventual manual workflow still
-requires an independently reviewed authorization and identity gate, not
-just a `workflow_dispatch` boolean.
+**No Actions workflow** is added. Neither push/PR/CI nor a manual dispatch
+can activate the launcher automatically. A future operator would have
+to run the opt-in command deliberately and provide an out-of-band
+SHA-256-pinned manifest and independent-control receipt.
 
 ## What remains blocked
 
@@ -153,7 +154,54 @@ just a `workflow_dispatch` boolean.
 - Current test-only deterministic second-create regression, exact-SHA CI
   and final review are independent of all of the above.
 
-Until these gates are met, **do not implement an executable launcher or
-workflow, instantiate a Modal client/App/Image, download/build an image,
-or invoke any host**. This document makes the intended route reviewable
-without changing operational authority.
+The executable launcher is **implemented but not qualified or executed**;
+its default mode is a pure local plan. Its `--execute` mode requires an
+external approval document, an independently supplied SHA-256 digest,
+a matching control receipt, nonexpired narrow permission, exact source
+and clean worktree, an explicit nonambiguous credential route, and
+a client-bound workspace identity match **before** App/Image construction.
+The manifest digest and receipt are checks for accidental disagreement,
+NOT cryptographic proof of the approving person's identity, and SDK
+resource cleanup is NOT an independent cost cap. In particular, no
+approval manifest or control receipt is present in this repository.
+Do not actually invoke `--execute`, construct clients, or allocate
+resources without the separately approved control-plane lifecycle and
+cost containment plan. The implementation remains **UNQUALIFIED**
+until exact-SHA offline tests, Ruff/mypy, full unchanged 95% CI and review.
+
+
+## Dormant launcher command and evidence
+
+```bash
+# From exact clean checkout. No Modal import, client, token or resource.
+PYTHONPATH=src:tests python tests/book_modal_cpu_launcher.py \
+  --expected-sha EXACT_40_HEX_REVIEWED_SHA
+```
+
+Output: `DORMANT_PLAN_ONLY` with fixed Function candidate limits.
+There is **no default run**, no checked-in manifest and no workflow.
+The launcher separately implements `--execute` with
+`--approval-file`, `--approval-sha256`,
+`--independent-control-receipt` and exact `--expected-sha`;
+these switches are not a request to execute and are not authorized.
+It imports the SDK only after local verification, then verifies the
+actual selected client's workspace before constructing an App/Image.
+
+The published SDK 1.5.5 entrypoints targeted are `App.function`,
+`App.run(client=..., detach=False, environment_name=...)`,
+`Workspace.from_context(client=...)` / `.hydrate()` / `.name`,
+`Function.spawn` / `FunctionCall.get(timeout=...)` /
+`FunctionCall.cancel(terminate_containers=True)`. The code requires
+`modal==1.5.5` by installed package metadata. Local service access,
+image initialization, `App.run` cleanup, provider removal and 512 MiB
+headroom remain untested. The remote child uses `subprocess.run` with
+an environment containing only PATH, HOME, PYTHONDONTWRITEBYTECODE and
+the pinned source's PYTHONPATH; Modal tokens are not inherited by that
+child process. The Function launcher source itself is included for
+serialization; no project/media source is automatically mounted.
+
+The launcher currently returns `provider_removal=UNKNOWN_UNTIL_EXTERNAL_VERIFICATION`
+rather than inventing deletion confirmation. App context exit and
+FunctionCall cancellation are attempted, not proven provider termination.
+A separately staffed/independent exact-ID control-plane stop and cost
+reconciliation are still operational prerequisites to **any live run**.

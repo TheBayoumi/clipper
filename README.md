@@ -479,3 +479,20 @@ download dependencies. A fresh-process check confirms its import graph;
 the CLI rejects preloaded forbidden modules and reports **scoped** Python
 guard evidence, not a kernel-level sandbox guarantee. No production source,
 host authority, Modal runtime or deployment has been changed.
+
+
+## Dormant opt-in book rehearsal launcher (UNQUALIFIED; no run approved)
+
+`tests/book_modal_cpu_launcher.py` implements an explicitly selected
+`DORMANT_PLAN_ONLY` default and a separately gated `--execute` path.
+Offline fake-only regressions are in `tests/test_book_modal_cpu_launcher.py`.
+A prospective restricted single CPU Function uses an anonymously cloned,
+exact-SHA clean public Git checkout, Python 3.11, Git and PyYAML 6.0.3;
+no private source, model, GPU, secret, volume, warm container or automatic
+workflow. No App/Image/Modal import occurs in plan mode. Execution is
+blocked absent separate approval manifest/hash, control receipt, selected
+credentials, budget/lifecycle authority and client-bound workspace match.
+Neither an approval document nor external controller exists in the repo;
+their strings are not cryptographic signature verification or a hard cost
+cap. Provider removal is UNKNOWN without external confirmation. See
+[the dormant route and restrictions](docs/BOOK_MODAL_CPU_DORMANT_ROUTE.md).
