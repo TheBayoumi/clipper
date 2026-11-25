@@ -1,0 +1,152 @@
+name: Private encrypted exact-App historical log retrieval (temporary)
+
+# One-shot push-only historical read. No dispatch/schedule/PR.
+on:
+  push:
+    branches: [review/unified-tts-cleanup]
+    paths:
+      - ".github/workflows/modal-private-exact-app-diag.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  encrypted-exact-app-history:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/review/unified-tts-cleanup'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Python 3.11 without credentials
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact SDK without credentials
+        shell: bash
+        run: python -m pip install --disable-pip-version-check --no-cache-dir "modal==1.5.5"
+
+      - name: Verify workspace and encrypt historical logs to operator public certificate
+        shell: bash
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -euo pipefail
+          unset MODAL_PROFILE
+          timeout --signal=TERM --kill-after=10s 60s python -I - <<'PY'
+          import base64
+          import contextlib
+          import hashlib
+          import os
+          import subprocess
+          import sys
+          import tempfile
+          from pathlib import Path
+
+          CERT = """-----BEGIN CERTIFICATE-----
+MIIDNTCCAh2gAwIBAgIUG/C5fvYIO00OTDGN3TfG9NMB2jMwDQYJKoZIhvcNAQEL
+BQAwKjEoMCYGA1UEAwwfdGVtcG9yYXJ5LWV4YWN0LWFwcC1kaWFnbm9zdGljczAe
+Fw0yNjExMjUxNDA4MDdaFw0yNjExMjYxNDA4MDdaMCoxKDAmBgNVBAMMH3RlbXBv
+cmFyeS1leGFjdC1hcHAtZGlhZ25vc3RpY3MwggEiMA0GCSqGSIb3DQEBAQUAA4IB
+DwAwggEKAoIBAQCN63VTcILP3jkMdrQjrffXFqYV9plDirrvj9hocGRPxd0veosZ
+Bck6d373rUdKWDfy5w5yhtJ3u1SFBQvowSr9O6kuvBNe1N0R1R63r5bDUEohzOoa
+IfSLEcGCzAQ3+Aq/wXIISDHMnvFiVT+zvEO/lhY/Eyy8Y8pkGW3ADoq/kiBjxd6n
+P1nwwCv7VQeFv6n6/B6VVcuKTia3unv6eGk2GXig6/mHmKrXsTlcsZHEm8qKKQrB
+G/i3E1zWu6ux+ShErwVPjyNOyJwLyAPN91uTLz3fCB3Ssor+ZgUA06xYBnm+U/fL
+/vPEw2aKsrF1kIw/xsNd/jfsADWEKQCXpFwXAgMBAAGjUzBRMB0GA1UdDgQWBBTY
+FIRi8yRWSq04X41TesuvnuP9rjAfBgNVHSMEGDAWgBTYFIRi8yRWSq04X41Tesuv
+nuP9rjAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQA/S7xYPOvd
+SPxQeWgdpG5tC7yNeZv9EbS6dt8ETpdwcrbAh0W4U+zXb4xPtvL1NDuw55sItS2H
+LkM8id/QvJmUfkiAEz/zYdeoLdtr/pHVo1qF/Cu0EB+1evf3YsOcxcXtQ760cDUf
+3ACjlKF0ThMQwKG2qwaxBchBjtcxb9fAksfEZrJbadVRdCvKloxC6M+QwXZuJNnC
+P9mPXaG1EKAq7RHSZ0We6CLP48HJfVtAll99dV/FIZKP+4gPOAPmHlWdGRVCbvys
+6jdhGGwfgu1CMQV5T/Y4t1Yze0uMwohkEbC45DAgcYas6D7Hi2tjzJH+taAcAUV5
+GgZ/V+VgEFi7
+-----END CERTIFICATE-----"""
+          APP_ID = "ap-8lq3aNsHtFapUbn8f0AQml"
+          WORKSPACE = "mahmoud-bayoumi-mm"
+          LOG_COMMAND = [
+              "modal", "app", "logs", APP_ID,
+              "--env", "main", "--tail", "100",
+              "--since", "2026-11-25T13:51:00Z",
+              "--until", "2026-11-25T13:54:00Z",
+          ]
+
+          def fail(category):
+              # Never print provider output, secrets, headers, or arbitrary exceptions.
+              print("PRIVATE_LOG_DIAGNOSTICS_INCOMPLETE=" + category)
+              sys.exit(2)
+
+          if not os.environ.get("MODAL_TOKEN_ID") or not os.environ.get("MODAL_TOKEN_SECRET"):
+              fail("CREDENTIALS_MISSING")
+
+          try:
+              # No provider log read until the exact workspace is authenticated.
+              with open(os.devnull, "w") as sink:
+                  with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                      import modal
+                      client = modal.Client.from_env()
+                      ws = modal.Workspace.from_context(client=client)
+                      ws.hydrate(client=client)
+                      workspace = ws.name
+          except BaseException:
+              fail("WORKSPACE_VERIFICATION_FAILED")
+          if workspace != WORKSPACE:
+              fail("WORKSPACE_MISMATCH")
+
+          # Only this exact App ID; deliberately no App lifecycle calls.
+          try:
+              with tempfile.TemporaryDirectory(prefix="clipper-private-app-log-") as directory:
+                  root = Path(directory)
+                  cert_path = root / "recipient.pem"
+                  raw_path = root / "private-log.bin"
+                  encrypted_path = root / "encrypted.der"
+                  cert_path.write_text(CERT, encoding="ascii")
+                  cert_path.chmod(0o600)
+
+                  with raw_path.open("wb") as raw:
+                      try:
+                          command = subprocess.run(
+                              LOG_COMMAND, capture_output=True, timeout=20, check=False
+                          )
+                      except (OSError, subprocess.SubprocessError):
+                          fail("LOG_READ_FAILED")
+                      # Preserve stdout and stderr exactly, with unambiguous separation.
+                      raw.write(command.stdout)
+                      raw.write(b"\n")
+                      raw.write(command.stderr)
+                  raw_path.chmod(0o600)
+                  byte_count = raw_path.stat().st_size
+                  if byte_count > 16384:
+                      fail("RAW_LOG_BOUND_EXCEEDED")
+                  raw_hash = hashlib.sha256(raw_path.read_bytes()).hexdigest()
+                  # CMS DER output is encrypted for the operator's public cert only.
+                  try:
+                      encrypted = subprocess.run(
+                          ["openssl", "cms", "-encrypt", "-binary", "-aes256",
+                           "-outform", "DER", "-in", str(raw_path),
+                           "-out", str(encrypted_path), str(cert_path)],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                          check=False, timeout=10,
+                      )
+                  except (OSError, subprocess.SubprocessError):
+                      fail("ENCRYPT_FAILED")
+                  if encrypted.returncode != 0 or not encrypted_path.is_file():
+                      fail("ENCRYPT_FAILED")
+                  cipher = encrypted_path.read_bytes()
+                  encoded = base64.b64encode(cipher).decode("ascii")
+                  if len(encoded) > 32768:
+                      fail("CIPHERTEXT_BOUND_EXCEEDED")
+                  print("WORKSPACE_VERIFIED=true")
+                  print("COMMAND_RETURN_CODE=" + str(command.returncode))
+                  print("RAW_BYTE_COUNT=" + str(byte_count))
+                  print("RAW_SHA256=" + raw_hash)
+                  print("CIPHERTEXT_BEGIN")
+                  print(encoded)
+                  print("CIPHERTEXT_END")
+          except SystemExit:
+              raise
+          except BaseException:
+              fail("DIAGNOSTIC_FAILED")
+          PY
