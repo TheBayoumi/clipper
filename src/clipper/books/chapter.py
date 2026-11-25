@@ -2178,6 +2178,7 @@ def evaluate_hybrid_chapter(
     on_resume_verified: Callable[[], None] | None = None,
     on_stage_progress: Callable[[str, str | None], None] | None = None,
     token_counter: Callable[[list[dict[str, str]]], int] | None = None,
+    script_only: bool = False,
 ) -> dict[str, object]:
     """One exact-source chapter argument, disjoint audits, reconciliation and human gate.
 
@@ -2189,6 +2190,17 @@ def evaluate_hybrid_chapter(
     if type(limits) is not ChapterPlan:
         raise ChapterStop("hybrid run plan must be the exact validated ChapterPlan")
     limits.validate()
+    if type(script_only) is not bool or (
+        script_only
+        and (
+            not all((limits.brief_cpu, limits.adaptation_cpu, limits.script_cpu))
+            or limits.direction_cpu
+            or limits.kokoro_cpu
+            or direction_completion is not None
+            or narration_producer is not None
+        )
+    ):
+        raise ChapterStop("script-only route requires exact text stages and no downstream work")
     verified = selected_scope.import_chapter(runner.root, selected_scope_path)
     scoped, manifest_sha = evaluation._section_scope(
         runner,
@@ -2198,6 +2210,8 @@ def evaluate_hybrid_chapter(
     )
     if scoped.fingerprint != verified.work.fingerprint:
         raise ChapterStop("hybrid selected work plan does not match verified import")
+    if script_only and review_file is not None and expected_brief_identity is None:
+        raise ChapterStop("script-only resume requires frozen brief identity")
     units, gaps, order = _full_source_scope(verified.book, scoped, None, [])
     if len(order) > chapter_hybrid.MAX_ENTRIES:
         raise ChapterStop("hybrid selected chapter exceeds finite original source cap")
@@ -2216,6 +2230,8 @@ def evaluate_hybrid_chapter(
         "linked_sections": list(verified.linked_section_ids),
         "run_plan": limits.fingerprint,
     }
+    if script_only:
+        ledger_identity["terminal_contract"] = "SCRIPT_ONLY_V1"
     try:
         ledger = chapter_hybrid.freeze(units, gaps, order, ledger_identity)
     except chapter_hybrid.HybridStop as exc:
@@ -2551,8 +2567,46 @@ def evaluate_hybrid_chapter(
             "script_attempts": script_attempts,
         }
     )
+    if script_only and any(origin != argument_origin for origin in (adapt_origin, script_origin)):
+        raise ChapterStop("hybrid script-only text stages have mismatched producer provenance")
     if on_stage_progress is not None:
         on_stage_progress("SCRIPT_VERIFIED", script_key)
+    if script_only:
+        record = {
+            "schema": "clipper-chapter-private-script-result-v1",
+            "chapter_scope_identity": chapter_key,
+            "source_ledger_sha256": summary["source_ledger_sha256"],
+            "selected_source_bundle_sha256": verified.bundle_sha256,
+            "source_boundary": verified.book.source_boundary,
+            "parent_original_reverified_on_host": False,
+            "source_mining_provenance": "DIRECT_SOURCE_NO_MINING",
+            "producer_identity_sha256": producer_sha256,
+            "argument_key": argument_key,
+            "audit_keys": audit_keys,
+            "brief_key": brief_key,
+            "human_review_sha256": review_sha,
+            "semantic_intervention": "HUMAN_ATTESTED_NOT_INDEPENDENTLY_PROVEN",
+            "adaptation_key": adapt_key,
+            "script_key": script_key,
+            "scene_count": len(script["scenes"]),
+            "text_provenances": [argument_origin, brief_origin, adapt_origin, script_origin],
+            "source_recovery": verified.book.recovery_status,
+            "script_review": "UNREVIEWED",
+            "publish_eligible": False,
+        }
+        result_key = content_fingerprint(record)
+        evaluation._store(root, base / f"chapter-result-{result_key}.json", record)
+        return {
+            **summary,
+            "status": (
+                "CHAPTER_SCRIPT_READY_UNREVIEWED"
+                if argument_origin == "ACTUAL_CPU_QWEN"
+                else "TEST_DOUBLE_CHAPTER_SCRIPT_READY_UNREVIEWED"
+            ),
+            "final_result_identity": result_key,
+            "semantic_intervention": "HUMAN_ATTESTED_NOT_INDEPENDENTLY_PROVEN",
+            "script_review": "UNREVIEWED",
+        }
     audio: list[dict[str, Any]] | None = None
     audio_origin = "NO_AUDIO"
     narration_report_key: str | None = None

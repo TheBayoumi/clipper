@@ -765,8 +765,9 @@ def test_model_free_hybrid_argument_audits_reconciliation_review_gate_and_replay
     miner.assert_not_called()
 
 
+@pytest.mark.parametrize("script_only", [False, True])
 def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script_only: bool
 ) -> None:
     runner, selected, section = _selected_hybrid_source(tmp_path)
     fake_miner = Mock(side_effect=AssertionError("no mandatory per-unit mining"))
@@ -775,8 +776,8 @@ def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(
         brief_cpu=True,
         adaptation_cpu=True,
         script_cpu=True,
-        direction_cpu=True,
-        kokoro_cpu=True,
+        direction_cpu=not script_only,
+        kokoro_cpu=not script_only,
     )
     calls: list[str] = []
 
@@ -796,8 +797,9 @@ def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(
         "reconcile_completion": producer("reconcile"),
         "adaptation_completion": producer("adaptation"),
         "script_completion": producer("chapter_script"),
-        "direction_completion": producer("chapter_direction"),
-        "narration_producer": _hybrid_wav,
+        "direction_completion": None if script_only else producer("chapter_direction"),
+        "narration_producer": None if script_only else _hybrid_wav,
+        "script_only": script_only,
         "token_counter": lambda _messages: 1200,
     }
     waiting = chapter.evaluate_hybrid_chapter(runner, selected, section, **args)
@@ -829,6 +831,10 @@ def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(
     }
     review_file = tmp_path / "hybrid-human-test.json"
     review_file.write_text(json.dumps(review), encoding="utf-8")
+    downstream = Mock(side_effect=AssertionError("script-only downstream work"))
+    if script_only:
+        monkeypatch.setattr(chapter, "_timings", downstream)
+        monkeypatch.setattr(chapter, "_narrate", downstream)
     checkpoint = chapter.evaluate_hybrid_chapter(
         runner,
         selected,
@@ -837,10 +843,20 @@ def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(
         expected_brief_identity=waiting["brief_identity"],
         **args,
     )
-    assert checkpoint["status"] == "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED"
+    if script_only:
+        assert checkpoint["status"] == "TEST_DOUBLE_CHAPTER_SCRIPT_READY_UNREVIEWED"
+        assert checkpoint["script_review"] == "UNREVIEWED"
+        assert checkpoint["semantic_intervention"] == "HUMAN_ATTESTED_NOT_INDEPENDENTLY_PROVEN"
+        assert checkpoint["final_result_identity"]
+        assert "narration_report_identity" not in checkpoint
+        assert "direction_identity" not in checkpoint
+        assert calls[-2:] == ["adaptation", "chapter_script"]
+        downstream.assert_not_called()
+    else:
+        assert checkpoint["status"] == "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED"
+        assert checkpoint["direction_attempts"] == 1
+        assert checkpoint["narration_report_identity"]
     assert checkpoint["script_scene_count"] == 3
-    assert checkpoint["direction_attempts"] == 1
-    assert checkpoint["narration_report_identity"]
     script_path = next((base / "chapter_script").glob("*/validated.json"))
     script = json.loads(script_path.read_bytes())["payload"]
     assert all(scene["source_spans"] for scene in script["scenes"])
