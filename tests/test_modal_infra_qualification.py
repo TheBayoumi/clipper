@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any
@@ -1536,17 +1537,45 @@ def test_observation_budget_rejects_nonfinite_and_nonpositive_before_start(
         ledger.close()
 
 
-def test_pending_snapshot_mutation_cannot_modify_owner_or_later_result(tmp_path: Path) -> None:
+@pytest.mark.parametrize("fsync_delay_seconds", [0.0, 0.025])
+def test_pending_snapshot_mutation_cannot_modify_owner_or_later_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fsync_delay_seconds: float
+) -> None:
+    # Delay the first real journal fsync as an explicit timing adversary;
+    # coordination is by backend stage event, never by a sleep estimate.
+    if fsync_delay_seconds:
+        original_fsync = os.fsync
+        once = False
+
+        def delayed_fsync(fd: int) -> None:
+            nonlocal once
+            if not once:
+                once = True
+                time.sleep(fsync_delay_seconds)
+            original_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", delayed_fsync)
+
     class HoldSecond(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered_read_create = asyncio.Event()
+
         async def create(self, app: Any, volume: Any, script: str) -> Sandbox:
             if script == READ_SCRIPT:
                 self.hold_create = True
+                self.entered_read_create.set()
             return await super().create(app, volume, script)
 
     async def exercise() -> None:
         backend = HoldSecond()
         owner = _owner(tmp_path, backend)
         owner.start()
+        # Don't start observe()'s 20 ms decision timer until the second
+        # acquisition is definitely held. The timeout is a deadlock guard.
+        await asyncio.wait_for(backend.entered_read_create.wait(), timeout=5.0)
+        assert "sandbox_2_create" in owner.active_operations
+        assert len(backend.sandboxes) == 1
         pending = await owner.observe()
         assert pending["status"] == "UNRESOLVED"
         assert pending["sandbox_terminal"] == ["137"]
