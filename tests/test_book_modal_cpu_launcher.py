@@ -957,7 +957,7 @@ def test_internal_worker_rechecks_approval_expiry_after_identity(
 
 
 def test_journal_valid_app_id_then_nonobject_json_keeps_cleanup_and_interrupt(
-    tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     path, digest = _manifest(tmp_path)
     approval = launcher.load_approval(path, digest, SHA)
@@ -986,14 +986,18 @@ def test_journal_valid_app_id_then_nonobject_json_keeps_cleanup_and_interrupt(
         if "stop" in argv:
             return SimpleNamespace(returncode=0, stdout="")
         state = "ephemeral" if len(commands) == 1 else "stopped"
-        return SimpleNamespace(returncode=0, stdout=json.dumps(
-            [{"app_id": app_id, "state": state, "tasks": "0"}]
-        ))
+        return SimpleNamespace(
+            returncode=0, stdout=json.dumps([{"app_id": app_id, "state": state, "tasks": "0"}])
+        )
 
     with pytest.raises(launcher.LaunchInterrupted) as interrupted:
         launcher._bounded_run(
-            approval, path, digest, deadline_seconds=10,
-            popen=fake_popen, runner=fake_cli,
+            approval,
+            path,
+            digest,
+            deadline_seconds=10,
+            popen=fake_popen,
+            runner=fake_cli,
         )
     evidence = interrupted.value.evidence
     assert evidence["app_id"] == app_id
@@ -1021,9 +1025,9 @@ def test_initial_inconclusive_list_still_stops_exact_id_and_retains_uncertainty(
             if initial_kind == "invalid_json":
                 return SimpleNamespace(returncode=0, stdout="{invalid")
             return SimpleNamespace(returncode=0, stdout="[]")
-        return SimpleNamespace(returncode=0, stdout=json.dumps(
-            [{"app_id": app_id, "state": "stopped", "tasks": "0"}]
-        ))
+        return SimpleNamespace(
+            returncode=0, stdout=json.dumps([{"app_id": app_id, "state": "stopped", "tasks": "0"}])
+        )
 
     confirmed, errors = launcher._stop_and_observe(
         app_id, "qualification", time.monotonic() + 10, runner=fake_cli
