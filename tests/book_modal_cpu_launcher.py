@@ -49,6 +49,14 @@ class LaunchBlocked(RuntimeError):
     """No resources may be allocated for this request."""
 
 
+class SyntheticChildError(RuntimeError):
+    """Fixed-category child failure with bounded exit-code evidence."""
+
+    def __init__(self, category: str, returncode: int | None = None) -> None:
+        super().__init__(category)
+        self.returncode = returncode
+
+
 class LaunchInterrupted(KeyboardInterrupt):
     """Original user interrupt retained with bounded reconciliation evidence."""
 
@@ -225,8 +233,11 @@ def _run_synthetic_child(checkout: Path, output: Path, sha: str) -> dict[str, ob
         check=False,
         timeout=25,
     )
-    if proc.returncode != 0 or len(proc.stdout) > 220_000:
-        raise RuntimeError("synthetic child failed; full output withheld")
+    if proc.returncode != 0:
+        raise SyntheticChildError("SYNTHETIC_CHILD_NONZERO", proc.returncode)
+    if len(proc.stdout) > 220_000:
+        raise SyntheticChildError("SYNTHETIC_CHILD_STDOUT_OVERSIZE")
+
     payload = child_json.loads(proc.stdout)
     if not isinstance(payload, dict) or payload.get("source_sha") != sha:
         raise RuntimeError("unexpected synthetic result identity")
@@ -236,20 +247,7 @@ def _run_synthetic_child(checkout: Path, output: Path, sha: str) -> dict[str, ob
         or payload.get("source_pin") != "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
     ):
         raise RuntimeError("synthetic result not accepted")
-    return {
-        "source_sha": sha,
-        "status": payload["status"],
-        "source_pin": payload["source_pin"],
-        "publish_eligible": False,
-        "tracks": payload["tracks"],
-        "zero_call_evidence": payload["zero_call_evidence"],
-        "artifact_sha256": payload["artifact_sha256"],
-        "elapsed_seconds": payload["elapsed_seconds"],
-        "peak_rss_kib_platform": payload["peak_rss_kib_platform"],
-        "real_model_calls": payload.get("real_model_calls"),
-        "network_calls": payload.get("network_calls"),
-        "publication_calls": payload.get("publication_calls"),
-    }
+    return _compact_rehearsal(payload, sha)
 
 
 class Control(Protocol):
@@ -324,7 +322,7 @@ class ModalControl:
                 record("CALL_ID", call_id)
                 record("GET_BEGIN", call_id)
                 output = call.get(timeout=30)
-                _validate_child_report(output, sha)
+                _validate_compact_report(output, sha)
                 record("RESULT_ACCEPTED", call_id)
                 return {
                     "source_sha": sha,
@@ -373,10 +371,123 @@ def _validate_child_report(payload: object, sha: str) -> None:
     proof = payload.get("zero_call_evidence")
     _require(isinstance(proof, dict) and proof.get("attempts") == [], "guard attempts not empty")
     _require(
-        payload.get("real_model_calls") == 0
-        and payload.get("network_calls") == 0
-        and payload.get("publication_calls") == 0,
+        all(
+            type(payload.get(key)) is int and payload[key] == 0
+            for key in ("real_model_calls", "network_calls", "publication_calls")
+        ),
         "synthetic zero-call evidence invalid",
+    )
+
+
+
+COMPACT_SCHEMA = "clipper-public-book-modal-compact-v1"
+COMPACT_KEYS = frozenset({
+    "schema", "source_sha", "source_pin", "status", "publish_eligible",
+    "tracks", "zero_call_evidence", "real_model_calls", "network_calls",
+    "publication_calls", "artifact_inventory_sha256", "artifact_inventory_count",
+})
+ERROR_PHASES = frozenset({
+    "WORKSPACE_VERIFY_BEGIN", "BUILD_BEGIN", "APP_RUN_BEGIN", "APP_ID",
+    "SPAWN_BEGIN", "CALL_ID", "GET_BEGIN", "RESULT_ACCEPTED",
+})
+SAFE_WORKER_CLASS = re.compile(r"(?:LaunchBlocked|[A-Za-z_][A-Za-z0-9_]{0,63}(?:Error|Exception))\Z")
+JOURNAL_PHASES = ERROR_PHASES | frozenset({
+    "CALL_CANCEL_ATTEMPTED", "CALL_CANCEL_ERROR", "WORKER_ERROR",
+    "WORKER_ERROR_PHASE", "WORKER_ERROR_HTTP_STATUS", "CHILD_EXIT_CODE",
+})
+
+
+def _compact_rehearsal(payload: object, sha: str) -> dict[str, object]:
+    """Validate full synthetic fixture in-container; return only bounded, fixed evidence."""
+    _validate_child_report(payload, sha)
+    assert isinstance(payload, dict)
+    hashes = payload.get("artifact_sha256")
+    _require(
+        isinstance(hashes, dict) and 0 < len(hashes) <= 512,
+        "synthetic artifact inventory count invalid",
+    )
+    for path, digest in hashes.items():
+        _require(
+            isinstance(path, str)
+            and bool(path)
+            and len(path.encode("utf-8")) <= 1024
+            and not path.startswith("/")
+            and "\\" not in path
+            and ":" not in path
+            and all(part not in {"", ".", ".."} for part in path.split("/"))
+            and isinstance(digest, str)
+            and bool(HEX64.fullmatch(digest)),
+            "invalid relative POSIX artifact inventory",
+        )
+    inventory = json.dumps(
+        hashes, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    _require(len(inventory) <= 65536, "synthetic artifact inventory exceeds 64 KiB")
+    compact: dict[str, object] = {
+        "schema": COMPACT_SCHEMA,
+        "source_sha": sha,
+        "source_pin": "VERIFIED_CLEAN_LOCAL_GIT_HEAD",
+        "status": "SYNTHETIC_CONTRACT_REHEARSAL_PASSED",
+        "publish_eligible": False,
+        "tracks": {
+            "pause": {"status": "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"},
+            "synthetic_test_review": {
+                "status": "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED",
+                "publish_eligible": False,
+            },
+        },
+        "zero_call_evidence": {"attempts": []},
+        "real_model_calls": 0,
+        "network_calls": 0,
+        "publication_calls": 0,
+        "artifact_inventory_sha256": hashlib.sha256(inventory).hexdigest(),
+        "artifact_inventory_count": len(hashes),
+    }
+    _validate_compact_report(compact, sha)
+    return compact
+
+
+def _validate_compact_report(payload: object, sha: str) -> None:
+    """Strict compact wire contract applied at remote, worker-parent and public edges."""
+    _require(isinstance(payload, dict) and set(payload) == COMPACT_KEYS,
+             "invalid compact report keys")
+    assert isinstance(payload, dict)
+    _require(
+        isinstance(sha, str) and bool(HEX40.fullmatch(sha))
+        and payload["schema"] == COMPACT_SCHEMA
+        and type(payload["source_sha"]) is str and payload["source_sha"] == sha
+        and payload["source_pin"] == "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
+        and payload["status"] == "SYNTHETIC_CONTRACT_REHEARSAL_PASSED"
+        and payload["publish_eligible"] is False,
+        "invalid compact identity/status",
+    )
+    tracks = payload["tracks"]
+    _require(isinstance(tracks, dict) and set(tracks) == {"pause", "synthetic_test_review"},
+             "invalid compact track keys")
+    assert isinstance(tracks, dict)
+    _require(
+        type(tracks["pause"]) is dict
+        and tracks["pause"] == {"status": "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"}
+        and type(tracks["synthetic_test_review"]) is dict
+        and tracks["synthetic_test_review"] == {
+            "status": "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED",
+            "publish_eligible": False,
+        },
+        "invalid compact track evidence",
+    )
+    _require(
+        type(payload["zero_call_evidence"]) is dict
+        and payload["zero_call_evidence"] == {"attempts": []}
+        and all(type(payload[key]) is int and payload[key] == 0
+                for key in ("real_model_calls", "network_calls", "publication_calls")),
+        "invalid compact zero-call evidence",
+    )
+    _require(
+        type(payload["artifact_inventory_sha256"]) is str
+        and bool(HEX64.fullmatch(payload["artifact_inventory_sha256"]))
+        and type(payload["artifact_inventory_count"]) is int
+        and 1 <= payload["artifact_inventory_count"] <= 512,
+        "invalid compact inventory evidence",
     )
 
 
@@ -402,7 +513,12 @@ def _read_journal(path: Path) -> tuple[str | None, list[str]]:
                 phases.append("MALFORMED_RECORD")
                 continue
             phase, identifier = entry.get("phase"), entry.get("id")
-            if not isinstance(phase, str) or not isinstance(identifier, str):
+            if (
+                not isinstance(phase, str)
+                or phase not in JOURNAL_PHASES
+                or not isinstance(identifier, str)
+                or len(identifier) > 128
+            ):
                 phases.append("MALFORMED_RECORD")
                 continue
             phases.append(phase)
@@ -414,6 +530,37 @@ def _read_journal(path: Path) -> tuple[str | None, list[str]]:
                     app_id = None
     return app_id, phases
 
+
+
+def _read_worker_error(path: Path) -> dict[str, object] | None:
+    """Extract only typed, allowlisted worker failure metadata from bounded journal."""
+    if not path.is_file() or path.stat().st_size > 65536:
+        return None
+    found: dict[str, object] = {}
+    try:
+        for raw in path.read_text(encoding="utf-8").splitlines()[:512]:
+            try:
+                entry = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+                continue
+            key, value = entry.get("phase"), entry["id"]
+            if key == "WORKER_ERROR" and SAFE_WORKER_CLASS.fullmatch(value):
+                found["class"] = value
+            elif key == "WORKER_ERROR_PHASE" and value in ERROR_PHASES:
+                found["phase"] = value
+            elif key == "WORKER_ERROR_HTTP_STATUS" and value.isascii() and value.isdecimal():
+                number = int(value)
+                if 100 <= number <= 599:
+                    found["http_status"] = number
+            elif key == "CHILD_EXIT_CODE" and re.fullmatch(r"-?[0-9]{1,3}", value):
+                number = int(value)
+                if -255 <= number <= 255:
+                    found["child_exit_code"] = number
+    except (OSError, UnicodeError):
+        return None
+    return found if "class" in found else None
 
 def _stop_and_observe(
     app_id: str,
@@ -558,6 +705,7 @@ def _bounded_run(
                     interrupted = True
                     process_cleanup_errors.append("INTERRUPT_DURING_WORKER_REAP")
         app_id, phases = _read_journal(ledger)
+        worker_error = _read_worker_error(ledger)
         confirmed = False
         cleanup_errors: list[str] = list(process_cleanup_errors)
         if "CALL_CANCEL_ERROR" in phases:
@@ -598,7 +746,7 @@ def _bounded_run(
                 parsed = json.loads(result_file.read_text())
                 if isinstance(parsed, dict):
                     output = parsed
-                    _validate_child_report(output.get("rehearsal"), approval.source_sha)
+                    _validate_compact_report(output.get("rehearsal"), approval.source_sha)
             except (ValueError, LaunchBlocked):
                 cleanup_errors.append("RESULT_UNVERIFIED")
         else:
@@ -614,6 +762,7 @@ def _bounded_run(
             "worker_diagnostics": diagnostics,
             "result": output if confirmed and not cleanup_errors else None,
             "initiator_interrupted": interrupted,
+            "worker_error": worker_error,
         }
         if interrupted:
             result["status"] = "BLOCKED"
@@ -624,24 +773,48 @@ def _bounded_run(
 
 def _internal_worker(approval: Approval, journal: Path, result_file: Path) -> int:
     controller = ModalControl()
+    phase = "WORKSPACE_VERIFY_BEGIN"
+
+    def record(item: str, value: str = "") -> None:
+        nonlocal phase
+        if item in ERROR_PHASES:
+            phase = item
+        _journal(journal, item, value)
+
     try:
-        _journal(journal, "WORKSPACE_VERIFY_BEGIN")
+        record("WORKSPACE_VERIFY_BEGIN")
         _require(controller.identify(approval) == approval.workspace, "workspace mismatch")
         _require(
             datetime.now(UTC) < approval.expires_utc,
             "approval expired during workspace identity lookup",
         )
-        result = controller.run_remote(
-            approval, lambda phase, value: _journal(journal, phase, value)
-        )
+        result = controller.run_remote(approval, record)
+        _validate_compact_report(result.get("rehearsal"), approval.source_sha)
         result_file.write_text(json.dumps(result, sort_keys=True))
         with result_file.open("rb") as f:
             os.fsync(f.fileno())
         return 0
     except Exception as exc:
-        _journal(journal, "WORKER_ERROR", type(exc).__name__)
+        name = type(exc).__name__
+        record("WORKER_ERROR", name if SAFE_WORKER_CLASS.fullmatch(name) else "OtherException")
+        record("WORKER_ERROR_PHASE", phase)
+        code = next(
+            (
+                value for value in (
+                    getattr(exc, "status_code", None),
+                    getattr(exc, "http_status", None),
+                    getattr(exc, "status", None),
+                )
+                if type(value) is int and 100 <= value <= 599
+            ),
+            None,
+        )
+        if code is not None:
+            record("WORKER_ERROR_HTTP_STATUS", str(code))
+        child_code = getattr(exc, "returncode", None)
+        if type(child_code) is int and -255 <= child_code <= 255:
+            record("CHILD_EXIT_CODE", str(child_code))
         return 2
-
 
 class BoundedModalControl:
     """Client identity before resources; image/build runs in a bounded subprocess."""
@@ -684,74 +857,48 @@ def _require_credential_route() -> None:
     )
 
 
+def _safe_worker_error(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    _require(isinstance(value, dict) and bool(value)
+             and set(value) <= {"class", "phase", "http_status", "child_exit_code"}
+             and "class" in value, "invalid worker error metadata")
+    assert isinstance(value, dict)
+    _require(type(value["class"]) is str
+             and bool(SAFE_WORKER_CLASS.fullmatch(value["class"])), "invalid worker class")
+    if "phase" in value:
+        _require(type(value["phase"]) is str and value["phase"] in ERROR_PHASES,
+                 "invalid worker error phase")
+    if "http_status" in value:
+        _require(type(value["http_status"]) is int
+                 and 100 <= value["http_status"] <= 599, "invalid worker HTTP status")
+    if "child_exit_code" in value:
+        _require(type(value["child_exit_code"]) is int
+                 and -255 <= value["child_exit_code"] <= 255, "invalid child exit code")
+    return dict(value)
+
+
 def _public_result(result: dict[str, object]) -> dict[str, object]:
-    """Emit only validated, reconstructed public-synthetic evidence."""
+    """Expose strictly validated compact evidence, never reconstruct proof."""
     keys = (
-        "status",
-        "provider_removal",
-        "app_id",
-        "observed_phases",
-        "cleanup_errors",
-        "initiator_interrupted",
+        "status", "provider_removal", "app_id", "observed_phases",
+        "cleanup_errors", "initiator_interrupted", "worker_error",
     )
-    safe = {key: result.get(key) for key in keys}
+    safe = {key: result.get(key) for key in keys if key in result}
+    if "worker_error" in safe:
+        safe["worker_error"] = _safe_worker_error(safe["worker_error"])
     if result.get("status") != "SYNTHETIC_REHEARSAL_CONFIRMED":
         return safe
-
     envelope = result.get("result")
     _require(isinstance(envelope, dict), "accepted result envelope missing")
     report = envelope.get("rehearsal")
-    source_sha = report.get("source_sha") if isinstance(report, dict) else None
-    _require(
-        isinstance(source_sha, str) and bool(HEX40.fullmatch(source_sha)),
-        "accepted source SHA missing",
-    )
-    _validate_child_report(report, source_sha)
+    sha = report.get("source_sha") if isinstance(report, dict) else None
+    _require(isinstance(sha, str) and bool(HEX40.fullmatch(sha)),
+             "accepted source SHA missing")
+    _validate_compact_report(report, sha)
     assert isinstance(report, dict)
-
-    hashes = report.get("artifact_sha256")
-    _require(
-        isinstance(hashes, dict) and 0 < len(hashes) <= 512,
-        "synthetic artifact inventory count invalid",
-    )
-    for name, digest in hashes.items():
-        _require(
-            isinstance(name, str)
-            and bool(name)
-            and len(name.encode("utf-8")) <= 1024
-            and not name.startswith("/")
-            and "\\" not in name
-            and ":" not in name
-            and all(component not in {"", ".", ".."} for component in name.split("/"))
-            and isinstance(digest, str)
-            and bool(HEX64.fullmatch(digest)),
-            "invalid relative POSIX artifact inventory",
-        )
-    inventory = json.dumps(hashes, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
-        "utf-8"
-    )
-    _require(len(inventory) <= 65536, "synthetic artifact inventory exceeds 64 KiB")
-    safe["rehearsal"] = {
-        "source_sha": source_sha,
-        "source_pin": "VERIFIED_CLEAN_LOCAL_GIT_HEAD",
-        "status": "SYNTHETIC_CONTRACT_REHEARSAL_PASSED",
-        "publish_eligible": False,
-        "tracks": {
-            "pause": {"status": "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"},
-            "synthetic_test_review": {
-                "status": "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED",
-                "publish_eligible": False,
-            },
-        },
-        "zero_call_evidence": {"attempts": []},
-        "real_model_calls": 0,
-        "network_calls": 0,
-        "publication_calls": 0,
-        "artifact_inventory_sha256": hashlib.sha256(inventory).hexdigest(),
-        "artifact_inventory_count": len(hashes),
-    }
+    safe["rehearsal"] = report
     return safe
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)

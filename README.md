@@ -481,32 +481,22 @@ guard evidence, not a kernel-level sandbox guarantee. No production source,
 host authority, Modal runtime or deployment has been changed.
 
 
-## Scoped public-synthetic Modal CPU rehearsal (dormant activation)
+## Scoped public-synthetic Modal CPU rehearsal (offline correction)
 
 `tests/book_modal_cpu_launcher.py` retains inert `DORMANT_PLAN_ONLY`
-and enables an explicitly scoped bounded `--execute` / internal worker path.
-The recorded owner request and confirmed included-credit-only scope permit a
-**model-free public-synthetic** rehearsal using existing GitHub Actions
-`MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, with paid overage explicitly
-unauthorized. These provenance strings and digest are **not** cryptographic
-owner authentication, enforcement of a monetary cap, or verification that a
-provider cannot incur paid charges. No model/private chapter inference,
-publishing, deployment or broad account activity is authorized.
+behavior and all original authorization, identity, single-container and
+fail-closed cleanup requirements. A historical, authorized public-synthetic
+CPU trial failed at the Modal SDK BlobCreate output-offload boundary
+(AuthError/HTTP 401); this does **not** establish a security-flag cause or
+a successful live end-to-end rehearsal. The exact App was independently
+confirmed stopped with zero tasks. All temporary workflows and activation
+requests have been removed; **no new live attempt is authorized**.
 
-`.github/workflows/modal-public-synthetic.yml` is staged but **dormant**:
-only a separately reviewed one-file addition of
-`acceptance/modal-public-synthetic/request.json` can trigger it on
-`review/unified-tts-cleanup`. The request file is intentionally absent.
-Its gate binds the one-file activation parent SHA and a strict request
-schema, then generates a temporary SHA-bound approval outside the Git
-checkout. No workflow_dispatch or automatic execution on workflow
-edits. SDK 1.5.5, Python 3.11, one invocation, 120-second bounded owner
-control plane, exact App-ID cleanup evidence and existing CPU/memory
-limit tuples remain unchanged.
-
-Full exact-SHA CI, lint, tests and independent review are prerequisites
-to any later activation. **No provider/image runtime has yet been
-qualified**. A timeout limits operation duration, not dollar spend;
-missing identifiers or unsuccessful terminal observation remain
-`BLOCKED/UNKNOWN`. See
+The repaired remote child validates the full public fixture output and
+returns a bounded fixed-schema DTO instead of the 97-entry artifact path/hash
+map. The DTO includes the canonical inventory hash/count, two review tracks
+and zero-call evidence; the worker, parent and CLI revalidate it independently.
+Offline protocol-4 pickle size is checked under 8,192 bytes; actual Modal
+SDK 1.5.5 serialization remains to be measured in a separate isolated probe
+after fixture generation. See
 [the scoped route and limitations](docs/BOOK_MODAL_CPU_DORMANT_ROUTE.md).

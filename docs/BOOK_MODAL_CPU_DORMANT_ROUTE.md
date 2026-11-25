@@ -67,18 +67,35 @@ performs the client-bound workspace lookup **within** the bounded
 control-plane window, requires an exact workspace match and verifies
 approval expiry **after** identity but before any App/Image construction.
 
-A clean successful CLI result includes only a reconstructed, schema-validated
-synthetic report: source SHA/pin, the human-review pause and separately
-labeled synthetic continuation statuses, empty guard attempts, and zero
-model/network/publication calls. The actual public fixture has a path-keyed
-artifact hash inventory: the launcher validates at most 512 relative POSIX
-paths and 64 KiB of sorted compact JSON, then emits **only** the SHA-256
-digest and entry count of that canonical inventory. No artifact paths,
-invented nested fields, raw worker/SDK response or arbitrary metadata
-appear in the published result. If success evidence cannot be sanitized,
-the CLI returns BLOCKED with a fixed reason while preserving any separately
-confirmed exact-App-ID cleanup evidence. BLOCKED and interrupted outcomes
-omit the rehearsal payload.
+The historical one-shot attempt reached remote fixture output packaging and
+failed on SDK 1.5.5 BlobCreate with AuthError/HTTP 401. It established an
+oversized serialized return that crossed the 8,192-byte inline threshold;
+the provider's exact authorization reason and any causal effect of the
+security flags are **unproven**. The public fixture's offline human-review
+pause and separately labeled synthetic continuation are independently
+validated, but the live end-to-end rehearsal is **not** validated.
+
+The offline correction now validates the **full synthetic report inside the
+remote Function**, then returns only a fixed-schema compact DTO before the
+Modal SDK can serialize the Function result. The original 97-entry path-keyed
+SHA-256 inventory remains internal to the Function; its canonical sorted,
+compact JSON is validated with the existing 512-entry/64-KiB limits and
+represented outside the Function only by its SHA-256 digest and count.
+The DTO includes exact source SHA/pin, status, both fixed track statuses,
+false publishing permission, empty guard attempts and strict zero model/
+network/publication counts. The worker, parent and CLI independently
+validate the same exact DTO keys and types; no arbitrary nested fields,
+artifact paths, source excerpts, raw logs or secrets may be published.
+
+The bounded worker journals a safe exception class, last known phase,
+numeric HTTP status when available, and bounded synthetic child exit code.
+These are preserved alongside exact App ID and independently observed cleanup
+state on failure, without exposing exception messages or raw stderr.
+An offline protocol-4 pickle regression checks below 8,192 bytes; **only a
+separate isolated Modal SDK 1.5.5 serializer probe can validate the actual
+SDK wire encoding**, after public fixture generation to preserve the guard.
+No runtime attempt, provider authentication or resource creation is
+authorized by this code correction.
 
 The existing Function configuration remains exactly:
 `cpu=(1,1)`, `memory=(512,512)`, `gpu=None`,
@@ -121,10 +138,15 @@ file. No activation request is included in this correction.
 
 ## Current disposition
 
-**STAGED, NOT ACTIVATED.** No activation request is committed, no SDK
-client/provider calls have been made by this engineering change, and no
-image/Function runtime has been qualified. Exact-SHA CI (including the
-unchanged unrounded 95% gate), launcher tests, Ruff and independent review
-must be accepted before any later one-file activation. These timeouts
-and included-credit assertions **do not prevent or guarantee a maximum
-provider charge**. Any paid-overage decision remains separately owned.
+**OFFLINE CORRECTION ONLY — NOT ACTIVATED.** Historical run
+45627938078 failed; the exact App was subsequently confirmed stopped
+with zero tasks (45628442604), and all temporary trial/reconcile/diagnostic
+workflows plus the activation request were removed. Retained security flags
+include restricted Modal access, blocked networking, no source mounting and
+the unchanged single-container/zero-retry limits. The earlier BlobCreate
+AuthError does not prove which authorization rule was responsible.
+
+The unchanged CI 95% gate, exact-SHA Ruff/tests, independent code review
+and a separately authorized future activation are required. Existing credit
+assertions do not guarantee provider billing limits. No paid overage is
+authorized.
