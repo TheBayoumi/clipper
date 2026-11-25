@@ -116,8 +116,8 @@ fail closed unless all hold:
 
 Modal documents `FunctionCall.cancel(terminate_containers=True)` and
 ephemeral `App.run()`; **neither is, by itself, independently verified
-deletion of every resource or hard spending containment**. A bounded local one-shot control-plane process and exact-ID stop/info
-attempts are now implemented; independently enforceable monetary budget
+deletion of every resource or hard spending containment**. A bounded local one-shot control-plane process and exact-ID list-first
+stop/observation attempts are implemented; independently enforceable monetary budget
 containment and provider-confirmed deletion are not established. In particular, no
 unapproved new daemon, supervisor or host architecture is introduced.
 
@@ -208,133 +208,61 @@ A separately staffed/independent exact-ID control-plane stop and cost
 reconciliation are still operational prerequisites to **any live run**.
 
 
-## LAUNCHER-FIX1314: bounded implementation, independent budget blocker
+## Current dormant lifecycle controls
 
-The launcher now **implements a bounded one-shot process**, not a receipt-string
-substitute for lifecycle control. Once independently authorized (not currently),
-the operator process creates a **separate control-plane worker process** and
-monitors its entire image/App/build/startup/spawn/get/context-exit execution
-within a finite absolute local deadline (candidate 120 seconds). It writes
-`BUILD_BEGIN`, `APP_RUN_BEGIN`, exact `APP_ID`, `SPAWN_BEGIN`,
-`CALL_ID`, and `GET_BEGIN` phases to a fsynced local journal before
-subsequent blocking operations whenever those IDs are actually known. If
-the build stalls before an App ID exists, the result remains
-`APP_ID_UNKNOWN` and `BLOCKED`; it never invents a provider resource ID.
+A bounded one-shot worker owns SDK workspace identity lookup, image setup,
+App context entry/exit, Function spawn/get and cancellation. The parent owns
+a finite process deadline and collects fsynced phase/App/call-ID evidence.
+The actual workspace lookup executes **inside the bounded worker, before
+any image or App creation**. The owner-approved workspace, environment
+and credential route remain unresolved; matching strings are not authority.
 
-At the deadline the parent kills the local worker process group, and when
-an exact App ID is known attempts the documented, explicit-environment
-`modal app stop -y --env ENV APP_ID` and
-`modal app info --json --env ENV APP_ID`, each with finite deadlines.
-Only both successful calls plus unambiguous terminal `state=stopped`
-are accepted as local stop confirmation. Missing ID, worker failure,
-malformed journal, cancel failure, stop error, unverifiable info schema
-or a timeout yield `status=BLOCKED`, with exact IDs and cleanup errors
-retained, and `provider_removal=UNKNOWN` if the stop observation fails.
-This is **not** universal provider deletion evidence. The CLI's default
-mode still has no SDK import or resource action. The bounded implementation
-is exercised only with fake controls in offline tests; no live run occurred.
+Before beginning allocation, the worker records `WORKSPACE_VERIFY_BEGIN`
+and then `BUILD_BEGIN`. `APP_RUN_BEGIN` precedes potentially allocating
+App context entry. A context entry can create an App before its ID is
+returned; missing identity therefore means **UNKNOWN**, never "no App".
+The only actionable App identifier is `ap-` followed by **exactly
+22 ASCII alphanumeric characters**, verified on SDK capture, journal
+recovery and before any provider stop. Anything else, including short
+`ap-a` or deployment names, cannot reach the stop command.
 
-Function resource requests use **hard CPU and memory limit pairs**,
-`cpu=(1,1)`, `memory=(512,512)`, not merely requests that could burst
-beyond the reservation. The 512 MiB hard limit is a candidate; SDK
-runtime overhead has not been remotely verified. The Function has
-`include_source=False` with the module supplied by the anonymous pinned
-public clone in the image and a fixed `PYTHONPATH`; no automatic host
-test/module folder mount is intended. Modal serialization/import behavior
-on a live 1.5.5 Function remains unverified. The child uses a fresh
-temporary root, passes a **nonexistent** artifact subdirectory to the
-accepted rehearsal CLI, returns selected provenance/artifact evidence and
-discards temporary files on exit.
+The control-plane parent retains KeyboardInterrupt as an interrupted
+outcome. It still attempts finite process cleanup and exact-ID provider
+reconciliation, then raises `LaunchInterrupted` with the blocked
+evidence attached. A timeout or other uncertain cleanup likewise remains
+`BLOCKED`; the result is not represented as a successful deletion.
+Worker cancellation occurs within `app.run()` before context exit, and
+earlier cleanup, journal, worker and cancellation failures accumulate.
+Worker stdout/stderr are represented by bounded prefix hashes and byte
+counts, not exposed as raw logs.
 
-**The unresolved cost gate is explicitly closed:** the current Starter
-workspace lacks independently enforceable account/environment cost budget
-authority verified for this route. A number in the manifest and a matching
-receipt string are **not** such authority. Therefore `--execute` explicitly
-fails before Modal client construction, even with matching approval strings.
-The bounded worker implementation is available for isolated fake tests,
-but cannot run live until a separately verified enforceable budget control
-and a review-approved gate are implemented. No billed operation is
-authorized.
+Restricted Function parameters remain `cpu=(1,1)`,
+`memory=(512,512)`, `include_source=False`, no model/GPU/secrets/
+volumes, no network, zero retries and a pinned anonymous public checkout.
+The 512 MiB envelope is unverified for a remote Modal SDK runtime.
+`--execute` and `--internal-worker` are **both disabled** while
+account/cost authority is resolved. The manifest's dollar number and
+matching receipt are not enforceable spending controls. No workflow,
+build, client or provider run is authorized.
 
-Reference: https://modal.com/docs/guide/resources (tuple resource limits),
-https://modal.com/docs/cli/latest/app (explicit-environment app stop/info).
-These currently published docs are not substitute for offline pinned
-Modal 1.5.5 compatibility tests. No GitHub workflow or launcher request
-file is introduced.
+## Exact provider terminal observation — pinned Modal 1.5.5
 
+The supported CLI is `modal app list --json --env ENV` and
+`modal app stop -y --env ENV EXACT_APP_ID`. Modal 1.5.5 has no
+`app info` command and no `app list --limit` flag.
 
-**Additional direct-worker containment:** `--internal-worker` is **not**
-an alternate permitted entrypoint. It is explicitly blocked even if a
-caller supplies forged manifest/receipt/file arguments, until the same
-independently enforceable spend authority is implemented and reviewed.
-The private worker's actual SDK logic remains available for isolated
-fake-unit verification, but **no CLI path currently permits resource
-allocation**.
+**List first** using the explicitly selected environment. Exactly one
+row with the full App ID, `state="stopped"`, and `tasks="0"` means
+the App is already terminal; **do not issue stop** (which exits nonzero
+for already-stopped Apps in this SDK). If a valid exact-ID row is
+nonterminal, issue stop and re-list within the bounded deadline. A
+missing, duplicated, malformed or ambiguous row never authorizes
+guessing a deployment name, and all failures remain `UNKNOWN/BLOCKED`.
+A nonzero stop cannot be turned into clean success merely because the
+later list shows stopped. This is narrowly labeled
+`STOPPED_CONFIRMED_BY_LIST`, not verified universal provider deletion.
 
-
-## LAUNCHER-CORRECT1326: offline lifecycle evidence correction
-
-Cancellation now occurs **within** the live `app.run()` context
-before its potentially blocking exit. Exact App/call identities and
-phase transitions are appended to an fsynced journal before later
-blocking operations when the SDK has actually returned those IDs.
-App creation may begin during context entry before any App ID can be
-observed. In that case `APP_RUN_BEGIN` and the worker failure/deadline
-remain durable but provider identity/removal is **UNKNOWN**, never
-guessed or reported successful.
-
-The bounded parent **accumulates** earlier worker/journal/cancellation,
-timeout and cleanup errors rather than replacing them with the
-result of a later stop attempt. Worker stdout/stderr are captured in
-temporary local files and represented in the result only by bounded
-4 KiB-prefix SHA-256 hashes, total byte counts and truncation flags,
-not raw log strings or credential-bearing provider output. These
-temporary files are destroyed after producing the local report.
-
-The independently inspected **Modal 1.5.5** CLI source has `modal app
-stop` and `modal app list` but **no `modal app info`**, so the
-unsupported info command was removed. The proposed conservative
-terminal probe issues:
-
-```text
-modal app stop -y --env ENV EXACT_APP_ID
-modal app list --json --limit 0 --env ENV
-```
-
-It only accepts a single row matching the exact App ID with
-`state="stopped"`, `tasks="0"`, both CLI commands succeeding and
-no earlier errors. Absent rows, mismatched IDs, duplicates,
-malformed JSON, nonzero tasks, unsupported state fields and
-stop/observation errors are **UNKNOWN/BLOCKED**. The JSON list
-schema was cross-checked against public Modal client source for the
-same command; **the precise pinned-1.5.5 JSON output must still
-be independently verified** before any live use. Never treat
-missing rows as deletion. The result label is
-`STOPPED_CONFIRMED_BY_LIST`, meaning only this narrow CLI
-observation—not absolute resource deletion or cost closure.
-
-The accepted synthetic rehearsal and production infrastructure owner
-remain unchanged. Both `--execute` and `--internal-worker` remain
-explicitly disabled by the unresolved spending-authority gate. This
-is an offline engineering implementation candidate only; no
-provider, credentials, App, image, resource or spend action occurred.
-
-
-## LAUNCHER-FINAL1333 pinned CLI/static correction
-
-The pinned Modal 1.5.5 `modal/cli/app.py` registers `app list`
-with `--env` and `--json`, but **not** `--limit`.
-The terminal observation now uses the exact supported command
-`modal app list --json --env ENV`; the stop command remains
-`modal app stop -y --env ENV EXACT_APP_ID`. The offline
-regression asserts both complete argument arrays rather than
-accepting extra invented options. The JSON field names
-`app_id`, `state` and `tasks` are grounded in the pinned
-CLI's output formatting. An absent, duplicated or nonterminal
-exact-ID row remains `UNKNOWN/BLOCKED`.
-
-The same bounded correction removes an unused child import,
-orders the SDK-version helper before `modal`, fixes the
-test import ordering and binds the parameterized fake's
-`rows` locally. No accepted chapter rehearsal or owner
-production code changed, and no live path is enabled.
+The pinned CLI's JSON `app_id`, `state` and `tasks` schema was
+independently verified in `modal/cli/utils.py`. Inert tests check
+command arguments, valid/invalid exact App IDs, skipped redundant stop,
+nonterminal stop/recheck, interrupts, and stage ordering.

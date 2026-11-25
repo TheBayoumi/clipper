@@ -24,6 +24,7 @@ from typing import Any, Protocol
 SOURCE_URL = "https://github.com/TheBayoumi/clipper.git"
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+APP_ID = re.compile(r"ap-[A-Za-z0-9]{22}\Z")
 INTENT = "PUBLIC_SYNTHETIC_MODEL_FREE_BOOK_REHEARSAL"
 LIMITS = {
     "cpu": (1, 1),
@@ -47,16 +48,25 @@ class LaunchBlocked(RuntimeError):
     """No resources may be allocated for this request."""
 
 
+class LaunchInterrupted(KeyboardInterrupt):
+    """Original user interrupt retained with bounded reconciliation evidence."""
+
+    def __init__(self, evidence: dict[str, object]) -> None:
+        super().__init__("bounded worker interrupted; reconciliation attempted")
+        self.evidence = evidence
+
+
 def _require(ok: bool, reason: str) -> None:
     if not ok:
         raise LaunchBlocked(reason)
 
 
-def _json(path: Path, limit: int = 8192) -> dict[str, Any]:
-    _require(path.is_file() and not path.is_symlink(), "approval must be a regular local file")
-    _require(path.stat().st_size <= limit, "approval file exceeds limit")
-    raw = path.read_bytes()
-    data = json.loads(raw)
+def _approval_object(raw: bytes) -> dict[str, Any]:
+    """Decode the exact already-digested approval bytes; never reopen the path."""
+    try:
+        data = json.loads(raw)
+    except (ValueError, UnicodeError) as exc:
+        raise LaunchBlocked("approval JSON malformed") from exc
     _require(isinstance(data, dict), "approval must be a JSON object")
     return data
 
@@ -100,10 +110,13 @@ class Approval:
 
 def load_approval(path: Path, digest: str, sha: str, *, now: datetime | None = None) -> Approval:
     _require(bool(HEX64.fullmatch(digest)), "out-of-band approval file SHA-256 required")
-    raw = path.read_bytes() if path.is_file() and not path.is_symlink() else b""
-    _require(0 < len(raw) <= 8192, "missing or invalid external approval")
+    _require(path.is_file() and not path.is_symlink(), "approval must be a regular file")
+    _require(0 < path.stat().st_size <= 8192, "missing or oversized approval")
+    with path.open("rb") as stream:
+        raw = stream.read(8193)
+    _require(0 < len(raw) <= 8192, "missing or oversized approval")
     _require(hashlib.sha256(raw).hexdigest() == digest, "approval digest mismatch")
-    data = _json(path)
+    data = _approval_object(raw)
     expected = {
         "schema",
         "intent",
@@ -143,10 +156,8 @@ def load_approval(path: Path, digest: str, sha: str, *, now: datetime | None = N
         expiry = datetime.fromisoformat(data["expires_utc"].replace("Z", "+00:00"))
     except (ValueError, TypeError, AttributeError) as exc:
         raise LaunchBlocked("invalid UTC approval expiry") from exc
-    _require(
-        expiry.tzinfo is not None and expiry.utcoffset().total_seconds() == 0,
-        "approval expiry must be UTC",
-    )
+    offset = expiry.utcoffset()
+    _require(offset is not None and offset.total_seconds() == 0, "approval expiry must be UTC")
     current = now if now is not None else datetime.now(UTC)
     _require(current < expiry, "approval expired")
     _require((expiry - current).total_seconds() <= 3600, "approval exceeds one-hour validity")
@@ -284,10 +295,8 @@ class ModalControl:
         # parent retains BUILD/APP_RUN_BEGIN with unknown resource identity.
         with app.run(client=client, detach=False, environment_name=approval.environment):
             app_id = getattr(app, "app_id", None)
-            _require(
-                isinstance(app_id, str) and bool(re.fullmatch(r"ap-[A-Za-z0-9-]+", app_id)),
-                "App id missing",
-            )
+            _require(isinstance(app_id, str) and bool(APP_ID.fullmatch(app_id)),
+                     "exact provider App ID missing")
             record("APP_ID", app_id)
             call: Any = None
             try:
@@ -377,8 +386,12 @@ def _read_journal(path: Path) -> tuple[str | None, list[str]]:
                 phases.append("MALFORMED_RECORD")
                 continue
             phases.append(phase)
-            if phase == "APP_ID" and re.fullmatch(r"ap-[A-Za-z0-9-]+", identifier):
-                app_id = identifier
+            if phase == "APP_ID":
+                if APP_ID.fullmatch(identifier):
+                    app_id = identifier
+                else:
+                    phases.append("INVALID_APP_ID")
+                    app_id = None
     return app_id, phases
 
 
@@ -388,53 +401,69 @@ def _stop_and_observe(
     deadline: float,
     runner: Any = subprocess.run,
 ) -> tuple[bool, list[str]]:
-    """Stop by exact ID, then require exact stopped row from supported app list.
+    """Observe exact App ID first; stop only when a known App is not terminal."""
+    if not APP_ID.fullmatch(app_id):
+        return False, ["INVALID_APP_ID"]
 
-    Modal 1.5.5 has app stop/list, NOT app info. The current public CLI
-    formats list --json as [{app_id, state, tasks, ...}]. Unverified or
-    version-divergent schemas are never interpreted as terminal success.
-    """
     errors: list[str] = []
-    commands = (
-        ("stop", ["modal", "app", "stop", "-y", "--env", environment, app_id]),
-        ("list", ["modal", "app", "list", "--json", "--env", environment]),
-    )
-    stopped = False
-    for kind, command in commands:
+    list_command = ["modal", "app", "list", "--json", "--env", environment]
+
+    def observe() -> tuple[bool | None, str | None]:
         remaining = min(8.0, deadline - time.monotonic())
         if remaining <= 0:
-            errors.append(kind + ":deadline")
-            return False, errors
+            return None, "list:deadline"
         try:
             response = runner(
-                command, check=False, text=True, capture_output=True, timeout=remaining
+                list_command, check=False, text=True, capture_output=True, timeout=remaining
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            errors.append(kind + ":" + type(exc).__name__)
-            continue
+            return None, "list:" + type(exc).__name__
         if response.returncode != 0:
-            errors.append(kind + ":nonzero")
-            continue
-        if kind == "stop":
-            stopped = True
-            continue
+            return None, "list:nonzero"
         try:
             rows = json.loads(response.stdout)
-        except (ValueError, TypeError):
-            errors.append("list:invalid_json")
-            continue
+        except (TypeError, ValueError):
+            return None, "list:invalid_json"
         if not isinstance(rows, list):
-            errors.append("list:invalid_schema")
-            continue
-        matches = [item for item in rows if isinstance(item, dict) and item.get("app_id") == app_id]
+            return None, "list:invalid_schema"
+        matches = [
+            item for item in rows
+            if isinstance(item, dict) and item.get("app_id") == app_id
+        ]
         if len(matches) != 1:
-            errors.append("list:exact_id_not_found_or_duplicate")
-            continue
+            return None, "list:exact_id_not_found_or_duplicate"
         row = matches[0]
-        if row.get("state") == "stopped" and row.get("tasks") == "0" and stopped and not errors:
-            return True, []
+        if row.get("state") == "stopped" and row.get("tasks") == "0":
+            return True, None
+        if not isinstance(row.get("state"), str) or not isinstance(row.get("tasks"), str):
+            return None, "list:invalid_row_schema"
+        return False, None
+
+    terminal, failure = observe()
+    if failure is not None:
+        return False, [failure]
+    if terminal is True:
+        # Already stopped: calling app stop again is an error in pinned 1.5.5.
+        return True, []
+    remaining = min(8.0, deadline - time.monotonic())
+    if remaining <= 0:
+        return False, ["stop:deadline"]
+    try:
+        response = runner(
+            ["modal", "app", "stop", "-y", "--env", environment, app_id],
+            check=False, text=True, capture_output=True, timeout=remaining,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        errors.append("stop:" + type(exc).__name__)
+    else:
+        if response.returncode != 0:
+            errors.append("stop:nonzero")
+    terminal, failure = observe()
+    if failure is not None:
+        errors.append(failure)
+    elif terminal is not True:
         errors.append("list:terminal_or_tasks_unconfirmed")
-    return False, errors
+    return terminal is True and not errors, errors
 
 
 def _bounded_run(
@@ -479,11 +508,15 @@ def _bounded_run(
                 stderr=stderr_sink,
             )
         timed_out = False
+        interrupted = False
         process_cleanup_errors: list[str] = []
         try:
             proc.wait(timeout=max(0.1, deadline - time.monotonic() - 20))
         except subprocess.TimeoutExpired:
             timed_out = True
+        except KeyboardInterrupt:
+            interrupted = True
+            process_cleanup_errors.append("INITIATOR_KEYBOARD_INTERRUPT")
         finally:
             if proc.poll() is None:
                 try:
@@ -494,6 +527,9 @@ def _bounded_run(
                     proc.wait(timeout=min(2.0, max(0.1, deadline - time.monotonic())))
                 except subprocess.TimeoutExpired:
                     timed_out = True
+                except KeyboardInterrupt:
+                    interrupted = True
+                    process_cleanup_errors.append("INTERRUPT_DURING_WORKER_REAP")
         app_id, phases = _read_journal(ledger)
         confirmed = False
         cleanup_errors: list[str] = list(process_cleanup_errors)
@@ -501,11 +537,17 @@ def _bounded_run(
             cleanup_errors.append("CALL_CANCEL_ERROR")
         if "MALFORMED_RECORD" in phases:
             cleanup_errors.append("INVALID_JOURNAL")
-        if app_id is not None:
-            confirmed, stop_errors = _stop_and_observe(
-                app_id, approval.environment, deadline, runner=runner
-            )
-            cleanup_errors.extend(stop_errors)
+        if "INVALID_APP_ID" in phases:
+            cleanup_errors.append("INVALID_APP_ID")
+        if app_id is not None and "INVALID_APP_ID" not in phases:
+            try:
+                confirmed, stop_errors = _stop_and_observe(
+                    app_id, approval.environment, deadline, runner=runner
+                )
+                cleanup_errors.extend(stop_errors)
+            except KeyboardInterrupt:
+                interrupted = True
+                cleanup_errors.append("INTERRUPT_DURING_STOP_OBSERVATION")
         else:
             cleanup_errors.append("APP_ID_UNKNOWN")
         if timed_out:
@@ -534,7 +576,7 @@ def _bounded_run(
                 cleanup_errors.append("RESULT_UNVERIFIED")
         else:
             cleanup_errors.append("NO_RESULT")
-        return {
+        result: dict[str, object] = {
             "status": "SYNTHETIC_REHEARSAL_CONFIRMED"
             if (confirmed and not cleanup_errors and output is not None)
             else "BLOCKED",
@@ -544,12 +586,19 @@ def _bounded_run(
             "cleanup_errors": cleanup_errors,
             "worker_diagnostics": diagnostics,
             "result": output if confirmed and not cleanup_errors else None,
+            "initiator_interrupted": interrupted,
         }
+        if interrupted:
+            result["status"] = "BLOCKED"
+            result["result"] = None
+            raise LaunchInterrupted(result)
+        return result
 
 
 def _internal_worker(approval: Approval, journal: Path, result_file: Path) -> int:
     controller = ModalControl()
     try:
+        _journal(journal, "WORKSPACE_VERIFY_BEGIN")
         _require(controller.identify(approval) == approval.workspace, "workspace mismatch")
         result = controller.run_remote(
             approval, lambda phase, value: _journal(journal, phase, value)
@@ -569,10 +618,10 @@ class BoundedModalControl:
     def __init__(self, manifest_path: Path, digest: str) -> None:
         self.manifest_path = manifest_path
         self.digest = digest
-        self._client = ModalControl()
 
     def identify(self, approval: Approval) -> str:
-        return self._client.identify(approval)
+        # The real SDK workspace lookup must be inside the bounded worker.
+        raise LaunchBlocked("workspace identity can only be read inside bounded worker")
 
     def run_once(self, approval: Approval) -> dict[str, object]:
         return _bounded_run(approval, self.manifest_path, self.digest)
@@ -584,6 +633,10 @@ def execute(
     _require(external_control_verified, "independent lifecycle control not verified")
     _require(approval.source_sha == sha, "approval source mismatch")
     _require(datetime.now(UTC) < approval.expires_utc, "approval expired before execution")
+    if isinstance(control, BoundedModalControl):
+        # Real workspace hydration happens inside the one-shot worker's deadline
+        # before image/App construction. Never hydrate in the parent.
+        return control.run_once(approval)
     observed = control.identify(approval)
     _require(observed == approval.workspace, "client-bound workspace identity mismatch")
     _require(datetime.now(UTC) < approval.expires_utc, "approval expired before resources")

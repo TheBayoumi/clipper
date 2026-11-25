@@ -301,7 +301,7 @@ def test_actual_run_remote_inert_sdk_stages_and_cleanup(tmp_path: Path) -> None:
             return Call()
 
     class App:
-        app_id = "ap-synthetic-1"
+        app_id = "ap-AAAAAAAAAAAAAAAAAAAAAA"
 
         def __init__(self, **_kw: object) -> None:
             events.append("app")
@@ -325,7 +325,7 @@ def test_actual_run_remote_inert_sdk_stages_and_cleanup(tmp_path: Path) -> None:
     controller._modal = SimpleNamespace(Image=Image, App=App)
     controller._client = object()
     result = controller.run_remote(approval, lambda phase, item: events.append(phase))
-    assert result["app_id"] == "ap-synthetic-1"
+    assert result["app_id"] == "ap-AAAAAAAAAAAAAAAAAAAAAA"
     assert result["call_id"] == "fc-synthetic-1"
     assert events.index("APP_ID") < events.index("SPAWN_BEGIN")
     assert events.index("CALL_ID") < events.index("GET_BEGIN")
@@ -374,7 +374,7 @@ def test_actual_run_remote_call_failure_records_cancel_and_never_succeeds(
             return Call()
 
     class App:
-        app_id = "ap-synthetic-2"
+        app_id = "ap-BBBBBBBBBBBBBBBBBBBBBB"
 
         def __init__(self, **_kw: object) -> None:
             pass
@@ -403,44 +403,43 @@ def test_actual_run_remote_call_failure_records_cancel_and_never_succeeds(
 
 
 def test_stop_and_list_terminal_evidence_requires_exact_id_zero_tasks() -> None:
+    app_id = "ap-AAAAAAAAAAAAAAAAAAAAAA"
     commands: list[list[str]] = []
+    responses = iter(
+        [
+            [{"app_id": app_id, "state": "ephemeral", "tasks": "1"}],
+            [{"app_id": app_id, "state": "stopped", "tasks": "0"}],
+        ]
+    )
 
     def fake_cli(argv: list[str], **_kw: object) -> SimpleNamespace:
         commands.append(argv)
         if "stop" in argv:
             return SimpleNamespace(returncode=0, stdout="")
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps([{"app_id": "ap-synthetic-1", "state": "stopped", "tasks": "0"}]),
-        )
+        return SimpleNamespace(returncode=0, stdout=json.dumps(next(responses)))
 
-    result = launcher._stop_and_observe(
-        "ap-synthetic-1",
-        "qualification",
-        time.monotonic() + 10,
-        runner=fake_cli,
-    )
-    assert result == (True, [])
-    assert commands[0][-1] == "ap-synthetic-1"
-    assert commands[0] == ["modal", "app", "stop", "-y", "--env", "qualification", "ap-synthetic-1"]
-    assert commands[1] == ["modal", "app", "list", "--json", "--env", "qualification"]
+    assert launcher._stop_and_observe(app_id, "qualification", time.monotonic() + 10,
+                                      runner=fake_cli) == (True, [])
+    list_cmd = ["modal", "app", "list", "--json", "--env", "qualification"]
+    stop_cmd = ["modal", "app", "stop", "-y", "--env", "qualification", app_id]
+    assert commands == [list_cmd, stop_cmd, list_cmd]
+
+    commands.clear()
 
     def failed_stop(argv: list[str], **_kw: object) -> SimpleNamespace:
+        commands.append(argv)
         if "stop" in argv:
             return SimpleNamespace(returncode=1, stdout="")
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps([{"app_id": "ap-synthetic-1", "state": "stopped", "tasks": "0"}]),
-        )
+        state = "ephemeral" if len(commands) == 1 else "stopped"
+        return SimpleNamespace(returncode=0, stdout=json.dumps(
+            [{"app_id": app_id, "state": state, "tasks": "0"}]
+        ))
 
     confirmed, errors = launcher._stop_and_observe(
-        "ap-synthetic-1",
-        "qualification",
-        time.monotonic() + 10,
-        runner=failed_stop,
+        app_id, "qualification", time.monotonic() + 10, runner=failed_stop
     )
-    assert confirmed is False
-    assert "stop:nonzero" in errors
+    assert confirmed is False and "stop:nonzero" in errors
+    assert commands == [list_cmd, stop_cmd, list_cmd]
 
 
 def test_build_stall_retains_unknown_cleanup_without_app_id(
@@ -496,13 +495,13 @@ def test_stop_failure_retains_exact_app_id_and_blocks(tmp_path: Path) -> None:
         journal = Path(argv[argv.index("--journal") + 1])
         result_file = Path(argv[argv.index("--result-file") + 1])
         launcher._journal(journal, "APP_RUN_BEGIN")
-        launcher._journal(journal, "APP_ID", "ap-synthetic-known")
+        launcher._journal(journal, "APP_ID", "ap-CCCCCCCCCCCCCCCCCCCCCC")
         launcher._journal(journal, "CALL_ID", "fc-synthetic-known")
         result_file.write_text(
             json.dumps(
                 {
                     "rehearsal": _valid_child_output(),
-                    "app_id": "ap-synthetic-known",
+                    "app_id": "ap-CCCCCCCCCCCCCCCCCCCCCC",
                     "call_id": "fc-synthetic-known",
                 }
             )
@@ -513,9 +512,10 @@ def test_stop_failure_retains_exact_app_id_and_blocks(tmp_path: Path) -> None:
         recorded.append(argv)
         if "stop" in argv:
             return SimpleNamespace(returncode=1, stdout="")
+        state = "ephemeral" if len(recorded) == 1 else "stopped"
         return SimpleNamespace(
             returncode=0,
-            stdout=json.dumps([{"app_id": "ap-synthetic-known", "state": "stopped", "tasks": "0"}]),
+            stdout=json.dumps([{"app_id": "ap-CCCCCCCCCCCCCCCCCCCCCC", "state": state, "tasks": "0"}]),
         )
 
     outcome = launcher._bounded_run(
@@ -527,10 +527,10 @@ def test_stop_failure_retains_exact_app_id_and_blocks(tmp_path: Path) -> None:
         runner=fake_cli,
     )
     assert outcome["status"] == "BLOCKED"
-    assert outcome["app_id"] == "ap-synthetic-known"
+    assert outcome["app_id"] == "ap-CCCCCCCCCCCCCCCCCCCCCC"
     assert outcome["provider_removal"] == "UNKNOWN"
     assert "stop:nonzero" in outcome["cleanup_errors"]
-    assert len(recorded) == 2
+    assert len(recorded) == 3
 
 
 def test_live_cli_cannot_spend_on_receipt_string_alone(
@@ -609,12 +609,12 @@ def test_internal_worker_cannot_bypass_budget_gate(
 def test_list_unknown_and_mismatched_states_never_claim_stop() -> None:
     for rows in (
         [],
-        [{"app_id": "ap-other", "state": "stopped", "tasks": "0"}],
-        [{"app_id": "ap-a", "state": "stopping...", "tasks": "0"}],
-        [{"app_id": "ap-a", "state": "stopped", "tasks": "1"}],
-        [{"app_id": "ap-a", "state": "stopped"}],
-        [{"app_id": "ap-a", "state": "stopped", "tasks": "0"}] * 2,
-        {"app_id": "ap-a", "state": "stopped", "tasks": "0"},
+        [{"app_id": "ap-EEEEEEEEEEEEEEEEEEEEEE", "state": "stopped", "tasks": "0"}],
+        [{"app_id": "ap-DDDDDDDDDDDDDDDDDDDDDD", "state": "stopping...", "tasks": "0"}],
+        [{"app_id": "ap-DDDDDDDDDDDDDDDDDDDDDD", "state": "stopped", "tasks": "1"}],
+        [{"app_id": "ap-DDDDDDDDDDDDDDDDDDDDDD", "state": "stopped"}],
+        [{"app_id": "ap-DDDDDDDDDDDDDDDDDDDDDD", "state": "stopped", "tasks": "0"}] * 2,
+        {"app_id": "ap-DDDDDDDDDDDDDDDDDDDDDD", "state": "stopped", "tasks": "0"},
     ):
 
         def fake_cli(argv: list[str], rows: object = rows, **_kw: object) -> SimpleNamespace:
@@ -623,7 +623,7 @@ def test_list_unknown_and_mismatched_states_never_claim_stop() -> None:
             return SimpleNamespace(returncode=0, stdout=json.dumps(rows))
 
         confirmed, errors = launcher._stop_and_observe(
-            "ap-a", "qualification", time.monotonic() + 10, runner=fake_cli
+            "ap-DDDDDDDDDDDDDDDDDDDDDD", "qualification", time.monotonic() + 10, runner=fake_cli
         )
         assert confirmed is False
         assert errors
@@ -645,7 +645,7 @@ def test_stop_preserves_prior_cancel_and_journal_failures(tmp_path: Path) -> Non
 
     def fake_popen(argv: list[str], **_kw: object) -> Finished:
         ledger = Path(argv[argv.index("--journal") + 1])
-        launcher._journal(ledger, "APP_ID", "ap-a")
+        launcher._journal(ledger, "APP_ID", "ap-DDDDDDDDDDDDDDDDDDDDDD")
         launcher._journal(ledger, "CALL_CANCEL_ERROR", "RuntimeError")
         with ledger.open("a", encoding="utf-8") as stream:
             stream.write("not json\\n")
@@ -656,7 +656,7 @@ def test_stop_preserves_prior_cancel_and_journal_failures(tmp_path: Path) -> Non
             return SimpleNamespace(returncode=0, stdout="")
         return SimpleNamespace(
             returncode=0,
-            stdout=json.dumps([{"app_id": "ap-a", "state": "stopped", "tasks": "0"}]),
+            stdout=json.dumps([{"app_id": "ap-DDDDDDDDDDDDDDDDDDDDDD", "state": "stopped", "tasks": "0"}]),
         )
 
     output = launcher._bounded_run(
@@ -672,7 +672,7 @@ def test_stop_preserves_prior_cancel_and_journal_failures(tmp_path: Path) -> Non
     assert "INVALID_JOURNAL" in output["cleanup_errors"]
     assert "WORKER_NONZERO_OR_TERMINATED" in output["cleanup_errors"]
     assert "NO_RESULT" in output["cleanup_errors"]
-    assert output["app_id"] == "ap-a"
+    assert output["app_id"] == "ap-DDDDDDDDDDDDDDDDDDDDDD"
     assert output["provider_removal"] == "STOPPED_CONFIRMED_BY_LIST"
 
 
@@ -709,3 +709,201 @@ def test_parent_retains_bounded_diagnostics_only(tmp_path: Path) -> None:
         assert evidence["size_bytes"] == len(sensitive)
         assert evidence["bounded_prefix_sha256"] == hashlib.sha256(sensitive).hexdigest()
     assert sensitive.decode() not in json.dumps(output)
+
+
+@pytest.mark.parametrize(
+    "invalid", ["ap-a", "ap-" + "a" * 21, "ap-" + "a" * 23,
+                "ap-" + "a" * 10 + "-" + "a" * 11, "deployment-name"],
+)
+def test_cleanup_rejects_nonexact_app_id_before_any_cli(invalid: str) -> None:
+    commands: list[list[str]] = []
+
+    def forbidden(argv: list[str], **_kw: object) -> SimpleNamespace:
+        commands.append(argv)
+        raise AssertionError("non-exact ID reached provider CLI")
+
+    assert launcher._stop_and_observe(
+        invalid, "qualification", time.monotonic() + 10, runner=forbidden
+    ) == (False, ["INVALID_APP_ID"])
+    assert commands == []
+
+
+def test_journal_invalid_app_id_never_becomes_actionable(tmp_path: Path) -> None:
+    ledger = tmp_path / "journal.jsonl"
+    launcher._journal(ledger, "APP_RUN_BEGIN")
+    launcher._journal(ledger, "APP_ID", "ap-a")
+    app_id, phases = launcher._read_journal(ledger)
+    assert app_id is None
+    assert "INVALID_APP_ID" in phases
+
+
+def test_approval_parses_same_digest_bound_bytes_during_atomic_path_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, digest = _manifest(tmp_path)
+    original_open = Path.open
+    first_read = False
+
+    class SwappingFile:
+        def __init__(self, stream: Any) -> None:
+            self.stream = stream
+
+        def __enter__(self) -> SwappingFile:
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args: object) -> Any:
+            return self.stream.__exit__(*args)
+
+        def read(self, *args: object) -> bytes:
+            nonlocal first_read
+            raw: bytes = self.stream.read(*args)
+            if not first_read:
+                first_read = True
+                changed = tmp_path / "replaced.json"
+                changed.write_text(json.dumps({"intent": "OTHER_OPERATION"}))
+                changed.replace(path)
+            return raw
+
+    def swapping_open(self: Path, mode: str = "r", **kw: object) -> Any:
+        stream = original_open(self, mode, **kw)
+        if self == path and mode == "rb":
+            return SwappingFile(stream)
+        return stream
+
+    monkeypatch.setattr(Path, "open", swapping_open)
+    approval = launcher.load_approval(path, digest, SHA)
+    assert first_read
+    assert approval.workspace == "expected-workspace"
+    assert json.loads(path.read_text()) == {"intent": "OTHER_OPERATION"}
+
+
+def test_approval_oversize_and_nondict_fail_closed(tmp_path: Path) -> None:
+    for raw in (b" " * 8193, b"[]", b"{not json"):
+        path = tmp_path / "malformed.json"
+        path.write_bytes(raw)
+        with pytest.raises(launcher.LaunchBlocked):
+            launcher.load_approval(path, hashlib.sha256(raw).hexdigest(), SHA)
+
+
+def test_already_stopped_app_skips_stop_even_if_stop_would_exit_nonzero() -> None:
+    app_id = "ap-" + "A" * 22
+    calls: list[list[str]] = []
+
+    def list_only(argv: list[str], **_kw: object) -> SimpleNamespace:
+        calls.append(argv)
+        assert argv[2] == "list"
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps([{"app_id": app_id, "state": "stopped", "tasks": "0"}]),
+        )
+
+    assert launcher._stop_and_observe(
+        app_id, "qualification", time.monotonic() + 10, runner=list_only
+    ) == (True, [])
+    assert calls == [["modal", "app", "list", "--json", "--env", "qualification"]]
+
+
+def test_keyboard_interrupt_reconciles_exact_id_and_propagates_evidence(
+    tmp_path: Path
+) -> None:
+    path, digest = _manifest(tmp_path)
+    approval = launcher.load_approval(path, digest, SHA)
+    app_id = "ap-" + "A" * 22
+    calls: list[list[str]] = []
+
+    class Interrupted:
+        pid = 31349
+        returncode = 130
+
+        def wait(self, **_kw: object) -> int:
+            raise KeyboardInterrupt
+
+        def poll(self) -> int:
+            return 130
+
+    def fake_popen(argv: list[str], **_kw: object) -> Interrupted:
+        ledger = Path(argv[argv.index("--journal") + 1])
+        launcher._journal(ledger, "APP_RUN_BEGIN")
+        launcher._journal(ledger, "APP_ID", app_id)
+        return Interrupted()
+
+    def list_only(argv: list[str], **_kw: object) -> SimpleNamespace:
+        calls.append(argv)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps([{"app_id": app_id, "state": "stopped", "tasks": "0"}]),
+        )
+
+    with pytest.raises(launcher.LaunchInterrupted) as interrupted:
+        launcher._bounded_run(
+            approval, path, digest, deadline_seconds=10,
+            popen=fake_popen, runner=list_only,
+        )
+    report = interrupted.value.evidence
+    assert report["status"] == "BLOCKED"
+    assert report["initiator_interrupted"] is True
+    assert report["app_id"] == app_id
+    assert "INITIATOR_KEYBOARD_INTERRUPT" in report["cleanup_errors"]
+    assert report["provider_removal"] == "STOPPED_CONFIRMED_BY_LIST"
+    assert len(calls) == 1 and calls[0][2] == "list"
+
+
+def test_real_adapter_identity_never_runs_outside_bounded_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, digest = _manifest(tmp_path)
+    approval = launcher.load_approval(path, digest, SHA)
+    adapter = launcher.BoundedModalControl(path, digest)
+    attempts: list[str] = []
+
+    def guarded_identity(_approval: launcher.Approval) -> str:
+        attempts.append("unbounded-identity")
+        raise AssertionError("workspace verification escaped deadline")
+
+    monkeypatch.setattr(adapter, "identify", guarded_identity)
+    monkeypatch.setattr(
+        adapter, "run_once",
+        lambda _approval: {"status": "BLOCKED", "provider_removal": "UNKNOWN"},
+    )
+    result = launcher.execute(SHA, approval, adapter, external_control_verified=True)
+    assert result["status"] == "BLOCKED"
+    assert attempts == []
+
+
+def test_identity_stage_stall_is_bounded_and_never_starts_cleanup_without_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, digest = _manifest(tmp_path)
+    approval = launcher.load_approval(path, digest, SHA)
+    events: list[str] = []
+
+    class StuckIdentity:
+        pid = 34349
+        returncode = -9
+
+        def wait(self, **_kw: object) -> None:
+            raise subprocess.TimeoutExpired("fake-identity", 1)
+
+        def poll(self) -> None:
+            return None
+
+    def fake_popen(argv: list[str], **_kw: object) -> StuckIdentity:
+        ledger = Path(argv[argv.index("--journal") + 1])
+        launcher._journal(ledger, "WORKSPACE_VERIFY_BEGIN")
+        events.append("worker-started")
+        return StuckIdentity()
+
+    monkeypatch.setattr(launcher.os, "killpg", lambda *_args: events.append("killed"))
+    report = launcher._bounded_run(
+        approval, path, digest, deadline_seconds=1,
+        popen=fake_popen,
+        runner=lambda *_args, **_kw: (_ for _ in ()).throw(
+            AssertionError("no ID: no provider stop")
+        ),
+    )
+    assert report["status"] == "BLOCKED"
+    assert report["provider_removal"] == "UNKNOWN"
+    assert "WORKSPACE_VERIFY_BEGIN" in report["observed_phases"]
+    assert "APP_ID_UNKNOWN" in report["cleanup_errors"]
+    assert events == ["worker-started", "killed"]
