@@ -1,0 +1,191 @@
+name: Read-only exact-App historical failure diagnostics (temporary)
+
+# One-shot push-only diagnostics. No dispatch, schedule, PR, or model execution.
+on:
+  push:
+    branches: [review/unified-tts-cleanup]
+    paths:
+      - ".github/workflows/modal-exact-app-diagnostics.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: modal-exact-app-diagnostics-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  exact-app-history:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/review/unified-tts-cleanup'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Python 3.11 without secrets
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned Modal client without secrets
+        shell: bash
+        run: python -m pip install --disable-pip-version-check --no-cache-dir "modal==1.5.5"
+
+      - name: Read only the stopped App history after exact workspace identity
+        shell: bash
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -euo pipefail
+          unset MODAL_PROFILE
+          timeout --signal=TERM --kill-after=10s 60s python -I - <<'PY'
+          import contextlib
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          APP_ID = "ap-8lq3aNsHtFapUbn8f0AQml"
+          WORKSPACE = "mahmoud-bayoumi-mm"
+          COMMAND = [
+              "modal", "app", "logs", APP_ID,
+              "--env", "main", "--tail", "100",
+              "--since", "2026-11-25T13:51:00Z",
+              "--until", "2026-11-25T13:54:00Z",
+          ]
+          ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
+          FRAME = re.compile(
+              r'^\s*File "([^"\r\n]{1,512})", line ([0-9]{1,7}), in ([A-Za-z_][A-Za-z0-9_]{0,127})\s*$'
+          )
+          SAFE_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
+          ERROR = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]{0,127}):(?:\s*(.*))?$")
+          KNOWN_ERRORS = {
+              "MemoryError", "TimeoutError", "ModuleNotFoundError",
+              "ImportError", "RuntimeError", "TypeError", "ValueError",
+              "AttributeError", "KeyError", "FileNotFoundError",
+              "AssertionError", "OSError", "SystemExit",
+          }
+          FIXED_RUNTIME = {"synthetic child failed; full output withheld"}
+          evidence = {
+              "status": "DIAGNOSTICS_INCOMPLETE",
+              "workspace_verified": False,
+              "target_app_id": APP_ID,
+              "window_utc": ["2026-11-25T13:51:00Z", "2026-11-25T13:54:00Z"],
+              "command_exit": None,
+              "lines_inspected": 0,
+              "captured_bytes": 0,
+              "truncated": False,
+              "frames": [],
+              "exceptions": [],
+              "categories": [],
+              "log_sha256": None,
+          }
+
+          def output():
+              rendered = json.dumps(evidence, sort_keys=True)
+              print(rendered)
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
+                  stream.write("Read-only exact-App historical diagnostics\n\n")
+                  stream.write("~~~json\n" + rendered + "\n~~~\n")
+
+          def scrub(data):
+              # Never disclose raw provider output, URLs, tokens, or arbitrary log text.
+              for secret in (os.environ.get("MODAL_TOKEN_ID"), os.environ.get("MODAL_TOKEN_SECRET")):
+                  if secret:
+                      data = data.replace(secret, "[REDACTED]")
+              return ANSI.sub("", data)
+
+          def classify(line):
+              frame = FRAME.fullmatch(line)
+              if frame and len(evidence["frames"]) < 20:
+                  file_name = frame.group(1).replace("\\", "/").rsplit("/", 1)[-1]
+                  if re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", file_name):
+                      evidence["frames"].append({
+                          "file": file_name, "line": int(frame.group(2)),
+                          "function": frame.group(3),
+                      })
+                  return
+              match = ERROR.fullmatch(line.strip())
+              if not match:
+                  return
+              name, message = match.group(1), match.group(2) or ""
+              if name not in KNOWN_ERRORS or len(evidence["exceptions"]) >= 8:
+                  return
+              entry = {"class": name}
+              if name == "ModuleNotFoundError":
+                  module = re.fullmatch(r"No module named ['\"]([A-Za-z_][A-Za-z0-9_.]{0,127})['\"]", message)
+                  if module:
+                      entry["module"] = module.group(1)
+                  else:
+                      entry["message_sha256"] = hashlib.sha256(message.encode()).hexdigest()
+              elif name == "ImportError":
+                  imported = re.match(r"cannot import name ['\"]([A-Za-z_][A-Za-z0-9_]{0,127})['\"]", message)
+                  if imported:
+                      entry["import_name"] = imported.group(1)
+                  else:
+                      entry["message_sha256"] = hashlib.sha256(message.encode()).hexdigest()
+              elif name == "RuntimeError" and message in FIXED_RUNTIME:
+                  entry["known_message"] = message
+              elif message:
+                  entry["message_sha256"] = hashlib.sha256(message.encode()).hexdigest()
+              evidence["exceptions"].append(entry)
+
+          try:
+              if not os.environ.get("MODAL_TOKEN_ID") or not os.environ.get("MODAL_TOKEN_SECRET"):
+                  evidence["categories"].append("CREDENTIALS_MISSING")
+                  output()
+                  sys.exit(2)
+
+              with open(os.devnull, "w") as sink:
+                  with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                      import modal
+                      client = modal.Client.from_env()
+                      ws = modal.Workspace.from_context(client=client)
+                      ws.hydrate(client=client)
+                      name = ws.name
+              if name != WORKSPACE:
+                  evidence["categories"].append("WORKSPACE_MISMATCH")
+                  output()
+                  sys.exit(2)
+              evidence["workspace_verified"] = True
+
+              try:
+                  proc = subprocess.run(
+                      COMMAND, capture_output=True, timeout=20, check=False
+                  )
+              except (OSError, subprocess.SubprocessError) as exc:
+                  evidence["categories"].append("LOG_COMMAND_" + type(exc).__name__)
+                  output()
+                  sys.exit(2)
+
+              evidence["command_exit"] = proc.returncode
+              combined = proc.stdout + b"\n" + proc.stderr
+              evidence["captured_bytes"] = len(combined)
+              evidence["truncated"] = len(combined) > 65536
+              bounded = combined[:65536]
+              raw_hash = hashlib.sha256(combined).hexdigest()
+              evidence["log_sha256"] = raw_hash
+              cleaned = scrub(bounded.decode("utf-8", errors="replace"))
+              lines = cleaned.splitlines()
+              evidence["lines_inspected"] = len(lines)
+              for line in lines:
+                  classify(line)
+              if proc.returncode != 0:
+                  evidence["categories"].append("LOG_COMMAND_NONZERO")
+              if evidence["truncated"]:
+                  evidence["categories"].append("LOG_TRUNCATED")
+              if not evidence["exceptions"]:
+                  evidence["categories"].append("NO_CLASSIFIED_EXCEPTION")
+              if evidence["exceptions"] and proc.returncode == 0 and not evidence["truncated"]:
+                  evidence["status"] = "CLASSIFIED_LOG_EVIDENCE"
+              output()
+              sys.exit(0 if evidence["status"] == "CLASSIFIED_LOG_EVIDENCE" else 2)
+          except SystemExit:
+              raise
+          except BaseException as exc:
+              evidence["categories"].append("DIAGNOSTIC_" + type(exc).__name__)
+              output()
+              sys.exit(2)
+          PY
