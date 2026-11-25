@@ -1541,21 +1541,9 @@ def test_observation_budget_rejects_nonfinite_and_nonpositive_before_start(
 def test_pending_snapshot_mutation_cannot_modify_owner_or_later_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fsync_delay_seconds: float
 ) -> None:
-    # Delay the first real journal fsync as an explicit timing adversary;
-    # coordination is by backend stage event, never by a sleep estimate.
-    if fsync_delay_seconds:
-        original_fsync = os.fsync
-        once = False
-
-        def delayed_fsync(fd: int) -> None:
-            nonlocal once
-            if not once:
-                once = True
-                time.sleep(fsync_delay_seconds)
-            original_fsync(fd)
-
-        monkeypatch.setattr(os, "fsync", delayed_fsync)
-
+    # An optional deliberate journal fsync delay occurs AFTER the first
+    # sandbox poll, before the second create. It is not used to coordinate
+    # the test: coordination uses the explicit second-create entry event.
     class HoldSecond(FakeBackend):
         def __init__(self) -> None:
             super().__init__()
@@ -1569,6 +1557,18 @@ def test_pending_snapshot_mutation_cannot_modify_owner_or_later_result(
 
     async def exercise() -> None:
         backend = HoldSecond()
+        if fsync_delay_seconds:
+            original_fsync = os.fsync
+            once = False
+
+            def delayed_fsync(fd: int) -> None:
+                nonlocal once
+                if not once and "poll_sb-synthetic-1" in backend.events:
+                    once = True
+                    time.sleep(fsync_delay_seconds)
+                original_fsync(fd)
+
+            monkeypatch.setattr(os, "fsync", delayed_fsync)
         owner = _owner(tmp_path, backend)
         owner.start()
         # Don't start observe()'s 20 ms decision timer until the second
