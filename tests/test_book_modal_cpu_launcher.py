@@ -1244,13 +1244,17 @@ def test_worker_identity_exact_workspace_and_unexpired_before_remote(
         def run_remote(self, _approval: launcher.Approval, record: Any) -> dict[str, object]:
             calls.append("resource")
             record("RESULT_ACCEPTED", "synthetic")
-            return {"rehearsal": {"status": "TEST_ONLY"}}
+            full = _valid_child_output()
+            full["artifact_sha256"] = {"identity.json": "a" * 64}
+            return {"rehearsal": launcher._compact_rehearsal(full, SHA)}
 
     monkeypatch.setattr(launcher, "ModalControl", FakeControl)
     journal, result = tmp_path / "ids.jsonl", tmp_path / "result.json"
     assert launcher._internal_worker(approval, journal, result) == 0
     assert calls == ["identity", "resource"]
-    assert json.loads(result.read_text())["rehearsal"]["status"] == "TEST_ONLY"
+    accepted = json.loads(result.read_text())["rehearsal"]
+    launcher._validate_compact_report(accepted, SHA)
+    assert accepted["status"] == "SYNTHETIC_CONTRACT_REHEARSAL_PASSED"
 
     calls.clear()
 
@@ -1334,7 +1338,8 @@ def test_actual_public_rehearsal_inventory_sanitized_end_to_end(tmp_path: Path) 
             "status": "SYNTHETIC_REHEARSAL_CONFIRMED",
             "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
             "result": {"rehearsal": compact},
-        }
+        },
+        source_sha,
     )
     evidence = result["rehearsal"]
     assert evidence["source_sha"] == source_sha
@@ -1353,10 +1358,24 @@ def test_actual_public_rehearsal_inventory_sanitized_end_to_end(tmp_path: Path) 
     assert all(path not in json.dumps(result) for path in inventory_map)
 
 
+def test_real_child_cli_proves_source_pin_before_remote_compaction(tmp_path: Path) -> None:
+    """Actual clean-checkout CLI; no Modal SDK and no test-double source pin."""
+    checkout = Path(__file__).resolve().parents[1]
+    source_sha = launcher._git(checkout, "rev-parse", "HEAD")
+    assert launcher._git(checkout, "status", "--porcelain=v1", "--untracked-files=all") == ""
+    compact = launcher._run_synthetic_child(checkout, tmp_path / "fresh-artifacts", source_sha)
+    launcher._validate_compact_report(compact, source_sha)
+    assert compact["source_pin"] == "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
+    assert compact["artifact_inventory_count"] == 97
+    assert len(pickle.dumps(compact, protocol=4)) < 8192
+    assert "artifact_sha256" not in compact
+
+
 @pytest.mark.parametrize(
     "bad_key",
     ["/absolute.json", "../escape.json", "a/../b.json", "a//b.json", "a\\b.json"],
 )
+
 def test_invalid_artifact_paths_cannot_publish(bad_key: str) -> None:
     report = _valid_child_output()
     report["artifact_sha256"] = {bad_key: "a" * 64}
@@ -1444,8 +1463,28 @@ def test_compact_wire_contract_rejects_extra_nested_and_wrong_types() -> None:
             launcher._validate_compact_report(malformed, SHA)
         with pytest.raises(launcher.LaunchBlocked):
             launcher._public_result(
-                {"status": "SYNTHETIC_REHEARSAL_CONFIRMED", "result": {"rehearsal": malformed}}
+                {"status": "SYNTHETIC_REHEARSAL_CONFIRMED", "result": {"rehearsal": malformed}},
+                SHA,
             )
+
+
+
+def test_public_report_rejects_self_consistent_untrusted_source_sha() -> None:
+    full = _valid_child_output()
+    full["artifact_sha256"] = {"fixture.json": "a" * 64}
+    forged_sha = "b" * 40
+    full["source_sha"] = forged_sha
+    compact = launcher._compact_rehearsal(full, forged_sha)
+    launcher._validate_compact_report(compact, forged_sha)
+    with pytest.raises(launcher.LaunchBlocked):
+        launcher._public_result(
+            {
+                "status": "SYNTHETIC_REHEARSAL_CONFIRMED",
+                "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
+                "result": {"rehearsal": compact},
+            },
+            SHA,
+        )
 
 
 def test_worker_error_safe_metadata_and_bounded_journal(tmp_path: Path) -> None:
@@ -1467,23 +1506,25 @@ def test_worker_error_safe_metadata_and_bounded_journal(tmp_path: Path) -> None:
         "app_id": "ap-" + "A" * 22,
         "worker_error": launcher._read_worker_error(ledger),
         "result": {"secret_raw_payload": "not-released"},
-    })
+    }, SHA)
     assert report["worker_error"]["http_status"] == 401
     assert report["provider_removal"] == "STOPPED_CONFIRMED_BY_LIST"
     assert "not-released" not in json.dumps(report)
     with pytest.raises(launcher.LaunchBlocked):
         launcher._public_result({"status": "BLOCKED", "worker_error": {
             "class": "AuthError", "raw_message": "must-not-leak"
-        }})
+        }}, SHA)
 
 
-def test_child_nonzero_exposes_fixed_category_and_numeric_code(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_child_nonzero_exposes_fixed_category_and_numeric_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def fake_run(*_args: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(returncode=17, stdout="private error detail", stderr="also private")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(launcher.SyntheticChildError) as error:
-        launcher._run_synthetic_child(Path("/opt/clipper"), Path("/tmp/artifacts"), SHA)
+        launcher._run_synthetic_child(Path("/opt/clipper"), tmp_path / "artifacts", SHA)
     assert error.value.returncode == 17
     assert str(error.value) == "SYNTHETIC_CHILD_NONZERO"
     assert "private" not in str(error.value)
@@ -1573,7 +1614,7 @@ def test_bounded_parent_retains_typed_worker_error_after_exact_cleanup(tmp_path:
     }
     assert "WORKER_NONZERO_OR_TERMINATED" in result["cleanup_errors"]
     assert "WORKER_ERROR" in result["observed_phases"]
-    visible = launcher._public_result(result)
+    visible = launcher._public_result(result, SHA)
     assert visible["worker_error"] == result["worker_error"]
     assert visible["provider_removal"] == "STOPPED_CONFIRMED_BY_LIST"
     assert "worker_diagnostics" not in visible

@@ -878,7 +878,7 @@ def _safe_worker_error(value: object) -> dict[str, object] | None:
     return dict(value)
 
 
-def _public_result(result: dict[str, object]) -> dict[str, object]:
+def _public_result(result: dict[str, object], expected_sha: str) -> dict[str, object]:
     """Expose strictly validated compact evidence, never reconstruct proof."""
     keys = (
         "status", "provider_removal", "app_id", "observed_phases",
@@ -892,10 +892,9 @@ def _public_result(result: dict[str, object]) -> dict[str, object]:
     envelope = result.get("result")
     _require(isinstance(envelope, dict), "accepted result envelope missing")
     report = envelope.get("rehearsal")
-    sha = report.get("source_sha") if isinstance(report, dict) else None
-    _require(isinstance(sha, str) and bool(HEX40.fullmatch(sha)),
-             "accepted source SHA missing")
-    _validate_compact_report(report, sha)
+    _require(isinstance(expected_sha, str) and bool(HEX40.fullmatch(expected_sha)),
+             "trusted expected source SHA required")
+    _validate_compact_report(report, expected_sha)
     assert isinstance(report, dict)
     safe["rehearsal"] = report
     return safe
@@ -998,7 +997,7 @@ def main(argv: list[str] | None = None) -> int:
             external_control_verified=True,
         )
         try:
-            visible = _public_result(result)
+            visible = _public_result(result, args.expected_sha)
         except (LaunchBlocked, ValueError, TypeError):
             # Preserve verified exact-ID cleanup evidence if publication validation fails.
             prior = result.get("cleanup_errors")
@@ -1010,12 +1009,12 @@ def main(argv: list[str] | None = None) -> int:
                 "cleanup_errors": errors,
                 "result": None,
             }
-            print(json.dumps(_public_result(blocked), sort_keys=True))
+            print(json.dumps(_public_result(blocked, args.expected_sha), sort_keys=True))
             return 2
         print(json.dumps(visible, sort_keys=True))
         return 0 if result.get("status") == "SYNTHETIC_REHEARSAL_CONFIRMED" else 2
     except LaunchInterrupted as interrupted:
-        print(json.dumps(_public_result(interrupted.evidence), sort_keys=True))
+        print(json.dumps(_public_result(interrupted.evidence, args.expected_sha), sort_keys=True))
         return 130
     except (LaunchBlocked, OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
         print(json.dumps({"status": "DORMANT_LAUNCH_BLOCKED"}))
