@@ -29,8 +29,8 @@ def _manifest(tmp_path: Path, **overrides: Any) -> tuple[Path, str]:
         "expires_utc": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
         "included_credit_only": True,
         "paid_overage_authorized": False,
-        "owner_request_ref": "request11:09",
-        "credit_confirmation_ref": "credit15:00",
+        "owner_request_ref": "2026-11-25T11:09:05+02:00",
+        "credit_confirmation_ref": "2026-11-25T15:00:33+02:00",
         "external_control_id": "independent-ctrl-123",
         "execution_permission": True,
     }
@@ -1065,11 +1065,19 @@ def test_reached_main_scoped_action_success_blocked_interrupt(
 
         def run_once(self, _approval: launcher.Approval) -> dict[str, object]:
             seen.append("worker-run")
-            return {"status": "SYNTHETIC_REHEARSAL_CONFIRMED",
-                    "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
-                    "app_id": "ap-" + "A" * 22, "observed_phases": [],
-                    "cleanup_errors": [], "initiator_interrupted": False,
-                    "secret_or_raw_payload": "never-print"}
+            evidence = _valid_child_output()
+            evidence["artifact_sha256"] = {"test.json": "b" * 64}
+            evidence["secret_or_raw_payload"] = "never-print"
+            return {
+                "status": "SYNTHETIC_REHEARSAL_CONFIRMED",
+                "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
+                "app_id": "ap-" + "A" * 22,
+                "observed_phases": [],
+                "cleanup_errors": [],
+                "initiator_interrupted": False,
+                "result": {"rehearsal": evidence, "secret_or_raw_payload": "never-print"},
+                "secret_or_raw_payload": "never-print",
+            }
 
     # Keep the real scoped execute, substitute only the worker run.
     monkeypatch.setattr(launcher.BoundedModalControl, "run_once", FakeBounded.run_once)
@@ -1086,7 +1094,19 @@ def test_reached_main_scoped_action_success_blocked_interrupt(
     assert launcher.main(args) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "SYNTHETIC_REHEARSAL_CONFIRMED"
-    assert "secret_or_raw_payload" not in output
+    assert "secret_or_raw_payload" not in json.dumps(output)
+    assert output["rehearsal"]["source_sha"] == SHA
+    assert output["rehearsal"]["tracks"]["pause"]["status"] == (
+        "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
+    )
+    assert output["rehearsal"]["tracks"]["synthetic_test_review"]["status"] == (
+        "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED"
+    )
+    assert output["rehearsal"]["zero_call_evidence"] == {"attempts": []}
+    assert output["rehearsal"]["real_model_calls"] == 0
+    assert output["rehearsal"]["network_calls"] == 0
+    assert output["rehearsal"]["publication_calls"] == 0
+    assert output["rehearsal"]["artifact_sha256"] == {"test.json": "b" * 64}
     assert seen == ["bounded-parent", "worker-run"]
 
     def blocked(self: launcher.BoundedModalControl, _approval: launcher.Approval) -> dict[str, object]:
@@ -1095,7 +1115,9 @@ def test_reached_main_scoped_action_success_blocked_interrupt(
 
     monkeypatch.setattr(launcher.BoundedModalControl, "run_once", blocked)
     assert launcher.main(args) == 2
-    assert json.loads(capsys.readouterr().out)["status"] == "BLOCKED"
+    blocked_output = json.loads(capsys.readouterr().out)
+    assert blocked_output["status"] == "BLOCKED"
+    assert "rehearsal" not in blocked_output
 
     def interrupted(self: launcher.BoundedModalControl, _approval: launcher.Approval) -> dict[str, object]:
         raise launcher.LaunchInterrupted({"status": "BLOCKED",
@@ -1103,7 +1125,9 @@ def test_reached_main_scoped_action_success_blocked_interrupt(
 
     monkeypatch.setattr(launcher.BoundedModalControl, "run_once", interrupted)
     assert launcher.main(args) == 130
-    assert json.loads(capsys.readouterr().out)["status"] == "BLOCKED"
+    interrupted_output = json.loads(capsys.readouterr().out)
+    assert interrupted_output["status"] == "BLOCKED"
+    assert "rehearsal" not in interrupted_output
 
 
 def test_reached_internal_worker_requires_scoped_inputs_before_sdk(
@@ -1137,7 +1161,12 @@ def test_reached_internal_worker_requires_scoped_inputs_before_sdk(
     assert events == ["identity-before-resource"]
     for bad_args in (
         [x for x in args if x != "--internal-owner-nonce" and x != nonce],
-        args[:args.index("--journal")] + ["--journal", str(tmp_path / "other.jsonl")] + args[args.index("--result-file"):],
+        [
+            *args[:args.index("--journal")],
+            "--journal",
+            str(tmp_path / "other.jsonl"),
+            *args[args.index("--result-file"):],
+        ],
         [*args[:-1], "b" * 64],
     ):
         assert launcher.main(bad_args) == 2

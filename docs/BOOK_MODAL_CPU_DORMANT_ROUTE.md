@@ -5,8 +5,8 @@
 A narrowly scoped owner request calls for one **model-free public-synthetic
 dry run before any model or chapter processing**, using existing included
 credits only, with **paid overage not authorized**. The explicit provenance
-references stored in a temporary approval are `request11:09` and
-`credit15:00`. They are stable operational labels, **not** independent
+references stored in a temporary approval are `2026-11-25T11:09:05+02:00` and
+`2026-11-25T15:00:33+02:00`. They are stable operational labels, **not** independent
 authentication, account-spend enforcement, or a guarantee that an included
 credit balance remains. No fabricated positive hard-dollar cap is recorded.
 
@@ -66,6 +66,13 @@ The internal worker rechecks all input constraints before SDK access,
 performs the client-bound workspace lookup **within** the bounded
 control-plane window, requires an exact workspace match and verifies
 approval expiry **after** identity but before any App/Image construction.
+
+A clean successful CLI result includes only a reconstructed, schema-validated
+synthetic report: source SHA/pin, the human-review pause and separately
+labeled synthetic continuation statuses, empty guard attempts, zero model/
+network/publication calls and optional strictly validated artifact SHA-256
+digests. It excludes raw worker/SDK responses and arbitrary report fields.
+BLOCKED and interrupted outcomes omit the rehearsal payload.
 
 The existing Function configuration remains exactly:
 `cpu=(1,1)`, `memory=(512,512)`, `gpu=None`,

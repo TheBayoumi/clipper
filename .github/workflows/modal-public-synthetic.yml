@@ -117,8 +117,8 @@ jobs:
               "expires_utc": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
               "included_credit_only": True,
               "paid_overage_authorized": False,
-              "owner_request_ref": "request11:09",
-              "credit_confirmation_ref": "credit15:00",
+              "owner_request_ref": "2026-11-25T11:09:05+02:00",
+              "credit_confirmation_ref": "2026-11-25T15:00:33+02:00",
               "external_control_id": receipt,
               "execution_permission": True,
           }

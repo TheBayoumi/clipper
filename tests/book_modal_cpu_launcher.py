@@ -154,8 +154,8 @@ def load_approval(path: Path, digest: str, sha: str, *, now: datetime | None = N
              "Actions-only credential route required")
     _require(data["included_credit_only"] is True, "included-credit-only scope required")
     _require(data["paid_overage_authorized"] is False, "paid overage prohibited")
-    _require(data["owner_request_ref"] == "request11:09", "owner request reference mismatch")
-    _require(data["credit_confirmation_ref"] == "credit15:00", "credit reference mismatch")
+    _require(data["owner_request_ref"] == "2026-11-25T11:09:05+02:00", "owner request reference mismatch")
+    _require(data["credit_confirmation_ref"] == "2026-11-25T15:00:33+02:00", "credit reference mismatch")
     try:
         expiry = datetime.fromisoformat(data["expires_utc"].replace("Z", "+00:00"))
     except (ValueError, TypeError, AttributeError) as exc:
@@ -677,11 +677,66 @@ def _require_credential_route() -> None:
 
 
 def _public_result(result: dict[str, object]) -> dict[str, object]:
-    """Allowlisted status/identifiers; do not log worker or SDK payloads."""
-    keys = ("status", "provider_removal", "app_id", "observed_phases",
-            "cleanup_errors", "initiator_interrupted")
-    return {key: result.get(key) for key in keys}
+    """Emit only validated, reconstructed public-synthetic evidence."""
+    keys = (
+        "status",
+        "provider_removal",
+        "app_id",
+        "observed_phases",
+        "cleanup_errors",
+        "initiator_interrupted",
+    )
+    safe = {key: result.get(key) for key in keys}
+    if result.get("status") != "SYNTHETIC_REHEARSAL_CONFIRMED":
+        return safe
 
+    envelope = result.get("result")
+    _require(isinstance(envelope, dict), "accepted result envelope missing")
+    report = envelope.get("rehearsal")
+    source_sha = report.get("source_sha") if isinstance(report, dict) else None
+    _require(
+        isinstance(source_sha, str) and bool(HEX40.fullmatch(source_sha)),
+        "accepted source SHA missing",
+    )
+    _validate_child_report(report, source_sha)
+    assert isinstance(report, dict)
+
+    hashes = report.get("artifact_sha256")
+    safe_hashes: dict[str, str] = {}
+    if hashes is not None:
+        _require(
+            isinstance(hashes, dict) and len(hashes) <= 32,
+            "invalid synthetic artifact hashes",
+        )
+        for name, digest in hashes.items():
+            _require(
+                isinstance(name, str)
+                and bool(re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", name))
+                and isinstance(digest, str)
+                and bool(HEX64.fullmatch(digest)),
+                "invalid synthetic artifact hash",
+            )
+            safe_hashes[name] = digest
+
+    safe["rehearsal"] = {
+        "source_sha": source_sha,
+        "source_pin": "VERIFIED_CLEAN_LOCAL_GIT_HEAD",
+        "status": "SYNTHETIC_CONTRACT_REHEARSAL_PASSED",
+        "publish_eligible": False,
+        "tracks": {
+            "pause": {"status": "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"},
+            "synthetic_test_review": {
+                "status": "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED",
+                "publish_eligible": False,
+            },
+        },
+        "zero_call_evidence": {"attempts": []},
+        "real_model_calls": 0,
+        "network_calls": 0,
+        "publication_calls": 0,
+        "artifact_sha256": safe_hashes,
+    }
+    return safe
 
 
 def main(argv: list[str] | None = None) -> int:
