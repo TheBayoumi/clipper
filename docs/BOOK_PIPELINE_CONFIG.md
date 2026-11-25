@@ -29,7 +29,10 @@ import hashlib
 import json
 
 from clipper.books.pipeline_plan import (
-    DESCRIPTOR_SCHEMA, registry, stage_input_identity, template,
+    DESCRIPTOR_SCHEMA,
+    registry,
+    stage_input_identity,
+    template,
 )
 
 root = Path("/absolute/private/artifacts")

@@ -2246,8 +2246,7 @@ def evaluate_hybrid_chapter(
                     )
                 continue
             replay_stage = not entries[name]["enabled"] or (
-                expected_brief_identity is not None
-                and name in {"argument", "audits", "reconcile"}
+                expected_brief_identity is not None and name in {"argument", "audits", "reconcile"}
             )
             if replay_stage:
                 if new_work_seen:
@@ -2256,8 +2255,10 @@ def evaluate_hybrid_chapter(
             else:
                 new_work_seen = True
                 permission = (
-                    limits.brief_cpu if name in {"argument", "audits", "reconcile"}
-                    else limits.adaptation_cpu if name == "adaptation"
+                    limits.brief_cpu
+                    if name in {"argument", "audits", "reconcile"}
+                    else limits.adaptation_cpu
+                    if name == "adaptation"
                     else limits.script_cpu
                 )
                 if not permission:
@@ -2334,9 +2335,7 @@ def evaluate_hybrid_chapter(
         "source_boundary": verified.book.source_boundary,
         "recovery_status": verified.book.recovery_status,
         "linked_sections": list(verified.linked_section_ids),
-        "run_plan": (
-            limits.fingerprint if configured is None else "CONFIGURED_HYBRID_SOURCE_V1"
-        ),
+        "run_plan": (limits.fingerprint if configured is None else "CONFIGURED_HYBRID_SOURCE_V1"),
     }
     if script_only:
         ledger_identity["terminal_contract"] = "SCRIPT_ONLY_V1"
@@ -2349,9 +2348,7 @@ def evaluate_hybrid_chapter(
             "contract": chapter_hybrid.BRIEF_SCHEMA,
             "source": ledger["ledger_sha256"],
             "scope": scoped.fingerprint,
-            "plan": (
-                limits.fingerprint if configured is None else "CONFIGURED_HYBRID_SOURCE_V1"
-            ),
+            "plan": (limits.fingerprint if configured is None else "CONFIGURED_HYBRID_SOURCE_V1"),
         }
     )
     base = root / "chapter-evaluations" / chapter_key
@@ -2412,12 +2409,14 @@ def evaluate_hybrid_chapter(
         # Resolve actual pinned public tokenizer/config BEFORE producer hashing:
         # the source journal and recovery must never depend on whether a
         # snapshot happened to be downloaded by a later stage.
-        if configured is not None and configured_replay:
-            # Cache-only tokenizer preflight must not fetch a public snapshot.
-            if scripting._cached_chapter_tokenizer_material().get("status") != (
-                "PINNED_PUBLIC_TOKENIZER"
-            ):
-                raise ChapterStop("configured replay requires retained pinned tokenizer")
+        # Cache-only tokenizer preflight must not fetch a public snapshot.
+        if (
+            configured is not None
+            and configured_replay
+            and scripting._cached_chapter_tokenizer_material().get("status")
+            != "PINNED_PUBLIC_TOKENIZER"
+        ):
+            raise ChapterStop("configured replay requires retained pinned tokenizer")
         scripting._public_book_context()
         tokens = scripting._chapter_prompt_encoding
     elif token_counter is not None:

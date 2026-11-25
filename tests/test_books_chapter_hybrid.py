@@ -845,9 +845,7 @@ def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(
             config["stages"][name]["enabled"] = False
         config["stages"]["narration"]["semantic"]["voice"] = "af_bella"
         args["pipeline_config"] = config
-        args["plan"] = chapter.ChapterPlan(
-            adaptation_cpu=True, script_cpu=True, voice="af_bella"
-        )
+        args["plan"] = chapter.ChapterPlan(adaptation_cpu=True, script_cpu=True, voice="af_bella")
     checkpoint = chapter.evaluate_hybrid_chapter(
         runner,
         selected,
@@ -1737,6 +1735,7 @@ def test_hybrid_producer_binding_reacts_to_tokenizer_template_and_generation_cha
     with monkeypatch.context() as patch:
         patch.setattr(hybrid.scripting, "SCRIPT_REVISION", "synthetic-new-revision")
         assert bound() != original
+
 
 @pytest.mark.parametrize(
     "case",
