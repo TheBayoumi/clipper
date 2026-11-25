@@ -1,7 +1,7 @@
 """Dormant, explicitly authorized, model-free Modal CPU rehearsal launcher.
 
 Default CLI only verifies local source and prints a plan: no Modal import.
-Live execute is separately authorized, currently not approved. No workflow.
+Live execution is separately scoped; import and plan remain inert.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -104,7 +105,10 @@ class Approval:
     environment: str
     credential_route: str
     expires_utc: datetime
-    cost_ceiling_usd: str
+    included_credit_only: bool
+    paid_overage_authorized: bool
+    owner_request_ref: str
+    credit_confirmation_ref: str
     external_control_id: str
 
 
@@ -125,12 +129,15 @@ def load_approval(path: Path, digest: str, sha: str, *, now: datetime | None = N
         "environment",
         "credential_route",
         "expires_utc",
-        "cost_ceiling_usd",
+        "included_credit_only",
+        "paid_overage_authorized",
+        "owner_request_ref",
+        "credit_confirmation_ref",
         "external_control_id",
         "execution_permission",
     }
     _require(set(data) == expected, "approval fields mismatch")
-    _require(data["schema"] == "clipper-modal-book-launch-approval-v1", "approval schema mismatch")
+    _require(data["schema"] == "clipper-modal-public-synthetic-approval-v2", "approval schema mismatch")
     _require(data["intent"] == INTENT, "wrong operation authorized")
     _require(data["execution_permission"] is True, "no explicit permission")
     _require(
@@ -142,16 +149,13 @@ def load_approval(path: Path, digest: str, sha: str, *, now: datetime | None = N
             isinstance(value, str) and bool(re.fullmatch(r"[A-Za-z0-9_.:/-]{3,128}", value)),
             "invalid or missing approval " + key,
         )
-    _require(
-        data["credential_route"] in {"explicit-modal-profile", "actions-existing-secret-route"},
-        "unapproved credential route",
-    )
-    _require(
-        isinstance(data["cost_ceiling_usd"], str)
-        and bool(re.fullmatch(r"(?:0|[1-9][0-9]{0,3})\.[0-9]{2}", data["cost_ceiling_usd"]))
-        and float(data["cost_ceiling_usd"]) > 0,
-        "explicit positive cost cap required",
-    )
+    _require(data["workspace"] == "mahmoud-bayoumi-mm", "workspace scope mismatch")
+    _require(data["credential_route"] == "actions-existing-secret-route",
+             "Actions-only credential route required")
+    _require(data["included_credit_only"] is True, "included-credit-only scope required")
+    _require(data["paid_overage_authorized"] is False, "paid overage prohibited")
+    _require(data["owner_request_ref"] == "request11:09", "owner request reference mismatch")
+    _require(data["credit_confirmation_ref"] == "credit15:00", "credit reference mismatch")
     try:
         expiry = datetime.fromisoformat(data["expires_utc"].replace("Z", "+00:00"))
     except (ValueError, TypeError, AttributeError) as exc:
@@ -167,7 +171,10 @@ def load_approval(path: Path, digest: str, sha: str, *, now: datetime | None = N
         data["environment"],
         data["credential_route"],
         expiry,
-        data["cost_ceiling_usd"],
+        True,
+        False,
+        data["owner_request_ref"],
+        data["credit_confirmation_ref"],
         data["external_control_id"],
     )
 
@@ -488,6 +495,7 @@ def _bounded_run(
         folder = Path(directory)
         ledger, result_file = folder / "ids.jsonl", folder / "result.json"
         stdout_file, stderr_file = folder / "worker.stdout", folder / "worker.stderr"
+        worker_nonce = secrets.token_hex(32)
         command = [
             sys.executable,
             str(Path(__file__).resolve()),
@@ -502,6 +510,10 @@ def _bounded_run(
             str(ledger),
             "--result-file",
             str(result_file),
+            "--independent-control-receipt",
+            approval.external_control_id,
+            "--internal-owner-nonce",
+            worker_nonce,
         ]
         # Capture only bounded diagnostic digests/sizes; never expose raw
         # stdout/stderr, which might contain provider or environment details.
@@ -512,6 +524,7 @@ def _bounded_run(
                 start_new_session=True,
                 stdout=stdout_sink,
                 stderr=stderr_sink,
+                env={**os.environ, "CLIPPER_MODAL_WORKER_NONCE": worker_nonce},
             )
         timed_out = False
         interrupted = False
@@ -653,6 +666,24 @@ def execute(
     return control.run_once(approval)
 
 
+def _require_credential_route() -> None:
+    """Actions-provided token pair only, without token values in output."""
+    _require(
+        bool(os.environ.get("MODAL_TOKEN_ID"))
+        and bool(os.environ.get("MODAL_TOKEN_SECRET"))
+        and not os.environ.get("MODAL_PROFILE"),
+        "existing Actions token pair required without profile ambiguity",
+    )
+
+
+def _public_result(result: dict[str, object]) -> dict[str, object]:
+    """Allowlisted status/identifiers; do not log worker or SDK payloads."""
+    keys = ("status", "provider_removal", "app_id", "observed_phases",
+            "cleanup_errors", "initiator_interrupted")
+    return {key: result.get(key) for key in keys}
+
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-sha", required=True)
@@ -664,16 +695,43 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--internal-worker", action="store_true", default=False)
     parser.add_argument("--journal", type=Path)
     parser.add_argument("--result-file", type=Path)
+    parser.add_argument("--internal-owner-nonce")
     args = parser.parse_args(argv)
     checkout = Path(__file__).resolve().parents[1]
     try:
         local_source(checkout, args.expected_sha)
         if args.internal_worker:
-            # The worker is an implementation detail, not a second user
-            # entrypoint. The current workspace cannot enforce the approved
-            # dollar cap. Do not allow a direct worker invocation to bypass
-            # the outer --execute blocker by supplying its arguments.
-            raise LaunchBlocked("internal worker disabled pending hard budget gate")
+            _require(
+                not args.execute and args.approval_file is not None
+                and args.approval_sha256 is not None
+                and args.journal is not None and args.result_file is not None,
+                "worker approval and output paths required",
+            )
+            _require(
+                isinstance(args.internal_owner_nonce, str)
+                and bool(re.fullmatch(r"[0-9a-f]{64}", args.internal_owner_nonce))
+                and secrets.compare_digest(
+                    args.internal_owner_nonce,
+                    os.environ.get("CLIPPER_MODAL_WORKER_NONCE", ""),
+                ),
+                "bounded owner capability missing",
+            )
+            _require(
+                args.journal.parent == args.result_file.parent
+                and args.journal.name == "ids.jsonl"
+                and args.result_file.name == "result.json"
+                and args.journal.parent.is_dir()
+                and not args.journal.is_symlink()
+                and not args.result_file.is_symlink(),
+                "invalid worker output paths",
+            )
+            approval = load_approval(args.approval_file, args.approval_sha256, args.expected_sha)
+            _require(
+                args.independent_control_receipt == approval.external_control_id,
+                "lifecycle receipt mismatch",
+            )
+            _require_credential_route()
+            return _internal_worker(approval, args.journal, args.result_file)
         if not args.execute:
             _require(
                 not any(
@@ -683,6 +741,7 @@ def main(argv: list[str] | None = None) -> int:
                         args.independent_control_receipt,
                         args.journal,
                         args.result_file,
+                        args.internal_owner_nonce,
                     )
                 ),
                 "plan mode accepts no execution/credential fields",
@@ -709,28 +768,23 @@ def main(argv: list[str] | None = None) -> int:
             args.independent_control_receipt == approval.external_control_id,
             "independent control authority receipt missing",
         )
-        # Fail closed on implicit/ambiguous credential sources before importing Modal.
-        profile = os.environ.get("MODAL_PROFILE", "")
-        token_id = os.environ.get("MODAL_TOKEN_ID", "")
-        token_secret = os.environ.get("MODAL_TOKEN_SECRET", "")
-        if approval.credential_route == "explicit-modal-profile":
-            _require(
-                bool(profile) and not token_id and not token_secret,
-                "explicit profile required without environment token overrides",
-            )
-        else:
-            _require(
-                bool(token_id) and bool(token_secret) and not profile,
-                "existing Actions token pair required without profile ambiguity",
-            )
-        # A parsed dollar amount and a matching receipt string are not
-        # independently enforceable spend authority. The bounded subprocess
-        # and cleanup controls are implemented/testable offline, but a live
-        # budget guard is NOT supplied by the current Starter workspace.
-        # Reject BEFORE constructing any SDK/client or remote resource.
-        raise LaunchBlocked("independent enforceable account budget cap missing")
-        # No live execution branch is reachable until a separately reviewed
-        # authenticated budget control replaces the explicit blocker above.
+        _require(
+            args.journal is None and args.result_file is None
+            and args.internal_owner_nonce is None,
+            "owner-only worker flags prohibited",
+        )
+        _require_credential_route()
+        result = execute(
+            args.expected_sha,
+            approval,
+            BoundedModalControl(args.approval_file, args.approval_sha256),
+            external_control_verified=True,
+        )
+        print(json.dumps(_public_result(result), sort_keys=True))
+        return 0 if result.get("status") == "SYNTHETIC_REHEARSAL_CONFIRMED" else 2
+    except LaunchInterrupted as interrupted:
+        print(json.dumps(_public_result(interrupted.evidence), sort_keys=True))
+        return 130
     except (LaunchBlocked, OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
         print(json.dumps({"status": "DORMANT_LAUNCH_BLOCKED"}))
         return 2

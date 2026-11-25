@@ -481,34 +481,32 @@ guard evidence, not a kernel-level sandbox guarantee. No production source,
 host authority, Modal runtime or deployment has been changed.
 
 
-## Dormant opt-in book rehearsal launcher (UNQUALIFIED; no run approved)
+## Scoped public-synthetic Modal CPU rehearsal (dormant activation)
 
-`tests/book_modal_cpu_launcher.py` implements an explicitly selected
-`DORMANT_PLAN_ONLY` default and a separately gated `--execute` path.
-Offline fake-only regressions are in `tests/test_book_modal_cpu_launcher.py`.
-A prospective restricted single CPU Function uses an anonymously cloned,
-exact-SHA clean public Git checkout, Python 3.11, Git and PyYAML 6.0.3;
-no private source, model, GPU, secret, volume, warm container or automatic
-workflow. No App/Image/Modal import occurs in plan mode. Execution is
-blocked absent separate approval manifest/hash, control receipt, selected
-credentials, budget/lifecycle authority and client-bound workspace match.
-Neither an approval document nor external controller exists in the repo;
-their strings are not cryptographic signature verification or a hard cost
-cap. Provider removal is UNKNOWN without external confirmation. See
-[the dormant route and restrictions](docs/BOOK_MODAL_CPU_DORMANT_ROUTE.md).
+`tests/book_modal_cpu_launcher.py` retains inert `DORMANT_PLAN_ONLY`
+and enables an explicitly scoped bounded `--execute` / internal worker path.
+The recorded owner request and confirmed included-credit-only scope permit a
+**model-free public-synthetic** rehearsal using existing GitHub Actions
+`MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, with paid overage explicitly
+unauthorized. These provenance strings and digest are **not** cryptographic
+owner authentication, enforcement of a monetary cap, or verification that a
+provider cannot incur paid charges. No model/private chapter inference,
+publishing, deployment or broad account activity is authorized.
 
+`.github/workflows/modal-public-synthetic.yml` is staged but **dormant**:
+only a separately reviewed one-file addition of
+`acceptance/modal-public-synthetic/request.json` can trigger it on
+`review/unified-tts-cleanup`. The request file is intentionally absent.
+Its gate binds the one-file activation parent SHA and a strict request
+schema, then generates a temporary SHA-bound approval outside the Git
+checkout. No workflow_dispatch or automatic execution on workflow
+edits. SDK 1.5.5, Python 3.11, one invocation, 120-second bounded owner
+control plane, exact App-ID cleanup evidence and existing CPU/memory
+limit tuples remain unchanged.
 
-### Bounded launcher correction candidate (LAUNCHER-FIX1314; UNQUALIFIED)
-
-The dormant launcher includes a bounded **local control-plane worker**
-and fsynced App/call identity journal, timed stop/info attempts using the
-explicit Modal environment, and fail-closed unknown cleanup reporting.
-Function resource requests are capped at `cpu=(1,1)` and
-`memory=(512,512)` with `include_source=False`; only the exact public
-Git clone is intended in the image. Child work uses a fresh temporary
-artifact root and validates both synthetic tracks, source pin and zero
-guard attempts. Offline SDK fakes cover the actual staged run and error
-paths. **The live `--execute` path is blocked before SDK construction
-because a manifest dollar amount/receipt does not enforce a hard total
-account budget.** Full exact-SHA tests/static/CI and review remain pending.
-No provider action is authorized.
+Full exact-SHA CI, lint, tests and independent review are prerequisites
+to any later activation. **No provider/image runtime has yet been
+qualified**. A timeout limits operation duration, not dollar spend;
+missing identifiers or unsuccessful terminal observation remain
+`BLOCKED/UNKNOWN`. See
+[the scoped route and limitations](docs/BOOK_MODAL_CPU_DORMANT_ROUTE.md).

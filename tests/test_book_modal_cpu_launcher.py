@@ -20,14 +20,17 @@ SHA = "a" * 40
 
 def _manifest(tmp_path: Path, **overrides: Any) -> tuple[Path, str]:
     data = {
-        "schema": "clipper-modal-book-launch-approval-v1",
+        "schema": "clipper-modal-public-synthetic-approval-v2",
         "intent": launcher.INTENT,
         "source_sha": SHA,
-        "workspace": "expected-workspace",
+        "workspace": "mahmoud-bayoumi-mm",
         "environment": "qualification",
-        "credential_route": "explicit-modal-profile",
+        "credential_route": "actions-existing-secret-route",
         "expires_utc": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
-        "cost_ceiling_usd": "0.05",
+        "included_credit_only": True,
+        "paid_overage_authorized": False,
+        "owner_request_ref": "request11:09",
+        "credit_confirmation_ref": "credit15:00",
         "external_control_id": "independent-ctrl-123",
         "execution_permission": True,
     }
@@ -102,8 +105,13 @@ def test_no_approval_blocks_before_client_construction(
         {"execution_permission": False},
         {"source_sha": "b" * 40},
         {"workspace": ""},
+        {"workspace": "wrong-workspace"},
         {"credential_route": "unknown"},
-        {"cost_ceiling_usd": "0.00"},
+        {"included_credit_only": False},
+        {"paid_overage_authorized": True},
+        {"owner_request_ref": "generic"},
+        {"credit_confirmation_ref": "generic"},
+        {"intent": "PRIVATE_BOOK_INFERENCE"},
         {"expires_utc": "2000-01-01T00:00:00+00:00"},
         {"expires_utc": "2999-01-01T00:00:00+00:00"},
     ],
@@ -785,7 +793,7 @@ def test_approval_parses_same_digest_bound_bytes_during_atomic_path_swap(
     monkeypatch.setattr(Path, "open", swapping_open)
     approval = launcher.load_approval(path, digest, SHA)
     assert first_read
-    assert approval.workspace == "expected-workspace"
+    assert approval.workspace == "mahmoud-bayoumi-mm"
     assert json.loads(path.read_text()) == {"intent": "OTHER_OPERATION"}
 
 
@@ -1039,3 +1047,166 @@ def test_initial_inconclusive_list_still_stops_exact_id_and_retains_uncertainty(
         ["modal", "app", "stop", "-y", "--env", "qualification", app_id],
         ["modal", "app", "list", "--json", "--env", "qualification"],
     ]
+
+
+def test_reached_main_scoped_action_success_blocked_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path, digest = _manifest(tmp_path)
+    monkeypatch.setattr(launcher, "local_source", lambda *_args: None)
+    monkeypatch.setenv("MODAL_TOKEN_ID", "inert-test-id")
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", "inert-test-secret")
+    monkeypatch.delenv("MODAL_PROFILE", raising=False)
+    seen: list[str] = []
+
+    class FakeBounded:
+        def __init__(self, _path: Path, _digest: str) -> None:
+            seen.append("bounded-parent")
+
+        def run_once(self, _approval: launcher.Approval) -> dict[str, object]:
+            seen.append("worker-run")
+            return {"status": "SYNTHETIC_REHEARSAL_CONFIRMED",
+                    "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
+                    "app_id": "ap-" + "A" * 22, "observed_phases": [],
+                    "cleanup_errors": [], "initiator_interrupted": False,
+                    "secret_or_raw_payload": "never-print"}
+
+    # Keep the real scoped execute, substitute only the worker run.
+    monkeypatch.setattr(launcher.BoundedModalControl, "run_once", FakeBounded.run_once)
+    original_init = launcher.BoundedModalControl.__init__
+
+    def inert_init(self: launcher.BoundedModalControl, approval_path: Path, digest_arg: str) -> None:
+        seen.append("bounded-parent")
+        original_init(self, approval_path, digest_arg)
+
+    monkeypatch.setattr(launcher.BoundedModalControl, "__init__", inert_init)
+    args = ["--execute", "--expected-sha", SHA, "--approval-file", str(path),
+            "--approval-sha256", digest, "--independent-control-receipt",
+            "independent-ctrl-123"]
+    assert launcher.main(args) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "SYNTHETIC_REHEARSAL_CONFIRMED"
+    assert "secret_or_raw_payload" not in output
+    assert seen == ["bounded-parent", "worker-run"]
+
+    def blocked(self: launcher.BoundedModalControl, _approval: launcher.Approval) -> dict[str, object]:
+        return {"status": "BLOCKED", "provider_removal": "UNKNOWN",
+                "cleanup_errors": ["APP_ID_UNKNOWN"]}
+
+    monkeypatch.setattr(launcher.BoundedModalControl, "run_once", blocked)
+    assert launcher.main(args) == 2
+    assert json.loads(capsys.readouterr().out)["status"] == "BLOCKED"
+
+    def interrupted(self: launcher.BoundedModalControl, _approval: launcher.Approval) -> dict[str, object]:
+        raise launcher.LaunchInterrupted({"status": "BLOCKED",
+                                         "cleanup_errors": ["INITIATOR_KEYBOARD_INTERRUPT"]})
+
+    monkeypatch.setattr(launcher.BoundedModalControl, "run_once", interrupted)
+    assert launcher.main(args) == 130
+    assert json.loads(capsys.readouterr().out)["status"] == "BLOCKED"
+
+
+def test_reached_internal_worker_requires_scoped_inputs_before_sdk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path, digest = _manifest(tmp_path)
+    monkeypatch.setattr(launcher, "local_source", lambda *_args: None)
+    monkeypatch.setenv("MODAL_TOKEN_ID", "inert-test-id")
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", "inert-test-secret")
+    monkeypatch.delenv("MODAL_PROFILE", raising=False)
+    nonce = "a" * 64
+    monkeypatch.setenv("CLIPPER_MODAL_WORKER_NONCE", nonce)
+    folder = tmp_path / "owner"
+    folder.mkdir()
+    journal, result = folder / "ids.jsonl", folder / "result.json"
+    events: list[str] = []
+
+    def fake_internal(approval: launcher.Approval, j: Path, r: Path) -> int:
+        events.append("identity-before-resource")
+        assert approval.workspace == "mahmoud-bayoumi-mm"
+        assert j == journal and r == result
+        return 0
+
+    monkeypatch.setattr(launcher, "_internal_worker", fake_internal)
+    args = ["--internal-worker", "--expected-sha", SHA,
+            "--approval-file", str(path), "--approval-sha256", digest,
+            "--independent-control-receipt", "independent-ctrl-123",
+            "--journal", str(journal), "--result-file", str(result),
+            "--internal-owner-nonce", nonce]
+    assert launcher.main(args) == 0
+    assert events == ["identity-before-resource"]
+    for bad_args in (
+        [x for x in args if x != "--internal-owner-nonce" and x != nonce],
+        args[:args.index("--journal")] + ["--journal", str(tmp_path / "other.jsonl")] + args[args.index("--result-file"):],
+        [*args[:-1], "b" * 64],
+    ):
+        assert launcher.main(bad_args) == 2
+    assert events == ["identity-before-resource"]
+    assert "DORMANT_LAUNCH_BLOCKED" in capsys.readouterr().out
+
+
+def test_worker_identity_exact_workspace_and_unexpired_before_remote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, digest = _manifest(tmp_path)
+    approval = launcher.load_approval(path, digest, SHA)
+    calls: list[str] = []
+
+    class FakeControl:
+        def identify(self, _approval: launcher.Approval) -> str:
+            calls.append("identity")
+            return approval.workspace
+
+        def run_remote(self, _approval: launcher.Approval, record: Any) -> dict[str, object]:
+            calls.append("resource")
+            record("RESULT_ACCEPTED", "synthetic")
+            return {"rehearsal": {"status": "TEST_ONLY"}}
+
+    monkeypatch.setattr(launcher, "ModalControl", FakeControl)
+    journal, result = tmp_path / "ids.jsonl", tmp_path / "result.json"
+    assert launcher._internal_worker(approval, journal, result) == 0
+    assert calls == ["identity", "resource"]
+    assert json.loads(result.read_text())["rehearsal"]["status"] == "TEST_ONLY"
+
+    calls.clear()
+
+    class ForeignControl(FakeControl):
+        def identify(self, _approval: launcher.Approval) -> str:
+            calls.append("identity")
+            return "different-workspace"
+
+    monkeypatch.setattr(launcher, "ModalControl", ForeignControl)
+    assert launcher._internal_worker(approval, journal, result) == 2
+    assert calls == ["identity"]
+
+
+def test_scoped_approval_rejects_paid_and_generic_before_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(launcher, "local_source", lambda *_args: None)
+    monkeypatch.setenv("MODAL_TOKEN_ID", "inert-test-id")
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", "inert-test-secret")
+    monkeypatch.delenv("MODAL_PROFILE", raising=False)
+    created: list[str] = []
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        created.append("SDK")
+        raise AssertionError("provider reached")
+
+    monkeypatch.setattr(launcher, "BoundedModalControl", forbidden)
+    for bad in (
+        {"paid_overage_authorized": True},
+        {"included_credit_only": False},
+        {"workspace": "foreign"},
+        {"intent": "MODEL_INFERENCE"},
+        {"owner_request_ref": "other"},
+        {"credit_confirmation_ref": "other"},
+        {"credential_route": "explicit-modal-profile"},
+        {"expires_utc": "2000-01-01T00:00:00Z"},
+    ):
+        path, digest = _manifest(tmp_path, **bad)
+        assert launcher.main(["--execute", "--expected-sha", SHA,
+                              "--approval-file", str(path), "--approval-sha256", digest,
+                              "--independent-control-receipt", "independent-ctrl-123"]) == 2
+    assert created == []
+    assert "DORMANT_LAUNCH_BLOCKED" in capsys.readouterr().out
