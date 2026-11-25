@@ -136,7 +136,6 @@ def load_approval(path: Path, digest: str, sha: str, *, now: datetime | None = N
 
 def _remote_child(sha: str) -> dict[str, object]:
     """Only executed in a separately approved restricted CPU Function."""
-    import os as child_os
     from pathlib import Path as ChildPath
 
     checkout = ChildPath("/opt/clipper")
@@ -200,9 +199,9 @@ class ModalControl:
 
     def identify(self, approval: Approval) -> str:
         # Does not create App/Image/Function. Credentials must already be explicitly selected.
-        import modal
-
         from importlib.metadata import version
+
+        import modal
 
         _require(version("modal") == "1.5.5", "Modal SDK must be exactly 1.5.5")
         client = modal.Client.from_env()
@@ -347,7 +346,7 @@ def _stop_and_observe(
     errors: list[str] = []
     commands = (
         ("stop", ["modal", "app", "stop", "-y", "--env", environment, app_id]),
-        ("list", ["modal", "app", "list", "--json", "--limit", "0", "--env", environment]),
+        ("list", ["modal", "app", "list", "--json", "--env", environment]),
     )
     stopped = False
     for kind, command in commands:
@@ -395,7 +394,7 @@ def _bounded_run(approval: Approval, manifest_path: Path, digest: str,
                  *, deadline_seconds: float = 120,
                  popen: Any = subprocess.Popen,
                  runner: Any = subprocess.run) -> dict[str, object]:
-    """One bounded control-plane process, plus bounded exact-ID stop/info."""
+    """One bounded control-plane process, plus bounded exact-ID stop/list."""
     _require(0 < deadline_seconds <= 180, "unbounded control-plane deadline")
     deadline = time.monotonic() + deadline_seconds
     with tempfile.TemporaryDirectory(prefix="clipper-modal-owner-") as directory:

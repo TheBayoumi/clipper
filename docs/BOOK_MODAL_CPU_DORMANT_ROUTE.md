@@ -318,3 +318,23 @@ remain unchanged. Both `--execute` and `--internal-worker` remain
 explicitly disabled by the unresolved spending-authority gate. This
 is an offline engineering implementation candidate only; no
 provider, credentials, App, image, resource or spend action occurred.
+
+
+## LAUNCHER-FINAL1333 pinned CLI/static correction
+
+The pinned Modal 1.5.5 `modal/cli/app.py` registers `app list`
+with `--env` and `--json`, but **not** `--limit`.
+The terminal observation now uses the exact supported command
+`modal app list --json --env ENV`; the stop command remains
+`modal app stop -y --env ENV EXACT_APP_ID`. The offline
+regression asserts both complete argument arrays rather than
+accepting extra invented options. The JSON field names
+`app_id`, `state` and `tasks` are grounded in the pinned
+CLI's output formatting. An absent, duplicated or nonterminal
+exact-ID row remains `UNKNOWN/BLOCKED`.
+
+The same bounded correction removes an unused child import,
+orders the SDK-version helper before `modal`, fixes the
+test import ordering and binds the parameterized fake's
+`rows` locally. No accepted chapter rehearsal or owner
+production code changed, and no live path is enabled.

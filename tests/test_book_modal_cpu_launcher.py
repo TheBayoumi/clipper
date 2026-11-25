@@ -11,9 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
-
 import book_modal_cpu_launcher as launcher
+import pytest
 
 
 SHA = "a" * 40
@@ -405,7 +404,12 @@ def test_stop_and_list_terminal_evidence_requires_exact_id_zero_tasks() -> None:
     )
     assert result == (True, [])
     assert commands[0][-1] == "ap-synthetic-1"
-    assert "--env" in commands[0] and "qualification" in commands[0]
+    assert commands[0] == [
+        "modal", "app", "stop", "-y", "--env", "qualification", "ap-synthetic-1"
+    ]
+    assert commands[1] == [
+        "modal", "app", "list", "--json", "--env", "qualification"
+    ]
 
     def failed_stop(argv: list[str], **_kw: object) -> SimpleNamespace:
         if "stop" in argv:
@@ -557,7 +561,9 @@ def test_list_unknown_and_mismatched_states_never_claim_stop() -> None:
         [{"app_id": "ap-a", "state": "stopped", "tasks": "0"}] * 2,
         {"app_id": "ap-a", "state": "stopped", "tasks": "0"},
     ):
-        def fake_cli(argv: list[str], **_kw: object) -> SimpleNamespace:
+        def fake_cli(
+            argv: list[str], rows: object = rows, **_kw: object
+        ) -> SimpleNamespace:
             if "stop" in argv:
                 return SimpleNamespace(returncode=0, stdout="")
             return SimpleNamespace(returncode=0, stdout=json.dumps(rows))
