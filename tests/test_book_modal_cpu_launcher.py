@@ -1375,7 +1375,6 @@ def test_real_child_cli_proves_source_pin_before_remote_compaction(tmp_path: Pat
     "bad_key",
     ["/absolute.json", "../escape.json", "a/../b.json", "a//b.json", "a\\b.json"],
 )
-
 def test_invalid_artifact_paths_cannot_publish(bad_key: str) -> None:
     report = _valid_child_output()
     report["artifact_sha256"] = {bad_key: "a" * 64}
@@ -1453,6 +1452,16 @@ def test_compact_wire_contract_rejects_extra_nested_and_wrong_types() -> None:
         {**compact, "unexpected_padding": "x" * 9000},
         {**compact, "tracks": {**compact["tracks"], "other": {"payload": "secret"}}},
         {**compact, "zero_call_evidence": {"attempts": [], "hidden": "secret"}},
+        {
+            **compact,
+            "tracks": {
+                **compact["tracks"],
+                "synthetic_test_review": {
+                    "status": "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED",
+                    "publish_eligible": 0,
+                },
+            },
+        },
         {**compact, "artifact_inventory_count": True},
         {**compact, "artifact_inventory_count": 513},
         {**compact, "artifact_inventory_sha256": "not-digest"},
@@ -1466,7 +1475,6 @@ def test_compact_wire_contract_rejects_extra_nested_and_wrong_types() -> None:
                 {"status": "SYNTHETIC_REHEARSAL_CONFIRMED", "result": {"rehearsal": malformed}},
                 SHA,
             )
-
 
 
 def test_public_report_rejects_self_consistent_untrusted_source_sha() -> None:
@@ -1497,23 +1505,32 @@ def test_worker_error_safe_metadata_and_bounded_journal(tmp_path: Path) -> None:
     launcher._journal(ledger, "CHILD_EXIT_CODE", "2")
     assert launcher._read_journal(ledger)[0] == "ap-" + "A" * 22
     assert launcher._read_worker_error(ledger) == {
-        "class": "AuthError", "phase": "GET_BEGIN",
-        "http_status": 401, "child_exit_code": 2,
+        "class": "AuthError",
+        "phase": "GET_BEGIN",
+        "http_status": 401,
+        "child_exit_code": 2,
     }
-    report = launcher._public_result({
-        "status": "BLOCKED",
-        "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
-        "app_id": "ap-" + "A" * 22,
-        "worker_error": launcher._read_worker_error(ledger),
-        "result": {"secret_raw_payload": "not-released"},
-    }, SHA)
+    report = launcher._public_result(
+        {
+            "status": "BLOCKED",
+            "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
+            "app_id": "ap-" + "A" * 22,
+            "worker_error": launcher._read_worker_error(ledger),
+            "result": {"secret_raw_payload": "not-released"},
+        },
+        SHA,
+    )
     assert report["worker_error"]["http_status"] == 401
     assert report["provider_removal"] == "STOPPED_CONFIRMED_BY_LIST"
     assert "not-released" not in json.dumps(report)
     with pytest.raises(launcher.LaunchBlocked):
-        launcher._public_result({"status": "BLOCKED", "worker_error": {
-            "class": "AuthError", "raw_message": "must-not-leak"
-        }}, SHA)
+        launcher._public_result(
+            {
+                "status": "BLOCKED",
+                "worker_error": {"class": "AuthError", "raw_message": "must-not-leak"},
+            },
+            SHA,
+        )
 
 
 def test_child_nonzero_exposes_fixed_category_and_numeric_code(
@@ -1567,7 +1584,9 @@ def test_internal_worker_records_safe_auth_error_phase_and_status(
     assert app_id == "ap-" + "A" * 22
     assert "WORKER_ERROR" in phases
     assert launcher._read_worker_error(ledger) == {
-        "class": "AuthError", "phase": "GET_BEGIN", "http_status": 401
+        "class": "AuthError",
+        "phase": "GET_BEGIN",
+        "http_status": 401,
     }
     assert "private-raw-provider-error-never-journal" not in ledger.read_text()
 
@@ -1603,14 +1622,20 @@ def test_bounded_parent_retains_typed_worker_error_after_exact_cleanup(tmp_path:
         )
 
     result = launcher._bounded_run(
-        approval, path, digest, deadline_seconds=10,
-        popen=fake_popen, runner=fake_cli,
+        approval,
+        path,
+        digest,
+        deadline_seconds=10,
+        popen=fake_popen,
+        runner=fake_cli,
     )
     assert result["status"] == "BLOCKED"
     assert result["provider_removal"] == "STOPPED_CONFIRMED_BY_LIST"
     assert result["app_id"] == target
     assert result["worker_error"] == {
-        "class": "AuthError", "phase": "GET_BEGIN", "http_status": 401
+        "class": "AuthError",
+        "phase": "GET_BEGIN",
+        "http_status": 401,
     }
     assert "WORKER_NONZERO_OR_TERMINATED" in result["cleanup_errors"]
     assert "WORKER_ERROR" in result["observed_phases"]

@@ -379,22 +379,48 @@ def _validate_child_report(payload: object, sha: str) -> None:
     )
 
 
-
 COMPACT_SCHEMA = "clipper-public-book-modal-compact-v1"
-COMPACT_KEYS = frozenset({
-    "schema", "source_sha", "source_pin", "status", "publish_eligible",
-    "tracks", "zero_call_evidence", "real_model_calls", "network_calls",
-    "publication_calls", "artifact_inventory_sha256", "artifact_inventory_count",
-})
-ERROR_PHASES = frozenset({
-    "WORKSPACE_VERIFY_BEGIN", "BUILD_BEGIN", "APP_RUN_BEGIN", "APP_ID",
-    "SPAWN_BEGIN", "CALL_ID", "GET_BEGIN", "RESULT_ACCEPTED",
-})
-SAFE_WORKER_CLASS = re.compile(r"(?:LaunchBlocked|[A-Za-z_][A-Za-z0-9_]{0,63}(?:Error|Exception))\Z")
-JOURNAL_PHASES = ERROR_PHASES | frozenset({
-    "CALL_CANCEL_ATTEMPTED", "CALL_CANCEL_ERROR", "WORKER_ERROR",
-    "WORKER_ERROR_PHASE", "WORKER_ERROR_HTTP_STATUS", "CHILD_EXIT_CODE",
-})
+COMPACT_KEYS = frozenset(
+    {
+        "schema",
+        "source_sha",
+        "source_pin",
+        "status",
+        "publish_eligible",
+        "tracks",
+        "zero_call_evidence",
+        "real_model_calls",
+        "network_calls",
+        "publication_calls",
+        "artifact_inventory_sha256",
+        "artifact_inventory_count",
+    }
+)
+ERROR_PHASES = frozenset(
+    {
+        "WORKSPACE_VERIFY_BEGIN",
+        "BUILD_BEGIN",
+        "APP_RUN_BEGIN",
+        "APP_ID",
+        "SPAWN_BEGIN",
+        "CALL_ID",
+        "GET_BEGIN",
+        "RESULT_ACCEPTED",
+    }
+)
+SAFE_WORKER_CLASS = re.compile(
+    r"(?:LaunchBlocked|[A-Za-z_][A-Za-z0-9_]{0,63}(?:Error|Exception))\Z"
+)
+JOURNAL_PHASES = ERROR_PHASES | frozenset(
+    {
+        "CALL_CANCEL_ATTEMPTED",
+        "CALL_CANCEL_ERROR",
+        "WORKER_ERROR",
+        "WORKER_ERROR_PHASE",
+        "WORKER_ERROR_HTTP_STATUS",
+        "CHILD_EXIT_CODE",
+    }
+)
 
 
 def _compact_rehearsal(payload: object, sha: str) -> dict[str, object]:
@@ -419,9 +445,9 @@ def _compact_rehearsal(payload: object, sha: str) -> dict[str, object]:
             and bool(HEX64.fullmatch(digest)),
             "invalid relative POSIX artifact inventory",
         )
-    inventory = json.dumps(
-        hashes, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
+    inventory = json.dumps(hashes, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
     _require(len(inventory) <= 65536, "synthetic artifact inventory exceeds 64 KiB")
     compact: dict[str, object] = {
         "schema": COMPACT_SCHEMA,
@@ -449,27 +475,34 @@ def _compact_rehearsal(payload: object, sha: str) -> dict[str, object]:
 
 def _validate_compact_report(payload: object, sha: str) -> None:
     """Strict compact wire contract applied at remote, worker-parent and public edges."""
-    _require(isinstance(payload, dict) and set(payload) == COMPACT_KEYS,
-             "invalid compact report keys")
+    _require(
+        isinstance(payload, dict) and set(payload) == COMPACT_KEYS, "invalid compact report keys"
+    )
     assert isinstance(payload, dict)
     _require(
-        isinstance(sha, str) and bool(HEX40.fullmatch(sha))
+        isinstance(sha, str)
+        and bool(HEX40.fullmatch(sha))
         and payload["schema"] == COMPACT_SCHEMA
-        and type(payload["source_sha"]) is str and payload["source_sha"] == sha
+        and type(payload["source_sha"]) is str
+        and payload["source_sha"] == sha
         and payload["source_pin"] == "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
         and payload["status"] == "SYNTHETIC_CONTRACT_REHEARSAL_PASSED"
         and payload["publish_eligible"] is False,
         "invalid compact identity/status",
     )
     tracks = payload["tracks"]
-    _require(isinstance(tracks, dict) and set(tracks) == {"pause", "synthetic_test_review"},
-             "invalid compact track keys")
+    _require(
+        isinstance(tracks, dict) and set(tracks) == {"pause", "synthetic_test_review"},
+        "invalid compact track keys",
+    )
     assert isinstance(tracks, dict)
     _require(
         type(tracks["pause"]) is dict
         and tracks["pause"] == {"status": "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"}
         and type(tracks["synthetic_test_review"]) is dict
-        and tracks["synthetic_test_review"] == {
+        and tracks["synthetic_test_review"].get("publish_eligible") is False
+        and tracks["synthetic_test_review"]
+        == {
             "status": "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED",
             "publish_eligible": False,
         },
@@ -478,8 +511,10 @@ def _validate_compact_report(payload: object, sha: str) -> None:
     _require(
         type(payload["zero_call_evidence"]) is dict
         and payload["zero_call_evidence"] == {"attempts": []}
-        and all(type(payload[key]) is int and payload[key] == 0
-                for key in ("real_model_calls", "network_calls", "publication_calls")),
+        and all(
+            type(payload[key]) is int and payload[key] == 0
+            for key in ("real_model_calls", "network_calls", "publication_calls")
+        ),
         "invalid compact zero-call evidence",
     )
     _require(
@@ -531,7 +566,6 @@ def _read_journal(path: Path) -> tuple[str | None, list[str]]:
     return app_id, phases
 
 
-
 def _read_worker_error(path: Path) -> dict[str, object] | None:
     """Extract only typed, allowlisted worker failure metadata from bounded journal."""
     if not path.is_file() or path.stat().st_size > 65536:
@@ -561,6 +595,7 @@ def _read_worker_error(path: Path) -> dict[str, object] | None:
     except (OSError, UnicodeError):
         return None
     return found if "class" in found else None
+
 
 def _stop_and_observe(
     app_id: str,
@@ -800,7 +835,8 @@ def _internal_worker(approval: Approval, journal: Path, result_file: Path) -> in
         record("WORKER_ERROR_PHASE", phase)
         code = next(
             (
-                value for value in (
+                value
+                for value in (
                     getattr(exc, "status_code", None),
                     getattr(exc, "http_status", None),
                     getattr(exc, "status", None),
@@ -815,6 +851,7 @@ def _internal_worker(approval: Approval, journal: Path, result_file: Path) -> in
         if type(child_code) is int and -255 <= child_code <= 255:
             record("CHILD_EXIT_CODE", str(child_code))
         return 2
+
 
 class BoundedModalControl:
     """Client identity before resources; image/build runs in a bounded subprocess."""
@@ -860,29 +897,46 @@ def _require_credential_route() -> None:
 def _safe_worker_error(value: object) -> dict[str, object] | None:
     if value is None:
         return None
-    _require(isinstance(value, dict) and bool(value)
-             and set(value) <= {"class", "phase", "http_status", "child_exit_code"}
-             and "class" in value, "invalid worker error metadata")
+    _require(
+        isinstance(value, dict)
+        and bool(value)
+        and set(value) <= {"class", "phase", "http_status", "child_exit_code"}
+        and "class" in value,
+        "invalid worker error metadata",
+    )
     assert isinstance(value, dict)
-    _require(type(value["class"]) is str
-             and bool(SAFE_WORKER_CLASS.fullmatch(value["class"])), "invalid worker class")
+    _require(
+        type(value["class"]) is str and bool(SAFE_WORKER_CLASS.fullmatch(value["class"])),
+        "invalid worker class",
+    )
     if "phase" in value:
-        _require(type(value["phase"]) is str and value["phase"] in ERROR_PHASES,
-                 "invalid worker error phase")
+        _require(
+            type(value["phase"]) is str and value["phase"] in ERROR_PHASES,
+            "invalid worker error phase",
+        )
     if "http_status" in value:
-        _require(type(value["http_status"]) is int
-                 and 100 <= value["http_status"] <= 599, "invalid worker HTTP status")
+        _require(
+            type(value["http_status"]) is int and 100 <= value["http_status"] <= 599,
+            "invalid worker HTTP status",
+        )
     if "child_exit_code" in value:
-        _require(type(value["child_exit_code"]) is int
-                 and -255 <= value["child_exit_code"] <= 255, "invalid child exit code")
+        _require(
+            type(value["child_exit_code"]) is int and -255 <= value["child_exit_code"] <= 255,
+            "invalid child exit code",
+        )
     return dict(value)
 
 
 def _public_result(result: dict[str, object], expected_sha: str) -> dict[str, object]:
     """Expose strictly validated compact evidence, never reconstruct proof."""
     keys = (
-        "status", "provider_removal", "app_id", "observed_phases",
-        "cleanup_errors", "initiator_interrupted", "worker_error",
+        "status",
+        "provider_removal",
+        "app_id",
+        "observed_phases",
+        "cleanup_errors",
+        "initiator_interrupted",
+        "worker_error",
     )
     safe = {key: result.get(key) for key in keys if key in result}
     if "worker_error" in safe:
@@ -892,12 +946,15 @@ def _public_result(result: dict[str, object], expected_sha: str) -> dict[str, ob
     envelope = result.get("result")
     _require(isinstance(envelope, dict), "accepted result envelope missing")
     report = envelope.get("rehearsal")
-    _require(isinstance(expected_sha, str) and bool(HEX40.fullmatch(expected_sha)),
-             "trusted expected source SHA required")
+    _require(
+        isinstance(expected_sha, str) and bool(HEX40.fullmatch(expected_sha)),
+        "trusted expected source SHA required",
+    )
     _validate_compact_report(report, expected_sha)
     assert isinstance(report, dict)
     safe["rehearsal"] = report
     return safe
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
