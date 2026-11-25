@@ -1,4 +1,5 @@
 """Offline-only contract tests for dormant public synthetic Modal launcher."""
+
 from __future__ import annotations
 
 import hashlib
@@ -13,7 +14,6 @@ from typing import Any
 
 import book_modal_cpu_launcher as launcher
 import pytest
-
 
 SHA = "a" * 40
 
@@ -51,7 +51,10 @@ print("INERT")
 """
     observed = subprocess.run(
         [sys.executable, "-c", probe, str(checkout)],
-        capture_output=True, text=True, timeout=15, check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
     )
     assert observed.returncode == 0, observed.stderr
     assert observed.stdout.strip() == "INERT"
@@ -65,7 +68,10 @@ def test_plan_mode_never_imports_sdk_or_provider(
     plan = json.loads(capsys.readouterr().out)
     assert plan["status"] == "DORMANT_PLAN_ONLY"
     assert plan["function_limits"]["cpu"] == [1, 1] or plan["function_limits"]["cpu"] == (1, 1)
-    assert plan["function_limits"]["memory"] == [512, 512] or plan["function_limits"]["memory"] == (512, 512)
+    assert plan["function_limits"]["memory"] == [512, 512] or plan["function_limits"]["memory"] == (
+        512,
+        512,
+    )
     assert plan["function_limits"]["include_source"] is False
     assert plan["function_limits"]["block_network"] is True
     assert plan["function_limits"]["restrict_modal_access"] is True
@@ -90,15 +96,18 @@ def test_no_approval_blocks_before_client_construction(
     assert json.loads(capsys.readouterr().out)["status"] == "DORMANT_LAUNCH_BLOCKED"
 
 
-@pytest.mark.parametrize("change", [
-    {"execution_permission": False},
-    {"source_sha": "b" * 40},
-    {"workspace": ""},
-    {"credential_route": "unknown"},
-    {"cost_ceiling_usd": "0.00"},
-    {"expires_utc": "2000-01-01T00:00:00+00:00"},
-    {"expires_utc": "2999-01-01T00:00:00+00:00"},
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"execution_permission": False},
+        {"source_sha": "b" * 40},
+        {"workspace": ""},
+        {"credential_route": "unknown"},
+        {"cost_ceiling_usd": "0.00"},
+        {"expires_utc": "2000-01-01T00:00:00+00:00"},
+        {"expires_utc": "2999-01-01T00:00:00+00:00"},
+    ],
+)
 def test_invalid_external_approval_rejected(tmp_path: Path, change: dict[str, Any]) -> None:
     path, digest = _manifest(tmp_path, **change)
     with pytest.raises(launcher.LaunchBlocked):
@@ -190,14 +199,18 @@ def test_local_source_fails_on_foreign_or_dirty_source(monkeypatch: pytest.Monke
 def test_child_function_uses_only_synthetic_cli_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     checkout = Path("/opt/clipper")
     fake_payload = {
-        "source_sha": SHA, "status": "SYNTHETIC_CONTRACT_REHEARSAL_PASSED",
+        "source_sha": SHA,
+        "status": "SYNTHETIC_CONTRACT_REHEARSAL_PASSED",
         "source_pin": "VERIFIED_CLEAN_LOCAL_GIT_HEAD",
         "publish_eligible": False,
         "tracks": {"pause": {"status": "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"}},
         "zero_call_evidence": {"attempts": []},
         "artifact_sha256": {"track.json": "b" * 64},
-        "elapsed_seconds": 0.2, "peak_rss_kib_platform": 32000,
-        "real_model_calls": 0, "network_calls": 0, "publication_calls": 0,
+        "elapsed_seconds": 0.2,
+        "peak_rss_kib_platform": 32000,
+        "real_model_calls": 0,
+        "network_calls": 0,
+        "publication_calls": 0,
     }
     calls: list[dict[str, Any]] = []
 
@@ -396,28 +409,34 @@ def test_stop_and_list_terminal_evidence_requires_exact_id_zero_tasks() -> None:
         commands.append(argv)
         if "stop" in argv:
             return SimpleNamespace(returncode=0, stdout="")
-        return SimpleNamespace(returncode=0, stdout=json.dumps([{"app_id": "ap-synthetic-1", "state": "stopped", "tasks": "0"}]))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps([{"app_id": "ap-synthetic-1", "state": "stopped", "tasks": "0"}]),
+        )
 
     result = launcher._stop_and_observe(
-        "ap-synthetic-1", "qualification", time.monotonic() + 10,
+        "ap-synthetic-1",
+        "qualification",
+        time.monotonic() + 10,
         runner=fake_cli,
     )
     assert result == (True, [])
     assert commands[0][-1] == "ap-synthetic-1"
-    assert commands[0] == [
-        "modal", "app", "stop", "-y", "--env", "qualification", "ap-synthetic-1"
-    ]
-    assert commands[1] == [
-        "modal", "app", "list", "--json", "--env", "qualification"
-    ]
+    assert commands[0] == ["modal", "app", "stop", "-y", "--env", "qualification", "ap-synthetic-1"]
+    assert commands[1] == ["modal", "app", "list", "--json", "--env", "qualification"]
 
     def failed_stop(argv: list[str], **_kw: object) -> SimpleNamespace:
         if "stop" in argv:
             return SimpleNamespace(returncode=1, stdout="")
-        return SimpleNamespace(returncode=0, stdout=json.dumps([{"app_id": "ap-synthetic-1", "state": "stopped", "tasks": "0"}]))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps([{"app_id": "ap-synthetic-1", "state": "stopped", "tasks": "0"}]),
+        )
 
     confirmed, errors = launcher._stop_and_observe(
-        "ap-synthetic-1", "qualification", time.monotonic() + 10,
+        "ap-synthetic-1",
+        "qualification",
+        time.monotonic() + 10,
         runner=failed_stop,
     )
     assert confirmed is False
@@ -425,7 +444,8 @@ def test_stop_and_list_terminal_evidence_requires_exact_id_zero_tasks() -> None:
 
 
 def test_build_stall_retains_unknown_cleanup_without_app_id(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path, digest = _manifest(tmp_path)
     approval = launcher.load_approval(path, digest, SHA)
@@ -442,7 +462,10 @@ def test_build_stall_retains_unknown_cleanup_without_app_id(
 
     monkeypatch.setattr(launcher.os, "killpg", lambda *_args: None)
     outcome = launcher._bounded_run(
-        approval, path, digest, deadline_seconds=1,
+        approval,
+        path,
+        digest,
+        deadline_seconds=1,
         popen=lambda *_args, **_kw: StuckProcess(),
         runner=lambda *_args, **_kw: (_ for _ in ()).throw(
             AssertionError("no App ID: cannot issue stop against guessed id")
@@ -475,21 +498,33 @@ def test_stop_failure_retains_exact_app_id_and_blocks(tmp_path: Path) -> None:
         launcher._journal(journal, "APP_RUN_BEGIN")
         launcher._journal(journal, "APP_ID", "ap-synthetic-known")
         launcher._journal(journal, "CALL_ID", "fc-synthetic-known")
-        result_file.write_text(json.dumps({
-            "rehearsal": _valid_child_output(),
-            "app_id": "ap-synthetic-known", "call_id": "fc-synthetic-known",
-        }))
+        result_file.write_text(
+            json.dumps(
+                {
+                    "rehearsal": _valid_child_output(),
+                    "app_id": "ap-synthetic-known",
+                    "call_id": "fc-synthetic-known",
+                }
+            )
+        )
         return CompletedProcess()
 
     def fake_cli(argv: list[str], **_kw: object) -> SimpleNamespace:
         recorded.append(argv)
         if "stop" in argv:
             return SimpleNamespace(returncode=1, stdout="")
-        return SimpleNamespace(returncode=0, stdout=json.dumps([{"app_id": "ap-synthetic-known", "state": "stopped", "tasks": "0"}]))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps([{"app_id": "ap-synthetic-known", "state": "stopped", "tasks": "0"}]),
+        )
 
     outcome = launcher._bounded_run(
-        approval, path, digest, deadline_seconds=10,
-        popen=fake_popen, runner=fake_cli,
+        approval,
+        path,
+        digest,
+        deadline_seconds=10,
+        popen=fake_popen,
+        runner=fake_cli,
     )
     assert outcome["status"] == "BLOCKED"
     assert outcome["app_id"] == "ap-synthetic-known"
@@ -515,12 +550,22 @@ def test_live_cli_cannot_spend_on_receipt_string_alone(
         raise AssertionError("budget gate incorrectly permitted client")
 
     monkeypatch.setattr(launcher, "BoundedModalControl", forbidden)
-    assert launcher.main([
-        "--execute", "--expected-sha", SHA,
-        "--approval-file", str(path),
-        "--approval-sha256", digest,
-        "--independent-control-receipt", "independent-ctrl-123",
-    ]) == 2
+    assert (
+        launcher.main(
+            [
+                "--execute",
+                "--expected-sha",
+                SHA,
+                "--approval-file",
+                str(path),
+                "--approval-sha256",
+                digest,
+                "--independent-control-receipt",
+                "independent-ctrl-123",
+            ]
+        )
+        == 2
+    )
     assert created == []
     assert json.loads(capsys.readouterr().out)["status"] == "DORMANT_LAUNCH_BLOCKED"
 
@@ -539,14 +584,24 @@ def test_internal_worker_cannot_bypass_budget_gate(
         raise AssertionError("internal worker bypassed budget")
 
     monkeypatch.setattr(launcher, "_internal_worker", forbidden)
-    assert launcher.main([
-        "--internal-worker",
-        "--expected-sha", SHA,
-        "--approval-file", str(path),
-        "--approval-sha256", digest,
-        "--journal", str(tmp_path / "journal.jsonl"),
-        "--result-file", str(tmp_path / "result.json"),
-    ]) == 2
+    assert (
+        launcher.main(
+            [
+                "--internal-worker",
+                "--expected-sha",
+                SHA,
+                "--approval-file",
+                str(path),
+                "--approval-sha256",
+                digest,
+                "--journal",
+                str(tmp_path / "journal.jsonl"),
+                "--result-file",
+                str(tmp_path / "result.json"),
+            ]
+        )
+        == 2
+    )
     assert called == []
     assert json.loads(capsys.readouterr().out)["status"] == "DORMANT_LAUNCH_BLOCKED"
 
@@ -561,9 +616,8 @@ def test_list_unknown_and_mismatched_states_never_claim_stop() -> None:
         [{"app_id": "ap-a", "state": "stopped", "tasks": "0"}] * 2,
         {"app_id": "ap-a", "state": "stopped", "tasks": "0"},
     ):
-        def fake_cli(
-            argv: list[str], rows: object = rows, **_kw: object
-        ) -> SimpleNamespace:
+
+        def fake_cli(argv: list[str], rows: object = rows, **_kw: object) -> SimpleNamespace:
             if "stop" in argv:
                 return SimpleNamespace(returncode=0, stdout="")
             return SimpleNamespace(returncode=0, stdout=json.dumps(rows))
@@ -606,8 +660,12 @@ def test_stop_preserves_prior_cancel_and_journal_failures(tmp_path: Path) -> Non
         )
 
     output = launcher._bounded_run(
-        approval, path, digest, deadline_seconds=10,
-        popen=fake_popen, runner=fake_cli,
+        approval,
+        path,
+        digest,
+        deadline_seconds=10,
+        popen=fake_popen,
+        runner=fake_cli,
     )
     assert output["status"] == "BLOCKED"
     assert "CALL_CANCEL_ERROR" in output["cleanup_errors"]
@@ -639,7 +697,10 @@ def test_parent_retains_bounded_diagnostics_only(tmp_path: Path) -> None:
         return Finished()
 
     output = launcher._bounded_run(
-        approval, path, digest, deadline_seconds=10,
+        approval,
+        path,
+        digest,
+        deadline_seconds=10,
         popen=fake_popen,
     )
     assert output["status"] == "BLOCKED"

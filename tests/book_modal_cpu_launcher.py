@@ -3,6 +3,7 @@
 Default CLI only verifies local source and prints a plan: no Modal import.
 Live execute is separately authorized, currently not approved. No workflow.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -73,12 +74,17 @@ def _git(checkout: Path, *args: str) -> str:
 
 def local_source(checkout: Path, sha: str) -> None:
     _require(bool(HEX40.fullmatch(sha)), "explicit full source SHA required")
-    _require(checkout.resolve() == Path(__file__).resolve().parents[1], "launcher must use own checkout")
+    _require(
+        checkout.resolve() == Path(__file__).resolve().parents[1], "launcher must use own checkout"
+    )
     _require(_git(checkout, "rev-parse", "HEAD") == sha, "source checkout SHA differs")
-    _require(not _git(checkout, "status", "--porcelain=v1", "--untracked-files=all"),
-             "source checkout is not clean")
-    _require((checkout / "tests" / "book_public_rehearsal.py").is_file(),
-             "rehearsal entrypoint missing")
+    _require(
+        not _git(checkout, "status", "--porcelain=v1", "--untracked-files=all"),
+        "source checkout is not clean",
+    )
+    _require(
+        (checkout / "tests" / "book_public_rehearsal.py").is_file(), "rehearsal entrypoint missing"
+    )
 
 
 @dataclass(frozen=True)
@@ -99,39 +105,60 @@ def load_approval(path: Path, digest: str, sha: str, *, now: datetime | None = N
     _require(hashlib.sha256(raw).hexdigest() == digest, "approval digest mismatch")
     data = _json(path)
     expected = {
-        "schema", "intent", "source_sha", "workspace", "environment",
-        "credential_route", "expires_utc", "cost_ceiling_usd",
-        "external_control_id", "execution_permission",
+        "schema",
+        "intent",
+        "source_sha",
+        "workspace",
+        "environment",
+        "credential_route",
+        "expires_utc",
+        "cost_ceiling_usd",
+        "external_control_id",
+        "execution_permission",
     }
     _require(set(data) == expected, "approval fields mismatch")
     _require(data["schema"] == "clipper-modal-book-launch-approval-v1", "approval schema mismatch")
     _require(data["intent"] == INTENT, "wrong operation authorized")
     _require(data["execution_permission"] is True, "no explicit permission")
-    _require(isinstance(data["source_sha"], str) and data["source_sha"] == sha,
-             "approval SHA mismatch")
+    _require(
+        isinstance(data["source_sha"], str) and data["source_sha"] == sha, "approval SHA mismatch"
+    )
     for key in ("workspace", "environment", "credential_route", "external_control_id"):
         value = data[key]
-        _require(isinstance(value, str) and bool(re.fullmatch(r"[A-Za-z0-9_.:/-]{3,128}", value)),
-                 "invalid or missing approval " + key)
+        _require(
+            isinstance(value, str) and bool(re.fullmatch(r"[A-Za-z0-9_.:/-]{3,128}", value)),
+            "invalid or missing approval " + key,
+        )
     _require(
         data["credential_route"] in {"explicit-modal-profile", "actions-existing-secret-route"},
         "unapproved credential route",
     )
-    _require(isinstance(data["cost_ceiling_usd"], str) and bool(
-        re.fullmatch(r"(?:0|[1-9][0-9]{0,3})\.[0-9]{2}", data["cost_ceiling_usd"])
-    ) and float(data["cost_ceiling_usd"]) > 0, "explicit positive cost cap required")
+    _require(
+        isinstance(data["cost_ceiling_usd"], str)
+        and bool(re.fullmatch(r"(?:0|[1-9][0-9]{0,3})\.[0-9]{2}", data["cost_ceiling_usd"]))
+        and float(data["cost_ceiling_usd"]) > 0,
+        "explicit positive cost cap required",
+    )
     try:
         expiry = datetime.fromisoformat(data["expires_utc"].replace("Z", "+00:00"))
     except (ValueError, TypeError, AttributeError) as exc:
         raise LaunchBlocked("invalid UTC approval expiry") from exc
-    _require(expiry.tzinfo is not None and expiry.utcoffset().total_seconds() == 0,
-             "approval expiry must be UTC")
+    _require(
+        expiry.tzinfo is not None and expiry.utcoffset().total_seconds() == 0,
+        "approval expiry must be UTC",
+    )
     current = now if now is not None else datetime.now(UTC)
     _require(current < expiry, "approval expired")
-    _require((expiry-current).total_seconds() <= 3600, "approval exceeds one-hour validity")
-    return Approval(sha, data["workspace"], data["environment"],
-                    data["credential_route"], expiry,
-                    data["cost_ceiling_usd"], data["external_control_id"])
+    _require((expiry - current).total_seconds() <= 3600, "approval exceeds one-hour validity")
+    return Approval(
+        sha,
+        data["workspace"],
+        data["environment"],
+        data["credential_route"],
+        expiry,
+        data["cost_ceiling_usd"],
+        data["external_control_id"],
+    )
 
 
 def _remote_child(sha: str) -> dict[str, object]:
@@ -150,24 +177,38 @@ def _run_synthetic_child(checkout: Path, output: Path, sha: str) -> dict[str, ob
     import os as child_os
     import subprocess as child_subprocess
 
-    env = {"PATH": child_os.environ.get("PATH", "/usr/bin:/bin"),
-           "PYTHONPATH": str(checkout / "src") + ":" + str(checkout / "tests"),
-           "HOME": str(output.parent),
-           "PYTHONDONTWRITEBYTECODE": "1"}
+    env = {
+        "PATH": child_os.environ.get("PATH", "/usr/bin:/bin"),
+        "PYTHONPATH": str(checkout / "src") + ":" + str(checkout / "tests"),
+        "HOME": str(output.parent),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
     proc = child_subprocess.run(
-        ["python", str(checkout / "tests" / "book_public_rehearsal.py"),
-         "--fresh-root", str(output), "--expected-sha", sha],
-        cwd=checkout, env=env, capture_output=True, text=True,
-        check=False, timeout=25,
+        [
+            "python",
+            str(checkout / "tests" / "book_public_rehearsal.py"),
+            "--fresh-root",
+            str(output),
+            "--expected-sha",
+            sha,
+        ],
+        cwd=checkout,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=25,
     )
     if proc.returncode != 0 or len(proc.stdout) > 220_000:
         raise RuntimeError("synthetic child failed; full output withheld")
     payload = child_json.loads(proc.stdout)
     if not isinstance(payload, dict) or payload.get("source_sha") != sha:
         raise RuntimeError("unexpected synthetic result identity")
-    if (payload.get("status") != "SYNTHETIC_CONTRACT_REHEARSAL_PASSED"
-            or payload.get("publish_eligible") is not False
-            or payload.get("source_pin") != "VERIFIED_CLEAN_LOCAL_GIT_HEAD"):
+    if (
+        payload.get("status") != "SYNTHETIC_CONTRACT_REHEARSAL_PASSED"
+        or payload.get("publish_eligible") is not False
+        or payload.get("source_pin") != "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
+    ):
         raise RuntimeError("synthetic result not accepted")
     return {
         "source_sha": sha,
@@ -221,11 +262,10 @@ class ModalControl:
         record("BUILD_BEGIN", "")
         clone = (
             "set -eu; export GIT_TERMINAL_PROMPT=0; "
-            "git -c credential.helper= clone --no-checkout "
-            + SOURCE_URL + " /opt/clipper; "
+            "git -c credential.helper= clone --no-checkout " + SOURCE_URL + " /opt/clipper; "
             "git -C /opt/clipper checkout --detach " + sha + "; "
-            "test \"$(git -C /opt/clipper rev-parse HEAD)\" = " + sha + "; "
-            "test -z \"$(git -C /opt/clipper status --porcelain=v1 --untracked-files=all)\"; "
+            'test "$(git -C /opt/clipper rev-parse HEAD)" = ' + sha + "; "
+            'test -z "$(git -C /opt/clipper status --porcelain=v1 --untracked-files=all)"; '
             "test -f /opt/clipper/tests/book_public_rehearsal.py"
         )
         image = (
@@ -244,23 +284,28 @@ class ModalControl:
         # parent retains BUILD/APP_RUN_BEGIN with unknown resource identity.
         with app.run(client=client, detach=False, environment_name=approval.environment):
             app_id = getattr(app, "app_id", None)
-            _require(isinstance(app_id, str) and bool(re.fullmatch(r"ap-[A-Za-z0-9-]+", app_id)),
-                     "App id missing")
+            _require(
+                isinstance(app_id, str) and bool(re.fullmatch(r"ap-[A-Za-z0-9-]+", app_id)),
+                "App id missing",
+            )
             record("APP_ID", app_id)
             call: Any = None
             try:
                 record("SPAWN_BEGIN", app_id)
                 call = function.spawn(sha)
                 call_id = getattr(call, "object_id", None)
-                _require(isinstance(call_id, str) and bool(call_id),
-                         "FunctionCall id missing")
+                _require(isinstance(call_id, str) and bool(call_id), "FunctionCall id missing")
                 record("CALL_ID", call_id)
                 record("GET_BEGIN", call_id)
                 output = call.get(timeout=30)
                 _validate_child_report(output, sha)
                 record("RESULT_ACCEPTED", call_id)
-                return {"source_sha": sha, "app_id": app_id, "call_id": call_id,
-                        "rehearsal": output}
+                return {
+                    "source_sha": sha,
+                    "app_id": app_id,
+                    "call_id": call_id,
+                    "rehearsal": output,
+                }
             finally:
                 # Cancellation runs BEFORE potentially blocking __exit__.
                 if call is not None:
@@ -274,11 +319,16 @@ class ModalControl:
 def _validate_child_report(payload: object, sha: str) -> None:
     _require(isinstance(payload, dict), "synthetic result not a dictionary")
     assert isinstance(payload, dict)
-    _require(payload.get("source_sha") == sha
-             and payload.get("source_pin") == "VERIFIED_CLEAN_LOCAL_GIT_HEAD",
-             "synthetic source pin mismatch")
-    _require(payload.get("status") == "SYNTHETIC_CONTRACT_REHEARSAL_PASSED"
-             and payload.get("publish_eligible") is False, "synthetic status rejected")
+    _require(
+        payload.get("source_sha") == sha
+        and payload.get("source_pin") == "VERIFIED_CLEAN_LOCAL_GIT_HEAD",
+        "synthetic source pin mismatch",
+    )
+    _require(
+        payload.get("status") == "SYNTHETIC_CONTRACT_REHEARSAL_PASSED"
+        and payload.get("publish_eligible") is False,
+        "synthetic status rejected",
+    )
     tracks = payload.get("tracks")
     _require(isinstance(tracks, dict), "synthetic tracks missing")
     assert isinstance(tracks, dict)
@@ -295,12 +345,13 @@ def _validate_child_report(payload: object, sha: str) -> None:
         "synthetic test continuation invalid",
     )
     proof = payload.get("zero_call_evidence")
-    _require(isinstance(proof, dict) and proof.get("attempts") == [],
-             "guard attempts not empty")
-    _require(payload.get("real_model_calls") == 0
-             and payload.get("network_calls") == 0
-             and payload.get("publication_calls") == 0,
-             "synthetic zero-call evidence invalid")
+    _require(isinstance(proof, dict) and proof.get("attempts") == [], "guard attempts not empty")
+    _require(
+        payload.get("real_model_calls") == 0
+        and payload.get("network_calls") == 0
+        and payload.get("publication_calls") == 0,
+        "synthetic zero-call evidence invalid",
+    )
 
 
 def _journal(path: Path, phase: str, item: str = "") -> None:
@@ -375,25 +426,26 @@ def _stop_and_observe(
         if not isinstance(rows, list):
             errors.append("list:invalid_schema")
             continue
-        matches = [
-            item for item in rows
-            if isinstance(item, dict) and item.get("app_id") == app_id
-        ]
+        matches = [item for item in rows if isinstance(item, dict) and item.get("app_id") == app_id]
         if len(matches) != 1:
             errors.append("list:exact_id_not_found_or_duplicate")
             continue
         row = matches[0]
-        if (row.get("state") == "stopped" and row.get("tasks") == "0"
-                and stopped and not errors):
+        if row.get("state") == "stopped" and row.get("tasks") == "0" and stopped and not errors:
             return True, []
         errors.append("list:terminal_or_tasks_unconfirmed")
     return False, errors
 
 
-def _bounded_run(approval: Approval, manifest_path: Path, digest: str,
-                 *, deadline_seconds: float = 120,
-                 popen: Any = subprocess.Popen,
-                 runner: Any = subprocess.run) -> dict[str, object]:
+def _bounded_run(
+    approval: Approval,
+    manifest_path: Path,
+    digest: str,
+    *,
+    deadline_seconds: float = 120,
+    popen: Any = subprocess.Popen,
+    runner: Any = subprocess.run,
+) -> dict[str, object]:
     """One bounded control-plane process, plus bounded exact-ID stop/list."""
     _require(0 < deadline_seconds <= 180, "unbounded control-plane deadline")
     deadline = time.monotonic() + deadline_seconds
@@ -402,22 +454,34 @@ def _bounded_run(approval: Approval, manifest_path: Path, digest: str,
         ledger, result_file = folder / "ids.jsonl", folder / "result.json"
         stdout_file, stderr_file = folder / "worker.stdout", folder / "worker.stderr"
         command = [
-            sys.executable, str(Path(__file__).resolve()), "--internal-worker",
-            "--expected-sha", approval.source_sha,
-            "--approval-file", str(manifest_path), "--approval-sha256", digest,
-            "--journal", str(ledger), "--result-file", str(result_file),
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--internal-worker",
+            "--expected-sha",
+            approval.source_sha,
+            "--approval-file",
+            str(manifest_path),
+            "--approval-sha256",
+            digest,
+            "--journal",
+            str(ledger),
+            "--result-file",
+            str(result_file),
         ]
         # Capture only bounded diagnostic digests/sizes; never expose raw
         # stdout/stderr, which might contain provider or environment details.
         with stdout_file.open("wb") as stdout_sink, stderr_file.open("wb") as stderr_sink:
             proc = popen(
-                command, cwd=Path(__file__).resolve().parents[1],
-                start_new_session=True, stdout=stdout_sink, stderr=stderr_sink
+                command,
+                cwd=Path(__file__).resolve().parents[1],
+                start_new_session=True,
+                stdout=stdout_sink,
+                stderr=stderr_sink,
             )
         timed_out = False
         process_cleanup_errors: list[str] = []
         try:
-            proc.wait(timeout=max(0.1, deadline-time.monotonic()-20))
+            proc.wait(timeout=max(0.1, deadline - time.monotonic() - 20))
         except subprocess.TimeoutExpired:
             timed_out = True
         finally:
@@ -427,7 +491,7 @@ def _bounded_run(approval: Approval, manifest_path: Path, digest: str,
                 except (OSError, ProcessLookupError) as exc:
                     process_cleanup_errors.append("KILL_GROUP:" + type(exc).__name__)
                 try:
-                    proc.wait(timeout=min(2.0, max(0.1, deadline-time.monotonic())))
+                    proc.wait(timeout=min(2.0, max(0.1, deadline - time.monotonic())))
                 except subprocess.TimeoutExpired:
                     timed_out = True
         app_id, phases = _read_journal(ledger)
@@ -471,9 +535,9 @@ def _bounded_run(approval: Approval, manifest_path: Path, digest: str,
         else:
             cleanup_errors.append("NO_RESULT")
         return {
-            "status": "SYNTHETIC_REHEARSAL_CONFIRMED" if (
-                confirmed and not cleanup_errors and output is not None
-            ) else "BLOCKED",
+            "status": "SYNTHETIC_REHEARSAL_CONFIRMED"
+            if (confirmed and not cleanup_errors and output is not None)
+            else "BLOCKED",
             "provider_removal": "STOPPED_CONFIRMED_BY_LIST" if confirmed else "UNKNOWN",
             "app_id": app_id,
             "observed_phases": phases,
@@ -514,8 +578,9 @@ class BoundedModalControl:
         return _bounded_run(approval, self.manifest_path, self.digest)
 
 
-def execute(sha: str, approval: Approval, control: Control,
-            *, external_control_verified: bool) -> dict[str, object]:
+def execute(
+    sha: str, approval: Approval, control: Control, *, external_control_verified: bool
+) -> dict[str, object]:
     _require(external_control_verified, "independent lifecycle control not verified")
     _require(approval.source_sha == sha, "approval source mismatch")
     _require(datetime.now(UTC) < approval.expires_utc, "approval expired before execution")
@@ -547,17 +612,35 @@ def main(argv: list[str] | None = None) -> int:
             # the outer --execute blocker by supplying its arguments.
             raise LaunchBlocked("internal worker disabled pending hard budget gate")
         if not args.execute:
-            _require(not any((args.approval_file, args.approval_sha256,
-                              args.independent_control_receipt,
-                              args.journal, args.result_file)),
-                     "plan mode accepts no execution/credential fields")
-            print(json.dumps({"status": "DORMANT_PLAN_ONLY",
-                              "source_sha": args.expected_sha,
-                              "intent": INTENT, "function_limits": LIMITS,
-                              "credential_or_modal_import": False}, sort_keys=True))
+            _require(
+                not any(
+                    (
+                        args.approval_file,
+                        args.approval_sha256,
+                        args.independent_control_receipt,
+                        args.journal,
+                        args.result_file,
+                    )
+                ),
+                "plan mode accepts no execution/credential fields",
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": "DORMANT_PLAN_ONLY",
+                        "source_sha": args.expected_sha,
+                        "intent": INTENT,
+                        "function_limits": LIMITS,
+                        "credential_or_modal_import": False,
+                    },
+                    sort_keys=True,
+                )
+            )
             return 0
-        _require(args.approval_file is not None and args.approval_sha256 is not None,
-                 "separate owner approval required")
+        _require(
+            args.approval_file is not None and args.approval_sha256 is not None,
+            "separate owner approval required",
+        )
         approval = load_approval(args.approval_file, args.approval_sha256, args.expected_sha)
         _require(
             args.independent_control_receipt == approval.external_control_id,
@@ -568,11 +651,15 @@ def main(argv: list[str] | None = None) -> int:
         token_id = os.environ.get("MODAL_TOKEN_ID", "")
         token_secret = os.environ.get("MODAL_TOKEN_SECRET", "")
         if approval.credential_route == "explicit-modal-profile":
-            _require(bool(profile) and not token_id and not token_secret,
-                     "explicit profile required without environment token overrides")
+            _require(
+                bool(profile) and not token_id and not token_secret,
+                "explicit profile required without environment token overrides",
+            )
         else:
-            _require(bool(token_id) and bool(token_secret) and not profile,
-                     "existing Actions token pair required without profile ambiguity")
+            _require(
+                bool(token_id) and bool(token_secret) and not profile,
+                "existing Actions token pair required without profile ambiguity",
+            )
         # A parsed dollar amount and a matching receipt string are not
         # independently enforceable spend authority. The bounded subprocess
         # and cleanup controls are implemented/testable offline, but a live
@@ -581,8 +668,7 @@ def main(argv: list[str] | None = None) -> int:
         raise LaunchBlocked("independent enforceable account budget cap missing")
         # No live execution branch is reachable until a separately reviewed
         # authenticated budget control replaces the explicit blocker above.
-    except (LaunchBlocked, OSError, ValueError, json.JSONDecodeError,
-            subprocess.SubprocessError):
+    except (LaunchBlocked, OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
         print(json.dumps({"status": "DORMANT_LAUNCH_BLOCKED"}))
         return 2
 
