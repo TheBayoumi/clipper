@@ -654,8 +654,12 @@ def test_human_review_requires_exact_brief_and_each_unit_and_beat() -> None:
         hybrid.validate_human_review(approval, brief, ledger)
 
 
-def _selected_hybrid_source(tmp_path: Path) -> tuple[BookOrchestrator, Path, Path]:
-    runner, selected, _data = _bundle(tmp_path, with_image=True)
+def _selected_hybrid_source(
+    tmp_path: Path, *, section_index: int = 0
+) -> tuple[BookOrchestrator, Path, Path]:
+    runner, selected, _data = _bundle(
+        tmp_path, with_image=True, section_index=section_index
+    )
     verified = selected_scope.import_chapter(runner.root, selected)
     section = selected_scope._section_manifest(verified.ref, verified.book, verified.work)
     path = runner.root / "book-candidates" / "section-scopes" / "chapter.json"

@@ -435,3 +435,30 @@ without changing host handlers or masks. The host must keep this state stable.
 The earlier arbitrary-host-handler exception/retry guarantee is **withdrawn**.
 See [the exact host contract](docs/modal_cpu_infra_offline_qualification.md).
 No live provider approval or account bootstrap is provided.
+
+
+## Public synthetic book-chapter rehearsal (offline candidate)
+
+An **opt-in, model-free, test-only** harness at
+`tests/book_public_rehearsal.py` reuses existing public synthetic EPUB
+fixtures and the real selected-source exporter/importer, chapter hybrid
+evaluator, validators, stage evidence and replay. It is **not** the Modal
+media/campaign pipeline, a chapter-host identity bypass, or real chapter
+analysis. Two isolated tracks stop at the real human-review checkpoint and,
+separately, use an explicitly **synthetic test review** to validate downstream
+adaptation/script/fake PCM/direction. Neither track becomes publishable.
+
+The CLI requires a checked-out exact Git SHA and a fresh absolute local output
+root; the harness blocks dangerous imports, model/provider entrypoints,
+network connections, subprocess launching during the scenario, source mining
+and publication attempts. It does **not** initialize Modal, clients, accounts,
+hosts, models or credentials, and never deploys or spends. It produces a
+machine-readable synthetic report with provenance and artifact hashes, callback
+counts, adversarial rejection results, wall time and peak RSS.
+
+See [model-free chapter rehearsal contract](docs/BOOK_MODAL_PUBLIC_REHEARSAL.md)
+for the explicit local invocation, security/coverage boundaries, dependencies,
+and the **separate** proposal for a future single CPU-only Modal job. There is
+no remote launcher or spending approval. The previously qualified offline Modal
+infrastructure owner/driver remain unchanged. This harness is **UNQUALIFIED**
+pending independent runnable tests, full exact-SHA CI/95% and final review.

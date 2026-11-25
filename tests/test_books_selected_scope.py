@@ -13,16 +13,18 @@ from clipper.books import chapter, evaluation, scripting, selected_scope, whole_
 from clipper.books.orchestrator import BookOrchestrator
 
 
-def _bundle(tmp_path: Path, *, with_image: bool = True) -> tuple[BookOrchestrator, Path, dict]:
+def _bundle(
+    tmp_path: Path, *, with_image: bool = True, section_index: int = 0
+) -> tuple[BookOrchestrator, Path, dict]:
     owner = tmp_path / "owner"
     owner.mkdir()
     exporter, acquired, _ = ingested(owner, paragraphs=8, with_image=with_image)
-    section = acquired.book.sections[0].chapter_id
+    section = acquired.book.sections[section_index].chapter_id
     original_plan = whole_book.plan_for(acquired.book, section_ids=(section,))
     filename, digest = selected_scope.export_chapter(
         exporter,
         acquired.analysis_ref_path,
-        chapter_number=1,
+        chapter_number=section_index + 1,
         chapter_section_ids=(section,),
     )
     assert hashlib.sha256(filename.read_bytes()).hexdigest() == digest
