@@ -126,3 +126,27 @@ This candidate requires exact-SHA local test/Ruff/mypy verification, full
 CI with the unchanged 95% coverage gate, and a fresh independent read-only
 review before claiming **rehearsal harness qualification**. Even then it
 would not authorize a live Modal run.
+
+
+## REACHED1142 candidate correction (UNQUALIFIED)
+
+The no-callback `brief_cpu=True` path fails **before** stage reservation
+with `ChapterStop("hybrid injected-test tokenizer counter is required")`.
+The harness asserts this exact production preflight outcome, the absence of
+any `hybrid_argument` attempt directory, and no injected callbacks rather
+than expecting the later `ChapterHostBlocked` path. The production code is
+unchanged.
+
+The CLI resolves its checkout from `__file__` (not the caller's CWD),
+verifies the explicit Git HEAD, and requires a wholly clean tracked/untracked
+worktree before reporting `VERIFIED_CLEAN_LOCAL_GIT_HEAD`. The direct
+Python API cannot independently prove its claimed source SHA and retains an
+explicit unverified source-pin label. An independent-process CLI regression
+uses the genuine checkout and emits a timing/RSS artifact report; this test
+requires a clean CI checkout.
+
+Zero-call fields are explicitly **scoped to the guarded Python APIs**, and
+the report inventories import roots, network hooks and model/source provider
+hooks which the process-local guard blocks. They are not assertions about
+all kernel/native APIs. This is not a network-namespace firewall and never
+authorizes provider use or a remote run.

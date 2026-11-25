@@ -7,12 +7,12 @@ import json
 import os
 import socket
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import book_public_rehearsal as rehearsal
+import pytest
 
 
 SHA = "a" * 40
@@ -53,6 +53,12 @@ def test_two_distinct_public_tracks_and_adversarial_contracts(tmp_path: Path) ->
     assert result["network_calls"] == 0
     assert result["publication_calls"] == 0
     assert result["prohibited_attempts"] == []
+    evidence = result["zero_call_evidence"]
+    assert evidence["scope"] == "IN_PROCESS_PATCHED_PYTHON_APIS_ONLY"
+    assert evidence["attempts"] == []
+    assert evidence["not_a_kernel_network_or_native_io_guard"] is True
+    assert "torch" in evidence["import_roots_denied"]
+    assert "socket.connect" in evidence["network_guards"]
     assert set(result["adversarial"]) == {
         "stale_review",
         "source_tamper",
@@ -102,7 +108,7 @@ def test_guards_prohibit_network_subprocess_model_import_and_restore() -> None:
             lambda: builtins.__import__("modal"),
             lambda: socket.create_connection(("127.0.0.1", 9)),
             lambda: subprocess.Popen(["echo", "forbidden"]),
-            lambda: os.system("echo forbidden"),
+            lambda: getattr(os, "system")("echo forbidden"),
         ):
             with pytest.raises(rehearsal.RehearsalStop, match="prohibited operation"):
                 callback()
@@ -129,9 +135,12 @@ def test_cli_requires_actual_checkout_pin_before_rehearsal(
 def test_cli_explicit_git_match_reports_verified_pin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(
-        rehearsal.subprocess, "run", lambda *_a, **_kw: SimpleNamespace(stdout=SHA + "\n")
-    )
+    def fake_git(argv: list[str], **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            stdout=SHA + "\n" if "rev-parse" in argv else ""
+        )
+
+    monkeypatch.setattr(rehearsal.subprocess, "run", fake_git)
     monkeypatch.setattr(
         rehearsal,
         "rehearse",
@@ -139,4 +148,74 @@ def test_cli_explicit_git_match_reports_verified_pin(
     )
     assert rehearsal.main(["--fresh-root", str(tmp_path / "new"), "--expected-sha", SHA]) == 0
     report = json.loads(capsys.readouterr().out)
-    assert report["source_pin"] == "VERIFIED_LOCAL_GIT_HEAD"
+    assert report["source_pin"] == "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
+
+
+def test_cli_rejects_dirty_checkout_before_rehearsal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    attempted: list[str] = []
+
+    def fake_git(argv: list[str], **_kwargs: object) -> SimpleNamespace:
+        if "rev-parse" in argv:
+            return SimpleNamespace(stdout=SHA + "\n")
+        if "status" in argv:
+            return SimpleNamespace(stdout=" M tests/book_public_rehearsal.py\n")
+        raise AssertionError("unexpected git operation")
+
+    def never_run(*_args: object, **_kwargs: object) -> dict[str, object]:
+        attempted.append("rehearsal")
+        raise AssertionError("dirty checkout initiated rehearsal")
+
+    monkeypatch.setattr(rehearsal.subprocess, "run", fake_git)
+    monkeypatch.setattr(rehearsal, "rehearse", never_run)
+    fresh = tmp_path / "unused"
+    assert rehearsal.main(["--fresh-root", str(fresh), "--expected-sha", SHA]) == 2
+    assert json.loads(capsys.readouterr().out)["status"] == "PUBLIC_SYNTHETIC_REHEARSAL_BLOCKED"
+    assert attempted == [] and not fresh.exists()
+
+
+def test_real_cli_same_checkout_clean_source_in_fresh_process(tmp_path: Path) -> None:
+    checkout = Path(__file__).resolve().parents[1]
+    head = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    ).stdout.strip()
+    clean = subprocess.run(
+        ["git", "-C", str(checkout), "status", "--porcelain=v1", "--untracked-files=all"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    ).stdout
+    assert not clean, "fresh-process proof requires a clean, exact Git checkout"
+    target = tmp_path / "independent-cli-artifacts"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(checkout / "tests" / "book_public_rehearsal.py"),
+            "--fresh-root",
+            str(target),
+            "--expected-sha",
+            head,
+        ],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert completed.returncode == 0, (completed.stdout, completed.stderr)
+    output = json.loads(completed.stdout.strip())
+    assert output["source_sha"] == head
+    assert output["source_pin"] == "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
+    assert output["status"] == "SYNTHETIC_CONTRACT_REHEARSAL_PASSED"
+    assert output["tracks"]["pause"]["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
+    assert output["real_model_calls"] == 0
+    assert output["network_calls"] == 0
+    assert output["zero_call_evidence"]["scope"] == "IN_PROCESS_PATCHED_PYTHON_APIS_ONLY"
+    assert output["elapsed_seconds"] >= 0
+    assert output["peak_rss_kib_platform"] > 0

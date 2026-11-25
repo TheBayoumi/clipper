@@ -12,9 +12,10 @@ import socket
 import subprocess
 import time
 import urllib.request
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 FIXTURE = "PUBLIC_SYNTHETIC_NOT_REAL_CHAPTER"
 REVIEW = "SYNTHETIC_TEST_REVIEW_NOT_HUMAN_APPROVAL"
@@ -88,14 +89,21 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
     with offline_guard(forbidden):
         root.mkdir(mode=0o700)
         # Explicitly test-only fixture imports, never production dependencies.
-        from test_books_chapter_hybrid import (
-            _hybrid_creative_output, _hybrid_wav, _injected_hybrid_response,
-            _selected_hybrid_source,
-        )
         from clipper.books import (
-            chapter, chapter_hybrid, narration, scripting, selected_scope, whole_book,
+            chapter,
+            chapter_hybrid,
+            narration,
+            scripting,
+            selected_scope,
+            whole_book,
         )
         from clipper.books.orchestrator import BookOrchestrator
+        from test_books_chapter_hybrid import (
+            _hybrid_creative_output,
+            _hybrid_wav,
+            _injected_hybrid_response,
+            _selected_hybrid_source,
+        )
 
         original: list[tuple[Any, str, Any]] = []
 
@@ -159,10 +167,17 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
                 chapter.evaluate_hybrid_chapter(
                     runner_a, bundle_a, section_a, plan=chapter.ChapterPlan(brief_cpu=True)
                 )
-            except chapter.ChapterHostBlocked:
-                pass
+            except chapter.ChapterStop as exc:
+                require(
+                    str(exc) == "hybrid injected-test tokenizer counter is required",
+                    "unexpected missing-producer rejection",
+                )
             else:
                 raise RehearsalStop("missing producer accepted")
+            require(
+                not (runner_a.root / "book-candidates" / "hybrid_argument").exists(),
+                "missing producer reserved a stage attempt",
+            )
             require(not any(calls.values()), "unexpected early callback")
             brief_plan = chapter.ChapterPlan(brief_cpu=True)
             pause = chapter.evaluate_hybrid_chapter(
@@ -367,6 +382,25 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
                 "network_calls": 0,
                 "publication_calls": 0,
                 "prohibited_attempts": list(forbidden),
+                "zero_call_evidence": {
+                    "scope": "IN_PROCESS_PATCHED_PYTHON_APIS_ONLY",
+                    "import_roots_denied": sorted(BAN_IMPORTS),
+                    "network_guards": [
+                        "socket.connect",
+                        "socket.connect_ex",
+                        "socket.create_connection",
+                        "urllib.request.urlopen",
+                    ],
+                    "source_provider_guards": [
+                        "BookOrchestrator.mine_candidate",
+                        "scripting._local_chapter_completion",
+                        "scripting._script_pipeline",
+                        "scripting._public_book_context",
+                        "narration._kokoro_wav",
+                    ],
+                    "attempts": list(forbidden),
+                    "not_a_kernel_network_or_native_io_guard": True,
+                },
                 "adversarial": adversarial,
                 "artifact_sha256": artifact_hashes(root),
                 "exclusions": [
@@ -391,13 +425,25 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         # Local checkout identity only; never contact GitHub or a Modal provider.
+        checkout = Path(__file__).resolve().parents[1]
         actual = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
-            check=True, timeout=5,
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
         ).stdout.strip()
         require(actual == args.expected_sha, "checkout SHA mismatch")
+        changes = subprocess.run(
+            ["git", "-C", str(checkout), "status", "--porcelain=v1", "--untracked-files=all"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        ).stdout
+        require(not changes.strip(), "checkout contains modified or untracked files")
         result = rehearse(args.fresh_root, args.expected_sha)
-        result["source_pin"] = "VERIFIED_LOCAL_GIT_HEAD"
+        result["source_pin"] = "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
         print(json.dumps(result, sort_keys=True))
         return 0
     except (RehearsalStop, OSError, ValueError, subprocess.SubprocessError):
