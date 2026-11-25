@@ -35,6 +35,8 @@ jobs:
           timeout --signal=TERM --kill-after=10s 120s python -I - <<'PY'
           import asyncio
           import contextlib
+          import inspect
+          from datetime import datetime, timezone
           import json
           import os
           import re
@@ -44,15 +46,8 @@ jobs:
 
           APP_ID = "ap-8lq3aNsHtFapUbn8f0AQml"
           WORKSPACE = "mahmoud-bayoumi-mm"
-          CALL_PATTERN = re.compile(r"(?<![A-Za-z0-9_-])fc-[A-Za-z0-9]{22}(?![A-Za-z0-9_-])")
+          CALL_PATTERN = re.compile(r"fc-[A-Za-z0-9_-]{3,128}\\Z")
           BLOB_PATTERN = re.compile(r"bl-[A-Za-z0-9]{1,64}\Z")
-          LOG_COMMAND = [
-              "modal", "app", "logs", APP_ID, "--env", "main",
-              "--since", "2026-11-25T13:51:00Z",
-              "--until", "2026-11-25T13:55:00Z",
-              "--tail", "1000", "--show-function-call-id",
-              "--show-container-id",
-          ]
           evidence = {
               "status": "INCOMPLETE",
               "workspace_verified": False,
@@ -60,8 +55,10 @@ jobs:
               "historical_window_utc": [
                   "2026-11-25T13:51:00Z", "2026-11-25T13:55:00Z"
               ],
-              "log_command_returncode": None,
-              "log_byte_count": None,
+              "raw_log_metadata_status": "NOT_READ",
+              "raw_log_item_count": 0,
+              "raw_log_missing_call_id_items": 0,
+              "raw_log_data_byte_count": 0,
               "log_autherror_seen": False,
               "log_blobcreate_seen": False,
               "function_call_ids": [],
@@ -106,6 +103,7 @@ jobs:
                       import modal
                       from modal.client import _Client
                       from modal_proto import api_pb2
+                      from google.protobuf.timestamp_pb2 import Timestamp
                       client = modal.Client.from_env()
                       workspace = modal.Workspace.from_context(client=client)
                       workspace.hydrate(client=client)
@@ -116,36 +114,80 @@ jobs:
               incomplete("WORKSPACE_MISMATCH")
           evidence["workspace_verified"] = True
 
-          try:
-              log_process = subprocess.run(
-                  LOG_COMMAND, capture_output=True, timeout=30, check=False
+          # One exact-App raw history request. Leave source unset: UNSPECIFIED.
+          # The request is read-only; never follow, print log.data, or fetch blobs.
+          async def read_exact_history(async_client):
+              start = Timestamp()
+              start.FromDatetime(datetime(2026, 11, 25, 13, 51, tzinfo=timezone.utc))
+              end = Timestamp()
+              end.FromDatetime(datetime(2026, 11, 25, 13, 55, tzinfo=timezone.utc))
+              request = api_pb2.AppFetchLogsRequest(
+                  app_id=APP_ID,
+                  since=start,
+                  until=end,
+                  limit=1000,
               )
-          except (OSError, subprocess.SubprocessError) as exc:
-              incomplete("LOG_READ_" + safe_class(exc))
-          evidence["log_command_returncode"] = log_process.returncode
-          log_bytes = log_process.stdout + b"\n" + log_process.stderr
-          evidence["log_byte_count"] = len(log_bytes)
-          if len(log_bytes) > 131072:
-              incomplete("LOG_BOUNDS_EXCEEDED")
-          if log_process.returncode != 0:
-              incomplete("LOG_COMMAND_NONZERO")
-          log_text = log_bytes.decode("utf-8", errors="replace")
-          evidence["log_autherror_seen"] = "AuthError" in log_text
-          evidence["log_blobcreate_seen"] = "BlobCreate" in log_text
-          call_ids = sorted(set(CALL_PATTERN.findall(log_text)))
-          evidence["function_call_count"] = len(call_ids)
-          evidence["function_call_ids"] = call_ids[:3]
-          if not call_ids:
-              evidence["status"] = "NO_FUNCTION_CALL_IDS_IN_EXACT_APP_LOGS"
-              report()
-              sys.exit(0)
-          if len(call_ids) > 3:
-              incomplete("AMBIGUOUS_FUNCTION_CALL_IDS")
+              candidate_ids = set()
+              response_count = 0
+
+              def read_response(response):
+                  nonlocal response_count
+                  response_count += 1
+                  if response_count > 16:
+                      raise ValueError("RAW_RESPONSE_BOUND")
+                  for batch in response.batches:
+                      for log in batch.items:
+                          evidence["raw_log_item_count"] += 1
+                          if evidence["raw_log_item_count"] > 1000:
+                              raise ValueError("RAW_LOG_ITEM_BOUND")
+                          # Inspect log.data only in memory for two fixed flags.
+                          data = getattr(log, "data", "")
+                          if isinstance(data, str):
+                              size = len(data.encode("utf-8"))
+                              if size > 131072:
+                                  raise ValueError("RAW_LOG_DATA_BOUND")
+                              evidence["raw_log_data_byte_count"] += size
+                              if evidence["raw_log_data_byte_count"] > 131072:
+                                  raise ValueError("RAW_LOG_DATA_BOUND")
+                              evidence["log_autherror_seen"] |= "AuthError" in data
+                              evidence["log_blobcreate_seen"] |= "BlobCreate" in data
+                          value = getattr(log, "function_call_id", "")
+                          if not value:
+                              evidence["raw_log_missing_call_id_items"] += 1
+                          elif isinstance(value, str) and CALL_PATTERN.fullmatch(value):
+                              candidate_ids.add(value)
+                          # Never publish or infer input_id/task_id; their existence
+                          # does not authorize guessing a FunctionCall identifier.
+                          if len(candidate_ids) > 3:
+                              raise ValueError("AMBIGUOUS_FUNCTION_CALL_IDS")
+
+              # Modal versions expose a stream or awaitable response for this RPC.
+              stream = async_client.stub.AppFetchLogs(request)
+              if inspect.isawaitable(stream):
+                  stream = await asyncio.wait_for(stream, timeout=24)
+              if hasattr(stream, "__aiter__"):
+                  async for message in stream:
+                      read_response(message)
+              else:
+                  read_response(stream)
+
+              call_ids = sorted(candidate_ids)
+              evidence["function_call_count"] = len(call_ids)
+              evidence["function_call_ids"] = call_ids
+              evidence["raw_log_metadata_status"] = "READ"
+              return call_ids
+
           # This RPC reads existing result metadata; do not call get(), deserialize,
           # follow logs, retrieve blobs, create resources, or clear outputs.
           async def inspect():
               async_client = await _Client.from_env()
               try:
+                  call_ids = await asyncio.wait_for(
+                      read_exact_history(async_client), timeout=28
+                  )
+                  if not call_ids:
+                      evidence["status"] = "MISSING_CALL_IDS_IN_RETAINED_LOG_METADATA"
+                      return
                   for call_id in call_ids:
                       request = api_pb2.FunctionGetOutputsRequest(
                           function_call_id=call_id,
@@ -215,6 +257,7 @@ jobs:
                       asyncio.run(asyncio.wait_for(inspect(), timeout=44))
           except Exception as exc:
               incomplete("ASYNC_READ_" + safe_class(exc))
-          evidence["status"] = "EXISTING_CALL_METADATA_INSPECTED"
+          if evidence["status"] == "INCOMPLETE":
+              evidence["status"] = "EXISTING_CALL_METADATA_INSPECTED"
           report()
           PY
