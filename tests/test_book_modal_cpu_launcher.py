@@ -1196,7 +1196,7 @@ def test_journal_valid_app_id_then_nonobject_json_keeps_cleanup_and_interrupt(
     assert [command[2] for command in commands] == ["list", "stop", "list"]
 
 
-@pytest.mark.parametrize("initial_kind", ["nonzero", "invalid_json", "missing"])
+@pytest.mark.parametrize("initial_kind", ["invalid_json", "missing", "duplicate"])
 def test_initial_inconclusive_list_does_not_stop_unverified_app(
     initial_kind: str,
 ) -> None:
@@ -1208,8 +1208,9 @@ def test_initial_inconclusive_list_does_not_stop_unverified_app(
         if argv[2] == "stop":
             return SimpleNamespace(returncode=0, stdout="")
         if len(commands) == 1:
-            if initial_kind == "nonzero":
-                return SimpleNamespace(returncode=1, stdout="")
+            if initial_kind == "duplicate":
+                row = {"app_id": app_id, "state": "stopped", "tasks": "0"}
+                return SimpleNamespace(returncode=0, stdout=json.dumps([row, row]))
             if initial_kind == "invalid_json":
                 return SimpleNamespace(returncode=0, stdout="{invalid")
             return SimpleNamespace(returncode=0, stdout="[]")
@@ -1223,6 +1224,59 @@ def test_initial_inconclusive_list_does_not_stop_unverified_app(
     assert confirmed is False
     assert errors
     assert commands == [["modal", "app", "list", "--json", "--env", "qualification"]]
+
+
+@pytest.mark.parametrize("initial_kind", ["nonzero", "timeout", "oserror"])
+@pytest.mark.parametrize("exhaust_budget", [False, True])
+def test_initial_transport_failure_allows_only_bounded_exact_stop(
+    initial_kind: str, exhaust_budget: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app_id = "ap-" + "A" * 22
+    commands: list[list[str]] = []
+    warnings: list[str] = []
+    now = 100.0
+    monkeypatch.setattr(launcher.time, "monotonic", lambda: now)
+
+    def fake_cli(argv: list[str], **_kw: object) -> SimpleNamespace:
+        nonlocal now
+        commands.append(argv)
+        if len(commands) == 1:
+            if exhaust_budget:
+                now = 110.0
+            if initial_kind == "timeout":
+                raise subprocess.TimeoutExpired(argv, 8)
+            if initial_kind == "oserror":
+                raise OSError("synthetic transport failure")
+            return SimpleNamespace(returncode=1, stdout="")
+        if argv[2] == "stop":
+            return SimpleNamespace(returncode=0, stdout="")
+        return SimpleNamespace(
+            returncode=0, stdout=json.dumps([{"app_id": app_id, "state": "stopped", "tasks": "0"}])
+        )
+
+    confirmed, errors = launcher._stop_and_observe(
+        app_id, "qualification", 110.0, runner=fake_cli, warnings=warnings
+    )
+    issue = {
+        "nonzero": "list:nonzero",
+        "timeout": "list:TimeoutExpired",
+        "oserror": "list:OSError",
+    }[initial_kind]
+    list_command = ["modal", "app", "list", "--json", "--env", "qualification"]
+    if exhaust_budget:
+        assert not confirmed
+        assert errors == [issue, "stop:deadline"]
+        assert warnings == []
+        assert commands == [list_command]
+    else:
+        assert confirmed
+        assert errors == []
+        assert warnings == [issue]
+        assert commands == [
+            list_command,
+            ["modal", "app", "stop", "-y", "--env", "qualification", app_id],
+            list_command,
+        ]
 
 
 def test_reached_main_scoped_action_success_blocked_interrupt(
