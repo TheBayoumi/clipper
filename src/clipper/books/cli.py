@@ -40,6 +40,10 @@ def configure_books_parser(subparsers: Any) -> None:
     books = subparsers.add_parser("books", help="source-backed book episode stage DAG")
     actions = books.add_subparsers(dest="books_action", required=True)
 
+    pipeline_plan = actions.add_parser("pipeline-plan", help="offline configurable chapter plan")
+    pipeline_plan.add_argument("--config", type=Path, required=True)
+    pipeline_plan.add_argument("--artifact-root", type=Path, required=True)
+
     discover = actions.add_parser(
         "candidates", help="resolve reviewed title/author/edition without network"
     )
@@ -214,6 +218,17 @@ def _run_legacy_private_evaluation(
 
 
 def dispatch_books(args: argparse.Namespace) -> int:
+    if args.books_action == "pipeline-plan":
+        from .pipeline_plan import plan_file
+
+        try:
+            report = plan_file(args.config, args.artifact_root)
+        except (ValueError, OSError, TypeError, KeyError):
+            print(json.dumps({"mode": "DRY_RUN_ONLY", "status": "INVALID_CONFIGURATION"}))
+            return 2
+        print(json.dumps(report, sort_keys=True))
+        return 0 if report["status"] == "PLAN_RESOLVED" else 1
+
     if args.books_action == "candidates":
         resolved = acquisition.discover(
             args.title,

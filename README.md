@@ -507,3 +507,10 @@ the earlier 20,646-byte serialized report was an offline reproduction, not
 a retained successful provider report. No provider action, inference,
 publication or paid overage is authorized by this code change. See
 [the scoped route and limitations](docs/BOOK_MODAL_CPU_DORMANT_ROUTE.md).
+
+## Configurable chapter pipeline (offline planning)
+
+Use `clipper books pipeline-plan --config PATH --artifact-root PRIVATE` to resolve
+explicit stage permissions, targets and validated inputs without invoking any
+provider. This is `DRY_RUN_ONLY`, not a new execution route. See
+[the configuration contract and commands](docs/BOOK_PIPELINE_CONFIG.md).
