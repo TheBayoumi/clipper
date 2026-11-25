@@ -655,7 +655,6 @@ def test_driver_sigterm_handoff_is_per_signal_not_joint(
     assert len(state.sandboxes) == 2
 
 
-
 @pytest.mark.skipif(
     os.name != "posix" or not hasattr(signal, "SIGUSR1"),
     reason="Real SIGUSR1 subprocess contract requires POSIX",
@@ -768,7 +767,6 @@ def test_driver_signal_preflight_fails_closed_without_work(
     state = FakeSDKState()
     touched: list[str] = []
     original_signal = signal.signal
-    original_valid = signal.valid_signals
     original_get = signal.getsignal
     original_mask = signal.pthread_sigmask
 
