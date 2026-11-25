@@ -46,7 +46,7 @@ jobs:
 
           APP_ID = "ap-8lq3aNsHtFapUbn8f0AQml"
           WORKSPACE = "mahmoud-bayoumi-mm"
-          CALL_PATTERN = re.compile(r"fc-[A-Za-z0-9_-]{3,128}\\Z")
+          CALL_PATTERN = re.compile(r"fc-[A-Za-z0-9_-]{3,128}\Z")
           BLOB_PATTERN = re.compile(r"bl-[A-Za-z0-9]{1,64}\Z")
           evidence = {
               "status": "INCOMPLETE",
