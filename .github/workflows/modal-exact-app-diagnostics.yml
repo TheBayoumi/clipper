@@ -93,6 +93,17 @@ jobs:
               "NETWORK_UNREACHABLE": re.compile(r"\b(?:network is unreachable|network unreachable|enetunreach)\b", re.I),
           }
           FIXED_RUNTIME = {"synthetic child failed; full output withheld"}
+          # Check ONLY the AuthError message suffix; emit category booleans.
+          AUTH_REASONS = {
+              "RESTRICTED": re.compile(r"\b(?:restrict(?:ed|ion|ions)?|untrusted)\b", re.I),
+              "NOT_ALLOWED": re.compile(r"\b(?:not[ _-]allowed|not[ _-]permitted)\b", re.I),
+              "PERMISSION": re.compile(r"\bpermission\b", re.I),
+              "DENIED": re.compile(r"\bdenied\b", re.I),
+              "UNAUTHORIZED": re.compile(r"\bunauthori[sz]ed\b", re.I),
+              "TOKEN_MISSING": re.compile(r"\b(?:token[ _-]missing|missing[ _-]token|token\s+(?:is\s+)?missing)\b", re.I),
+              "INVALID_TOKEN": re.compile(r"\b(?:invalid[ _-]token|token[ _-]invalid|invalid\s+(?:auth\s+)?token)\b", re.I),
+              "CREDENTIAL": re.compile(r"\bcredentials?\b", re.I),
+          }
           evidence = {
               "status": "DIAGNOSTICS_INCOMPLETE",
               "workspace_verified": False,
@@ -108,6 +119,11 @@ jobs:
               "log_sha256": None,
               "unclassified_error_line_hashes": [],
               "grpc_status": [],
+              "auth_error_seen": False,
+              "auth_error_reason_categories": {category: False for category in AUTH_REASONS},
+              "output_upload_frames_observed": False,
+              "exception_handling_frames_observed": False,
+              "output_path_inference": "UNDETERMINED",
           }
 
           def output():
@@ -136,6 +152,15 @@ jobs:
                           "line": int(frame.group(2)),
                           "function": frame.group(3),
                       })
+                      if frame.group(3) in {
+                          "push_outputs", "output_items", "package_output",
+                          "format_blob_data", "blob_upload", "_blob_upload",
+                      }:
+                          evidence["output_upload_frames_observed"] = True
+                      if frame.group(3) in {
+                          "handle_input_exception", "push_exception", "exception_items",
+                      }:
+                          evidence["exception_handling_frames_observed"] = True
                   return
 
               for category, pattern in CATEGORY_PATTERNS.items():
@@ -154,6 +179,11 @@ jobs:
                   if suffix.startswith(":"):
                       suffix = suffix[1:].strip()
                   entry = {"class": qualified}
+                  if name == "AuthError":
+                      evidence["auth_error_seen"] = True
+                      for category, pattern in AUTH_REASONS.items():
+                          if pattern.search(suffix):
+                              evidence["auth_error_reason_categories"][category] = True
                   if name == "ModuleNotFoundError":
                       module = re.fullmatch(r"No module named \W([A-Za-z_][A-Za-z0-9_.]{0,127})\W", suffix)
                       if module:
@@ -224,6 +254,15 @@ jobs:
                   evidence["categories"].append("LOG_TRUNCATED")
               if not evidence["exceptions"]:
                   evidence["categories"].append("NO_CLASSIFIED_EXCEPTION")
+              if evidence["output_upload_frames_observed"]:
+                  evidence["output_path_inference"] = "OUTPUT_PACKAGING_OR_BLOB_UPLOAD_OBSERVED"
+              elif evidence["exception_handling_frames_observed"]:
+                  evidence["output_path_inference"] = "EXCEPTION_HANDLING_OBSERVED_ONLY"
+              # Frame paths indicate where the error surfaced, not whether rehearsal failed.
+              if evidence["auth_error_seen"] and not any(
+                  evidence["auth_error_reason_categories"].values()
+              ):
+                  evidence["categories"].append("AUTH_REASON_UNCLASSIFIED")
               if evidence["exceptions"] and proc.returncode == 0 and not evidence["truncated"]:
                   evidence["status"] = "CLASSIFIED_LOG_EVIDENCE"
               output()
