@@ -457,18 +457,25 @@ machine-readable synthetic report with provenance and artifact hashes, callback
 counts, adversarial rejection results, wall time and peak RSS.
 
 See [model-free chapter rehearsal contract](docs/BOOK_MODAL_PUBLIC_REHEARSAL.md)
-for the explicit local invocation, security/coverage boundaries, dependencies,
-and the **separate** proposal for a future single CPU-only Modal job. There is
-no remote launcher or spending approval. The previously qualified offline Modal
-infrastructure owner/driver remain unchanged. This harness is **UNQUALIFIED**
-pending independent runnable tests, full exact-SHA CI/95% and final review.
+for the explicit clean-checkout invocation (`PYTHONPATH=src:tests`),
+application-level guard limitations, verified minimal local dependencies and
+the **separate, unapproved** restricted CPU-only Modal Function proposal.
+Independent external verification on `6162ca65333f67445fa0bb8003f8198fe95de376`:
+12 new tests PASS, Ruff lint/format PASS, mypy PASS, and standalone Python
+3.11 + PyYAML 6.0.3 CLI PASS (0.22127 s, Linux peak RSS 32,308 KiB).
+No pytest, media stack or model/Modal library was needed for that standalone
+run. The separate CI `45592640560` has not yet been confirmed fully
+successful; the unchanged 95% gate and fresh read-only final review remain
+pending. There is no remote launcher, resource allocation or spending
+approval. The previously qualified offline Modal infrastructure owner/driver
+remain unchanged. This harness is **UNQUALIFIED**.
 
 
 ### Synthetic rehearsal support isolation (UNQUALIFIED)
 
-The standalone harness uses `tests/public_book_fixture_support.py` rather
-than importing broad test modules that transitively initialize the CLI,
-media pipeline or download dependencies. An explicit fresh-process test
-checks the import graph; the CLI rejects preloaded forbidden modules and
-reports only scoped Python guard evidence. No production source, host
-authority, Modal runtime or deployment has been changed.
+The standalone harness uses `tests/public_book_fixture_support.py`, not
+broad test modules that transitively initialize the CLI, media pipeline or
+download dependencies. A fresh-process check confirms its import graph;
+the CLI rejects preloaded forbidden modules and reports **scoped** Python
+guard evidence, not a kernel-level sandbox guarantee. No production source,
+host authority, Modal runtime or deployment has been changed.

@@ -7,15 +7,21 @@ private source acquisition, upload, publication, spending, or host selection**.
 
 ## Intentional execution boundary
 
-From an independently pinned checkout with the already-installed Clipper
-CPU/test dependencies, a later independently authorized local or container
-operator may explicitly run:
+From an independently pinned, **clean** source checkout with Git available,
+Python 3.11+ and PyYAML 6.0.3, a local operator may explicitly run:
 
 ```bash
-python tests/book_public_rehearsal.py \
+PYTHONPATH=src:tests python tests/book_public_rehearsal.py \
   --fresh-root /tmp/clipper-public-rehearsal-UNUSED \
   --expected-sha EXACT_REVIEWED_40_HEX_SHA
 ```
+
+The `PYTHONPATH` shown assumes the command runs at the repository root.
+Alternatively, install the same checked-out Clipper source locally without
+adding its unrelated media/model extras, while retaining the `tests` module
+path. The CLI checks Git HEAD **relative to its own source checkout**, not
+to an arbitrary shell working directory. It rejects tracked modifications
+and untracked files before starting the synthetic run.
 
 The CLI requires `git rev-parse HEAD` to match the explicit full SHA before
 creating any artifact. Direct Python `rehearse(..., expected_sha)` reports
@@ -25,8 +31,10 @@ are created. All artifacts are kept local to that root, not published.
 Use only a dedicated, unprivileged, isolated rehearsal process. This is
 not authorization to invoke the command on Modal or spend credits.
 
-The entrypoint is deliberately under `tests/` and imports existing
-`test_books_chapter_hybrid` fixture helpers. These helpers construct a public
+The entrypoint is deliberately under `tests/` and imports minimal shared
+helpers from `tests/public_book_fixture_support.py` — **not** from
+`test_books_chapter_hybrid`, `test_books_chapter_host`, `test_books_whole_book`,
+the CLI or the media pipeline. These helpers construct a public
 synthetic EPUB through the recorded in-memory transport and production
 `BookOrchestrator.ingest_candidate()`, `selected_scope.export_chapter()`,
 `import_chapter()`, and `whole_book.plan_for()`. The optional fixture
@@ -88,27 +96,48 @@ access is implied from an offline test pass.
 ## Modal execution gap and bounded proposal
 
 No remote execution entrypoint is implemented or called in this change.
-A future separately approved **one CPU-only job**, 1 core / initially 2 GiB
-memory, no GPU, no persistent volume, no model/media image dependencies,
-would run the **same test-only entrypoint** in an exact source-pinned image.
-A nominal 15-minute job timeout is a candidate, **not** an end-to-end
-lifecycle or spending cap; image build, idle CPU/memory, storage, startup,
-failed jobs and cleanup can incur cost outside it. Free/paid credit status,
-which Modal workspace/account/client to use, image build feasibility,
-authorization and complete cost cap remain unresolved and must be reviewed
-before any provider interaction. Preserve the qualified offline
-`modal_infra_qualification.py` and `modal_infra_driver.py`; their synthetic
-64 KiB infrastructure check is separate from this chapter rehearsal.
+A **future proposal only**, subject to separate account, cost and execution
+approval, is one restricted Modal Function with `block_network=True`,
+`restrict_modal_access=True`, `single_use_containers=True`,
+`max_containers=1`, zero retries, 1 CPU, an initial candidate 512 MiB RAM
+and **no GPU, secrets, attached volumes, model assets or private input**.
+These Function options and the 512 MiB selection are proposed deployment
+constraints, not tested provider configuration or a verified minimum.
+The image must contain the **exact reviewed, clean Git checkout**, the
+Git binary and the minimal local dependencies, so the existing CLI's
+source-pin checks continue to work. There is no launcher or deployment
+implementation in this repository change.
 
-The optional test runner requires a supported Python (3.11–3.13), the
-project's installed CPU dependencies and pytest fixture imports. The
-existing `pyproject.toml` declares runtime dependencies including numpy,
-PyYAML, opencv-python-headless, gdown and yt-dlp; **this rehearsal must not
-invoke download behavior**. Torch, Transformers, Kokoro and Modal client
-dependencies must not be installed for rehearsal execution. Actual minimal
-resolved dependency inventory, image build time, measured local peak RSS
-and wall time remain *unverified until execution*. The CLI emits one JSON
-report if successful; failed preflight prints only a bounded blocked status.
+Execution timeout, image build duration, startup and idle billing, temporary
+storage, cancellation, cleanup and failed attempts require a separately
+enforced total resource/time/cost boundary. A short execution timeout alone
+is **not** a hard spending cap. The currently observed Starter workspace
+does not expose the Team/Enterprise environment-budget controls; the
+approved workspace/account identity, credential route, available allowance,
+total cost limit and independent control/cleanup method are unresolved.
+Do not default to a dashboard-observed workspace or assume free credits.
+Preserve the qualified offline `modal_infra_qualification.py` and
+`modal_infra_driver.py`; their synthetic 64 KiB infrastructure qualification
+is separate from book-chapter orchestration.
+
+**Measured independently on exact code SHA
+`6162ca65333f67445fa0bb8003f8198fe95de376`:** the clean-checkout,
+fresh-process standalone CLI completed on minimal Python 3.11 with
+**PyYAML 6.0.3 only**, plus the standard library, local Clipper source,
+the lightweight fixture support and Git. It required no pytest, media
+libraries, Torch, Transformers, Kokoro or Modal dependencies in that run.
+Elapsed time **0.22127 seconds**; Linux process peak RSS **32,308 KiB**
+(about 31.6 MiB). Forbidden module roots preloaded: **none**;
+guarded prohibited-operation attempts: **none**. These are **local
+observations**, not a reproducible bound for image build, a Modal SDK
+container's memory overhead, remote latency, native network isolation,
+private-book cardinality, or production pipeline performance. The 512 MiB
+proposal includes an unmeasured margin, not a validated remote requirement.
+
+The CLI produces a machine-checkable JSON report on synthetic success;
+failed preflight prints a bounded blocked status. Its zero-call evidence
+covers the enumerated Python-level guards and is not a universal
+no-network/no-execution security proof.
 
 ## What it does **not** prove
 
@@ -122,10 +151,17 @@ cost, infrastructure deletion or host-crash recovery. The old
 `scripts/modal_pipeline.py` and `run_modal_pipeline()` are media/campaign
 entrypoints and are **never imported** here.
 
-This candidate requires exact-SHA local test/Ruff/mypy verification, full
-CI with the unchanged 95% coverage gate, and a fresh independent read-only
-review before claiming **rehearsal harness qualification**. Even then it
-would not authorize a live Modal run.
+**Independent verification reported for SHA `6162ca65333f67445fa0bb8003f8198fe95de376`:**
+12 new rehearsal tests PASS; Ruff lint PASS; Ruff format PASS across 285
+files; mypy PASS across 77 files; fresh standalone clean-checkout CLI PASS
+with the measurements above. These checks were run externally by the
+project owner, **not** by the connector-only assistant environment.
+CI workflow `45592640560` has reported both-version Ruff/format/mypy
+success, but its tokenizer-only probe was still running at the reporting
+checkpoint. **Full CI is not yet PASS** and the unchanged 95% coverage gate
+must be confirmed on the completed exact-SHA run. Independent read-only
+final review has been requested and remains pending. The rehearsal harness
+is therefore **UNQUALIFIED**; no live Modal run is authorized.
 
 
 ## REACHED1142 candidate correction (UNQUALIFIED)
