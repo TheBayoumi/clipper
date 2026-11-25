@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from public_book_fixture_support import ingested, synthetic_candidate
 
 from clipper import cli
 from clipper.books import acquisition, constrained, mining, scripting, whole_book
@@ -28,104 +29,6 @@ from clipper.dag import DagStore
 from clipper.stage_contracts import content_fingerprint
 
 BASE = Path(__file__).resolve().parents[1] / "niches/book-source-candidates-v1.json"
-
-
-def synthetic_candidate(
-    tmp_path: Path, *, paragraphs: int = 129, with_image: bool = True
-) -> tuple[acquisition.ReviewedCandidate, object]:
-    """All prose and image bytes are original synthetic fixtures, never book extracts."""
-    candidate = next(
-        item for item in acquisition.load_registry(BASE) if item.book_id == "atomic-habits"
-    )
-    stream = io.BytesIO()
-    with zipfile.ZipFile(stream, "w") as z:
-        z.writestr(
-            "META-INF/container.xml",
-            '<container><rootfile full-path="OPS/content.opf"/></container>',
-        )
-        manifest = "".join(
-            f'<item id="c{i}" href="chapter{i}.xhtml" media-type="application/xhtml+xml"/>'
-            for i in range(3)
-        )
-        z.writestr(
-            "OPS/content.opf",
-            '<package xmlns:dc="http://purl.org/dc/elements/1.1/" unique-identifier="uid">'
-            f"<metadata><dc:title>{candidate.title}</dc:title>"
-            f"<dc:creator>{candidate.author}</dc:creator>"
-            f'<dc:identifier id="uid">urn:isbn:{candidate.isbn}</dc:identifier>'
-            "</metadata><manifest>"
-            + manifest
-            + ('<item id="pic" href="figure.png" media-type="image/png"/>' if with_image else "")
-            + "</manifest><spine>"
-            + "".join(f'<itemref idref="c{i}"/>' for i in range(3))
-            + "</spine></package>",
-        )
-        for chapter in range(3):
-            parts = [f"<h2>Fabricated heading {chapter}</h2>"]
-            for index in range(chapter, paragraphs, 3):
-                parts.append(
-                    f"<p>Invented paragraph {index} describes a reproducible "
-                    "synthetic learning example, without borrowing text.</p>"
-                )
-            if with_image and chapter == 1:
-                parts.append('<img src="figure.png" alt="diagram is not extracted words"/>')
-            z.writestr(
-                f"OPS/chapter{chapter}.xhtml",
-                "<html><body>" + "".join(parts) + "</body></html>",
-            )
-        if with_image:
-            z.writestr("OPS/figure.png", b"\x89PNG\r\n\x1a\nSYNTHETIC-ONLY")
-    raw = stream.getvalue()
-    selected = replace(
-        candidate,
-        expected_bytes=len(raw),
-        expected_sha256=hashlib.sha256(raw).hexdigest(),
-    )
-
-    class RecordedTransport:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def get(self, url: str, *, limit: int) -> acquisition.HTTPResult:
-            self.calls += 1
-            if "/metadata/" in url:
-                metadata = {
-                    "metadata": {"identifier": selected.record_url.rsplit("/", 1)[-1]},
-                    "files": [
-                        {
-                            "name": selected.filename,
-                            "size": str(selected.expected_bytes),
-                            "source": "original",
-                        }
-                    ],
-                }
-                return acquisition.HTTPResult(
-                    url, url, 200, "application/json", json.dumps(metadata).encode()
-                )
-            assert url.startswith("https://archive.org/download/")
-            assert limit >= len(raw)
-            return acquisition.HTTPResult(
-                url,
-                "https://ia801234.us.archive.org/synthetic/whole-epub",
-                200,
-                "application/epub+zip",
-                raw,
-            )
-
-    return selected, RecordedTransport()
-
-
-def ingested(tmp_path: Path, *, paragraphs: int = 129, with_image: bool = True):
-    candidate, transport = synthetic_candidate(
-        tmp_path, paragraphs=paragraphs, with_image=with_image
-    )
-    runner = BookOrchestrator(tmp_path / "artifacts")
-    ingest_result = runner.ingest_candidate(
-        candidate.title, registry=(candidate,), transport=transport
-    )
-    assert not isinstance(ingest_result, tuple)
-    assert transport.calls == 2
-    return runner, ingest_result, transport
 
 
 def response_for(unit: whole_book.WorkUnit, *, count: int = 1) -> dict[str, object]:

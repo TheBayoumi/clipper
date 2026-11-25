@@ -10,6 +10,7 @@ import re
 import resource
 import socket
 import subprocess
+import sys
 import time
 import urllib.request
 from collections.abc import Iterator
@@ -98,7 +99,7 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
             whole_book,
         )
         from clipper.books.orchestrator import BookOrchestrator
-        from test_books_chapter_hybrid import (
+        from public_book_fixture_support import (
             _hybrid_creative_output,
             _hybrid_wav,
             _injected_hybrid_response,
@@ -384,6 +385,10 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
                 "prohibited_attempts": list(forbidden),
                 "zero_call_evidence": {
                     "scope": "IN_PROCESS_PATCHED_PYTHON_APIS_ONLY",
+                    "preloaded_forbidden_module_roots": sorted(
+                        {name.split(".", 1)[0] for name in sys.modules}
+                        & BAN_IMPORTS
+                    ),
                     "import_roots_denied": sorted(BAN_IMPORTS),
                     "network_guards": [
                         "socket.connect",
@@ -434,6 +439,10 @@ def main(argv: list[str] | None = None) -> int:
             timeout=5,
         ).stdout.strip()
         require(actual == args.expected_sha, "checkout SHA mismatch")
+        require(
+            not ({name.split(".", 1)[0] for name in sys.modules} & BAN_IMPORTS),
+            "forbidden modules already loaded in CLI process",
+        )
         changes = subprocess.run(
             ["git", "-C", str(checkout), "status", "--porcelain=v1", "--untracked-files=all"],
             capture_output=True,

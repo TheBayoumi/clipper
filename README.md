@@ -462,3 +462,13 @@ and the **separate** proposal for a future single CPU-only Modal job. There is
 no remote launcher or spending approval. The previously qualified offline Modal
 infrastructure owner/driver remain unchanged. This harness is **UNQUALIFIED**
 pending independent runnable tests, full exact-SHA CI/95% and final review.
+
+
+### Synthetic rehearsal support isolation (UNQUALIFIED)
+
+The standalone harness uses `tests/public_book_fixture_support.py` rather
+than importing broad test modules that transitively initialize the CLI,
+media pipeline or download dependencies. An explicit fresh-process test
+checks the import graph; the CLI rejects preloaded forbidden modules and
+reports only scoped Python guard evidence. No production source, host
+authority, Modal runtime or deployment has been changed.

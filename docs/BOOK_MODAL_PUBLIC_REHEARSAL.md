@@ -150,3 +150,24 @@ the report inventories import roots, network hooks and model/source provider
 hooks which the process-local guard blocks. They are not assertions about
 all kernel/native APIs. This is not a network-namespace firewall and never
 authorizes provider use or a remote run.
+
+
+## ISOLATION1157: standalone test-support import graph
+
+The public synthetic EPUB/recorded transport, selected-scope bundle,
+argument/audit/reconcile response, creative response and PCM WAV fixture
+helpers now live together in `tests/public_book_fixture_support.py`.
+The rehearsal imports only this lightweight support module, never
+`test_books_chapter_hybrid`, `test_books_chapter_host`,
+`test_books_whole_book` or `clipper.cli`. Those tests reuse the same
+shared helpers; the existing default source fixture section is unchanged.
+A fresh subprocess checks that the support import itself does not preload
+broad test, CLI, pipeline or forbidden model/download modules.
+
+The real CLI requires no forbidden roots already loaded into
+`sys.modules` before scenario execution. An in-process test invocation
+may already have imported unrelated packages; its reported
+`preloaded_forbidden_module_roots` makes this limitation observable
+rather than claiming clean-process coverage. In either case a subsequent
+forbidden import or guarded call fails closed. This remains a Python
+application guard, not kernel network isolation.

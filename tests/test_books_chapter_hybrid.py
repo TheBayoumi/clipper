@@ -14,9 +14,15 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from public_book_fixture_support import (
+    _bundle,
+    _hybrid_creative_output,
+    _hybrid_wav,
+    _injected_hybrid_response,
+    _selected_hybrid_source,
+    ingested,
+)
 from test_books_chapter_host import _call, _locked, _private_setup
-from test_books_selected_scope import _bundle
-from test_books_whole_book import ingested
 
 from clipper.books import chapter, chapter_host, evaluation, scripting, selected_scope, whole_book
 from clipper.books import chapter_hybrid as hybrid
@@ -654,80 +660,6 @@ def test_human_review_requires_exact_brief_and_each_unit_and_beat() -> None:
         hybrid.validate_human_review(approval, brief, ledger)
 
 
-def _selected_hybrid_source(
-    tmp_path: Path, *, section_index: int = 0
-) -> tuple[BookOrchestrator, Path, Path]:
-    runner, selected, _data = _bundle(
-        tmp_path, with_image=True, section_index=section_index
-    )
-    verified = selected_scope.import_chapter(runner.root, selected)
-    section = selected_scope._section_manifest(verified.ref, verified.book, verified.work)
-    path = runner.root / "book-candidates" / "section-scopes" / "chapter.json"
-    evaluation._store(runner.root / "book-candidates", path, section)
-    return runner, selected, path
-
-
-def _injected_hybrid_response(kind: str, request: dict[str, object]) -> str:
-    context = json.loads(request["messages"][1]["content"])
-    if kind == "argument":
-        source = next(item for item in context["original_source"] if item[1] == "text")
-        return json.dumps(
-            {
-                "hypothesis": "The entire chapter remains an editable hypothesis.",
-                "questions": ["Does the local evidence narrow the claim?"],
-                "source_links": [{"id": source[0], "start": 0, "end": 10, "role": "ASSERTION"}],
-            }
-        )
-    if kind == "audit":
-        window = context["window"]
-        return json.dumps(
-            {
-                "audit_id": window["audit_id"],
-                "core_ids": window["core_ids"],
-                "decisions": [
-                    {
-                        "id": item[0],
-                        "decision": "keep" if item[1] == "text" else "omit",
-                        "reason": "Explicit model-free original source or gap decision.",
-                        "evidence": [{"id": item[0], "start": 0, "end": 10, "role": "ASSERTION"}]
-                        if item[1] == "text"
-                        else [],
-                    }
-                    for item in window["core"]
-                ],
-                "disagreements": [],
-            }
-        )
-    if kind == "reconcile":
-        entries = [item for item in context["complete_original_source"] if item[1] == "text"]
-        halfway = max(1, len(entries) // 2)
-        groups = [entries[:halfway], entries[halfway:]]
-        if not groups[1]:
-            groups = [[entries[0]], [entries[0]]]
-        return json.dumps(
-            {
-                "argument": "The whole source is preserved as one revisable causal argument.",
-                "amendments": [],
-                "resolutions": [],
-                "beats": [
-                    {
-                        "beat_id": f"beat-{index:03d}",
-                        "spans": [
-                            {"id": entry[0], "start": 0, "end": 10, "role": "ASSERTION"}
-                            for entry in group
-                        ],
-                        "meaning": "A source-grounded, still unreviewed argument.",
-                        "qualification": "A limitation expressed as a faithful paraphrase.",
-                        "causal_link": "Connect this source with the next original passage.",
-                        "essential": True,
-                    }
-                    for index, group in enumerate(groups, 1)
-                ],
-            }
-        )
-    raise AssertionError("unexpected synthetic stage")
-
-
 def test_direct_hybrid_mode_freezes_source_without_mining_or_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -832,113 +764,6 @@ def test_model_free_hybrid_argument_audits_reconciliation_review_gate_and_replay
     assert after_review["human_attested_beat_count"] == 2
     assert call_counts == frozen
     miner.assert_not_called()
-
-
-def _hybrid_creative_output(kind: str, request: dict[str, object]) -> str:
-    data = json.loads(request["messages"][1]["content"])
-    if kind == "adaptation":
-        return json.dumps(
-            {
-                "throughline": "An invented person tests, learns and changes a physical procedure.",
-                "narrative_form": "DRAMATIZED_ILLUSTRATION",
-                "choice_reason": "Fiction is never mistaken for a source-authenticated author example.",
-                "beats": [
-                    {
-                        "beat_id": beat["beat_id"],
-                        "decision": "keep",
-                        "reason": "Retain the source-grounded link to the whole argument.",
-                        "qualification": "A faithful paraphrase that omits literal source terms.",
-                        "illustration": "INVENTED_ILLUSTRATION",
-                    }
-                    for beat in data["brief"]["beats"]
-                ],
-                "characters": [
-                    {
-                        "id": "worker",
-                        "name": "Invented worker",
-                        "initial_state": "examining the unchanged instructions",
-                    }
-                ],
-                "locations": [
-                    {
-                        "id": "workroom",
-                        "name": "Imaginary workroom",
-                        "initial_state": "a bench containing unmodified tools",
-                    }
-                ],
-                "props": [
-                    {
-                        "id": "card",
-                        "name": "Paper checklist",
-                        "initial_state": "blank",
-                    }
-                ],
-            }
-        )
-    if kind == "chapter_script":
-        beat_ids = [beat["beat_id"] for beat in data["adaptation"]["beats"]]
-        narration = (
-            "A worker sees that the shared instruction assumes a result without a test. "
-            "She records the original observation before attempting a small change. "
-            "The next limited experiment produces a different observation, which narrows "
-            "the original claim instead of proving that every circumstance is identical. "
-            "The group can now revise its procedure while admitting that other conditions "
-            "might require additional verification."
-        )
-        scenes = []
-        for index in range(3):
-            scenes.append(
-                {
-                    "scene_id": f"scene-{index + 1:02d}",
-                    "previous_id": f"scene-{index:02d}" if index else None,
-                    "next_id": f"scene-{index + 2:02d}" if index < 2 else None,
-                    "purpose": "Show one limited example and connect it to the next claim.",
-                    "action": "The worker marks a revised step on the checklist.",
-                    "environment_id": "workroom",
-                    "narration": narration,
-                    "dialogue": [],
-                    "beat_ids": [beat_ids[index % len(beat_ids)]],
-                    "illustration_label": "INVENTED_ILLUSTRATION",
-                    "transition": "The prior observation motivates the next test.",
-                    "consequence": "The next step changes without asserting universal proof.",
-                }
-            )
-        return json.dumps({"title": "The revised checklist", "scenes": scenes})
-    if kind == "chapter_direction":
-        shots = []
-        before = "blank"
-        for index, timing in enumerate(data["timings"]):
-            after = f"marked step {index + 1}"
-            shots.append(
-                {
-                    "shot_id": f"shot-{index + 1:03d}",
-                    "scene_id": timing["scene_id"],
-                    "purpose": "Show a measured revision of the invented checklist.",
-                    "action": "The character marks a practical change.",
-                    "environment_id": "workroom",
-                    "camera": "Medium close shot on the same card and hand.",
-                    "transition": "Continue following the checklist into the next test.",
-                    "entity_ids": ["card"],
-                    "state_before": {"card": before},
-                    "state_after": {"card": after},
-                    "start_seconds": timing["start_seconds"],
-                    "end_seconds": timing["end_seconds"],
-                }
-            )
-            before = after
-        return json.dumps({"shots": shots})
-    raise AssertionError("unrecognized creative stage")
-
-
-def _hybrid_wav(_text: str, voice: str) -> bytes:
-    assert voice == "af_heart"
-    file = io.BytesIO()
-    with wave.open(file, "wb") as writer:
-        writer.setnchannels(1)
-        writer.setsampwidth(2)
-        writer.setframerate(24000)
-        writer.writeframes(b"\0\0" * 24000)
-    return file.getvalue()
 
 
 def test_full_hybrid_model_free_creative_path_keeps_spans_and_review_provenance(

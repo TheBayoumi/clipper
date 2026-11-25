@@ -11,8 +11,9 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import book_public_rehearsal as rehearsal
 import pytest
+
+import book_public_rehearsal as rehearsal
 
 
 SHA = "a" * 40
@@ -56,6 +57,7 @@ def test_two_distinct_public_tracks_and_adversarial_contracts(tmp_path: Path) ->
     evidence = result["zero_call_evidence"]
     assert evidence["scope"] == "IN_PROCESS_PATCHED_PYTHON_APIS_ONLY"
     assert evidence["attempts"] == []
+    assert isinstance(evidence["preloaded_forbidden_module_roots"], list)
     assert evidence["not_a_kernel_network_or_native_io_guard"] is True
     assert "torch" in evidence["import_roots_denied"]
     assert "socket.connect" in evidence["network_guards"]
@@ -108,7 +110,7 @@ def test_guards_prohibit_network_subprocess_model_import_and_restore() -> None:
             lambda: builtins.__import__("modal"),
             lambda: socket.create_connection(("127.0.0.1", 9)),
             lambda: subprocess.Popen(["echo", "forbidden"]),
-            lambda: getattr(os, "system")("echo forbidden"),
+            lambda: os.system("echo forbidden"),  # noqa: S605 - intercepted, never executed
         ):
             with pytest.raises(rehearsal.RehearsalStop, match="prohibited operation"):
                 callback()
@@ -219,3 +221,28 @@ def test_real_cli_same_checkout_clean_source_in_fresh_process(tmp_path: Path) ->
     assert output["zero_call_evidence"]["scope"] == "IN_PROCESS_PATCHED_PYTHON_APIS_ONLY"
     assert output["elapsed_seconds"] >= 0
     assert output["peak_rss_kib_platform"] > 0
+
+
+def test_standalone_support_import_avoids_broad_tests_and_forbidden_roots() -> None:
+    checkout = Path(__file__).resolve().parents[1]
+    code = """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "tests"))
+blocked = {"modal", "torch", "transformers", "huggingface_hub", "kokoro", "yt_dlp", "gdown"}
+assert not (blocked & {name.split(".", 1)[0] for name in sys.modules})
+import public_book_fixture_support
+assert not any(name.startswith(("test_books_", "clipper.cli", "clipper.pipeline")) for name in sys.modules)
+assert not (blocked & {name.split(".", 1)[0] for name in sys.modules})
+print("SUPPORT_IMPORT_CLEAN")
+"""
+    checked = subprocess.run(
+        [sys.executable, "-c", code, str(checkout)],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert checked.returncode == 0, (checked.stdout, checked.stderr)
+    assert checked.stdout.strip() == "SUPPORT_IMPORT_CLEAN"

@@ -7,41 +7,10 @@ import json
 from pathlib import Path
 
 import pytest
-from test_books_whole_book import ingested
+from public_book_fixture_support import _bundle
 
 from clipper.books import chapter, evaluation, scripting, selected_scope, whole_book
 from clipper.books.orchestrator import BookOrchestrator
-
-
-def _bundle(
-    tmp_path: Path, *, with_image: bool = True, section_index: int = 0
-) -> tuple[BookOrchestrator, Path, dict]:
-    owner = tmp_path / "owner"
-    owner.mkdir()
-    exporter, acquired, _ = ingested(owner, paragraphs=8, with_image=with_image)
-    section = acquired.book.sections[section_index].chapter_id
-    original_plan = whole_book.plan_for(acquired.book, section_ids=(section,))
-    filename, digest = selected_scope.export_chapter(
-        exporter,
-        acquired.analysis_ref_path,
-        chapter_number=section_index + 1,
-        chapter_section_ids=(section,),
-    )
-    assert hashlib.sha256(filename.read_bytes()).hexdigest() == digest
-    target_root = tmp_path / "isolated-host"
-    target = target_root / "book-candidates" / "selected-scopes" / f"{digest}.json"
-    target.parent.mkdir(parents=True)
-    target.write_bytes(filename.read_bytes())
-    runner = BookOrchestrator(target_root)
-    imported = selected_scope.import_chapter(runner.root, target)
-    assert imported.work == original_plan
-    assert imported.book.fingerprint == acquired.book.fingerprint
-    assert imported.book.parent_original_reverified_on_host is False
-    assert imported.bundle_sha256 == digest
-    assert not list(target_root.rglob("*.epub"))
-    assert not list(target_root.rglob("analysis-refs"))
-    assert not list(target_root.rglob("extracted"))
-    return runner, target, json.loads(target.read_bytes())
 
 
 def _edited(runner: BookOrchestrator, data: dict) -> Path:
