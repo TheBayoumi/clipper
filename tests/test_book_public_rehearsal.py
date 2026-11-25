@@ -1,4 +1,5 @@
 """End-to-end public synthetic chapter rehearsal tests; no Modal account/provider."""
+
 from __future__ import annotations
 
 import builtins
@@ -11,10 +12,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import book_public_rehearsal as rehearsal
-
+import pytest
 
 SHA = "a" * 40
 

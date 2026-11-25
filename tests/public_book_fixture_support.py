@@ -152,9 +152,7 @@ def _bundle(
 def _selected_hybrid_source(
     tmp_path: Path, *, section_index: int = 0
 ) -> tuple[BookOrchestrator, Path, Path]:
-    runner, selected, _data = _bundle(
-        tmp_path, with_image=True, section_index=section_index
-    )
+    runner, selected, _data = _bundle(tmp_path, with_image=True, section_index=section_index)
     verified = selected_scope.import_chapter(runner.root, selected)
     section = selected_scope._section_manifest(verified.ref, verified.book, verified.work)
     path = runner.root / "book-candidates" / "section-scopes" / "chapter.json"
@@ -328,5 +326,3 @@ def _hybrid_wav(_text: str, voice: str) -> bytes:
         writer.setframerate(24000)
         writer.writeframes(b"\0\0" * 24000)
     return file.getvalue()
-
-

@@ -10,10 +10,11 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from public_book_fixture_support import ingested, synthetic_candidate as synthetic_candidate
+from public_book_fixture_support import ingested
+from public_book_fixture_support import synthetic_candidate as synthetic_candidate
 
 from clipper import cli
-from clipper.books import acquisition, constrained, mining, scripting, whole_book
+from clipper.books import constrained, mining, scripting, whole_book
 from clipper.books import orchestrator as orchestrator_module
 from clipper.books.contracts import (
     BookText,
@@ -25,6 +26,7 @@ from clipper.books.contracts import (
 from clipper.books.orchestrator import BookOrchestrator, BookRunError
 from clipper.dag import DagStore
 from clipper.stage_contracts import content_fingerprint
+
 
 def response_for(unit: whole_book.WorkUnit, *, count: int = 1) -> dict[str, object]:
     spans = constrained.span_pool(unit.text, unit.evidence_field)["spans"]

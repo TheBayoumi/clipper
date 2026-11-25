@@ -1,4 +1,5 @@
 """Opt-in public-synthetic book chapter rehearsal. Test-only, never production."""
+
 from __future__ import annotations
 
 import argparse
@@ -20,7 +21,9 @@ from typing import Any
 
 FIXTURE = "PUBLIC_SYNTHETIC_NOT_REAL_CHAPTER"
 REVIEW = "SYNTHETIC_TEST_REVIEW_NOT_HUMAN_APPROVAL"
-BAN_IMPORTS = frozenset({"modal", "torch", "transformers", "huggingface_hub", "kokoro", "yt_dlp", "gdown"})
+BAN_IMPORTS = frozenset(
+    {"modal", "torch", "transformers", "huggingface_hub", "kokoro", "yt_dlp", "gdown"}
+)
 STAGES = ("argument", "audit", "reconcile", "adaptation", "chapter_script", "chapter_direction")
 
 
@@ -32,14 +35,20 @@ class RehearsalStop(RuntimeError):
 def offline_guard(attempts: list[str]) -> Iterator[None]:
     """In-process guard; run in a dedicated process, outside a Modal control plane."""
     originals = (
-        builtins.__import__, socket.socket.connect, socket.socket.connect_ex,
-        socket.create_connection, urllib.request.urlopen, subprocess.Popen, os.system,
+        builtins.__import__,
+        socket.socket.connect,
+        socket.socket.connect_ex,
+        socket.create_connection,
+        urllib.request.urlopen,
+        subprocess.Popen,
+        os.system,
     )
 
     def deny(name: str) -> Any:
         def blocked(*_args: Any, **_kwargs: Any) -> Any:
             attempts.append(name)
             raise RehearsalStop("prohibited operation: " + name)
+
         return blocked
 
     def safe_import(name: str, *args: Any, **kwargs: Any) -> Any:
@@ -58,8 +67,13 @@ def offline_guard(attempts: list[str]) -> Iterator[None]:
         yield
     finally:
         (
-            builtins.__import__, socket.socket.connect, socket.socket.connect_ex,
-            socket.create_connection, urllib.request.urlopen, subprocess.Popen, os.system,
+            builtins.__import__,
+            socket.socket.connect,
+            socket.socket.connect_ex,
+            socket.create_connection,
+            urllib.request.urlopen,
+            subprocess.Popen,
+            os.system,
         ) = originals
 
 
@@ -90,6 +104,13 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
     with offline_guard(forbidden):
         root.mkdir(mode=0o700)
         # Explicitly test-only fixture imports, never production dependencies.
+        from public_book_fixture_support import (
+            _hybrid_creative_output,
+            _hybrid_wav,
+            _injected_hybrid_response,
+            _selected_hybrid_source,
+        )
+
         from clipper.books import (
             chapter,
             chapter_hybrid,
@@ -99,12 +120,6 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
             whole_book,
         )
         from clipper.books.orchestrator import BookOrchestrator
-        from public_book_fixture_support import (
-            _hybrid_creative_output,
-            _hybrid_wav,
-            _injected_hybrid_response,
-            _selected_hybrid_source,
-        )
 
         original: list[tuple[Any, str, Any]] = []
 
@@ -114,6 +129,7 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
             def refused(*_args: Any, **_kwargs: Any) -> Any:
                 forbidden.append(f"{obj.__name__}.{name}")
                 raise RehearsalStop("forbidden model/source provider")
+
             setattr(obj, name, refused)
             original.append((obj, name, previous))
 
@@ -135,6 +151,7 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
                 if name in {"argument", "audit", "reconcile"}:
                     return _injected_hybrid_response(name, request)
                 return _hybrid_creative_output(name, request)
+
             return produce
 
         def fake_wav(text: str, voice: str) -> bytes:
@@ -189,16 +206,25 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
             require(pause["publish_eligible"] is False, "publish gate bypass")
             before = dict(calls)
             replay_pause = chapter.evaluate_hybrid_chapter(
-                runner_a, bundle_a, section_a, plan=brief_plan,
-                expected_brief_identity=pause["brief_identity"], **args,
+                runner_a,
+                bundle_a,
+                section_a,
+                plan=brief_plan,
+                expected_brief_identity=pause["brief_identity"],
+                **args,
             )
             require(replay_pause["status"] == pause["status"], "review replay differs")
             require(calls == before and wav_count == 0, "pre-review replay did work")
 
-            runner_b, bundle_b, section_b = _selected_hybrid_source(root / "continuation", section_index=1)
+            runner_b, bundle_b, section_b = _selected_hybrid_source(
+                root / "continuation", section_index=1
+            )
             full_plan = chapter.ChapterPlan(
-                brief_cpu=True, adaptation_cpu=True, script_cpu=True,
-                direction_cpu=True, kokoro_cpu=True,
+                brief_cpu=True,
+                adaptation_cpu=True,
+                script_cpu=True,
+                direction_cpu=True,
+                kokoro_cpu=True,
             )
             pending = chapter.evaluate_hybrid_chapter(
                 runner_b, bundle_b, section_b, plan=full_plan, **args
@@ -233,8 +259,13 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
             review_path = root / "continuation" / "test-review.json"
             review_path.write_text(json.dumps(review, sort_keys=True), encoding="utf-8")
             final = chapter.evaluate_hybrid_chapter(
-                runner_b, bundle_b, section_b, plan=full_plan, review_file=review_path,
-                expected_brief_identity=pending["brief_identity"], **args,
+                runner_b,
+                bundle_b,
+                section_b,
+                plan=full_plan,
+                review_file=review_path,
+                expected_brief_identity=pending["brief_identity"],
+                **args,
             )
             require(
                 final["status"] == "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED",
@@ -245,8 +276,13 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
             require(wav_count > 0, "fake audio not exercised")
             before, before_wav = dict(calls), wav_count
             replay = chapter.evaluate_hybrid_chapter(
-                runner_b, bundle_b, section_b, plan=full_plan, review_file=review_path,
-                expected_brief_identity=pending["brief_identity"], **args,
+                runner_b,
+                bundle_b,
+                section_b,
+                plan=full_plan,
+                review_file=review_path,
+                expected_brief_identity=pending["brief_identity"],
+                **args,
             )
             require(replay["status"] == final["status"], "postreview cache replay status")
             require(before == calls and before_wav == wav_count, "replay reran producers")
@@ -257,8 +293,13 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
             stale_path.write_text(json.dumps(changed_review), encoding="utf-8")
             try:
                 chapter.evaluate_hybrid_chapter(
-                    runner_b, bundle_b, section_b, plan=full_plan, review_file=stale_path,
-                    expected_brief_identity=pending["brief_identity"], **args,
+                    runner_b,
+                    bundle_b,
+                    section_b,
+                    plan=full_plan,
+                    review_file=stale_path,
+                    expected_brief_identity=pending["brief_identity"],
+                    **args,
                 )
             except chapter.ChapterStop:
                 adversarial.append("stale_review")
@@ -267,13 +308,18 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
 
             original_material = whole_book.hybrid_chapter_producer_material
             whole_book.hybrid_chapter_producer_material = lambda: {
-                **original_material(), "public_synthetic_producer_variant": "changed"
+                **original_material(),
+                "public_synthetic_producer_variant": "changed",
             }
             try:
                 try:
                     chapter.evaluate_hybrid_chapter(
-                        runner_b, bundle_b, section_b, plan=full_plan,
-                        expected_brief_identity=pending["brief_identity"], **args,
+                        runner_b,
+                        bundle_b,
+                        section_b,
+                        plan=full_plan,
+                        expected_brief_identity=pending["brief_identity"],
+                        **args,
                     )
                 except chapter.ChapterStop:
                     adversarial.append("producer_identity_tamper")
@@ -296,15 +342,21 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
             brief_path.write_bytes(brief_path.read_bytes() + b" ")
             try:
                 chapter.evaluate_hybrid_chapter(
-                    runner_b, bundle_b, section_b, plan=full_plan,
-                    expected_brief_identity=pending["brief_identity"], **args,
+                    runner_b,
+                    bundle_b,
+                    section_b,
+                    plan=full_plan,
+                    expected_brief_identity=pending["brief_identity"],
+                    **args,
                 )
             except chapter.ChapterStop:
                 adversarial.append("raw_artifact_tamper")
             else:
                 raise RehearsalStop("raw artifact tamper accepted")
 
-            runner_c, bundle_c, section_c = _selected_hybrid_source(root / "malformed", section_index=1)
+            runner_c, bundle_c, section_c = _selected_hybrid_source(
+                root / "malformed", section_index=1
+            )
             invalid_calls = 0
 
             def malformed(_request: dict[str, object]) -> str:
@@ -326,7 +378,9 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
             require(invalid_calls == 1, "failed attempt automatically retried")
             adversarial.append("malformed_reply_no_replay")
 
-            runner_d, bundle_d, section_d = _selected_hybrid_source(root / "interruption", section_index=1)
+            runner_d, bundle_d, section_d = _selected_hybrid_source(
+                root / "interruption", section_index=1
+            )
             interrupt_calls = 0
 
             def interrupted(_request: dict[str, object]) -> str:
@@ -355,12 +409,16 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
                 "status": "SYNTHETIC_CONTRACT_REHEARSAL_PASSED",
                 "publish_eligible": False,
                 "tracks": {
-                    "pause": {"status": pause["status"], "review_supplied": False,
-                              "units": len(source_a.work.units),
-                              "gaps": len(source_a.work.skipped),
-                              "provenance": pause["automation_claim"]},
+                    "pause": {
+                        "status": pause["status"],
+                        "review_supplied": False,
+                        "units": len(source_a.work.units),
+                        "gaps": len(source_a.work.skipped),
+                        "provenance": pause["automation_claim"],
+                    },
                     "synthetic_test_review": {
-                        "status": final["status"], "review_label": REVIEW,
+                        "status": final["status"],
+                        "review_label": REVIEW,
                         "audio_provenance": final["audio_provenance"],
                         "publish_eligible": False,
                     },
@@ -386,8 +444,7 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
                 "zero_call_evidence": {
                     "scope": "IN_PROCESS_PATCHED_PYTHON_APIS_ONLY",
                     "preloaded_forbidden_module_roots": sorted(
-                        {name.split(".", 1)[0] for name in sys.modules}
-                        & BAN_IMPORTS
+                        {name.split(".", 1)[0] for name in sys.modules} & BAN_IMPORTS
                     ),
                     "import_roots_denied": sorted(BAN_IMPORTS),
                     "network_guards": [
@@ -409,9 +466,12 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
                 "adversarial": adversarial,
                 "artifact_sha256": artifact_hashes(root),
                 "exclusions": [
-                    "CODESPACE_SIGNED_HOST_AUTHORITY", "MODAL_DISTRIBUTED_CAMPAIGN_DAG",
-                    "REAL_TOKENIZER_AND_MODEL_QUALITY", "PRIVATE_CHAPTER_SOURCE",
-                    "ACTUAL_EDITORIAL_REVIEW", "REAL_TTS_AND_VISUALS",
+                    "CODESPACE_SIGNED_HOST_AUTHORITY",
+                    "MODAL_DISTRIBUTED_CAMPAIGN_DAG",
+                    "REAL_TOKENIZER_AND_MODEL_QUALITY",
+                    "PRIVATE_CHAPTER_SOURCE",
+                    "ACTUAL_EDITORIAL_REVIEW",
+                    "REAL_TTS_AND_VISUALS",
                     "PROVIDER_EXECUTION_AND_HOST_CRASH_RECOVERY",
                 ],
             }
