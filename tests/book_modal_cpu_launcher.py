@@ -637,7 +637,11 @@ def _stop_and_observe(
     local_warnings: list[str] = []
     list_command = ["modal", "app", "list", "--json", "--env", environment]
 
+    transient_observation = False
+
     def observe() -> tuple[bool | None, str | None]:
+        nonlocal transient_observation
+        transient_observation = False
         remaining = min(8.0, deadline - time.monotonic())
         if remaining <= 0:
             return None, "list:deadline"
@@ -645,9 +649,13 @@ def _stop_and_observe(
             response = runner(
                 list_command, check=False, text=True, capture_output=True, timeout=remaining
             )
-        except (OSError, subprocess.SubprocessError) as exc:
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            transient_observation = True
+            return None, "list:" + type(exc).__name__
+        except subprocess.SubprocessError as exc:
             return None, "list:" + type(exc).__name__
         if response.returncode != 0:
+            transient_observation = True
             return None, "list:nonzero"
         try:
             rows = json.loads(response.stdout)
@@ -670,13 +678,15 @@ def _stop_and_observe(
 
     terminal, issue = observe()
     if issue:
-        return False, [issue]
+        if not transient_observation:
+            return False, [issue]
+        local_warnings.append(issue)
     if terminal:
         return True, []
 
     remaining = min(8.0, deadline - time.monotonic())
     if remaining <= 0:
-        return False, ["stop:deadline"]
+        return False, [*local_warnings, "stop:deadline"]
     try:
         response = runner(
             ["modal", "app", "stop", "-y", "--env", environment, app_id],
@@ -709,13 +719,15 @@ def _stop_and_observe(
             # An invalid or ambiguous exact-ID record cannot be healed by
             # observing a different snapshot later.
             if issue in {
-                "list:invalid_json", "list:invalid_schema",
-                "list:invalid_row_schema", "list:exact_id_not_found_or_duplicate",
+                "list:invalid_json",
+                "list:invalid_schema",
+                "list:invalid_row_schema",
+                "list:exact_id_not_found_or_duplicate",
             }:
                 break
         else:
             last_issue = "list:terminal_or_tasks_unconfirmed"
-    return False, local_warnings + [last_issue]
+    return False, [*local_warnings, last_issue]
 
 
 
