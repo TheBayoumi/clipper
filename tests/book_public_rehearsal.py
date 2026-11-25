@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import builtins
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -16,6 +17,7 @@ import time
 import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager
+from importlib.abc import MetaPathFinder
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,8 @@ class RehearsalStop(RuntimeError):
 @contextmanager
 def offline_guard(attempts: list[str]) -> Iterator[None]:
     """In-process guard; run in a dedicated process, outside a Modal control plane."""
+    original_dynamic_import = importlib.import_module
+    loaded_at_entry = {name.split(".", 1)[0] for name in sys.modules} & BAN_IMPORTS
     originals = (
         builtins.__import__,
         socket.socket.connect,
@@ -56,8 +60,23 @@ def offline_guard(attempts: list[str]) -> Iterator[None]:
             return deny("import:" + name)()
         return originals[0](name, *args, **kwargs)
 
+    def safe_dynamic_import(name: str, package: str | None = None) -> Any:
+        absolute = importlib.util.resolve_name(name, package) if name.startswith(".") else name
+        if absolute.split(".", 1)[0] in BAN_IMPORTS:
+            return deny("importlib.import_module:" + absolute)()
+        return original_dynamic_import(name, package)
+
+    class RejectForbiddenFinder(MetaPathFinder):
+        def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> None:
+            if fullname.split(".", 1)[0] in BAN_IMPORTS:
+                return deny("meta_path:" + fullname)()
+            return None
+
+    finder = RejectForbiddenFinder()
     try:
+        sys.meta_path.insert(0, finder)
         builtins.__import__ = safe_import
+        importlib.import_module = safe_dynamic_import
         socket.socket.connect = deny("socket.connect")
         socket.socket.connect_ex = deny("socket.connect_ex")
         socket.create_connection = deny("socket.create_connection")
@@ -65,7 +84,14 @@ def offline_guard(attempts: list[str]) -> Iterator[None]:
         subprocess.Popen = deny("subprocess")
         os.system = deny("system")
         yield
+        newly_loaded = (
+            {name.split(".", 1)[0] for name in sys.modules} & BAN_IMPORTS
+        ) - loaded_at_entry
+        if newly_loaded:
+            raise RehearsalStop("forbidden modules appeared during guard")
     finally:
+        sys.meta_path.remove(finder)
+        importlib.import_module = original_dynamic_import
         (
             builtins.__import__,
             socket.socket.connect,
@@ -80,6 +106,22 @@ def offline_guard(attempts: list[str]) -> Iterator[None]:
 def require(ok: bool, reason: str) -> None:
     if not ok:
         raise RehearsalStop(reason)
+
+
+def _verify_checkout_module_origins(checkout: Path) -> None:
+    """Reject ambient imports outside the exact script checkout."""
+    package_root = (checkout / "src" / "clipper").resolve()
+    fixtures_root = (checkout / "tests").resolve()
+    for name, module in tuple(sys.modules.items()):
+        if name == "clipper" or name.startswith("clipper."):
+            expected = package_root
+        elif name in {"public_book_fixture_support", "book_public_rehearsal"}:
+            expected = fixtures_root
+        else:
+            continue
+        raw = getattr(module, "__file__", None)
+        if not isinstance(raw, str) or not Path(raw).resolve().is_relative_to(expected):
+            raise RehearsalStop("foreign or unlocated rehearsal/production module: " + name)
 
 
 def artifact_hashes(root: Path) -> dict[str, str]:
@@ -99,6 +141,8 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
     """Actual selected-source and hybrid chapter logic; only producers are injected."""
     require(bool(re.fullmatch(r"[0-9a-f]{40}", expected_sha)), "exact source SHA required")
     require(root.is_absolute() and not root.exists(), "fresh absolute root required")
+    checkout = Path(__file__).resolve().parents[1]
+    _verify_checkout_module_origins(checkout)
     start = time.monotonic()
     forbidden: list[str] = []
     with offline_guard(forbidden):
@@ -121,6 +165,7 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
         )
         from clipper.books.orchestrator import BookOrchestrator
 
+        _verify_checkout_module_origins(checkout)
         original: list[tuple[Any, str, Any]] = []
 
         def block(obj: Any, name: str) -> None:
@@ -447,6 +492,7 @@ def rehearse(root: Path, expected_sha: str) -> dict[str, object]:
                         {name.split(".", 1)[0] for name in sys.modules} & BAN_IMPORTS
                     ),
                     "import_roots_denied": sorted(BAN_IMPORTS),
+                    "dynamic_import_guard": "importlib.import_module_and_meta_path",
                     "network_guards": [
                         "socket.connect",
                         "socket.connect_ex",
@@ -511,6 +557,17 @@ def main(argv: list[str] | None = None) -> int:
             timeout=5,
         ).stdout
         require(not changes.strip(), "checkout contains modified or untracked files")
+        _verify_checkout_module_origins(checkout)
+        source_path = str((checkout / "src").resolve())
+        fixture_path = str((checkout / "tests").resolve())
+        # Resolve later imports from this exact checkout, not ambient PYTHONPATH.
+        sys.path[:] = [
+            source_path,
+            fixture_path,
+            *[path for path in sys.path if Path(path or ".").resolve() not in {
+                Path(source_path), Path(fixture_path)
+            }],
+        ]
         result = rehearse(args.fresh_root, args.expected_sha)
         result["source_pin"] = "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
         print(json.dumps(result, sort_keys=True))

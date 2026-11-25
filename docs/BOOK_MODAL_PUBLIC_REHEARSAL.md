@@ -207,3 +207,30 @@ may already have imported unrelated packages; its reported
 rather than claiming clean-process coverage. In either case a subsequent
 forbidden import or guarded call fails closed. This remains a Python
 application guard, not kernel network isolation.
+
+
+## REVIEWFIX1227 source and dynamic-import evidence boundaries (UNQUALIFIED)
+
+The CLI first checks exact clean Git HEAD and rejects already-loaded
+`clipper` package/submodules and shared fixture modules unless their real
+`__file__` paths resolve inside the script's **own** checkout. It then
+prepends that checkout's `src` and `tests` to the import path before
+scenario execution and rechecks loaded production/fixture module origins
+after import. A foreign ambient `PYTHONPATH` or preloaded foreign
+`clipper` module cannot be credited to the checked-out SHA. This is an
+evidence-binding check for cooperative Python execution, not a code-signing
+or adversarial Python interpreter sandbox.
+
+The process-local offline guard now rejects `importlib.import_module()`
+for the forbidden roots, including modules already present in
+`sys.modules`. A temporary first-position `MetaPathFinder` also denies
+new forbidden-module loading before a loader executes, and the guard fails
+if new forbidden roots appear in the module registry before normal exit.
+Patches and finder are restored on both success and exception. The scope
+remains documented Python import/network/provider hooks only, **not**
+arbitrary native C networking or OS-level network isolation.
+
+These corrections are not included in the independently qualified
+`6162ca6` executable checks; exact new-SHA tests, Ruff, full unchanged
+95% CI and fresh review remain required. No Modal execution approval is
+implied.

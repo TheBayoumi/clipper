@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import builtins
 import hashlib
+import importlib
+import importlib.abc
+import importlib.machinery
 import json
 import os
 import socket
 import subprocess
 import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -258,3 +262,124 @@ print("SUPPORT_IMPORT_CLEAN")
     )
     assert checked.returncode == 0, (checked.stdout, checked.stderr)
     assert checked.stdout.strip() == "SUPPORT_IMPORT_CLEAN"
+
+
+def test_dynamic_import_guards_reject_fake_torch_before_loader() -> None:
+    events: list[str] = []
+    previous_import = importlib.import_module
+    before_finders = tuple(sys.meta_path)
+    previously_loaded = sys.modules.pop("torch", None)
+    fake = types.ModuleType("torch")
+
+    class FakeLoader(importlib.abc.Loader):
+        def create_module(self, _spec: object) -> types.ModuleType:
+            events.append("loaded")
+            return fake
+
+        def exec_module(self, _module: object) -> None:
+            events.append("executed")
+
+    class FakeFinder(importlib.abc.MetaPathFinder):
+        def find_spec(
+            self, fullname: str, path: object = None, target: object = None
+        ) -> object:
+            if fullname == "torch":
+                events.append("foreign-finder")
+                return importlib.machinery.ModuleSpec(fullname, FakeLoader())
+            return None
+
+    finder = FakeFinder()
+    sys.meta_path.insert(0, finder)
+    try:
+        with rehearsal.offline_guard(events):
+            with pytest.raises(rehearsal.RehearsalStop, match="prohibited operation"):
+                importlib.import_module("torch")
+            sys.modules["torch"] = fake
+            with pytest.raises(rehearsal.RehearsalStop, match="prohibited operation"):
+                importlib.import_module("torch")
+            sys.modules.pop("torch", None)
+        assert "loaded" not in events
+        assert "executed" not in events
+        assert "foreign-finder" not in events
+        assert len([x for x in events if x == "importlib.import_module:torch"]) == 2
+        assert importlib.import_module is previous_import
+        assert tuple(sys.meta_path) == (finder, *before_finders)
+    finally:
+        sys.meta_path.remove(finder)
+        if previously_loaded is not None:
+            sys.modules["torch"] = previously_loaded
+        else:
+            sys.modules.pop("torch", None)
+
+
+def test_cli_refuses_preloaded_foreign_clipper(tmp_path: Path) -> None:
+    checkout = Path(__file__).resolve().parents[1]
+    code = """
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+sys.path.insert(0, str(Path(sys.argv[1]) / "tests"))
+import book_public_rehearsal as rehearsal
+foreign = types.ModuleType("clipper")
+foreign.__file__ = str(Path(sys.argv[2]) / "clipper" / "__init__.py")
+sys.modules["clipper"] = foreign
+rehearsal.subprocess.run = lambda args, **kw: SimpleNamespace(
+    stdout="a" * 40 + "\\n" if "rev-parse" in args else ""
+)
+assert rehearsal.main([
+    "--fresh-root", sys.argv[3], "--expected-sha", "a" * 40
+]) == 2
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(checkout), str(tmp_path / "other"), str(tmp_path / "new")],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert json.loads(result.stdout.strip())["status"] == "PUBLIC_SYNTHETIC_REHEARSAL_BLOCKED"
+    assert not (tmp_path / "new").exists()
+
+
+def test_cli_foreign_ambient_pythonpath_uses_verified_chapter(tmp_path: Path) -> None:
+    checkout = Path(__file__).resolve().parents[1]
+    foreign = tmp_path / "foreign"
+    (foreign / "clipper" / "books").mkdir(parents=True)
+    (foreign / "clipper" / "__init__.py").write_text("FOREIGN = True\n")
+    (foreign / "clipper" / "books" / "__init__.py").write_text("FOREIGN = True\n")
+    (foreign / "clipper" / "books" / "chapter.py").write_text("FOREIGN = True\n")
+    code = """
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+checkout = Path(sys.argv[1])
+sys.path.insert(0, str(checkout / "tests"))
+import book_public_rehearsal as rehearsal
+rehearsal.subprocess.run = lambda args, **kw: SimpleNamespace(
+    stdout="a" * 40 + "\\n" if "rev-parse" in args else ""
+)
+assert rehearsal.main([
+    "--fresh-root", sys.argv[2], "--expected-sha", "a" * 40
+]) == 0
+from clipper.books import chapter
+assert Path(chapter.__file__).resolve() == (
+    checkout / "src" / "clipper" / "books" / "chapter.py"
+).resolve()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(checkout), str(tmp_path / "new")],
+        cwd=checkout,
+        env={**os.environ, "PYTHONPATH": str(foreign)},
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    payload = json.loads(result.stdout.strip())
+    assert payload["status"] == "SYNTHETIC_CONTRACT_REHEARSAL_PASSED"
+    assert payload["source_pin"] == "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
