@@ -924,3 +924,114 @@ def test_identity_stage_stall_is_bounded_and_never_starts_cleanup_without_id(
     assert "WORKSPACE_VERIFY_BEGIN" in report["observed_phases"]
     assert "APP_ID_UNKNOWN" in report["cleanup_errors"]
     assert events == ["worker-started", "killed"]
+
+
+def test_internal_worker_rechecks_approval_expiry_after_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, digest = _manifest(tmp_path)
+    approval = launcher.load_approval(path, digest, SHA)
+    calls: list[str] = []
+
+    class FakeController:
+        def identify(self, _approval: launcher.Approval) -> str:
+            calls.append("identity")
+            return approval.workspace
+
+        def run_remote(self, *_args: object) -> None:
+            calls.append("resource")
+            raise AssertionError("expired approval reached resource path")
+
+    class ExpiredDateTime:
+        @staticmethod
+        def now(_tz: object) -> datetime:
+            return approval.expires_utc + timedelta(seconds=1)
+
+    monkeypatch.setattr(launcher, "ModalControl", FakeController)
+    monkeypatch.setattr(launcher, "datetime", ExpiredDateTime)
+    ledger, result = tmp_path / "ledger.jsonl", tmp_path / "result.json"
+    assert launcher._internal_worker(approval, ledger, result) == 2
+    assert calls == ["identity"]
+    assert not result.exists()
+    assert "WORKER_ERROR" in launcher._read_journal(ledger)[1]
+
+
+def test_journal_valid_app_id_then_nonobject_json_keeps_cleanup_and_interrupt(
+    tmp_path: Path
+) -> None:
+    path, digest = _manifest(tmp_path)
+    approval = launcher.load_approval(path, digest, SHA)
+    app_id = "ap-" + "A" * 22
+    commands: list[list[str]] = []
+
+    class Interrupted:
+        pid = 23232
+        returncode = 130
+
+        def wait(self, **_kw: object) -> int:
+            raise KeyboardInterrupt
+
+        def poll(self) -> int:
+            return 130
+
+    def fake_popen(argv: list[str], **_kw: object) -> Interrupted:
+        ledger = Path(argv[argv.index("--journal") + 1])
+        launcher._journal(ledger, "APP_ID", app_id)
+        with ledger.open("a", encoding="utf-8") as stream:
+            stream.write("[]\nnull\n123\n")
+        return Interrupted()
+
+    def fake_cli(argv: list[str], **_kw: object) -> SimpleNamespace:
+        commands.append(argv)
+        if "stop" in argv:
+            return SimpleNamespace(returncode=0, stdout="")
+        state = "ephemeral" if len(commands) == 1 else "stopped"
+        return SimpleNamespace(returncode=0, stdout=json.dumps(
+            [{"app_id": app_id, "state": state, "tasks": "0"}]
+        ))
+
+    with pytest.raises(launcher.LaunchInterrupted) as interrupted:
+        launcher._bounded_run(
+            approval, path, digest, deadline_seconds=10,
+            popen=fake_popen, runner=fake_cli,
+        )
+    evidence = interrupted.value.evidence
+    assert evidence["app_id"] == app_id
+    assert evidence["initiator_interrupted"] is True
+    assert evidence["status"] == "BLOCKED"
+    assert "INVALID_JOURNAL" in evidence["cleanup_errors"]
+    assert "INITIATOR_KEYBOARD_INTERRUPT" in evidence["cleanup_errors"]
+    assert [command[2] for command in commands] == ["list", "stop", "list"]
+
+
+@pytest.mark.parametrize("initial_kind", ["nonzero", "invalid_json", "missing"])
+def test_initial_inconclusive_list_still_stops_exact_id_and_retains_uncertainty(
+    initial_kind: str,
+) -> None:
+    app_id = "ap-" + "A" * 22
+    commands: list[list[str]] = []
+
+    def fake_cli(argv: list[str], **_kw: object) -> SimpleNamespace:
+        commands.append(argv)
+        if argv[2] == "stop":
+            return SimpleNamespace(returncode=0, stdout="")
+        if len(commands) == 1:
+            if initial_kind == "nonzero":
+                return SimpleNamespace(returncode=1, stdout="")
+            if initial_kind == "invalid_json":
+                return SimpleNamespace(returncode=0, stdout="{invalid")
+            return SimpleNamespace(returncode=0, stdout="[]")
+        return SimpleNamespace(returncode=0, stdout=json.dumps(
+            [{"app_id": app_id, "state": "stopped", "tasks": "0"}]
+        ))
+
+    confirmed, errors = launcher._stop_and_observe(
+        app_id, "qualification", time.monotonic() + 10, runner=fake_cli
+    )
+    assert confirmed is False
+    assert errors
+    assert commands == [
+        ["modal", "app", "list", "--json", "--env", "qualification"],
+        ["modal", "app", "stop", "-y", "--env", "qualification", app_id],
+        ["modal", "app", "list", "--json", "--env", "qualification"],
+    ]

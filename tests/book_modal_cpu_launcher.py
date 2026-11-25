@@ -383,6 +383,9 @@ def _read_journal(path: Path) -> tuple[str | None, list[str]]:
             except ValueError:
                 phases.append("MALFORMED_RECORD")
                 continue
+            if not isinstance(entry, dict):
+                phases.append("MALFORMED_RECORD")
+                continue
             phase, identifier = entry.get("phase"), entry.get("id")
             if not isinstance(phase, str) or not isinstance(identifier, str):
                 phases.append("MALFORMED_RECORD")
@@ -440,13 +443,14 @@ def _stop_and_observe(
 
     terminal, failure = observe()
     if failure is not None:
-        return False, [failure]
-    if terminal is True:
-        # Already stopped: calling app stop again is an error in pinned 1.5.5.
+        errors.append(failure)
+    elif terminal is True:
+        # Only positive exact-ID stopped evidence permits skipping stop.
         return True, []
     remaining = min(8.0, deadline - time.monotonic())
     if remaining <= 0:
-        return False, ["stop:deadline"]
+        errors.append("stop:deadline")
+        return False, errors
     try:
         response = runner(
             ["modal", "app", "stop", "-y", "--env", environment, app_id],
@@ -602,6 +606,10 @@ def _internal_worker(approval: Approval, journal: Path, result_file: Path) -> in
     try:
         _journal(journal, "WORKSPACE_VERIFY_BEGIN")
         _require(controller.identify(approval) == approval.workspace, "workspace mismatch")
+        _require(
+            datetime.now(UTC) < approval.expires_utc,
+            "approval expired during workspace identity lookup",
+        )
         result = controller.run_remote(
             approval, lambda phase, value: _journal(journal, phase, value)
         )

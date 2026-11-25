@@ -214,7 +214,10 @@ A bounded one-shot worker owns SDK workspace identity lookup, image setup,
 App context entry/exit, Function spawn/get and cancellation. The parent owns
 a finite process deadline and collects fsynced phase/App/call-ID evidence.
 The actual workspace lookup executes **inside the bounded worker, before
-any image or App creation**. The owner-approved workspace, environment
+any image or App creation**. Immediately after a successful workspace
+match, the worker independently rechecks the UTC approval expiry
+**before** entering any resource-constructing operation. An identity
+lookup that consumes the remaining approval window fails closed. The owner-approved workspace, environment
 and credential route remain unresolved; matching strings are not authority.
 
 Before beginning allocation, the worker records `WORKSPACE_VERIFY_BEGIN`
@@ -229,7 +232,10 @@ recovery and before any provider stop. Anything else, including short
 The control-plane parent retains KeyboardInterrupt as an interrupted
 outcome. It still attempts finite process cleanup and exact-ID provider
 reconciliation, then raises `LaunchInterrupted` with the blocked
-evidence attached. A timeout or other uncertain cleanup likewise remains
+evidence attached. Journal parsing treats non-object JSON records such
+as `[]`, `null` or `123` as `MALFORMED_RECORD`, retains any previously
+validated exact App ID, and continues bounded cleanup without mistaking
+the malformed evidence for a safe outcome. A timeout or other uncertain cleanup likewise remains
 `BLOCKED`; the result is not represented as a successful deletion.
 Worker cancellation occurs within `app.run()` before context exit, and
 earlier cleanup, journal, worker and cancellation failures accumulate.
@@ -254,10 +260,14 @@ The supported CLI is `modal app list --json --env ENV` and
 **List first** using the explicitly selected environment. Exactly one
 row with the full App ID, `state="stopped"`, and `tasks="0"` means
 the App is already terminal; **do not issue stop** (which exits nonzero
-for already-stopped Apps in this SDK). If a valid exact-ID row is
-nonterminal, issue stop and re-list within the bounded deadline. A
-missing, duplicated, malformed or ambiguous row never authorizes
-guessing a deployment name, and all failures remain `UNKNOWN/BLOCKED`.
+for already-stopped Apps in this SDK). Otherwise, including when the
+initial list fails, is malformed, or omits the exact App ID, retain
+the initial uncertainty but attempt a bounded stop **only against the
+already validated exact App ID**, followed by another bounded list.
+Cleanup can be reported confirmed only with positive post-stop terminal
+evidence and **no retained initial or stop error**. Missing, duplicate,
+malformed or ambiguous rows never authorize guessing a deployment
+name, and all such failures remain `UNKNOWN/BLOCKED`.
 A nonzero stop cannot be turned into clean success merely because the
 later list shows stopped. This is narrowly labeled
 `STOPPED_CONFIRMED_BY_LIST`, not verified universal provider deletion.
