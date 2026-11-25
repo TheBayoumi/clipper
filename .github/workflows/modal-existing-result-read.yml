@@ -1,0 +1,220 @@
+name: Read-only exact historical Modal FunctionCall output metadata (temporary)
+
+on:
+  push:
+    branches: [review/unified-tts-cleanup]
+    paths:
+      - ".github/workflows/modal-existing-result-read.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  existing-result-metadata:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/review/unified-tts-cleanup'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Set up Python 3.11 without credentials
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned Modal client without credentials
+        run: python -m pip install --disable-pip-version-check --no-cache-dir "modal==1.5.5"
+
+      - name: Inspect exact historical App logs and existing call output metadata only
+        shell: bash
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -euo pipefail
+          unset MODAL_PROFILE
+          timeout --signal=TERM --kill-after=10s 120s python -I - <<'PY'
+          import asyncio
+          import contextlib
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import time
+
+          APP_ID = "ap-8lq3aNsHtFapUbn8f0AQml"
+          WORKSPACE = "mahmoud-bayoumi-mm"
+          CALL_PATTERN = re.compile(r"(?<![A-Za-z0-9_-])fc-[A-Za-z0-9]{22}(?![A-Za-z0-9_-])")
+          BLOB_PATTERN = re.compile(r"bl-[A-Za-z0-9]{1,64}\Z")
+          LOG_COMMAND = [
+              "modal", "app", "logs", APP_ID, "--env", "main",
+              "--since", "2026-11-25T13:51:00Z",
+              "--until", "2026-11-25T13:55:00Z",
+              "--tail", "1000", "--show-function-call-id",
+              "--show-container-id",
+          ]
+          evidence = {
+              "status": "INCOMPLETE",
+              "workspace_verified": False,
+              "target_app_id": APP_ID,
+              "historical_window_utc": [
+                  "2026-11-25T13:51:00Z", "2026-11-25T13:55:00Z"
+              ],
+              "log_command_returncode": None,
+              "log_byte_count": None,
+              "log_autherror_seen": False,
+              "log_blobcreate_seen": False,
+              "function_call_ids": [],
+              "function_call_count": 0,
+              "call_metadata": [],
+          }
+
+          def report():
+              # The only output channel. No provider errors or untrusted text.
+              rendered = json.dumps(evidence, sort_keys=True, separators=(",", ":"))
+              print(rendered)
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+                  f.write("Exact-App historical output-metadata read (no payload)\n\n")
+                  f.write("~~~json\n" + rendered + "\n~~~\n")
+
+          def incomplete(category):
+              evidence["status"] = category
+              report()
+              sys.exit(2)
+
+          def safe_class(exc):
+              name = type(exc).__name__
+              return name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name) else "OtherException"
+
+          def enum_value(message, field):
+              value = getattr(message, field)
+              if type(value) is not int:
+                  return {"number": None, "name": "UNKNOWN"}
+              descriptor = message.DESCRIPTOR.fields_by_name.get(field)
+              enum_type = descriptor.enum_type if descriptor is not None else None
+              named = enum_type.values_by_number.get(value) if enum_type is not None else None
+              name = named.name if named is not None else "UNKNOWN"
+              if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", name):
+                  name = "UNKNOWN"
+              return {"number": value, "name": name}
+
+          if not (os.environ.get("MODAL_TOKEN_ID") and os.environ.get("MODAL_TOKEN_SECRET")):
+              incomplete("CREDENTIALS_MISSING")
+          try:
+              with open(os.devnull, "w") as sink:
+                  with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                      import modal
+                      from modal.client import _Client
+                      from modal_proto import api_pb2
+                      client = modal.Client.from_env()
+                      workspace = modal.Workspace.from_context(client=client)
+                      workspace.hydrate(client=client)
+                      actual_workspace = workspace.name
+          except BaseException as exc:
+              incomplete("WORKSPACE_VERIFICATION_" + safe_class(exc))
+          if actual_workspace != WORKSPACE:
+              incomplete("WORKSPACE_MISMATCH")
+          evidence["workspace_verified"] = True
+
+          try:
+              log_process = subprocess.run(
+                  LOG_COMMAND, capture_output=True, timeout=30, check=False
+              )
+          except (OSError, subprocess.SubprocessError) as exc:
+              incomplete("LOG_READ_" + safe_class(exc))
+          evidence["log_command_returncode"] = log_process.returncode
+          log_bytes = log_process.stdout + b"\n" + log_process.stderr
+          evidence["log_byte_count"] = len(log_bytes)
+          if len(log_bytes) > 131072:
+              incomplete("LOG_BOUNDS_EXCEEDED")
+          if log_process.returncode != 0:
+              incomplete("LOG_COMMAND_NONZERO")
+          log_text = log_bytes.decode("utf-8", errors="replace")
+          evidence["log_autherror_seen"] = "AuthError" in log_text
+          evidence["log_blobcreate_seen"] = "BlobCreate" in log_text
+          call_ids = sorted(set(CALL_PATTERN.findall(log_text)))
+          evidence["function_call_count"] = len(call_ids)
+          evidence["function_call_ids"] = call_ids[:3]
+          if not call_ids:
+              evidence["status"] = "NO_FUNCTION_CALL_IDS_IN_EXACT_APP_LOGS"
+              report()
+              sys.exit(0)
+          if len(call_ids) > 3:
+              incomplete("AMBIGUOUS_FUNCTION_CALL_IDS")
+          # This RPC reads existing result metadata; do not call get(), deserialize,
+          # follow logs, retrieve blobs, create resources, or clear outputs.
+          async def inspect():
+              async_client = await _Client.from_env()
+              try:
+                  for call_id in call_ids:
+                      request = api_pb2.FunctionGetOutputsRequest(
+                          function_call_id=call_id,
+                          timeout=0,
+                          clear_on_success=False,
+                          last_entry_id="0-0",
+                          max_values=1,
+                          start_idx=0,
+                          end_idx=0,
+                          requested_at=time.time(),
+                      )
+                      record = {
+                          "function_call_id": call_id,
+                          "rpc": "FunctionGetOutputs",
+                          "output_items": [],
+                          "num_unfinished_inputs": None,
+                          "status": "INCOMPLETE",
+                      }
+                      try:
+                          with open(os.devnull, "w") as sink:
+                              with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                                  response = await asyncio.wait_for(
+                                      async_client.stub.FunctionGetOutputs(request), timeout=12
+                                  )
+                          record["num_unfinished_inputs"] = int(response.num_unfinished_inputs)
+                          if len(response.outputs) > 16:
+                              record["status"] = "OUTPUT_METADATA_BOUNDS_EXCEEDED"
+                          else:
+                              record["status"] = "OUTPUT_METADATA_READ"
+                              for item in response.outputs:
+                                  result = item.result
+                                  raw = getattr(result, "data", b"")
+                                  blob_id = getattr(result, "data_blob_id", "")
+                                  blob_id = blob_id if isinstance(blob_id, str) and BLOB_PATTERN.fullmatch(blob_id) else None
+                                  inline_len = len(raw) if isinstance(raw, bytes) else None
+                                  status = enum_value(result, "status")
+                                  entry = {
+                                      "result_status": status,
+                                      "data_format": enum_value(item, "data_format"),
+                                      "inline_byte_length": inline_len,
+                                      "blob_id": blob_id,
+                                      # Exception bytes are NEVER decoded or unpickled.
+                                      "exception_class": "UNAVAILABLE_WITHOUT_DESERIALIZATION"
+                                      if getattr(result, "exception", b"") else None,
+                                  }
+                                  entry["availability"] = (
+                                      "AVAILABLE_FOR_PRIVATE_RETRIEVAL"
+                                      if status["name"] in {"GENERIC_STATUS_SUCCESS", "SUCCESS"}
+                                      and ((inline_len is not None and inline_len > 0) or blob_id)
+                                      else "NOT_CONFIRMED"
+                                  )
+                                  record["output_items"].append(entry)
+                      except Exception as exc:
+                          record["status"] = "OUTPUT_METADATA_RPC_" + safe_class(exc)
+                      evidence["call_metadata"].append(record)
+              finally:
+                  close = getattr(async_client, "close", None)
+                  if close is not None:
+                      try:
+                          await asyncio.wait_for(close(), timeout=3)
+                      except Exception:
+                          pass
+
+          try:
+              with open(os.devnull, "w") as sink:
+                  with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                      asyncio.run(asyncio.wait_for(inspect(), timeout=44))
+          except Exception as exc:
+              incomplete("ASYNC_READ_" + safe_class(exc))
+          evidence["status"] = "EXISTING_CALL_METADATA_INSPECTED"
+          report()
+          PY
