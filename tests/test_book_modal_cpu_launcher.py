@@ -71,12 +71,8 @@ def test_plan_mode_never_imports_sdk_or_provider(
     assert launcher.main(["--expected-sha", SHA]) == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan["status"] == "DORMANT_PLAN_ONLY"
-    assert plan["function_limits"]["cpu"] == [1, 1] or plan["function_limits"][
-        "cpu"
-    ] == (1, 1)
-    assert plan["function_limits"]["memory"] == [512, 512] or plan["function_limits"][
-        "memory"
-    ] == (
+    assert plan["function_limits"]["cpu"] == [1, 1] or plan["function_limits"]["cpu"] == (1, 1)
+    assert plan["function_limits"]["memory"] == [512, 512] or plan["function_limits"]["memory"] == (
         512,
         512,
     )
@@ -121,9 +117,7 @@ def test_no_approval_blocks_before_client_construction(
         {"expires_utc": "2999-01-01T00:00:00+00:00"},
     ],
 )
-def test_invalid_external_approval_rejected(
-    tmp_path: Path, change: dict[str, Any]
-) -> None:
+def test_invalid_external_approval_rejected(tmp_path: Path, change: dict[str, Any]) -> None:
     path, digest = _manifest(tmp_path, **change)
     with pytest.raises(launcher.LaunchBlocked):
         launcher.load_approval(path, digest, SHA)
@@ -190,9 +184,7 @@ def test_approved_fake_control_does_not_import_modal(tmp_path: Path) -> None:
             events.append("run-called-inert-fake")
             return {"source_sha": a.source_sha, "test_double": True}
 
-    output = launcher.execute(
-        SHA, approval, FakeControl(), external_control_verified=True
-    )
+    output = launcher.execute(SHA, approval, FakeControl(), external_control_verified=True)
     assert output["test_double"] is True
     assert events == ["identity-read", "run-called-inert-fake"]
 
@@ -253,9 +245,7 @@ def test_child_function_uses_only_synthetic_cli_contract(
     assert output["publish_eligible"] is False
     assert len(calls) == 1
     assert calls[0]["argv"][1] == str(checkout / "tests" / "book_public_rehearsal.py")
-    assert (
-        calls[0]["kwargs"]["env"]["PYTHONPATH"] == "/opt/clipper/src:/opt/clipper/tests"
-    )
+    assert calls[0]["kwargs"]["env"]["PYTHONPATH"] == "/opt/clipper/src:/opt/clipper/tests"
     assert "MODAL_TOKEN_SECRET" not in calls[0]["kwargs"]["env"]
     assert output["real_model_calls"] == 0
     assert output["artifact_inventory_count"] == 1
@@ -525,11 +515,7 @@ def test_bounded_lifecycle_reobservation_without_retry(
     )
     assert confirmed is expected
     assert commands.count("stop") == 1
-    assert (
-        (warnings == ["stop:nonzero"])
-        if expected
-        else (bool(errors) and warnings == [])
-    )
+    assert (warnings == ["stop:nonzero"]) if expected else (bool(errors) and warnings == [])
 
 
 @pytest.mark.parametrize(
@@ -552,9 +538,9 @@ def test_missing_duplicate_wrong_or_malformed_terminal_fails_without_stop(
         return SimpleNamespace(returncode=0, stdout=json.dumps(rows))
 
     assert (
-        launcher._stop_and_observe(
-            "ap-" + "A" * 22, "main", time.monotonic() + 2, runner=fake_cli
-        )[0]
+        launcher._stop_and_observe("ap-" + "A" * 22, "main", time.monotonic() + 2, runner=fake_cli)[
+            0
+        ]
         is False
     )
     assert commands == ["list"]
@@ -766,9 +752,7 @@ def test_worker_compact_survives_cleanup_unknown_without_promoting_success(
 
 
 @pytest.mark.parametrize("phase", ["CALL_ID", "GET_BEGIN", "RESULT_ACCEPTED"])
-def test_journal_call_binding_required_for_public_execution(
-    tmp_path: Path, phase: str
-) -> None:
+def test_journal_call_binding_required_for_public_execution(tmp_path: Path, phase: str) -> None:
     journal = tmp_path / "journal.jsonl"
     app_id, call_id = "ap-" + "A" * 22, "fc-synthetic-known"
     launcher._journal(journal, "APP_ID", app_id)
@@ -866,9 +850,7 @@ def test_list_unknown_and_mismatched_states_never_claim_stop() -> None:
         {"app_id": "ap-DDDDDDDDDDDDDDDDDDDDDD", "state": "stopped", "tasks": "0"},
     ):
 
-        def fake_cli(
-            argv: list[str], rows: object = rows, **_kw: object
-        ) -> SimpleNamespace:
+        def fake_cli(argv: list[str], rows: object = rows, **_kw: object) -> SimpleNamespace:
             if "stop" in argv:
                 return SimpleNamespace(returncode=0, stdout="")
             return SimpleNamespace(returncode=0, stdout=json.dumps(rows))
@@ -969,9 +951,7 @@ def test_parent_retains_bounded_diagnostics_only(tmp_path: Path) -> None:
     for part in ("stdout", "stderr"):
         evidence = output["worker_diagnostics"][part]
         assert evidence["size_bytes"] == len(sensitive)
-        assert (
-            evidence["bounded_prefix_sha256"] == hashlib.sha256(sensitive).hexdigest()
-        )
+        assert evidence["bounded_prefix_sha256"] == hashlib.sha256(sensitive).hexdigest()
     assert sensitive.decode() not in json.dumps(output)
 
 
@@ -1543,9 +1523,7 @@ def test_worker_identity_exact_workspace_and_unexpired_before_remote(
             calls.append("identity")
             return approval.workspace
 
-        def run_remote(
-            self, _approval: launcher.Approval, record: Any
-        ) -> dict[str, object]:
+        def run_remote(self, _approval: launcher.Approval, record: Any) -> dict[str, object]:
             calls.append("resource")
             record("RESULT_ACCEPTED", "synthetic")
             full = _valid_child_output()
@@ -1625,9 +1603,7 @@ def test_actual_public_rehearsal_inventory_sanitized_end_to_end(tmp_path: Path) 
     report = rehearsal.rehearse(tmp_path / "public-rehearsal", source_sha)
     report["source_pin"] = "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
     # Nested arbitrary metadata from test producers is not an output permission.
-    report["tracks"]["pause"]["unapproved_field"] = {
-        "marker": "never-publish-nested-marker"
-    }
+    report["tracks"]["pause"]["unapproved_field"] = {"marker": "never-publish-nested-marker"}
     report["unapproved_field"] = "never-publish-nested-marker"
     inventory_map = report["artifact_sha256"]
     assert isinstance(inventory_map, dict)
@@ -1679,13 +1655,8 @@ def test_real_child_cli_proves_source_pin_before_remote_compaction(
     """Actual clean-checkout CLI; no Modal SDK and no test-double source pin."""
     checkout = Path(__file__).resolve().parents[1]
     source_sha = launcher._git(checkout, "rev-parse", "HEAD")
-    assert (
-        launcher._git(checkout, "status", "--porcelain=v1", "--untracked-files=all")
-        == ""
-    )
-    compact = launcher._run_synthetic_child(
-        checkout, tmp_path / "fresh-artifacts", source_sha
-    )
+    assert launcher._git(checkout, "status", "--porcelain=v1", "--untracked-files=all") == ""
+    compact = launcher._run_synthetic_child(checkout, tmp_path / "fresh-artifacts", source_sha)
     launcher._validate_compact_report(compact, source_sha)
     assert compact["source_pin"] == "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
     assert compact["artifact_inventory_count"] == 97
@@ -1709,9 +1680,7 @@ def test_artifact_inventory_count_and_size_bounds() -> None:
     report["artifact_sha256"] = {f"file-{i}.json": "a" * 64 for i in range(513)}
     with pytest.raises(launcher.LaunchBlocked):
         launcher._compact_rehearsal(report, SHA)
-    report["artifact_sha256"] = {
-        f"folder/{i:03d}-{'x' * 100}.json": "a" * 64 for i in range(510)
-    }
+    report["artifact_sha256"] = {f"folder/{i:03d}-{'x' * 100}.json": "a" * 64 for i in range(510)}
     with pytest.raises(launcher.LaunchBlocked):
         launcher._compact_rehearsal(report, SHA)
 
@@ -1857,9 +1826,7 @@ def test_blocked_lifecycle_retains_only_verified_compact_evidence() -> None:
         with pytest.raises(launcher.LaunchBlocked):
             launcher._public_result({**blocked, **change}, SHA)
     with pytest.raises(launcher.LaunchBlocked):
-        launcher._public_result(
-            {**blocked, "status": "SYNTHETIC_REHEARSAL_CONFIRMED"}, SHA
-        )
+        launcher._public_result({**blocked, "status": "SYNTHETIC_REHEARSAL_CONFIRMED"}, SHA)
 
 
 def test_invalid_publication_fallback_does_not_recurse(
@@ -1970,9 +1937,7 @@ def test_child_nonzero_exposes_fixed_category_and_numeric_code(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def fake_run(*_args: object, **_kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(
-            returncode=17, stdout="private error detail", stderr="also private"
-        )
+        return SimpleNamespace(returncode=17, stdout="private error detail", stderr="also private")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(launcher.SyntheticChildError) as error:
