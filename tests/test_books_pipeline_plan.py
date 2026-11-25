@@ -185,3 +185,70 @@ def test_cli_offline(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None
     config_path.write_text('{"schema":1,"schema":2}', encoding="utf-8")
     assert dispatch_books(args) == 2
     assert json.loads(capsys.readouterr().out)["status"] == "INVALID_CONFIGURATION"
+
+
+@pytest.mark.parametrize("raw", [b"[]", b'{"a":1,"a":2}', b'{"a":NaN}', b"\xff"])
+def test_invalid_json_variants(raw: bytes) -> None:
+    with pytest.raises(plan.PlanError):
+        plan.strict_json(raw)
+
+
+@pytest.mark.parametrize(
+    "fault", ["shape", "path", "nonobject", "voice", "pending", "symlink", "raises"]
+)
+def test_planner_uncovered_rejections(tmp_path: Path, fault: str) -> None:
+    config = plan.template("a" * 64)
+    _input(config, tmp_path, "source", b"source")
+    if fault == "shape":
+        config["stages"]["source"]["input"] = 1
+    elif fault == "path":
+        config["stages"]["source"]["input"]["path"] = "../escape.json"
+    elif fault == "nonobject":
+        with pytest.raises(plan.PlanError):
+            plan.resolve([], tmp_path)
+        return
+    elif fault == "voice":
+        config["stages"]["narration"]["semantic"]["voice"] = "invalid"
+    elif fault == "pending":
+        _input(config, tmp_path, "audits", b"audits")
+        report = _rows(plan.resolve(config, tmp_path, verifiers={"source": lambda *_: True}))
+        assert report["audits"]["reason"] == "INPUT_DEPENDENCIES_NOT_VERIFIED"
+        return
+    elif fault == "symlink":
+        (tmp_path / "source.json").unlink()
+        (tmp_path / "target.json").write_bytes(b"source")
+        (tmp_path / "source.json").symlink_to(tmp_path / "target.json")
+        report = _rows(plan.resolve(config, tmp_path, verifiers={"source": lambda *_: True}))
+        assert report["source"]["reason"] == "INPUT_PATH_REDIRECTED"
+        return
+    else:
+
+        def rejects(*_):
+            raise RuntimeError("private details omitted")
+
+        report = _rows(plan.resolve(config, tmp_path, verifiers={"source": rejects}))
+        assert report["source"]["reason"] == "INPUT_VERIFICATION_FAILED"
+        return
+    with pytest.raises(plan.PlanError):
+        plan.resolve(config, tmp_path)
+
+
+def test_actual_selected_source_validator(tmp_path: Path) -> None:
+    from public_book_fixture_support import _selected_hybrid_source
+
+    (tmp_path / "fixture").mkdir()
+    _runner, selected, _section = _selected_hybrid_source(tmp_path / "fixture")
+    raw = selected.read_bytes()
+    config = plan.template(hashlib.sha256(raw).hexdigest())
+    _input(config, tmp_path, "source", raw)
+    config["stages"]["source"]["enabled"] = False
+    report = _rows(
+        plan.resolve(config, tmp_path, verifiers={"source": plan.verify_selected_source})
+    )
+    assert report["source"]["status"] == "REUSE"
+    descriptor = config["stages"]["source"]["input"]
+    assert not plan.verify_selected_source(raw, descriptor, {"unexpected": b"bytes"})
+    assert not plan.verify_selected_source(b"changed", descriptor, {})
+    (tmp_path / "config.json").write_bytes(b"")
+    with pytest.raises(plan.PlanError):
+        plan.plan_file(tmp_path / "config.json", tmp_path)

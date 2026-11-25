@@ -2756,3 +2756,87 @@ def test_configured_hybrid_preflight_blocks_before_producer(tmp_path: Path, case
             token_counter=lambda _: 1200,
         )
     forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "source_disabled",
+        "mixed_script_only",
+        "downstream_permission",
+        "text_descriptor",
+        "source_descriptor",
+        "human_disabled",
+        "missing_permission",
+        "missing_callback",
+        "mixed_origin",
+        "review_without_identity",
+        "identity_without_review",
+        "brief_review",
+    ],
+)
+def test_configured_execution_guard_matrix_no_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    from clipper.books import pipeline_plan
+
+    runner, selected, section = _selected_hybrid_source(tmp_path)
+    config = pipeline_plan.template(selected.stem, "script")
+    forbidden = Mock(side_effect=AssertionError("forbidden provider"))
+    callbacks = {
+        "argument_completion": forbidden,
+        "audit_completion": forbidden,
+        "reconcile_completion": forbidden,
+        "adaptation_completion": forbidden,
+        "script_completion": forbidden,
+    }
+    permissions = chapter.ChapterPlan(brief_cpu=True, adaptation_cpu=True, script_cpu=True)
+    extra: dict[str, object] = {}
+    if fault == "source_disabled":
+        config["stages"]["source"]["enabled"] = False
+    elif fault == "mixed_script_only":
+        extra["script_only"] = True
+    elif fault == "downstream_permission":
+        permissions = chapter.ChapterPlan(direction_cpu=True)
+    elif fault in {"text_descriptor", "source_descriptor"}:
+        name = "source" if fault == "source_descriptor" else "argument"
+        config["stages"][name]["input"] = {
+            "schema": pipeline_plan.DESCRIPTOR_SCHEMA,
+            "identity": pipeline_plan.stage_input_identity(
+                name,
+                pipeline_plan.registry()[name],
+                selected.stem,
+                config["stages"][name]["semantic"],
+                (),
+            ),
+            "output_sha256": "a" * 64,
+            "path": "input.json",
+        }
+    elif fault == "human_disabled":
+        config["stages"]["human_review"]["enabled"] = False
+    elif fault == "missing_permission":
+        permissions = chapter.ChapterPlan()
+    elif fault == "missing_callback":
+        callbacks["script_completion"] = None
+    elif fault == "mixed_origin":
+        callbacks["audit_completion"] = scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
+    elif fault == "review_without_identity":
+        extra["review_file"] = tmp_path / "no-approval.json"
+    elif fault == "identity_without_review":
+        extra["expected_brief_identity"] = "a" * 64
+    elif fault == "brief_review":
+        config["targets"] = ["brief"]
+        extra["review_file"] = tmp_path / "no-approval.json"
+    with pytest.raises(chapter.ChapterStop):
+        chapter.evaluate_hybrid_chapter(
+            runner,
+            selected,
+            section,
+            plan=permissions,
+            pipeline_config=config,
+            token_counter=lambda _: 1000,
+            **callbacks,
+            **extra,
+        )
+    forbidden.assert_not_called()
+    assert not list(runner.root.rglob("started-*.json"))

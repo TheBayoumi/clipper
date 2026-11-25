@@ -141,8 +141,10 @@ evidence from RAN to REUSED without changing the script identity.
 
 The brief target reports BRIEF_READY_UNREVIEWED and review REQUIRED_NEXT. It is
 not human-approved. The source stage always strictly imports the caller-supplied
-immutable selected bundle and never acquires source data. With source disabled,
-this is input reuse, not hidden source generation. Producer callbacks on disabled
+immutable selected bundle and never acquires source data. The native evaluator currently requires source validation enabled. Disabling it
+is rejected before any import or producer call, rather than silently ignoring the
+flag. The offline planner can validate a disabled source from an explicit input
+descriptor, but the native evaluator does not yet implement that descriptor bridge. Producer callbacks on disabled
 text stages are provenance bindings for exact native cache verification, never
 permission to invoke them. Human review disabled means reuse a matching actual
 attestation, never waive the review requirement.

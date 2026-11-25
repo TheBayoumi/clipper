@@ -2237,6 +2237,8 @@ def evaluate_hybrid_chapter(
         ]
         configured_lineage = pipeline_plan.semantic_lineage(configured, pipeline_plan.registry())
         entries = configured["stages"]
+        if not entries["source"]["enabled"]:
+            raise ChapterStop("configured native execution requires source validation enabled")
         # Only canonical native cache replay is supported in this slice. Never
         # treat a planner descriptor as a native validated Qwen artifact.
         if any(entries[name]["input"] is not None for name in entries if name != "source"):
