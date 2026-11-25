@@ -702,22 +702,25 @@ def _public_result(result: dict[str, object]) -> dict[str, object]:
     assert isinstance(report, dict)
 
     hashes = report.get("artifact_sha256")
-    safe_hashes: dict[str, str] = {}
-    if hashes is not None:
+    _require(isinstance(hashes, dict) and 0 < len(hashes) <= 512,
+             "synthetic artifact inventory count invalid")
+    for name, digest in hashes.items():
         _require(
-            isinstance(hashes, dict) and len(hashes) <= 32,
-            "invalid synthetic artifact hashes",
+            isinstance(name, str)
+            and bool(name)
+            and len(name.encode("utf-8")) <= 1024
+            and not name.startswith("/")
+            and "\\" not in name
+            and ":" not in name
+            and all(component not in {"", ".", ".."} for component in name.split("/"))
+            and isinstance(digest, str)
+            and bool(HEX64.fullmatch(digest)),
+            "invalid relative POSIX artifact inventory",
         )
-        for name, digest in hashes.items():
-            _require(
-                isinstance(name, str)
-                and bool(re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", name))
-                and isinstance(digest, str)
-                and bool(HEX64.fullmatch(digest)),
-                "invalid synthetic artifact hash",
-            )
-            safe_hashes[name] = digest
-
+    inventory = json.dumps(hashes, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
+    _require(len(inventory) <= 65536, "synthetic artifact inventory exceeds 64 KiB")
     safe["rehearsal"] = {
         "source_sha": source_sha,
         "source_pin": "VERIFIED_CLEAN_LOCAL_GIT_HEAD",
@@ -734,7 +737,8 @@ def _public_result(result: dict[str, object]) -> dict[str, object]:
         "real_model_calls": 0,
         "network_calls": 0,
         "publication_calls": 0,
-        "artifact_sha256": safe_hashes,
+        "artifact_inventory_sha256": hashlib.sha256(inventory).hexdigest(),
+        "artifact_inventory_count": len(hashes),
     }
     return safe
 
@@ -835,7 +839,22 @@ def main(argv: list[str] | None = None) -> int:
             BoundedModalControl(args.approval_file, args.approval_sha256),
             external_control_verified=True,
         )
-        print(json.dumps(_public_result(result), sort_keys=True))
+        try:
+            visible = _public_result(result)
+        except (LaunchBlocked, ValueError, TypeError):
+            # Preserve verified exact-ID cleanup evidence if publication validation fails.
+            prior = result.get("cleanup_errors")
+            errors = list(prior) if isinstance(prior, list) else []
+            errors.append("PUBLIC_EVIDENCE_VALIDATION_FAILED")
+            blocked = {
+                **result,
+                "status": "BLOCKED",
+                "cleanup_errors": errors,
+                "result": None,
+            }
+            print(json.dumps(_public_result(blocked), sort_keys=True))
+            return 2
+        print(json.dumps(visible, sort_keys=True))
         return 0 if result.get("status") == "SYNTHETIC_REHEARSAL_CONFIRMED" else 2
     except LaunchInterrupted as interrupted:
         print(json.dumps(_public_result(interrupted.evidence), sort_keys=True))

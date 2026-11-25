@@ -69,10 +69,16 @@ approval expiry **after** identity but before any App/Image construction.
 
 A clean successful CLI result includes only a reconstructed, schema-validated
 synthetic report: source SHA/pin, the human-review pause and separately
-labeled synthetic continuation statuses, empty guard attempts, zero model/
-network/publication calls and optional strictly validated artifact SHA-256
-digests. It excludes raw worker/SDK responses and arbitrary report fields.
-BLOCKED and interrupted outcomes omit the rehearsal payload.
+labeled synthetic continuation statuses, empty guard attempts, and zero
+model/network/publication calls. The actual public fixture has a path-keyed
+artifact hash inventory: the launcher validates at most 512 relative POSIX
+paths and 64 KiB of sorted compact JSON, then emits **only** the SHA-256
+digest and entry count of that canonical inventory. No artifact paths,
+invented nested fields, raw worker/SDK response or arbitrary metadata
+appear in the published result. If success evidence cannot be sanitized,
+the CLI returns BLOCKED with a fixed reason while preserving any separately
+confirmed exact-App-ID cleanup evidence. BLOCKED and interrupted outcomes
+omit the rehearsal payload.
 
 The existing Function configuration remains exactly:
 `cpu=(1,1)`, `memory=(512,512)`, `gpu=None`,
@@ -104,6 +110,14 @@ Otherwise it stops only that validated exact ID and verifies with a new
 bounded list. Errors, missing IDs, malformed rows and timeouts are
 retained, never converted into success. A clean terminal observation
 is not proof of universal resource deletion or account billing closure.
+
+The currently staged workflow gate does not independently pin the reviewed
+functional base: a later request could echo its arbitrary parent. **Do not
+activate the existing workflow.** After this functional commit is reviewed,
+stage a separate workflow-only commit whose gate pins the literal reviewed
+functional commit, checks that the intervening commit changes only its
+workflow file, and checks that the activation commit adds only its request
+file. No activation request is included in this correction.
 
 ## Current disposition
 

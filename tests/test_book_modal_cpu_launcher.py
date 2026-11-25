@@ -1067,7 +1067,7 @@ def test_reached_main_scoped_action_success_blocked_interrupt(
             seen.append("worker-run")
             evidence = _valid_child_output()
             evidence["artifact_sha256"] = {"test.json": "b" * 64}
-            evidence["secret_or_raw_payload"] = "never-print"
+            evidence["unapproved_field"] = "marker-not-for-output"
             return {
                 "status": "SYNTHETIC_REHEARSAL_CONFIRMED",
                 "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
@@ -1075,8 +1075,8 @@ def test_reached_main_scoped_action_success_blocked_interrupt(
                 "observed_phases": [],
                 "cleanup_errors": [],
                 "initiator_interrupted": False,
-                "result": {"rehearsal": evidence, "secret_or_raw_payload": "never-print"},
-                "secret_or_raw_payload": "never-print",
+                "result": {"rehearsal": evidence, "unapproved_field": "marker-not-for-output"},
+                "unapproved_field": "marker-not-for-output",
             }
 
     # Keep the real scoped execute, substitute only the worker run.
@@ -1094,7 +1094,8 @@ def test_reached_main_scoped_action_success_blocked_interrupt(
     assert launcher.main(args) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "SYNTHETIC_REHEARSAL_CONFIRMED"
-    assert "secret_or_raw_payload" not in json.dumps(output)
+    assert "unapproved_field" not in json.dumps(output)
+    assert "marker-not-for-output" not in json.dumps(output)
     assert output["rehearsal"]["source_sha"] == SHA
     assert output["rehearsal"]["tracks"]["pause"]["status"] == (
         "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
@@ -1106,7 +1107,14 @@ def test_reached_main_scoped_action_success_blocked_interrupt(
     assert output["rehearsal"]["real_model_calls"] == 0
     assert output["rehearsal"]["network_calls"] == 0
     assert output["rehearsal"]["publication_calls"] == 0
-    assert output["rehearsal"]["artifact_sha256"] == {"test.json": "b" * 64}
+    expected_inventory = json.dumps(
+        {"test.json": "b" * 64}, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    assert output["rehearsal"]["artifact_inventory_count"] == 1
+    assert output["rehearsal"]["artifact_inventory_sha256"] == hashlib.sha256(
+        expected_inventory
+    ).hexdigest()
+    assert "artifact_sha256" not in output["rehearsal"]
     assert seen == ["bounded-parent", "worker-run"]
 
     def blocked(self: launcher.BoundedModalControl, _approval: launcher.Approval) -> dict[str, object]:
@@ -1239,3 +1247,109 @@ def test_scoped_approval_rejects_paid_and_generic_before_client(
                               "--independent-control-receipt", "independent-ctrl-123"]) == 2
     assert created == []
     assert "DORMANT_LAUNCH_BLOCKED" in capsys.readouterr().out
+
+
+def test_actual_public_rehearsal_inventory_sanitized_end_to_end(tmp_path: Path) -> None:
+    """Use the real 97-file fixture generator, not a fabricated flat-hash stub."""
+    import book_public_rehearsal as rehearsal
+
+    source_sha = launcher._git(Path(__file__).resolve().parents[1], "rev-parse", "HEAD")
+    report = rehearsal.rehearse(tmp_path / "public-rehearsal", source_sha)
+    report["source_pin"] = "VERIFIED_CLEAN_LOCAL_GIT_HEAD"
+    # Nested arbitrary metadata from test producers is not an output permission.
+    report["tracks"]["pause"]["unapproved_field"] = {"marker": "never-publish-nested-marker"}
+    report["unapproved_field"] = "never-publish-nested-marker"
+    inventory_map = report["artifact_sha256"]
+    assert isinstance(inventory_map, dict)
+    assert len(inventory_map) > 32
+    raw_inventory = json.dumps(
+        inventory_map, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    expected_digest = hashlib.sha256(raw_inventory).hexdigest()
+    result = launcher._public_result(
+        {
+            "status": "SYNTHETIC_REHEARSAL_CONFIRMED",
+            "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
+            "result": {"rehearsal": report},
+        }
+    )
+    evidence = result["rehearsal"]
+    assert evidence["source_sha"] == source_sha
+    assert evidence["tracks"]["pause"]["status"] == "AWAITING_HUMAN_CHAPTER_BEAT_REVIEW"
+    assert evidence["tracks"]["synthetic_test_review"]["status"] == (
+        "TEST_DOUBLE_HYBRID_CHAPTER_TEXT_READY_UNREVIEWED"
+    )
+    assert evidence["zero_call_evidence"] == {"attempts": []}
+    assert evidence["real_model_calls"] == 0
+    assert evidence["network_calls"] == 0
+    assert evidence["publication_calls"] == 0
+    assert evidence["artifact_inventory_count"] == len(inventory_map)
+    assert evidence["artifact_inventory_sha256"] == expected_digest
+    assert "artifact_sha256" not in json.dumps(result)
+    assert "never-publish-nested-marker" not in json.dumps(result)
+    assert all(path not in json.dumps(result) for path in inventory_map)
+
+
+@pytest.mark.parametrize(
+    "bad_key",
+    ["/absolute.json", "../escape.json", "a/../b.json", "a//b.json", "a\\b.json"],
+)
+def test_invalid_artifact_paths_cannot_publish(bad_key: str) -> None:
+    report = _valid_child_output()
+    report["artifact_sha256"] = {bad_key: "a" * 64}
+    with pytest.raises(launcher.LaunchBlocked):
+        launcher._public_result(
+            {"status": "SYNTHETIC_REHEARSAL_CONFIRMED", "result": {"rehearsal": report}}
+        )
+
+
+def test_artifact_inventory_count_and_size_bounds() -> None:
+    report = _valid_child_output()
+    report["artifact_sha256"] = {f"file-{i}.json": "a" * 64 for i in range(513)}
+    with pytest.raises(launcher.LaunchBlocked):
+        launcher._public_result(
+            {"status": "SYNTHETIC_REHEARSAL_CONFIRMED", "result": {"rehearsal": report}}
+        )
+    report["artifact_sha256"] = {f"folder/{i:03d}-{'x' * 100}.json": "a" * 64 for i in range(510)}
+    with pytest.raises(launcher.LaunchBlocked):
+        launcher._public_result(
+            {"status": "SYNTHETIC_REHEARSAL_CONFIRMED", "result": {"rehearsal": report}}
+        )
+
+
+def test_main_publication_failure_preserves_confirmed_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path, digest = _manifest(tmp_path)
+    monkeypatch.setattr(launcher, "local_source", lambda *_args: None)
+    monkeypatch.setenv("MODAL_TOKEN_ID", "inert-id")
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", "inert-value")
+    monkeypatch.delenv("MODAL_PROFILE", raising=False)
+
+    def fake_run(self: launcher.BoundedModalControl, _approval: launcher.Approval) -> dict[str, object]:
+        report = _valid_child_output()
+        report["artifact_sha256"] = {"../invalid.json": "a" * 64}
+        return {
+            "status": "SYNTHETIC_REHEARSAL_CONFIRMED",
+            "provider_removal": "STOPPED_CONFIRMED_BY_LIST",
+            "app_id": "ap-" + "A" * 22,
+            "observed_phases": ["APP_ID", "RESULT_ACCEPTED"],
+            "cleanup_errors": [],
+            "initiator_interrupted": False,
+            "result": {"rehearsal": report},
+        }
+
+    monkeypatch.setattr(launcher.BoundedModalControl, "run_once", fake_run)
+    assert launcher.main(
+        [
+            "--execute", "--expected-sha", SHA, "--approval-file", str(path),
+            "--approval-sha256", digest, "--independent-control-receipt",
+            "independent-ctrl-123",
+        ]
+    ) == 2
+    observed = json.loads(capsys.readouterr().out)
+    assert observed["status"] == "BLOCKED"
+    assert observed["provider_removal"] == "STOPPED_CONFIRMED_BY_LIST"
+    assert observed["app_id"] == "ap-" + "A" * 22
+    assert "PUBLIC_EVIDENCE_VALIDATION_FAILED" in observed["cleanup_errors"]
+    assert "rehearsal" not in observed
