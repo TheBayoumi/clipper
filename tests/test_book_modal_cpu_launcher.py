@@ -418,8 +418,9 @@ def test_stop_and_list_terminal_evidence_requires_exact_id_zero_tasks() -> None:
             return SimpleNamespace(returncode=0, stdout="")
         return SimpleNamespace(returncode=0, stdout=json.dumps(next(responses)))
 
-    assert launcher._stop_and_observe(app_id, "qualification", time.monotonic() + 10,
-                                      runner=fake_cli) == (True, [])
+    assert launcher._stop_and_observe(
+        app_id, "qualification", time.monotonic() + 10, runner=fake_cli
+    ) == (True, [])
     list_cmd = ["modal", "app", "list", "--json", "--env", "qualification"]
     stop_cmd = ["modal", "app", "stop", "-y", "--env", "qualification", app_id]
     assert commands == [list_cmd, stop_cmd, list_cmd]
@@ -431,9 +432,9 @@ def test_stop_and_list_terminal_evidence_requires_exact_id_zero_tasks() -> None:
         if "stop" in argv:
             return SimpleNamespace(returncode=1, stdout="")
         state = "ephemeral" if len(commands) == 1 else "stopped"
-        return SimpleNamespace(returncode=0, stdout=json.dumps(
-            [{"app_id": app_id, "state": state, "tasks": "0"}]
-        ))
+        return SimpleNamespace(
+            returncode=0, stdout=json.dumps([{"app_id": app_id, "state": state, "tasks": "0"}])
+        )
 
     confirmed, errors = launcher._stop_and_observe(
         app_id, "qualification", time.monotonic() + 10, runner=failed_stop
@@ -515,7 +516,9 @@ def test_stop_failure_retains_exact_app_id_and_blocks(tmp_path: Path) -> None:
         state = "ephemeral" if len(recorded) == 1 else "stopped"
         return SimpleNamespace(
             returncode=0,
-            stdout=json.dumps([{"app_id": "ap-CCCCCCCCCCCCCCCCCCCCCC", "state": state, "tasks": "0"}]),
+            stdout=json.dumps(
+                [{"app_id": "ap-CCCCCCCCCCCCCCCCCCCCCC", "state": state, "tasks": "0"}]
+            ),
         )
 
     outcome = launcher._bounded_run(
@@ -656,7 +659,9 @@ def test_stop_preserves_prior_cancel_and_journal_failures(tmp_path: Path) -> Non
             return SimpleNamespace(returncode=0, stdout="")
         return SimpleNamespace(
             returncode=0,
-            stdout=json.dumps([{"app_id": "ap-DDDDDDDDDDDDDDDDDDDDDD", "state": "stopped", "tasks": "0"}]),
+            stdout=json.dumps(
+                [{"app_id": "ap-DDDDDDDDDDDDDDDDDDDDDD", "state": "stopped", "tasks": "0"}]
+            ),
         )
 
     output = launcher._bounded_run(
@@ -712,8 +717,14 @@ def test_parent_retains_bounded_diagnostics_only(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "invalid", ["ap-a", "ap-" + "a" * 21, "ap-" + "a" * 23,
-                "ap-" + "a" * 10 + "-" + "a" * 11, "deployment-name"],
+    "invalid",
+    [
+        "ap-a",
+        "ap-" + "a" * 21,
+        "ap-" + "a" * 23,
+        "ap-" + "a" * 10 + "-" + "a" * 11,
+        "deployment-name",
+    ],
 )
 def test_cleanup_rejects_nonexact_app_id_before_any_cli(invalid: str) -> None:
     commands: list[list[str]] = []
@@ -804,9 +815,7 @@ def test_already_stopped_app_skips_stop_even_if_stop_would_exit_nonzero() -> Non
     assert calls == [["modal", "app", "list", "--json", "--env", "qualification"]]
 
 
-def test_keyboard_interrupt_reconciles_exact_id_and_propagates_evidence(
-    tmp_path: Path
-) -> None:
+def test_keyboard_interrupt_reconciles_exact_id_and_propagates_evidence(tmp_path: Path) -> None:
     path, digest = _manifest(tmp_path)
     approval = launcher.load_approval(path, digest, SHA)
     app_id = "ap-" + "A" * 22
@@ -837,8 +846,12 @@ def test_keyboard_interrupt_reconciles_exact_id_and_propagates_evidence(
 
     with pytest.raises(launcher.LaunchInterrupted) as interrupted:
         launcher._bounded_run(
-            approval, path, digest, deadline_seconds=10,
-            popen=fake_popen, runner=list_only,
+            approval,
+            path,
+            digest,
+            deadline_seconds=10,
+            popen=fake_popen,
+            runner=list_only,
         )
     report = interrupted.value.evidence
     assert report["status"] == "BLOCKED"
@@ -863,7 +876,8 @@ def test_real_adapter_identity_never_runs_outside_bounded_worker(
 
     monkeypatch.setattr(adapter, "identify", guarded_identity)
     monkeypatch.setattr(
-        adapter, "run_once",
+        adapter,
+        "run_once",
         lambda _approval: {"status": "BLOCKED", "provider_removal": "UNKNOWN"},
     )
     result = launcher.execute(SHA, approval, adapter, external_control_verified=True)
@@ -896,7 +910,10 @@ def test_identity_stage_stall_is_bounded_and_never_starts_cleanup_without_id(
 
     monkeypatch.setattr(launcher.os, "killpg", lambda *_args: events.append("killed"))
     report = launcher._bounded_run(
-        approval, path, digest, deadline_seconds=1,
+        approval,
+        path,
+        digest,
+        deadline_seconds=1,
         popen=fake_popen,
         runner=lambda *_args, **_kw: (_ for _ in ()).throw(
             AssertionError("no ID: no provider stop")

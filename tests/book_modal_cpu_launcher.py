@@ -295,8 +295,10 @@ class ModalControl:
         # parent retains BUILD/APP_RUN_BEGIN with unknown resource identity.
         with app.run(client=client, detach=False, environment_name=approval.environment):
             app_id = getattr(app, "app_id", None)
-            _require(isinstance(app_id, str) and bool(APP_ID.fullmatch(app_id)),
-                     "exact provider App ID missing")
+            _require(
+                isinstance(app_id, str) and bool(APP_ID.fullmatch(app_id)),
+                "exact provider App ID missing",
+            )
             record("APP_ID", app_id)
             call: Any = None
             try:
@@ -426,10 +428,7 @@ def _stop_and_observe(
             return None, "list:invalid_json"
         if not isinstance(rows, list):
             return None, "list:invalid_schema"
-        matches = [
-            item for item in rows
-            if isinstance(item, dict) and item.get("app_id") == app_id
-        ]
+        matches = [item for item in rows if isinstance(item, dict) and item.get("app_id") == app_id]
         if len(matches) != 1:
             return None, "list:exact_id_not_found_or_duplicate"
         row = matches[0]
@@ -451,7 +450,10 @@ def _stop_and_observe(
     try:
         response = runner(
             ["modal", "app", "stop", "-y", "--env", environment, app_id],
-            check=False, text=True, capture_output=True, timeout=remaining,
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=remaining,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         errors.append("stop:" + type(exc).__name__)
