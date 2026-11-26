@@ -62,8 +62,17 @@ def test_exact_terminal_observation(monkeypatch: pytest.MonkeyPatch, tasks: obje
 @pytest.mark.parametrize(
     "fault",
     [
-        "none", "owner", "digest", "size", "status", "spawn", "write", "no_output",
-        "cleanup", "call_journal", "scope_exit",
+        "none",
+        "owner",
+        "digest",
+        "size",
+        "status",
+        "spawn",
+        "write",
+        "no_output",
+        "cleanup",
+        "call_journal",
+        "scope_exit",
     ],
 )
 def test_dispatch_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
