@@ -2573,8 +2573,6 @@ def _evaluate_hybrid_chapter(
                 "source_links": [
                     {
                         "id": "<an id from original_source>",
-                        "start": "<integer character offset inside that source>",
-                        "end": "<integer character offset after start>",
                         "role": "<one of ASSERTION, AUTHOR_EXAMPLE, COUNTEREXAMPLE, QUALIFICATION>",
                     }
                 ],
@@ -2611,8 +2609,6 @@ def _evaluate_hybrid_chapter(
                             "evidence": [
                                 {
                                     "id": "source core ID",
-                                    "start": 0,
-                                    "end": 10,
                                     "role": "ASSERTION/COUNTEREXAMPLE/QUALIFICATION/AUTHOR_EXAMPLE",
                                 }
                             ],
@@ -2623,9 +2619,7 @@ def _evaluate_hybrid_chapter(
                             "id": "audit-d01",
                             "issue": "missing/contradictory arguments requiring revision",
                             "proposed_change": "What should change and why",
-                            "evidence": [
-                                {"id": "core ID", "start": 0, "end": 10, "role": "ASSERTION"}
-                            ],
+                            "evidence": [{"id": "core ID", "role": "ASSERTION"}],
                         }
                     ],
                 },
@@ -2663,9 +2657,7 @@ def _evaluate_hybrid_chapter(
                         "from": "keep/compress/omit",
                         "to": "keep/compress/omit",
                         "reason": "explicit source-grounded change",
-                        "evidence": [
-                            {"id": "source ID", "start": 0, "end": 10, "role": "ASSERTION"}
-                        ],
+                        "evidence": [{"id": "source ID", "role": "ASSERTION"}],
                     }
                 ],
                 "resolutions": [
@@ -2673,15 +2665,13 @@ def _evaluate_hybrid_chapter(
                         "id": "audit-d01",
                         "resolution": "accepted/rejected/qualified",
                         "reason": "source-grounded disagreement resolution",
-                        "evidence": [
-                            {"id": "source ID", "start": 0, "end": 10, "role": "ASSERTION"}
-                        ],
+                        "evidence": [{"id": "source ID", "role": "ASSERTION"}],
                     }
                 ],
                 "beats": [
                     {
                         "beat_id": "beat-001",
-                        "spans": [{"id": "source ID", "start": 0, "end": 10, "role": "ASSERTION"}],
+                        "spans": [{"id": "source ID", "role": "ASSERTION"}],
                         "meaning": "source-grounded meaning",
                         "qualification": "qualified paraphrase",
                         "causal_link": "relation to neighboring argument",

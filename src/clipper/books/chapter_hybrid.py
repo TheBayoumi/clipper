@@ -214,12 +214,13 @@ def producer_identity(
 
 _STAGE_GUIDANCE = {
     "argument": (
-        "Each source_links item is one object with exactly id, start, end and role. "
-        "id is an id taken from original_source. start and end are character offsets "
-        "inside that unit's own text, with 0 <= start < end <= the unit's text length "
-        "and end - start <= 700. role is exactly one of ASSERTION, AUTHOR_EXAMPLE, "
-        "COUNTEREXAMPLE or QUALIFICATION. Link counterexamples and author "
-        "qualifications whenever the source contains them, not only assertions."
+        "Each source_links item is one object with exactly id and role, plus an optional "
+        "quote. id is an id taken from original_source and cites that whole unit. Do not "
+        "write character offsets. Add quote only to cite part of a unit, and then it must "
+        "be copied exactly, once, from that unit's text. role is exactly one of ASSERTION, "
+        "AUTHOR_EXAMPLE, COUNTEREXAMPLE or QUALIFICATION, chosen per unit from what that "
+        "unit does in the argument. Link counterexamples and author qualifications "
+        "whenever the source contains them, not only assertions."
     ),
 }
 
@@ -412,10 +413,38 @@ def audit_windows(ledger: dict[str, Any]) -> list[dict[str, object]]:
     return windows
 
 
+def _resolve_reference(item: dict[str, Any], original: dict[str, Any]) -> dict[str, Any]:
+    """Resolve an ID reference to exact offsets in code, never from model arithmetic.
+
+    {"id", "role"} cites the whole unit. {"id", "role", "quote"} cites one exact,
+    unambiguous substring of the unit. Offsets and the stored quote come from the
+    immutable ledger text, so a model can only choose what to cite, not where it sits.
+    """
+    text = original["text"]
+    if "quote" not in item:
+        start, end = 0, len(text)
+    else:
+        quote = item["quote"]
+        if not isinstance(quote, str) or not quote or text.count(quote) != 1:
+            raise HybridStop("hybrid source quote is absent, empty or ambiguous in its unit")
+        start = text.index(quote)
+        end = start + len(quote)
+    return {"id": item["id"], "start": start, "end": end, "role": item["role"]}
+
+
 def _span(
     raw: object, entries: dict[str, dict[str, Any]], *, core: set[str] | None = None
 ) -> dict[str, Any]:
-    item = _object(raw, {"id", "start", "end", "role"})
+    if isinstance(raw, dict) and set(raw) in ({"id", "role"}, {"id", "role", "quote"}):
+        sid = raw["id"]
+        if sid not in entries or (core is not None and sid not in core):
+            raise HybridStop("hybrid source span outside allowed original units")
+        if entries[sid]["kind"] == "CANONICAL_WORK_UNIT" and raw["role"] in SPAN_ROLES:
+            item = _resolve_reference(raw, entries[sid])
+        else:
+            raise HybridStop("hybrid source character span or role is invalid")
+    else:
+        item = _object(raw, {"id", "start", "end", "role"})
     sid = item["id"]
     if sid not in entries or (core is not None and sid not in core):
         raise HybridStop("hybrid source span outside allowed original units")
@@ -435,6 +464,14 @@ def _span(
         "quote": original["text"][start:end],
         "original_source_id": original["source_id"],
     }
+
+
+def _canonical_span(
+    raw: object, entries: dict[str, dict[str, Any]], *, core: set[str] | None = None
+) -> dict[str, Any]:
+    """Validate a cited span and return it as the stored id/start/end/role form."""
+    span = _span(raw, entries, core=core)
+    return {key: span[key] for key in ("id", "start", "end", "role")}
 
 
 _ECHO_KEYS = frozenset({"response_contract", "schema", "stage", "input", "original_source"})
@@ -477,8 +514,7 @@ def validate_argument(raw: object, ledger: dict[str, Any]) -> dict[str, Any]:
     links = _list(data["source_links"], MAX_ENTRIES)
     if not links:
         raise HybridStop("revisable argument has no source-linked hypothesis")
-    for link in links:
-        _span(link, source)
+    links[:] = [_canonical_span(link, source) for link in links]
     return data
 
 
@@ -505,8 +541,7 @@ def validate_audit(
         if source[sid]["kind"] != "CANONICAL_WORK_UNIT" and item["decision"] != "omit":
             raise HybridStop("hybrid unresolved original gap cannot be retained")
         evidence = _list(item["evidence"], 12)
-        for span in evidence:
-            _span(span, source, core=expected)
+        evidence[:] = [_canonical_span(span, source, core=expected) for span in evidence]
     if seen != expected:
         raise HybridStop("hybrid audit silently omitted original units")
     disagreements = _list(data["disagreements"], 24)
@@ -518,8 +553,9 @@ def validate_audit(
         _text(item["proposed_change"], 1000)
         if not _list(item["evidence"], 12):
             raise HybridStop("hybrid disagreement has no source support")
-        for span in item["evidence"]:
-            _span(span, source, core=expected)
+        item["evidence"][:] = [
+            _canonical_span(span, source, core=expected) for span in item["evidence"]
+        ]
     return data
 
 
@@ -570,8 +606,7 @@ def reconcile(
         _text(amendment["reason"], 800)
         if not _list(amendment["evidence"], 12):
             raise HybridStop("hybrid amendment has no exact supporting spans")
-        for span in amendment["evidence"]:
-            _span(span, source)
+        amendment["evidence"][:] = [_canonical_span(span, source) for span in amendment["evidence"]]
         decisions[sid] = {
             **decisions[sid],
             "decision": amendment["to"],
@@ -589,8 +624,7 @@ def reconcile(
         _text(item["reason"], 800)
         if not _list(item["evidence"], 12):
             raise HybridStop("hybrid disagreement was resolved without original evidence")
-        for span in item["evidence"]:
-            _span(span, source)
+        item["evidence"][:] = [_canonical_span(span, source) for span in item["evidence"]]
     if resolved != disputes:
         raise HybridStop("hybrid global reconciliation left audit disagreements unresolved")
     beats: list[dict[str, Any]] = []

@@ -2968,7 +2968,7 @@ def test_hybrid_prompt_reads_the_source_first_and_the_task_last() -> None:
     assert "top-level keys are exactly: hypothesis, questions, source_links" in user
     assert "Do not wrap it in another object" in user
     assert user.rstrip().endswith("Now write the JSON object.")
-    assert "COUNTEREXAMPLE" in user and "end - start <= 700" in user
+    assert "COUNTEREXAMPLE" in user and "Do not write character offsets" in user
     parsed = hybrid.input_payload(request["messages"])  # type: ignore[arg-type]
     assert "response_contract" not in parsed
     assert parsed["schema"] == hybrid.ARGUMENT_SCHEMA
@@ -2991,3 +2991,116 @@ def test_wrapped_answer_in_the_contract_slot_is_still_rejected_as_an_echo() -> N
 def test_input_payload_rejects_a_malformed_request() -> None:
     with pytest.raises(ValueError):
         hybrid.input_payload([{"role": "system", "content": "s"}, {"role": "user", "content": "x"}])
+
+
+def _text_of(ledger: dict[str, object], sid: str) -> str:
+    return next(e["text"] for e in hybrid.validate_ledger(ledger) if e["id"] == sid)
+
+
+def test_argument_id_reference_resolves_whole_unit_in_code() -> None:
+    ledger = _ledger(25)
+    argument = _argument(ledger)
+    argument["source_links"] = [{"id": "s0003", "role": "QUALIFICATION"}]
+    result = hybrid.validate_argument(argument, ledger)
+    text = _text_of(ledger, "s0003")
+    assert result["source_links"] == [
+        {"id": "s0003", "start": 0, "end": len(text), "role": "QUALIFICATION"}
+    ]
+
+
+def test_argument_quote_reference_resolves_offsets_from_exact_unique_text() -> None:
+    ledger = _ledger(25)
+    text = _text_of(ledger, "s0003")
+    quote = text[2:9]
+    assert text.count(quote) == 1
+    argument = _argument(ledger)
+    argument["source_links"] = [{"id": "s0003", "role": "COUNTEREXAMPLE", "quote": quote}]
+    result = hybrid.validate_argument(argument, ledger)
+    assert result["source_links"] == [
+        {"id": "s0003", "start": 2, "end": 9, "role": "COUNTEREXAMPLE"}
+    ]
+
+
+@pytest.mark.parametrize("quote", ("", "not in the unit text at all", None, 7))
+def test_argument_quote_reference_rejects_missing_empty_or_nonstring(quote: object) -> None:
+    ledger = _ledger(25)
+    argument = _argument(ledger)
+    argument["source_links"] = [{"id": "s0003", "role": "ASSERTION", "quote": quote}]
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_argument(argument, ledger)
+
+
+def test_argument_quote_reference_rejects_a_quote_that_occurs_twice() -> None:
+    ledger = _ledger(25)
+    text = _text_of(ledger, "s0003")
+    repeated = next(char for char in text if text.count(char) > 1)
+    argument = _argument(ledger)
+    argument["source_links"] = [{"id": "s0003", "role": "ASSERTION", "quote": repeated}]
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_argument(argument, ledger)
+
+
+@pytest.mark.parametrize(
+    "link",
+    (
+        {"id": "s9999", "role": "ASSERTION"},
+        {"id": "s0003", "role": "INVENTED"},
+        {"id": "gap-unresolved", "role": "ASSERTION"},
+        {"id": "s0003", "role": "ASSERTION", "start": 0},
+        {"id": "s0003", "role": "ASSERTION", "extra": 1},
+        {"id": "s0003"},
+    ),
+)
+def test_argument_id_reference_rejects_unknown_gap_role_and_extra_fields(
+    link: dict[str, object],
+) -> None:
+    ledger = _ledger(25)
+    argument = _argument(ledger)
+    argument["source_links"] = [link]
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_argument(argument, ledger)
+
+
+def test_legacy_offset_links_still_validate_and_a_repeated_constant_span_is_rejected() -> None:
+    ledger = _ledger(25)
+    argument = _argument(ledger)
+    assert hybrid.validate_argument(argument, ledger)["source_links"][0]["end"] == 13
+    short = min(
+        (e for e in hybrid.validate_ledger(ledger) if e["kind"] == "CANONICAL_WORK_UNIT"),
+        key=lambda e: len(e["text"]),
+    )
+    argument["source_links"] = [
+        {"id": short["id"], "start": 0, "end": len(short["text"]) + 50, "role": "ASSERTION"}
+    ]
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_argument(argument, ledger)
+
+
+def test_audit_and_reconcile_accept_id_references_and_store_canonical_offsets() -> None:
+    ledger = _ledger(25)
+    outputs = _audit_outputs(ledger)
+    for output in outputs:
+        for decision in output["decisions"]:
+            decision["evidence"] = [
+                {"id": e["id"], "role": e["role"]} for e in decision["evidence"]
+            ]
+    audits = [
+        hybrid.validate_audit(output, ledger, window)
+        for output, window in zip(outputs, hybrid.audit_windows(ledger), strict=True)
+    ]
+    kept = [d for a in audits for d in a["decisions"] if d["evidence"]]
+    assert kept and all(
+        set(span) == {"id", "start", "end", "role"} for d in kept for span in d["evidence"]
+    )
+    reconciliation = _reconciliation(ledger)
+    for beat in reconciliation["beats"]:
+        beat["spans"] = [{"id": s["id"], "role": s["role"]} for s in beat["spans"]]
+    brief = hybrid.reconcile(reconciliation, ledger, _argument(ledger), audits)
+    assert brief["beats"]
+
+
+def test_hybrid_contracts_ask_for_ids_not_character_offsets() -> None:
+    source = Path(chapter.__file__).read_text(encoding="utf-8")
+    contract_region = source[source.index('"hybrid_argument"') :]
+    assert "integer character offset" not in contract_region
+    assert '"start": 0' not in contract_region
