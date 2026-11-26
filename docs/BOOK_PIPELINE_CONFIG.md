@@ -286,8 +286,14 @@ verification, with bounded CLI calls and increasing backoff. A timed-out exact
 stop is recorded as ambiguous; the same App is reobserved without resubmitting
 the stop. Missing or malformed exact-App evidence remains unverified.
 
-Checkpoints cross the restricted Modal container boundary LZMA-compressed with
-a 1.9 MB inline limit. Larger compressed checkpoints fail closed with
-`PRIVATE_PHASE_FAILED_NO_RETRY` and `OUTPUT_NOT_RETAINED`, without a Volume
-or relaxing `restrict_modal_access=True`. The caller performs bounded
-decompression before existing checkpoint identity and checksum verification.
+Checkpoints cross the restricted Modal container boundary LZMA-compressed and
+the host calls the Function synchronously with `remote()`. A restricted container
+cannot call Modal's API, so results above Modal's inline limit (2 MiB for
+`remote()`, only 8 KiB for `spawn()` results in modal 1.5.5) would fail with a
+401 blob-upload error. Compressed checkpoints above 1.9 MB therefore fail closed
+with `PRIVATE_PHASE_FAILED_NO_RETRY` and `OUTPUT_NOT_RETAINED`, without a Volume
+or relaxing `restrict_modal_access=True`. Because `remote()` exposes no Call ID,
+the exact App ID is the journal and cleanup identity. The caller performs
+bounded XZ decompression (memory limit and size cap) before existing checkpoint
+identity and checksum verification. The client is closed through the SDK
+context-manager exit, since Modal 1.5.5 has no public `close()`.

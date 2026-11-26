@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 from test_books_private_phase import _brief
@@ -21,7 +21,7 @@ def test_identity_uses_injected_client_and_closes_failed_identity(monkeypatch, f
     monkeypatch.setenv("MODAL_TOKEN_SECRET", "offline-fixture-secret")
     monkeypatch.setenv("MODAL_ENVIRONMENT", "main")
     monkeypatch.delenv("MODAL_PROFILE", raising=False)
-    client = Mock()
+    client = MagicMock()
     workspace = Mock(name="workspace")
     workspace.name = phase.WORKSPACE if fault != "workspace" else "wrong-workspace"
     sdk = SimpleNamespace(Client=Mock(), Workspace=Mock())
@@ -37,16 +37,16 @@ def test_identity_uses_injected_client_and_closes_failed_identity(monkeypatch, f
         assert host.identify() == (sdk, client)
         sdk.Workspace.from_context.assert_called_once_with(client=client)
         workspace.hydrate.assert_called_once_with(client=client)
-        client.close.assert_not_called()
+        client.__exit__.assert_not_called()
     else:
         with pytest.raises(phase.PrivatePhaseError, match="identity unavailable"):
             host.identify()
-        assert client.close.call_count == (0 if fault == "client" else 1)
+        assert client.__exit__.call_count == (0 if fault == "client" else 1)
 
 
 def test_close_client_failure_is_explicit():
-    client = Mock()
-    client.close.side_effect = OSError("offline failure")
+    client = MagicMock()
+    client.__exit__.side_effect = OSError("offline failure")
     assert host.close_client(client) is False
 
 
@@ -182,3 +182,27 @@ def test_decompress_checkpoint_rejects_oversize_expansion(monkeypatch):
     monkeypatch.setattr(phase, "MAX_PACKET", 100)
     with pytest.raises(phase.PrivatePhaseError, match="invalid compressed checkpoint"):
         host.decompress_checkpoint(host.compress_checkpoint(b"\0" * 1000))
+
+
+def test_decompress_checkpoint_uses_bounded_xz_memory(monkeypatch):
+    created = []
+    real = host.lzma.LZMADecompressor
+
+    def spy(*args, **kwargs):
+        created.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(host.lzma, "LZMADecompressor", spy)
+    assert host.decompress_checkpoint(host.compress_checkpoint(b"abc")) == b"abc"
+    assert created == [{"format": host.lzma.FORMAT_XZ, "memlimit": host.DECOMPRESS_MEMLIMIT}]
+
+
+def test_remote_compression_failure_fails_closed(monkeypatch):
+    manifest, packet = _brief()
+    run = Mock(side_effect=[Mock(stdout=manifest["commit"] + "\n"), Mock(returncode=0)])
+    monkeypatch.setattr(host.subprocess, "run", run)
+    report = {"status": "BRIEF_READY_UNREVIEWED", "manifest_sha256": "m", "owner": "o"}
+    monkeypatch.setattr(phase, "execute_private_phase", Mock(return_value=(report, b"x")))
+    monkeypatch.setattr(host, "compress_checkpoint", Mock(side_effect=MemoryError))
+    result, blob = host._remote_phase(manifest, packet, None)
+    assert blob is None and result["retention"] == "OUTPUT_NOT_RETAINED"

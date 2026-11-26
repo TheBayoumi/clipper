@@ -7,7 +7,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 from test_books_private_phase import _brief
@@ -68,7 +68,7 @@ def test_exact_terminal_observation(monkeypatch: pytest.MonkeyPatch, tasks: obje
         "digest",
         "size",
         "status",
-        "spawn",
+        "remote",
         "write",
         "no_output",
         "cleanup",
@@ -113,22 +113,20 @@ def test_dispatch_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fau
             inventory_truncated=False,
         )
         raw = None
-    client = Mock()
+    client = MagicMock()
     app = Mock(app_id="ap-" + "a" * 22)
     function = Mock()
-    call = Mock(object_id="fc-fixture")
-    function.spawn.return_value = call
-    call.get.return_value = (
+    function.remote.return_value = (
         report,
         None if raw is None else private_modal.compress_checkpoint(raw),
     )
-    if fault == "spawn":
-        function.spawn.side_effect = TimeoutError("ambiguous")
+    if fault == "remote":
+        function.remote.side_effect = TimeoutError("ambiguous")
     if fault == "call_journal":
         original = private_modal.Journal.record
 
         def record(self, event, **fields):
-            if event == "CALL_ID":
+            if event == "REMOTE_BEGIN":
                 raise OSError("journal failure")
             original(self, event, **fields)
 
@@ -166,14 +164,15 @@ def test_dispatch_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fau
     )
     assert result["checkpoint_saved"] is (fault in {"none", "cleanup", "scope_exit"})
     assert result["app_id"] == app.app_id
-    assert result["call_id"] == (None if fault == "spawn" else call.object_id)
-    client.close.assert_called_once()
+    assert "call_id" not in result
+    client.__exit__.assert_called_once_with(None, None, None)
     if fault in {"no_output", "write"}:
         events = [json.loads(path.read_bytes()) for path in tmp_path.glob("*/*.json")]
         assert any(item["event"] == "RESPONSE_VERIFIED" for item in events)
     with pytest.raises((FileExistsError, private_phase.PrivatePhaseError)):
         private_modal._dispatch_qualified(manifest, packet, None, **kwargs)
-    function.spawn.assert_called_once()
+    # A journal failure before dispatch must fail closed without calling the function.
+    assert function.remote.call_count == (0 if fault == "call_journal" else 1)
 
 
 @pytest.mark.parametrize("rows", [[], [{"app_id": "wrong"}], [{"app_id": "ap-" + "a" * 22}]])
@@ -213,7 +212,7 @@ def test_cleanup_one_stop_without_terminal_state(
     manifest, _ = _brief()
     journal = private_modal.Journal(tmp_path, manifest)
     app_id = "ap-" + "a" * 22
-    client = Mock()
+    client = MagicMock()
     monkeypatch.setattr(private_modal, "identify", lambda: (Mock(), client))
     run = Mock(
         return_value=Mock(
@@ -229,7 +228,7 @@ def test_cleanup_one_stop_without_terminal_state(
     assert all(command[:3] == [sys.executable, "-m", "modal"] for command in commands)
     assert len([command for command in commands if command[4] == "stop"]) == 1
     assert sleep.call_count == 6
-    client.close.assert_called_once()
+    client.__exit__.assert_called_once_with(None, None, None)
 
 
 @pytest.mark.parametrize("terminal", ["stopped", "running", "absent"])
@@ -239,7 +238,7 @@ def test_stop_timeout_reobserves_exact_app(
     manifest, _ = _brief()
     journal = private_modal.Journal(tmp_path, manifest)
     app_id = "ap-" + "a" * 22
-    monkeypatch.setattr(private_modal, "identify", lambda: (Mock(), Mock()))
+    monkeypatch.setattr(private_modal, "identify", lambda: (Mock(), MagicMock()))
     clock = [0.0]
     commands = []
 

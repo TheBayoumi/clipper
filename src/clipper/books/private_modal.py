@@ -20,12 +20,12 @@ from clipper.stage_contracts import content_fingerprint
 from . import acquisition, evaluation, pipeline_plan, private_phase
 
 APP = re.compile(r"ap-[A-Za-z0-9]{22}")
-CALL = re.compile(r"fc-[A-Za-z0-9_-]{3,128}")
 SOURCE = "https://github.com/TheBayoumi/clipper.git"
 STARTUP_TIMEOUT = 120
-RESULT_TRANSPORT_MARGIN = 180
-# Modal returns values above 2 MiB through its API, which restricted containers cannot call.
+# Synchronous remote() results above 2 MiB use Modal blob upload, which restricted containers
+# cannot call. spawn() is not usable: its async result limit is only 8 KiB (modal 1.5.5).
 INLINE_RESULT_LIMIT = 1_900_000
+DECOMPRESS_MEMLIMIT = 256 * 1024 * 1024
 COMPRESSED_MAGIC = b"CXZ1"
 
 
@@ -38,7 +38,7 @@ def decompress_checkpoint(blob: bytes) -> bytes:
         isinstance(blob, bytes) and blob.startswith(COMPRESSED_MAGIC),
         "invalid compressed checkpoint",
     )
-    decoder = lzma.LZMADecompressor()
+    decoder = lzma.LZMADecompressor(format=lzma.FORMAT_XZ, memlimit=DECOMPRESS_MEMLIMIT)
     try:
         raw = decoder.decompress(
             blob[len(COMPRESSED_MAGIC) :], max_length=private_phase.MAX_PACKET + 1
@@ -103,7 +103,8 @@ def identify() -> tuple[Any, Any]:
 
 def close_client(client: Any) -> bool:
     try:
-        client.close()
+        # Modal 1.5.5 exposes no public close(); the sync context-manager exit closes it.
+        client.__exit__(None, None, None)
     except Exception:
         return False
     return True
@@ -142,8 +143,12 @@ def _remote_phase(
     )
     if raw is None:
         return report, None
-    blob = compress_checkpoint(raw)
-    if len(blob) > INLINE_RESULT_LIMIT:
+    try:
+        blob = compress_checkpoint(raw)
+        too_large = len(blob) > INLINE_RESULT_LIMIT
+    except Exception:
+        blob, too_large = b"", True
+    if too_large:
         # Fail closed: a larger result would need Modal API access this container lacks.
         return {
             "status": "PRIVATE_PHASE_FAILED_NO_RETRY",
@@ -448,7 +453,6 @@ def _dispatch_qualified(
     journal = Journal(journal_root, run)
     client = None
     app_id: str | None = None
-    call_id: str | None = None
     saved = False
     result: dict[str, Any] = {}
     cleaned = False
@@ -468,37 +472,27 @@ def _dispatch_qualified(
             )
             app_id = candidate
             journal.record("APP_ID", app_id=app_id)
-            journal.record("SPAWN_BEGIN", app_id=app_id)
-            call = function.spawn(run, packet, checkpoint)
-            candidate = call.object_id
-            require(
-                isinstance(candidate, str) and CALL.fullmatch(candidate) is not None,
-                "exact Call ID unavailable",
-            )
-            call_id = candidate
-            journal.record("CALL_ID", app_id=app_id, call_id=call_id)
-            journal.record("GET_BEGIN", app_id=app_id, call_id=call_id)
-            report, blob = call.get(
-                timeout=run["timeout_seconds"] + STARTUP_TIMEOUT + RESULT_TRANSPORT_MARGIN
-            )
+            # Synchronous remote(): spawn() results are capped at 8 KiB for restricted containers.
+            # The exact App ID is the stop/cleanup identity; Modal enforces the function timeout.
+            journal.record("REMOTE_BEGIN", app_id=app_id)
+            report, blob = function.remote(run, packet, checkpoint)
             raw = None if blob is None else decompress_checkpoint(blob)
             result = response(report, raw, run, identity)
-            journal.record("RESPONSE_VERIFIED", app_id=app_id, call_id=call_id, response=result)
+            journal.record("RESPONSE_VERIFIED", app_id=app_id, response=result)
             if raw is not None:
-                journal.record("CHECKPOINT_WRITE_BEGIN", app_id=app_id, call_id=call_id)
+                journal.record("CHECKPOINT_WRITE_BEGIN", app_id=app_id)
                 private_phase.persist_checkpoint(output, raw, result["checkpoint_sha256"])
                 saved = True
                 journal.record(
                     "CHECKPOINT_VERIFIED",
                     app_id=app_id,
-                    call_id=call_id,
                     checkpoint_sha256=result["checkpoint_sha256"],
                 )
-            journal.record("APP_SCOPE_EXIT_BEGIN", app_id=app_id, call_id=call_id)
+            journal.record("APP_SCOPE_EXIT_BEGIN", app_id=app_id)
         journal.record("APP_SCOPE_EXIT_RETURNED", app_id=app_id)
         scope_exited = True
     except Exception:
-        journal.record("DISPATCH_FAILED_NO_RETRY", app_id=app_id, call_id=call_id)
+        journal.record("DISPATCH_FAILED_NO_RETRY", app_id=app_id)
     finally:
         try:
             if app_id is not None:
@@ -520,7 +514,6 @@ def _dispatch_qualified(
             else "PRIVATE_PHASE_BLOCKED_NO_RETRY"
         ),
         "app_id": app_id,
-        "call_id": call_id,
         "checkpoint_saved": saved,
         "retention": result.get("retention") if saved else "OUTPUT_NOT_RETAINED",
         "cleanup_verified": cleaned,
