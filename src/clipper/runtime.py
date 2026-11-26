@@ -196,13 +196,9 @@ class StageJournal:
 
 
 class ComputeBudget:
-    def __init__(self, max_cost_usd: float = 1.0, *, large_vlm_fraction: float = 0.25) -> None:
-        if max_cost_usd <= 0:
-            raise ValueError("compute budget must be positive")
-        if not 0 < large_vlm_fraction <= 1:
-            raise ValueError("large VLM budget fraction must be in (0, 1]")
-        self.max_cost_usd = max_cost_usd
-        self.large_vlm_fraction = large_vlm_fraction
+    """Usage telemetry only; no spending or model escalation limit."""
+
+    def __init__(self) -> None:
         self.usage: list[InferenceUsage] = []
 
     @property
@@ -240,18 +236,9 @@ class ComputeBudget:
         except (TypeError, ValueError):
             return
 
-    def allow_large_vlm(self, *, estimated_next_cost_usd: float = 0.0) -> bool:
-        if estimated_next_cost_usd < 0:
-            raise ValueError("estimated next cost cannot be negative")
-        escalation_cutoff = self.max_cost_usd * (1.0 - self.large_vlm_fraction)
-        return self.estimated_cost_usd + estimated_next_cost_usd <= escalation_cutoff
-
     def to_dict(self) -> dict[str, object]:
         return {
-            "max_cost_usd": self.max_cost_usd,
             "estimated_cost_usd": self.estimated_cost_usd,
             "gpu_seconds": self.gpu_seconds,
-            "large_vlm_fraction": self.large_vlm_fraction,
-            "large_vlm_allowed": self.allow_large_vlm(),
             "usage": [asdict(item) for item in self.usage],
         }

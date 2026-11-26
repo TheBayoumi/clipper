@@ -45,8 +45,8 @@ def test_stage_journal_rejects_invalid_state_and_counts(tmp_path: Path) -> None:
         StageJournal(bad)
 
 
-def test_compute_budget_accounts_usage_and_disables_large_vlm_first() -> None:
-    budget = ComputeBudget(1.0, large_vlm_fraction=0.25)
+def test_compute_budget_records_usage_without_cost_cutoff() -> None:
+    budget = ComputeBudget()
     budget.record(
         InferenceUsage(
             "modal",
@@ -54,13 +54,11 @@ def test_compute_budget_accounts_usage_and_disables_large_vlm_first() -> None:
             100,
             gpu_type="L4",
             gpu_seconds=100,
-            estimated_cost_usd=0.20,
+            estimated_cost_usd=20.0,
         )
     )
-    assert budget.estimated_cost_usd == 0.2
+    assert budget.estimated_cost_usd == 20.0
     assert budget.gpu_seconds == 100
-    assert budget.allow_large_vlm(estimated_next_cost_usd=0.54)
-    assert not budget.allow_large_vlm(estimated_next_cost_usd=0.56)
     budget.record_mapping(
         {
             "provider": "modal",
@@ -71,13 +69,11 @@ def test_compute_budget_accounts_usage_and_disables_large_vlm_first() -> None:
             "estimated_cost_usd": 0.01,
         }
     )
-    assert budget.estimated_cost_usd == 0.21
+    assert budget.estimated_cost_usd == 20.01
     budget.record_mapping("ignored")
     budget.record_mapping({"duration_seconds": object()})
-    assert budget.to_dict()["large_vlm_allowed"] is True
-    with pytest.raises(ValueError, match="positive"):
-        ComputeBudget(0)
-    with pytest.raises(ValueError, match="fraction"):
-        ComputeBudget(1, large_vlm_fraction=0)
-    with pytest.raises(ValueError, match="cannot be negative"):
-        budget.allow_large_vlm(estimated_next_cost_usd=-1)
+    report = budget.to_dict()
+    assert set(report) == {"estimated_cost_usd", "gpu_seconds", "usage"}
+    assert report["estimated_cost_usd"] == 20.01
+    assert report["gpu_seconds"] == 110
+    assert len(budget.usage) == 2
