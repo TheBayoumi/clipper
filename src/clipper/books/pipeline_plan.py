@@ -107,8 +107,8 @@ TARGETS = {
     "render": ("render",),
     "publish": ("publish",),
 }
+AUTO_OUTPUT = "auto"
 RANGES = {
-    "max_new_tokens": (1024, 8192),
     "max_attempts": (1, 2),
     "max_runtime_seconds": (60, 900),
     "max_beats": (2, 24),
@@ -285,6 +285,13 @@ def validate_config(raw: object, specs: Mapping[str, StageSpec]) -> dict[str, An
         for key, value in semantic.items():
             if key == "voice":
                 require(isinstance(value, str) and value in VOICES, "unsupported voice")
+            elif key == "max_new_tokens":
+                # "auto" is resolved per request from the measured prompt; an int is fixed.
+                low, high = model_profile.output_bounds()
+                require(
+                    value == AUTO_OUTPUT or (type(value) is int and low <= value <= high),
+                    "invalid stage limit",
+                )
             else:
                 low, high = RANGES[key]
                 require(type(value) is int and low <= value <= high, "invalid stage limit")
@@ -509,7 +516,11 @@ def template(
     for name in TARGETS[target]:
         visit(name)
     defaults: dict[str, object] = {
-        "max_new_tokens": 4096,
+        # Fixed default, clamped so a small-output profile still yields a valid config.
+        "max_new_tokens": min(
+            4096,
+            model_profile.profiles()[profile or model_profile.DEFAULT_PROFILE].max_output_tokens,
+        ),
         "max_attempts": 2,
         "max_runtime_seconds": 900,
         "max_beats": 20,

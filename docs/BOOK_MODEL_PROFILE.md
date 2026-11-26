@@ -39,3 +39,26 @@ hash or window: verify each profile.
 The active profile is a `ContextVar`, so it is isolated per thread and task and restored on exit. Tokenizer and model caches are keyed by the profile fingerprint (a hash of every profile fact), so profiles never share a cached object.
 
 The Modal private phase supports only the default profile. Its image build downloads the default snapshot before the network is cut, so a configuration naming another profile is rejected before launch (`private_phase.require_default_profile`) instead of failing inside the worker. Selecting the profile in the image build is the next step for a second model on Modal.
+
+## Output budget
+
+Each profile carries its output-budget facts: `max_output_tokens` (finite ceiling,
+default 16384 for Qwen3-1.7B), `output_margin_tokens` (default 512) and
+`min_output_tokens` (default 1024). They must fit inside `safe_context_tokens`, so a
+profile with a small safe context must also set a smaller `max_output_tokens`.
+
+A stage's `max_new_tokens` in the pipeline configuration is either:
+
+- an integer between `min_output_tokens` and `max_output_tokens` (fixed, as before), or
+- the string `"auto"`.
+
+For `"auto"`, the budget is resolved once per request, from the prompt measured with the
+pinned tokenizer, before the request is hashed:
+
+    budget = min(max_output_tokens, safe_context_tokens - prompt_tokens - output_margin_tokens)
+
+If `budget` is below `min_output_tokens`, the stage stops before any model call with a clear
+error. The resolved integer is what the request, stage key, receipts and replay check use,
+so the same prompt always gives the same budget, and a different prompt gives a different
+request identity. The limit is the profile's safe context (32768 for Qwen3-1.7B), not the
+40960 window.

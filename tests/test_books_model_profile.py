@@ -21,6 +21,8 @@ FAKE = ModelProfile(
     safe_context_tokens=4096,
     chat_template_kwargs={"enable_thinking": True, "extra_flag": "x"},
     generation_settings={"do_sample": False, "temperature": 0.1},
+    max_output_tokens=2048,
+    output_margin_tokens=256,
 )
 
 
@@ -262,7 +264,10 @@ def test_fingerprint_changes_with_every_fact_and_keys_caches() -> None:
         {"context_window": 50_000},
         {"generation_settings": {"temperature": 0.2}},
         {"chat_template_kwargs": {"enable_thinking": True}},
-        {"safe_context_tokens": 2048},
+        {"safe_context_tokens": 2048, "max_output_tokens": 1024},
+        {"max_output_tokens": 8192},
+        {"output_margin_tokens": 128},
+        {"min_output_tokens": 512},
     ):
         assert dataclasses.replace(model_profile.QWEN3_1_7B, **change).fingerprint != base
 
@@ -297,3 +302,96 @@ def test_modal_phase_rejects_non_default_profile(fake_registered: ModelProfile) 
     with pytest.raises(private_phase.PrivatePhaseError):
         private_phase.require_default_profile(chosen)
     assert model_profile.active().name == "qwen3-1.7b"
+
+
+def test_auto_output_budget_uses_measured_prompt_and_ceiling() -> None:
+    qwen = model_profile.QWEN3_1_7B
+    assert (qwen.max_output_tokens, qwen.output_margin_tokens, qwen.min_output_tokens) == (
+        16_384,
+        512,
+        1_024,
+    )
+    assert qwen.auto_output_tokens(7_700) == 16_384  # ceiling binds
+    assert qwen.auto_output_tokens(20_000) == 32_768 - 20_000 - 512
+    assert qwen.auto_output_tokens(32_768 - 512 - 1_024) == 1_024  # exactly the minimum
+    for prompt in (32_768 - 512 - 1_023, 40_000):
+        with pytest.raises(ModelProfileError):
+            qwen.auto_output_tokens(prompt)
+    for bad in (0, -1, True, 7.5):
+        with pytest.raises(ModelProfileError):
+            qwen.auto_output_tokens(bad)  # type: ignore[arg-type]
+    assert FAKE.auto_output_tokens(1_000) == 2_048
+    assert FAKE.auto_output_tokens(2_000) == 1_840
+    with pytest.raises(ModelProfileError):
+        FAKE.auto_output_tokens(3_000)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"max_output_tokens": 4096},  # not below the safe context
+        {"max_output_tokens": 512},  # below the minimum
+        {"min_output_tokens": 0},
+        {"output_margin_tokens": -1},
+        {"output_margin_tokens": 4096},
+        {"max_output_tokens": "2048"},
+    ],
+)
+def test_invalid_output_budget_is_rejected(change: dict[str, object]) -> None:
+    with pytest.raises(ModelProfileError):
+        dataclasses.replace(FAKE, **change)
+
+
+def test_output_budget_is_part_of_the_fingerprint_and_bounds() -> None:
+    assert dataclasses.replace(FAKE, output_margin_tokens=128).fingerprint != FAKE.fingerprint
+    assert model_profile.output_bounds() == (1_024, 16_384)
+    with model_profile.use(FAKE):
+        assert model_profile.output_bounds() == (1_024, 2_048)
+
+
+def test_config_accepts_auto_or_bounded_int_only() -> None:
+    config = pipeline_plan.template("c" * 64)
+    base = pipeline_plan.validate_config(config, pipeline_plan.registry())
+    assert base["stages"]["argument"]["semantic"]["max_new_tokens"] == 4096
+    for good in ("auto", 1024, 16_384):
+        config["stages"]["argument"]["semantic"]["max_new_tokens"] = good
+        pipeline_plan.validate_config(config, pipeline_plan.registry())
+    for bad in ("AUTO", "", 1023, 16_385, True, None, 4096.0):
+        config["stages"]["argument"]["semantic"]["max_new_tokens"] = bad
+        with pytest.raises(pipeline_plan.PlanError):
+            pipeline_plan.validate_config(config, pipeline_plan.registry())
+
+
+def test_hybrid_request_resolves_auto_budget_before_hashing() -> None:
+    from clipper.books import chapter_hybrid as hybrid
+
+    payload = {"source": {"id": "x"}}
+    identity = {"schema": "runtime-v1", "runtime": "CPU", "producer": "a" * 64}
+
+    def build(prompt: int, *, auto: bool = True) -> tuple[dict[str, object], str, int]:
+        return hybrid.request(
+            "argument",
+            payload,
+            output_tokens=16_384,
+            token_count=lambda _messages: prompt,
+            producer_identity=identity,
+            auto_output=auto,
+        )
+
+    short, short_key, _ = build(7_700)
+    assert short["max_new_tokens"] == 16_384
+    long_, long_key, _ = build(20_000)
+    assert long_["max_new_tokens"] == 32_768 - 20_000 - 512
+    assert short_key != long_key  # the resolved budget is inside the request identity
+    assert build(20_000) == build(20_000)  # deterministic
+    fixed, fixed_key, _ = hybrid.request(
+        "argument",
+        payload,
+        output_tokens=4_096,
+        token_count=lambda _messages: 20_000,
+        producer_identity=identity,
+    )
+    assert fixed["max_new_tokens"] == 4_096
+    assert fixed_key != long_key
+    with pytest.raises(hybrid.HybridStop):
+        build(32_768 - 512 - 1_023)

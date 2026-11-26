@@ -90,7 +90,7 @@ class ChapterPlan:
             "max_words": (130, 2400),
             "max_beats": (2, 24),
             "max_shots_per_scene": (1, 4),
-            "max_new_tokens": (1024, 8192),
+            "max_new_tokens": model_profile.output_bounds(),
             "max_attempts_per_stage": (1, 2),
             "max_runtime_seconds": (60, 900),
         }
@@ -2483,13 +2483,16 @@ def _evaluate_hybrid_chapter(
         if configured is None:
             return limits
         semantic = configured["stages"][name]["semantic"]
-        return replace(
-            limits,
-            **{
-                ("max_attempts_per_stage" if key == "max_attempts" else key): value
-                for key, value in semantic.items()
-            },
-        )
+        overrides: dict[str, Any] = {
+            ("max_attempts_per_stage" if key == "max_attempts" else key): (
+                # "auto" plans carry the profile ceiling; the request resolves the budget.
+                model_profile.active().max_output_tokens
+                if value == pipeline_plan.AUTO_OUTPUT
+                else value
+            )
+            for key, value in semantic.items()
+        }
+        return replace(limits, **overrides)
 
     def stage(
         name: str,
@@ -2521,9 +2524,15 @@ def _evaluate_hybrid_chapter(
                 output_tokens=effective.max_new_tokens,
                 token_count=tokens,
                 producer_identity=stage_producer,
+                auto_output=(
+                    local_limits is not None
+                    and local_limits.get("max_new_tokens") == pipeline_plan.AUTO_OUTPUT
+                ),
             )
         except chapter_hybrid.HybridStop as error:
             raise ChapterStop("hybrid pinned-token request preflight refused") from error
+        # The resolved request budget is the stage budget: receipts and replay check against it.
+        effective = replace(effective, max_new_tokens=cast(int, prepared["max_new_tokens"]))
         result = _stage(
             root,
             name,

@@ -184,7 +184,7 @@ seed 42 with unchanged sampling settings. The chapter's per-stage
 `max_new_tokens` is separate from the existing miner's 960-token limit.
 Configuration enforces **2–20 scenes**, **130–2400 total words**, **2–24
 source beats and original source-unit/gap coverage entries**, **1–4 shots
-per scene**, **1024–8192 output tokens per call**, **1–2 attempts per
+per scene**, **1024–16384 output tokens per call** (the active model profile's output bounds; or `"auto"`, see `BOOK_MODEL_PROFILE.md`), **1–2 attempts per
 each of four text stages**, and **60–900 seconds chapter runtime**.
 No source unit is truncated. The private source ledger has an absolute
 **163,840-byte** bound derived from 4× the pinned 40,960-token model

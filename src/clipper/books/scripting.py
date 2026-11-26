@@ -799,7 +799,9 @@ def _chapter_context_tokens(
         or type(request.get("seed")) is not int
         or request["seed"] != 42
         or type(request.get("max_new_tokens")) is not int
-        or not 1024 <= cast(int, request["max_new_tokens"]) <= 8192
+        or not model_profile.output_bounds()[0]
+        <= cast(int, request["max_new_tokens"])
+        <= model_profile.output_bounds()[1]
     ):
         raise NicheVideoError("chapter pinned model request or output budget mismatch")
     tokenizer, limit = _public_book_context() if tokenizer_context is None else tokenizer_context

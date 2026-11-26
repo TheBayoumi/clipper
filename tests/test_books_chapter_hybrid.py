@@ -563,7 +563,7 @@ def test_effective_tokenizer_cache_status_and_cpu_context_fail_closed(
     with pytest.raises(scripting.NicheVideoError, match="token context"):
         scripting._chapter_context_tokens(request)
     with pytest.raises(scripting.NicheVideoError, match="output budget mismatch"):
-        scripting._chapter_context_tokens({**request, "max_new_tokens": 8193})
+        scripting._chapter_context_tokens({**request, "max_new_tokens": 16385})
     request["verified_input_encoding"] = {"incorrect": "reserved digest"}
     # An absent actual tokenizer identity fails before CPU invocation or raw claim.
     with pytest.raises(scripting.NicheVideoError, match="snapshot identity"):
@@ -2041,7 +2041,7 @@ def test_hybrid_real_request_preflight_refuses_bad_context_and_contract(
     elif case == "low_output":
         output_tokens = 900
     elif case == "high_output":
-        output_tokens = 8193
+        output_tokens = 16385
     elif case == "missing_producer":
         producer = {}
     elif case == "zero_tokens":
@@ -2893,3 +2893,43 @@ def test_argument_prompt_contract_has_no_copyable_filled_example() -> None:
 
     source = inspect.getsource(chapter)
     assert '"source_links": [{"id": "s0001", "start": 0, "end": 10' not in source
+
+
+@pytest.mark.parametrize(
+    "prompt_tokens,expected", [(1200, 16_384), (20_000, 32_768 - 20_000 - 512)]
+)
+def test_configured_auto_output_budget_reaches_every_brief_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prompt_tokens: int, expected: int
+) -> None:
+    from clipper.books import pipeline_plan
+
+    runner, selected, section = _selected_hybrid_source(tmp_path)
+    monkeypatch.setattr(
+        BookOrchestrator, "mine_candidate", Mock(side_effect=AssertionError("no mining"))
+    )
+    config = pipeline_plan.template(selected.stem, "brief")
+    for name in ("argument", "audits", "reconcile"):
+        config["stages"][name]["semantic"]["max_new_tokens"] = "auto"
+    seen: list[tuple[str, int]] = []
+
+    def producer(kind: str):
+        def run(req: dict[str, object]) -> str:
+            seen.append((kind, int(req["max_new_tokens"])))  # type: ignore[call-overload]
+            return _injected_hybrid_response(kind, req)
+
+        return run
+
+    waiting = chapter.evaluate_hybrid_chapter(
+        runner,
+        selected,
+        section,
+        plan=chapter.ChapterPlan(brief_cpu=True),
+        pipeline_config=config,
+        argument_completion=producer("argument"),
+        audit_completion=producer("audit"),
+        reconcile_completion=producer("reconcile"),
+        token_counter=lambda _messages: prompt_tokens,
+    )
+    assert waiting["status"] == "BRIEF_READY_UNREVIEWED"
+    assert {kind for kind, _ in seen} == {"argument", "audit", "reconcile"}
+    assert {budget for _, budget in seen} == {expected}

@@ -42,6 +42,11 @@ class ModelProfile:
     safe_context_tokens: int
     chat_template_kwargs: Mapping[str, Any]
     generation_settings: Mapping[str, Any]
+    # Output budget facts. A fixed config value must lie in [min, max]; "auto" resolves to
+    # min(max_output_tokens, safe_context_tokens - prompt_tokens - output_margin_tokens).
+    max_output_tokens: int = 16_384
+    output_margin_tokens: int = 512
+    min_output_tokens: int = 1_024
 
     def __post_init__(self) -> None:
         if not _NAME.fullmatch(self.name):
@@ -60,6 +65,20 @@ class ModelProfile:
             self.context_window, self.tokenizer_max_length
         ):
             raise ModelProfileError("profile safe context must fit the model and tokenizer limits")
+        if (
+            any(
+                type(value) is not int
+                for value in (
+                    self.max_output_tokens,
+                    self.output_margin_tokens,
+                    self.min_output_tokens,
+                )
+            )
+            or not 1 <= self.min_output_tokens <= self.max_output_tokens
+            or self.max_output_tokens >= self.safe_context_tokens
+            or not 0 <= self.output_margin_tokens < self.safe_context_tokens
+        ):
+            raise ModelProfileError("profile output budget must fit inside the safe context")
         object.__setattr__(
             self, "chat_template_kwargs", MappingProxyType(dict(self.chat_template_kwargs))
         )
@@ -88,8 +107,23 @@ class ModelProfile:
             "safe_context_tokens": self.safe_context_tokens,
             "chat_template_kwargs": dict(self.chat_template_kwargs),
             "generation_settings": dict(self.generation_settings),
+            "max_output_tokens": self.max_output_tokens,
+            "output_margin_tokens": self.output_margin_tokens,
+            "min_output_tokens": self.min_output_tokens,
         }
         return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
+
+    def auto_output_tokens(self, prompt_tokens: int) -> int:
+        """Largest finite output budget the measured prompt leaves room for."""
+        if type(prompt_tokens) is not int or prompt_tokens < 1:
+            raise ModelProfileError("measured prompt token count invalid")
+        budget = min(
+            self.max_output_tokens,
+            self.safe_context_tokens - prompt_tokens - self.output_margin_tokens,
+        )
+        if budget < self.min_output_tokens:
+            raise ModelProfileError("prompt leaves too little room for the minimum output")
+        return budget
 
     @property
     def effective_context(self) -> int:
@@ -129,6 +163,12 @@ def register(profile: ModelProfile) -> None:
     if profile.name in _PROFILES and _PROFILES[profile.name] != profile:
         raise ModelProfileError("profile name already registered with different facts")
     _PROFILES[profile.name] = profile
+
+
+def output_bounds() -> tuple[int, int]:
+    """Inclusive limits for a fixed max_new_tokens under the active profile."""
+    profile = _active.get()
+    return profile.min_output_tokens, profile.max_output_tokens
 
 
 def active() -> ModelProfile:

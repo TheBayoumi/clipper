@@ -219,8 +219,13 @@ def request(
     output_tokens: int,
     token_count: Callable[[list[dict[str, str]]], int | dict[str, object]],
     producer_identity: dict[str, object],
+    auto_output: bool = False,
 ) -> tuple[dict[str, object], str, int]:
-    """Exact pinned-template preflight supplied by caller, never a byte proxy."""
+    """Exact pinned-template preflight supplied by caller, never a byte proxy.
+
+    With auto_output the reserved output is resolved here, from the measured prompt and
+    before the request is hashed; output_tokens is then only the profile ceiling.
+    """
     if (
         stage
         not in {
@@ -232,7 +237,7 @@ def request(
             "chapter_direction",
         }
         or type(output_tokens) is not int
-        or not 1024 <= output_tokens <= 8192
+        or not model_profile.output_bounds()[0] <= output_tokens <= model_profile.output_bounds()[1]
         or not producer_identity
     ):
         raise HybridStop("hybrid stage capacity or producer identity is invalid")
@@ -296,6 +301,11 @@ def request(
         }
     else:
         count = counted
+    if auto_output and type(count) is int and count >= 1:
+        try:
+            output_tokens = model_profile.active().auto_output_tokens(count)
+        except model_profile.ModelProfileError as exc:
+            raise HybridStop("hybrid prompt leaves too little room for the minimum output") from exc
     if (
         type(count) is not int
         or count < 1
