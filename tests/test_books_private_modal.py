@@ -15,7 +15,6 @@ from clipper.books import private_modal, private_phase
 from clipper.stage_contracts import content_fingerprint
 
 
-
 def test_preflight_does_not_authenticate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     manifest, packet = _brief()
     forbidden = Mock(side_effect=AssertionError("no provider"))

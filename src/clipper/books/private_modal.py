@@ -282,9 +282,7 @@ def private_directory(path: Path) -> bool:
     )
 
 
-def response(
-    report: object, raw: object, run: dict[str, Any], identity: str
-) -> dict[str, Any]:
+def response(report: object, raw: object, run: dict[str, Any], identity: str) -> dict[str, Any]:
     if not isinstance(report, dict):
         raise private_phase.PrivatePhaseError("invalid phase envelope")
     expected = (

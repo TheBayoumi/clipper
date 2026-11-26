@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import os
-import stat
 import re
+import stat
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -35,7 +35,7 @@ HEX40 = re.compile(r"[0-9a-f]{40}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 NATIVE_PATH = re.compile(
     r"book-candidates/(?:"
-    r"failed-phase\\.json|"
+    r"failed-phase\.json|"
     r"selected-scopes/[0-9a-f]{64}\.json|"
     r"section-scopes/[0-9a-f]{64}\.json|"
     r"(?:hybrid_argument|hybrid_audit|hybrid_reconcile|adaptation|chapter_script)/"
