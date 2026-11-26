@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import Mock
@@ -61,7 +62,10 @@ def test_exact_terminal_observation(monkeypatch: pytest.MonkeyPatch, tasks: obje
 
 @pytest.mark.parametrize(
     "fault",
-    ["none", "owner", "digest", "size", "status", "spawn", "write", "no_output", "cleanup"],
+    [
+        "none", "owner", "digest", "size", "status", "spawn", "write", "no_output",
+        "cleanup", "call_journal", "scope_exit",
+    ],
 )
 def test_dispatch_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
     tmp_path.chmod(0o700)
@@ -108,6 +112,15 @@ def test_dispatch_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fau
     call.get.return_value = (report, raw)
     if fault == "spawn":
         function.spawn.side_effect = TimeoutError("ambiguous")
+    if fault == "call_journal":
+        original = private_modal.Journal.record
+
+        def record(self, event, **fields):
+            if event == "CALL_ID":
+                raise OSError("journal failure")
+            original(self, event, **fields)
+
+        monkeypatch.setattr(private_modal.Journal, "record", record)
     if fault == "write":
         monkeypatch.setattr(
             private_phase, "persist_checkpoint", Mock(side_effect=OSError("private failure"))
@@ -118,8 +131,10 @@ def test_dispatch_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fau
         try:
             yield
         finally:
-            if fault in {"none", "cleanup"}:
+            if fault in {"none", "cleanup", "scope_exit"}:
                 assert output.read_bytes() == raw
+            if fault == "scope_exit":
+                raise RuntimeError("context exit failure")
 
     app.run.side_effect = scope
     monkeypatch.setattr(private_modal, "identify", lambda: (Mock(), client))
@@ -133,11 +148,11 @@ def test_dispatch_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fau
         "journal_root": tmp_path,
         "output": output,
     }
-    result = private_modal.launch(manifest, packet, None, **kwargs)
+    result = private_modal._dispatch_qualified(manifest, packet, None, **kwargs)
     assert result["status"] == (
         "BRIEF_READY_UNREVIEWED" if fault == "none" else "PRIVATE_PHASE_BLOCKED_NO_RETRY"
     )
-    assert result["checkpoint_saved"] is (fault in {"none", "cleanup"})
+    assert result["checkpoint_saved"] is (fault in {"none", "cleanup", "scope_exit"})
     assert result["app_id"] == app.app_id
     assert result["call_id"] == (None if fault == "spawn" else call.object_id)
     client.close.assert_called_once()
@@ -145,7 +160,7 @@ def test_dispatch_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fau
         events = [json.loads(path.read_bytes()) for path in tmp_path.glob("*/*.json")]
         assert any(item["event"] == "RESPONSE_VERIFIED" for item in events)
     with pytest.raises((FileExistsError, private_phase.PrivatePhaseError)):
-        private_modal.launch(manifest, packet, None, **kwargs)
+        private_modal._dispatch_qualified(manifest, packet, None, **kwargs)
     function.spawn.assert_called_once()
 
 
@@ -156,3 +171,50 @@ def test_cleanup_requires_exact_record(monkeypatch: pytest.MonkeyPatch, rows: li
     )
     with pytest.raises(private_phase.PrivatePhaseError):
         private_modal.observe("ap-" + "a" * 22)
+
+
+def test_public_execute_blocked_before_authentication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest, packet = _brief()
+    forbidden = Mock(side_effect=AssertionError("no authentication or dispatch"))
+    monkeypatch.setattr(private_modal, "identify", forbidden)
+    monkeypatch.setattr(private_modal, "_dispatch_qualified", forbidden)
+    with pytest.raises(private_phase.PrivatePhaseError, match="zero-overage"):
+        private_modal.launch(
+            manifest,
+            packet,
+            None,
+            approved_manifest_sha256=content_fingerprint(manifest),
+            execute=True,
+            checkout=tmp_path,
+            journal_root=tmp_path,
+            output=tmp_path / "result.bin",
+        )
+    forbidden.assert_not_called()
+    assert not list(tmp_path.iterdir())
+
+
+def test_cleanup_one_stop_without_terminal_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest, _ = _brief()
+    journal = private_modal.Journal(tmp_path, manifest)
+    app_id = "ap-" + "a" * 22
+    client = Mock()
+    monkeypatch.setattr(private_modal, "identify", lambda: (Mock(), client))
+    run = Mock(
+        return_value=Mock(
+            returncode=0,
+            stdout=json.dumps([{"app_id": app_id, "state": "stopping", "tasks": "1"}]),
+        )
+    )
+    monkeypatch.setattr(private_modal.subprocess, "run", run)
+    sleep = Mock()
+    monkeypatch.setattr(private_modal.time, "sleep", sleep)
+    assert private_modal.cleanup(app_id, journal) is False
+    commands = [call.args[0] for call in run.call_args_list]
+    assert all(command[:3] == [sys.executable, "-m", "modal"] for command in commands)
+    assert len([command for command in commands if command[4] == "stop"]) == 1
+    assert sleep.call_count == 3
+    client.close.assert_called_once()

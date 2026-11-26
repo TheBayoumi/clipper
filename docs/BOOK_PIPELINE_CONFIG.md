@@ -251,3 +251,32 @@ versions and imports the actual worker module before staging pinned model
 material. This build remains unqualified. Cleanup observations use bounded
 backoff and one exact-ID stop, and client handles are closed on exit.
 The private journal and output directories must be owner-only directories.
+
+
+### Live authorization hold and CPU image qualification
+
+The public launcher currently rejects every execute request before authentication
+or resource creation. The internal dispatch implementation remains available
+for offline lifecycle qualification, not as an alternate operational entrypoint.
+A future reviewed change must explicitly lift the hold only after the owner
+approves the exact phase resource estimate/cap and effective paid-overage zero
+is verified with the merchant. Neither the manifest approval string nor
+included credits establishes a zero-cost guarantee. No billing API is assumed.
+
+The CPU image recipe follows the retained public CPU smoke workflow pins:
+torch 2.6.0+cpu from the PyTorch CPU wheel index, transformers 4.57.3,
+huggingface_hub 0.36.2 and lm-format-enforcer 0.11.3. The repository-compatible
+base dependencies are additionally pinned. The public workflow is not proof
+that this complete image builds or that a real chapter fits the candidate
+four-core/16-GiB limits. Image construction fetches public code, dependencies
+and pinned public model material; private invocation has network blocked.
+The remote workspace constant represents caller-side authenticated workspace
+verification, not independent remote workspace attestation. SDK transport
+does not by itself establish any provider at-rest privacy guarantee.
+
+Cleanup uses the same Python interpreter and pinned Modal package as the
+launcher. The get timeout includes 120 seconds for platform startup and a
+separate 180-second result/transport margin beyond the phase timeout.
+The exclusive dispatch claim is permanent on failure or uncertainty; any
+manual operator reset requires explicit new approval and reconciliation of
+the original exact App/Call, never automatic retry.

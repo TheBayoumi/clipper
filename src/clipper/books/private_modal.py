@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from importlib.metadata import version
 from pathlib import Path
@@ -19,6 +20,8 @@ from . import acquisition, evaluation, pipeline_plan, private_phase
 APP = re.compile(r"ap-[A-Za-z0-9]{22}")
 CALL = re.compile(r"fc-[A-Za-z0-9_-]{3,128}")
 SOURCE = "https://github.com/TheBayoumi/clipper.git"
+STARTUP_TIMEOUT = 120
+RESULT_TRANSPORT_MARGIN = 180
 
 
 def require(ok: bool, reason: str) -> None:
@@ -81,7 +84,7 @@ def close_client(client: Any) -> bool:
 def _remote_phase(
     manifest: dict[str, Any], packet: bytes, checkpoint: bytes | None
 ) -> tuple[dict[str, object], bytes | None]:
-    """Runs only in the reviewed public-code image; no caller worktree mount."""
+    """Reviewed image; workspace scope comes from the authenticated caller guard."""
     import subprocess
     from pathlib import Path
 
@@ -132,9 +135,13 @@ def factory(modal: Any, manifest: dict[str, Any]) -> tuple[Any, Any]:
             "opencv-python-headless==4.12.0.88",
             "gdown==6.1.0",
             "yt-dlp==2026.7.4",
-            "torch==2.8.0",
             "transformers==4.57.3",
+            "huggingface_hub==0.36.2",
             "lm-format-enforcer==0.11.3",
+        )
+        .run_commands(
+            "python -m pip install --no-cache-dir "
+            "--index-url https://download.pytorch.org/whl/cpu torch==2.6.0+cpu"
         )
         .env({"PYTHONPATH": "/opt/clipper/src", "HF_HOME": "/opt/hf"})
         .run_commands(
@@ -159,7 +166,7 @@ def factory(modal: Any, manifest: dict[str, Any]) -> tuple[Any, Any]:
         max_containers=1,
         buffer_containers=0,
         retries=0,
-        startup_timeout=120,
+        startup_timeout=STARTUP_TIMEOUT,
         timeout=manifest["timeout_seconds"],
         scaledown_window=2,
     )(_remote_phase)
@@ -216,7 +223,7 @@ def observe(app_id: str) -> bool:
     """Exact positive terminal evidence; no absent-ID success."""
     require(APP.fullmatch(app_id) is not None, "invalid App ID")
     proc = subprocess.run(
-        ["modal", "app", "list", "--json", "--env", "main"],
+        [sys.executable, "-m", "modal", "app", "list", "--json", "--env", "main"],
         capture_output=True,
         text=True,
         check=True,
@@ -249,7 +256,7 @@ def cleanup(app_id: str, journal: Journal) -> bool:
             return True
         journal.record("EXACT_STOP_BEGIN", app_id=app_id)
         proc = subprocess.run(
-            ["modal", "app", "stop", "-y", "--env", "main", app_id],
+            [sys.executable, "-m", "modal", "app", "stop", "-y", "--env", "main", app_id],
             capture_output=True,
             check=False,
             timeout=8,
@@ -353,7 +360,7 @@ def response(
     return safe
 
 
-def launch(
+def _dispatch_qualified(
     manifest: object,
     packet: bytes,
     checkpoint: bytes | None,
@@ -413,7 +420,9 @@ def launch(
             call_id = candidate
             journal.record("CALL_ID", app_id=app_id, call_id=call_id)
             journal.record("GET_BEGIN", app_id=app_id, call_id=call_id)
-            report, raw = call.get(timeout=run["timeout_seconds"] + 120)
+            report, raw = call.get(
+                timeout=run["timeout_seconds"] + STARTUP_TIMEOUT + RESULT_TRANSPORT_MARGIN
+            )
             result = response(report, raw, run, identity)
             journal.record("RESPONSE_VERIFIED", app_id=app_id, call_id=call_id, response=result)
             if raw is not None:
@@ -460,6 +469,29 @@ def launch(
         "checkpoint_sha256": result.get("checkpoint_sha256"),
         "publish_eligible": False,
     }
+
+
+def launch(
+    manifest: object,
+    packet: bytes,
+    checkpoint: bytes | None,
+    *,
+    approved_manifest_sha256: str,
+    execute: bool,
+    checkout: Path,
+    journal_root: Path,
+    output: Path,
+) -> dict[str, object]:
+    """Public boundary remains preflight-only until merchant/owner qualification."""
+    run, _, _ = private_phase.preflight(manifest, packet, checkpoint)
+    identity = content_fingerprint(run)
+    require(identity == approved_manifest_sha256, "reviewed manifest digest mismatch")
+    require(type(execute) is bool, "explicit execution boolean required")
+    if execute:
+        raise private_phase.PrivatePhaseError(
+            "live phase blocked pending merchant zero-overage and owner resource approval"
+        )
+    return {"status": "PREFLIGHT_ONLY", "manifest_sha256": identity}
 
 
 def main(argv: list[str] | None = None) -> int:
