@@ -400,6 +400,7 @@ def _spawn_recoverable_modal_call(
         estimated_usd_per_second=estimated_usd_per_second,
     )
     started = time.monotonic()
+
     async def submit_input() -> None:
         nonlocal started
         attachment_boundary = time.monotonic()

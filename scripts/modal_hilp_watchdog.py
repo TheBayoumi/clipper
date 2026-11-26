@@ -17,8 +17,8 @@ from modal_execution_spy import ModalExecutionSpy
 from clipper.modal_execution import (
     ProductionCallNotTerminated,
     _acquire_remote_source,
-    _UsageLedger,
     _spawn_recoverable_modal_call,
+    _UsageLedger,
 )
 from clipper.models import VideoCandidate
 
@@ -665,7 +665,7 @@ def run(*, render: bool) -> dict[str, Any]:
                     cancellation_failure_reason or cleanup_failure_reason
                 ),
                 "render": render,
-                    "budget": budget.to_dict(),
+                "budget": budget.to_dict(),
             }
         )
         if not run_succeeded:

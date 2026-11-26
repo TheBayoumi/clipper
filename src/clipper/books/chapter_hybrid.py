@@ -264,7 +264,8 @@ def _messages(stage: str, payload: dict[str, object]) -> list[dict[str, str]]:
             f"Reply with ONE JSON object whose top-level keys are exactly: {keys}. "
             "Put your answer directly at the top level. Do not wrap it in another "
             "object and do not repeat the input or these instructions. Shape of each "
-            f"key (angle-bracket text is a description to replace, never to copy): {_json(contract)}"
+            "key (angle-bracket text is a description to replace, never to copy): "
+            f"{_json(contract)}"
         )
     else:
         shape = (
@@ -277,7 +278,6 @@ def _messages(stage: str, payload: dict[str, object]) -> list[dict[str, str]]:
         f"{shape}\n{guidance}\nNow write the JSON object."
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
 
 
 def request(

@@ -709,5 +709,3 @@ def test_watchdog_cancels_exact_call_if_spy_thread_dies(
         module.run(render=False)
 
     assert call.cancel_args == [False]
-
-

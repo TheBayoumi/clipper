@@ -423,4 +423,3 @@ def test_cli_benchmark_writes_report_and_returns_threshold_status(tmp_path: Path
     assert main(["benchmark", "--manifest", str(manifest), "--output", str(output)]) == 0
     assert json.loads(output.read_text())["status"] == "PASS"
     assert '"status": "PASS"' in capsys.readouterr().out
-
