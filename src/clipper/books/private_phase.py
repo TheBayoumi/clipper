@@ -122,10 +122,22 @@ def validate_manifest(raw: object) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise PrivatePhaseError("manifest object required")
     require(
-        set(raw) == {
-            "schema", "commit", "workspace", "phase", "configuration_sha256",
-            "bundle_sha256", "section_sha256", "review_sha256", "expected_brief_identity",
-            "checkpoint_sha256", "owner", "cpu", "memory_mib", "timeout_seconds",
+        set(raw)
+        == {
+            "schema",
+            "commit",
+            "workspace",
+            "phase",
+            "configuration_sha256",
+            "bundle_sha256",
+            "section_sha256",
+            "review_sha256",
+            "expected_brief_identity",
+            "checkpoint_sha256",
+            "owner",
+            "cpu",
+            "memory_mib",
+            "timeout_seconds",
             "resource_approval",
         },
         "manifest fields",
@@ -138,9 +150,12 @@ def validate_manifest(raw: object) -> dict[str, Any]:
     for key in ("configuration_sha256", "bundle_sha256", "section_sha256", "owner"):
         require(pipeline_plan.is_digest(raw[key]), "manifest identity")
     require(
-        type(raw["cpu"]) is int and raw["cpu"] == 4
-        and type(raw["memory_mib"]) is int and raw["memory_mib"] == 16384
-        and type(raw["timeout_seconds"]) is int and 60 <= raw["timeout_seconds"] <= 43200
+        type(raw["cpu"]) is int
+        and raw["cpu"] == 4
+        and type(raw["memory_mib"]) is int
+        and raw["memory_mib"] == 16384
+        and type(raw["timeout_seconds"]) is int
+        and 60 <= raw["timeout_seconds"] <= 43200
         and raw["resource_approval"] == "EXPLICIT_PRIVATE_CPU_PHASE",
         "manifest resource bounds or approval",
     )
@@ -164,7 +179,8 @@ def preflight(
         expected.add("review.json")
     require(set(inputs) == expected, "phase input inventory")
     for name, field in (
-        ("selected.json", "bundle_sha256"), ("section.json", "section_sha256"),
+        ("selected.json", "bundle_sha256"),
+        ("section.json", "section_sha256"),
     ):
         require(sha(inputs[name]) == run[field], "phase input checksum mismatch")
     require(len(inputs["selected.json"]) <= selected_scope.MAX_BUNDLE_BYTES, "source bound")
@@ -190,7 +206,8 @@ def preflight(
     else:
         require(
             all(not stages[name]["enabled"] for name in required)
-            and stages["adaptation"]["enabled"] and stages["script"]["enabled"],
+            and stages["adaptation"]["enabled"]
+            and stages["script"]["enabled"],
             "script phase requires analysis replay and creative permission",
         )
         require(
@@ -343,7 +360,8 @@ def execute_private_phase(
                     script_completion=producer,
                 )
                 expected_status = (
-                    "BRIEF_READY_UNREVIEWED" if run["phase"] == "brief"
+                    "BRIEF_READY_UNREVIEWED"
+                    if run["phase"] == "brief"
                     else "CHAPTER_SCRIPT_READY_UNREVIEWED"
                 )
                 require(

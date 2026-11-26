@@ -196,3 +196,38 @@ backup. The worker returns a private review packet at the brief boundary and
 native script evidence after review; a failed phase may return partial evidence
 with a no-retry status. Platform termination can still prevent output return.
 No automatic retry or recovery of an ambiguous remote invocation is authorized.
+
+
+## Private SDK launcher (unqualified, no execution approval)
+
+The launcher module is `clipper.books.private_modal`. Its default command
+is offline preflight:
+
+```sh
+python -m clipper.books.private_modal \
+    --manifest "$PRIVATE/manifest.json" --packet "$PRIVATE/input.bin" \
+    --approved-manifest-sha256 "$REVIEWED_MANIFEST_SHA256" \
+    --checkout "$REVIEWED_CHECKOUT" --journal-root "$PRIVATE/journal" \
+    --output "$PRIVATE/checkpoint.bin"
+```
+
+A script phase also takes `--checkpoint` for the exact previous brief archive.
+The reviewed digest is the canonical content_fingerprint of the manifest.
+Only a separately approved invocation may add `--execute`. The launcher uses
+the pinned 1.5.5 SDK, explicit securely injected environment credentials and
+live workspace validation before constructing an App. Do not pass credentials
+on command lines or use public Actions for private bytes. An exclusive durable
+phase directory prevents a second dispatch in the same journal root.
+
+The Function is ephemeral, without a public endpoint, GPU or volume. It uses
+the public pinned repository checkout, no ambient source mount, a single
+container and explicit CPU/memory request/limit pairs. The SDK returns private
+bytes; checkpoint persistence and reread precede App context exit. Positive
+cleanup requires exact stopped state and the string task count "0"; otherwise
+the result is blocked, even if checkpoint bytes were saved.
+
+This implementation has not been run or qualified. Image dependency resolution,
+SDK serialization, image-build bounds, caller-side hard interruption handling,
+durable recovery of an unknown App/Call, complete checkpoint validation and
+credential availability remain qualification blockers. No live authorization is
+implied by the code or manifest. Never automatically retry an ambiguous phase.

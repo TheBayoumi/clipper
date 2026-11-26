@@ -8,7 +8,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from clipper.books import chapter, pipeline_plan, private_phase as phase
+from clipper.books import chapter, pipeline_plan
+from clipper.books import private_phase as phase
 from clipper.stage_contracts import content_fingerprint
 
 
@@ -33,11 +34,13 @@ def _brief():
         "timeout_seconds": 900,
         "resource_approval": "EXPLICIT_PRIVATE_CPU_PHASE",
     }
-    packet = phase.pack({
-        "selected.json": source,
-        "section.json": section,
-        "config.json": json.dumps(config).encode(),
-    })
+    packet = phase.pack(
+        {
+            "selected.json": source,
+            "section.json": section,
+            "config.json": json.dumps(config).encode(),
+        }
+    )
     return manifest, packet
 
 
@@ -70,16 +73,19 @@ def test_packet_corruption_and_trailing_bytes() -> None:
             phase.unpack(bad)
 
 
-@pytest.mark.parametrize("field,value", [
-    ("workspace", "wrong"),
-    ("cpu", 8),
-    ("memory_mib", 32768),
-    ("timeout_seconds", 0),
-    ("resource_approval", None),
-    ("commit", "main"),
-    ("review_sha256", "a" * 64),
-    ("configuration_sha256", "c" * 64),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("workspace", "wrong"),
+        ("cpu", 8),
+        ("memory_mib", 32768),
+        ("timeout_seconds", 0),
+        ("resource_approval", None),
+        ("commit", "main"),
+        ("review_sha256", "a" * 64),
+        ("configuration_sha256", "c" * 64),
+    ],
+)
 def test_manifest_preflight_rejects(field, value) -> None:
     manifest, packet = _brief()
     manifest[field] = value
@@ -93,7 +99,10 @@ def test_worker_identity_precedes_evaluator(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(chapter, "evaluate_hybrid_chapter", forbidden)
     with pytest.raises(phase.PrivatePhaseError):
         phase.execute_private_phase(
-            manifest, packet, None, verified_commit="0" * 40,
+            manifest,
+            packet,
+            None,
+            verified_commit="0" * 40,
             verified_workspace=phase.WORKSPACE,
         )
     forbidden.assert_not_called()
@@ -103,12 +112,18 @@ def test_worker_passes_same_config_and_rejects_synthetic_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manifest, packet = _brief()
-    evaluator = Mock(return_value={
-        "status": "BRIEF_READY_UNREVIEWED", "automation_claim": "INJECTED_TEST",
-    })
+    evaluator = Mock(
+        return_value={
+            "status": "BRIEF_READY_UNREVIEWED",
+            "automation_claim": "INJECTED_TEST",
+        }
+    )
     monkeypatch.setattr(chapter, "evaluate_hybrid_chapter", evaluator)
     report, output = phase.execute_private_phase(
-        manifest, packet, None, verified_commit=manifest["commit"],
+        manifest,
+        packet,
+        None,
+        verified_commit=manifest["commit"],
         verified_workspace=phase.WORKSPACE,
     )
     assert report["status"] == "PRIVATE_PHASE_FAILED_NO_RETRY"
