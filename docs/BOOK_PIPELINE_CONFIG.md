@@ -231,3 +231,23 @@ SDK serialization, image-build bounds, caller-side hard interruption handling,
 durable recovery of an unknown App/Call, complete checkpoint validation and
 credential availability remain qualification blockers. No live authorization is
 implied by the code or manifest. Never automatically retry an ambiguous phase.
+
+
+### Failed phase retention
+
+The worker now guards archive finalization as well as evaluator execution.
+A failure returns a fixed no-retry envelope with the manifest and owner
+identities, safe artifact digests where known, and either a marked partial
+archive or explicit OUTPUT_NOT_RETAINED. Partial archives record omitted
+member counts and whether inventory was truncated; they are not valid
+automatic resume inputs. The caller journals the sanitized response before
+attempting to save bytes, including when no packet exists. A failed brief
+cannot automatically resume. A human expert may inspect retained valid
+brief evidence after a review-packet failure; a full rerun requires separate
+owner approval and reconciliation of the original dispatch.
+
+The image build now requests repository-compatible gdown and yt-dlp
+versions and imports the actual worker module before staging pinned model
+material. This build remains unqualified. Cleanup observations use bounded
+backoff and one exact-ID stop, and client handles are closed on exit.
+The private journal and output directories must be owner-only directories.

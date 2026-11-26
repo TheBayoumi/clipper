@@ -133,3 +133,55 @@ def test_worker_passes_same_config_and_rejects_synthetic_result(
     assert kwargs["plan"].brief_cpu is True
     assert kwargs["plan"].kokoro_cpu is False
     assert kwargs["argument_completion"] is phase.scripting._ORIGINAL_LOCAL_CHAPTER_COMPLETION
+
+
+@pytest.mark.parametrize("evaluation_fails", [False, True])
+def test_finalization_failure_retains_partial(
+    monkeypatch: pytest.MonkeyPatch, evaluation_fails: bool
+) -> None:
+    manifest, packet = _brief()
+    if evaluation_fails:
+        evaluator = Mock(side_effect=RuntimeError("private data"))
+    else:
+        evaluator = Mock(
+            return_value={"status": "BRIEF_READY_UNREVIEWED", "automation_claim": "ACTUAL_CPU"}
+        )
+    monkeypatch.setattr(chapter, "evaluate_hybrid_chapter", evaluator)
+    monkeypatch.setattr(
+        phase.selected_scope, "import_chapter", Mock(return_value=Mock(chapter_number=1))
+    )
+    monkeypatch.setattr(phase.chapter_host, "_hybrid_review_packet", Mock())
+    monkeypatch.setattr(phase, "collect", Mock(side_effect=OSError("private path")))
+    report, raw = phase.execute_private_phase(
+        manifest,
+        packet,
+        None,
+        verified_commit=manifest["commit"],
+        verified_workspace=phase.WORKSPACE,
+    )
+    assert report["status"] == "PRIVATE_PHASE_FAILED_NO_RETRY"
+    assert report["retention"] == "PARTIAL_NONRESUMABLE"
+    assert raw is not None
+    assert report["checkpoint_sha256"] == phase.sha(raw)
+
+
+def test_partial_excludes_unsafe_and_oversized(tmp_path: Path) -> None:
+    native = tmp_path / "book-candidates" / "hybrid_argument" / ("a" * 64)
+    native.mkdir(parents=True)
+    (native / "raw-1.json").write_bytes(b"safe")
+    (native / "raw-2.json").write_bytes(b"x" * (phase.MAX_MEMBER + 1))
+    (native / "unknown.json").write_bytes(b"not allowed")
+    (native / "started-1.json").symlink_to(native / "raw-1.json")
+    packet, omitted, truncated = phase.partial_checkpoint(tmp_path)
+    assert packet is not None
+    assert omitted == 3
+    assert not truncated
+    assert list(phase.unpack(packet).values()) == [b"safe"]
+
+
+def test_empty_partial_is_not_archive(tmp_path: Path) -> None:
+    manifest, _ = _brief()
+    report, raw = phase.failed_phase(tmp_path, manifest, {})
+    assert raw is None
+    assert report["retention"] == "OUTPUT_NOT_RETAINED"
+    assert report["checkpoint_sha256"] is None

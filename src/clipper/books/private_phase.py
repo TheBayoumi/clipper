@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import re
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
@@ -34,6 +35,7 @@ HEX40 = re.compile(r"[0-9a-f]{40}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 NATIVE_PATH = re.compile(
     r"book-candidates/(?:"
+    r"failed-phase\\.json|"
     r"selected-scopes/[0-9a-f]{64}\.json|"
     r"section-scopes/[0-9a-f]{64}\.json|"
     r"(?:hybrid_argument|hybrid_audit|hybrid_reconcile|adaptation|chapter_script)/"
@@ -220,6 +222,7 @@ def preflight(
             raise PrivatePhaseError("checkpoint required")
         require(sha(checkpoint) == run["checkpoint_sha256"], "checkpoint checksum mismatch")
         restored = unpack(checkpoint)
+        require("book-candidates/failed-phase.json" not in restored, "failed phase cannot resume")
         require(all(NATIVE_PATH.fullmatch(name) for name in restored), "checkpoint inventory")
         require(
             not any(
@@ -287,6 +290,89 @@ def collect(root: Path) -> bytes:
     return pack(files)
 
 
+def partial_checkpoint(root: Path) -> tuple[bytes | None, int, bool]:
+    """Best effort bounded evidence, never a complete/resumable phase result."""
+    files: dict[str, bytes] = {}
+    omitted = 0
+    truncated = False
+    total = 0
+    try:
+        base = root / "book-candidates"
+        if base.is_symlink() or not base.is_dir():
+            return None, 0, True
+        scanned = 0
+        for directory, dirs, names in os.walk(base, followlinks=False):
+            parent = Path(directory)
+            for name in list(dirs):
+                if (parent / name).is_symlink():
+                    dirs.remove(name)
+                    omitted += 1
+            for name in names:
+                scanned += 1
+                if scanned > MAX_FILES * 4:
+                    truncated = True
+                    break
+                path = parent / name
+                relative = path.relative_to(root).as_posix()
+                try:
+                    if (
+                        not NATIVE_PATH.fullmatch(relative)
+                        or not stat.S_ISREG(path.lstat().st_mode)
+                        or path.resolve() != path.absolute()
+                        or len(files) >= MAX_FILES
+                    ):
+                        omitted += 1
+                        continue
+                    data = evaluation._read(path, MAX_MEMBER)
+                    if not data or total + len(data) > MAX_PACKET - MAX_HEADER - 4:
+                        omitted += 1
+                        continue
+                    files[relative] = data
+                    total += len(data)
+                except Exception:
+                    omitted += 1
+            if truncated:
+                break
+        if files:
+            return pack(files), omitted, truncated
+    except Exception:
+        return None, omitted, True
+    return None, omitted, truncated
+
+
+def failed_phase(
+    root: Path, run: dict[str, Any], result: dict[str, object]
+) -> tuple[dict[str, object], bytes | None]:
+    """Sanitized terminal envelope, even when archive finalization itself fails."""
+    output, omitted, truncated = partial_checkpoint(root)
+    if output is not None:
+        try:
+            files = unpack(output)
+            marker = "book-candidates/failed-phase.json"
+            files[marker] = evaluation._json_bytes(
+                {"status": "PARTIAL_NONRESUMABLE", "manifest_sha256": content_fingerprint(run)}
+            )
+            output = pack(files)
+        except Exception:
+            output = None
+            truncated = True
+    report: dict[str, object] = {
+        "status": "PRIVATE_PHASE_FAILED_NO_RETRY",
+        "manifest_sha256": content_fingerprint(run),
+        "owner": run["owner"],
+        "checkpoint_sha256": sha(output) if output is not None else None,
+        "checkpoint_bytes": len(output) if output is not None else 0,
+        "retention": "PARTIAL_NONRESUMABLE" if output is not None else "OUTPUT_NOT_RETAINED",
+        "omitted_members": omitted,
+        "inventory_truncated": truncated,
+        "publish_eligible": False,
+    }
+    for key in ("brief_identity", "configured_execution_receipt_identity", "final_result_identity"):
+        if pipeline_plan.is_digest(result.get(key)):
+            report[key] = result[key]
+    return report, output
+
+
 def persist_checkpoint(path: Path, packet: bytes, expected_sha256: str) -> None:
     """Owner-side durable write; never claims external backup."""
     require(sha(packet) == expected_sha256, "checkpoint response checksum mismatch")
@@ -309,7 +395,7 @@ def execute_private_phase(
     *,
     verified_commit: str,
     verified_workspace: str,
-) -> tuple[dict[str, object], bytes]:
+) -> tuple[dict[str, object], bytes | None]:
     """Worker consumer for a future authenticated, reviewed SDK Function launcher.
 
     The launcher must supply independently established deployment identity and
@@ -340,6 +426,7 @@ def execute_private_phase(
             redirect_stdout(sink),
             redirect_stderr(sink),
         ):
+            result: dict[str, object] = {}
             try:
                 result = chapter.evaluate_hybrid_chapter(
                     runner,
@@ -372,19 +459,12 @@ def execute_private_phase(
                 if run["phase"] == "brief":
                     verified = selected_scope.import_chapter(root, selected)
                     chapter_host._hybrid_review_packet(runner, verified.chapter_number, result)
-            except Exception:
                 output = collect(root)
-                return {
-                    "status": "PRIVATE_PHASE_FAILED_NO_RETRY",
-                    "manifest_sha256": content_fingerprint(run),
-                    "owner": run["owner"],
-                    "checkpoint_sha256": sha(output),
-                    "checkpoint_bytes": len(output),
-                    "publish_eligible": False,
-                }, output
-        output = collect(root)
+            except Exception:
+                return failed_phase(root, run, result)
         return {
             "status": expected_status,
+            "retention": "COMPLETE",
             "manifest_sha256": content_fingerprint(run),
             "owner": run["owner"],
             "checkpoint_sha256": sha(output),

@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import json
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from test_books_private_phase import _brief
 
 from clipper.books import private_modal, private_phase
 from clipper.stage_contracts import content_fingerprint
 
-from test_books_private_phase import _brief
 
 
 def test_preflight_does_not_authenticate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -43,15 +45,114 @@ def test_duplicate_phase_claim(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("tasks", ["0", "1", 0])
 def test_exact_terminal_observation(monkeypatch: pytest.MonkeyPatch, tasks: object) -> None:
-    import json
-
     app_id = "ap-" + "a" * 22
-    run = Mock(return_value=Mock(stdout=json.dumps([
-        {"app_id": app_id, "state": "stopped", "tasks": tasks}
-    ])))
+    run = Mock(
+        return_value=Mock(
+            stdout=json.dumps([{"app_id": app_id, "state": "stopped", "tasks": tasks}])
+        )
+    )
     monkeypatch.setattr(private_modal.subprocess, "run", run)
     if isinstance(tasks, int):
         with pytest.raises(private_phase.PrivatePhaseError):
             private_modal.observe(app_id)
     else:
         assert private_modal.observe(app_id) is (tasks == "0")
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["none", "owner", "digest", "size", "status", "spawn", "write", "no_output", "cleanup"],
+)
+def test_dispatch_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
+    tmp_path.chmod(0o700)
+    manifest, packet = _brief()
+    identity = content_fingerprint(manifest)
+    output = tmp_path / "result.bin"
+    raw = private_phase.pack(
+        {"book-candidates/hybrid_argument/" + "a" * 64 + "/raw-1.json": b"fixture"}
+    )
+    report = {
+        "status": "BRIEF_READY_UNREVIEWED",
+        "manifest_sha256": identity,
+        "owner": manifest["owner"],
+        "checkpoint_bytes": len(raw),
+        "checkpoint_sha256": private_phase.sha(raw),
+        "retention": "COMPLETE",
+        "brief_identity": "a" * 64,
+        "configured_execution_receipt_identity": "b" * 64,
+        "publish_eligible": False,
+    }
+    if fault == "owner":
+        report["owner"] = "c" * 64
+    elif fault == "digest":
+        report["checkpoint_sha256"] = "c" * 64
+    elif fault == "size":
+        report["checkpoint_bytes"] = 0
+    elif fault == "status":
+        report["status"] = "unexpected"
+    elif fault == "no_output":
+        report.update(
+            status="PRIVATE_PHASE_FAILED_NO_RETRY",
+            retention="OUTPUT_NOT_RETAINED",
+            checkpoint_bytes=0,
+            checkpoint_sha256=None,
+            omitted_members=1,
+            inventory_truncated=False,
+        )
+        raw = None
+    client = Mock()
+    app = Mock(app_id="ap-" + "a" * 22)
+    function = Mock()
+    call = Mock(object_id="fc-fixture")
+    function.spawn.return_value = call
+    call.get.return_value = (report, raw)
+    if fault == "spawn":
+        function.spawn.side_effect = TimeoutError("ambiguous")
+    if fault == "write":
+        monkeypatch.setattr(
+            private_phase, "persist_checkpoint", Mock(side_effect=OSError("private failure"))
+        )
+
+    @contextmanager
+    def scope(**_):
+        try:
+            yield
+        finally:
+            if fault in {"none", "cleanup"}:
+                assert output.read_bytes() == raw
+
+    app.run.side_effect = scope
+    monkeypatch.setattr(private_modal, "identify", lambda: (Mock(), client))
+    monkeypatch.setattr(private_modal, "verify_checkout", lambda *_: None)
+    monkeypatch.setattr(private_modal, "factory", lambda *_: (app, function))
+    monkeypatch.setattr(private_modal, "cleanup", lambda *_: fault != "cleanup")
+    kwargs = {
+        "approved_manifest_sha256": identity,
+        "execute": True,
+        "checkout": tmp_path,
+        "journal_root": tmp_path,
+        "output": output,
+    }
+    result = private_modal.launch(manifest, packet, None, **kwargs)
+    assert result["status"] == (
+        "BRIEF_READY_UNREVIEWED" if fault == "none" else "PRIVATE_PHASE_BLOCKED_NO_RETRY"
+    )
+    assert result["checkpoint_saved"] is (fault in {"none", "cleanup"})
+    assert result["app_id"] == app.app_id
+    assert result["call_id"] == (None if fault == "spawn" else call.object_id)
+    client.close.assert_called_once()
+    if fault in {"no_output", "write"}:
+        events = [json.loads(path.read_bytes()) for path in tmp_path.glob("*/*.json")]
+        assert any(item["event"] == "RESPONSE_VERIFIED" for item in events)
+    with pytest.raises((FileExistsError, private_phase.PrivatePhaseError)):
+        private_modal.launch(manifest, packet, None, **kwargs)
+    function.spawn.assert_called_once()
+
+
+@pytest.mark.parametrize("rows", [[], [{"app_id": "wrong"}], [{"app_id": "ap-" + "a" * 22}]])
+def test_cleanup_requires_exact_record(monkeypatch: pytest.MonkeyPatch, rows: list) -> None:
+    monkeypatch.setattr(
+        private_modal.subprocess, "run", Mock(return_value=Mock(stdout=json.dumps(rows)))
+    )
+    with pytest.raises(private_phase.PrivatePhaseError):
+        private_modal.observe("ap-" + "a" * 22)

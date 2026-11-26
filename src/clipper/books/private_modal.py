@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -56,16 +57,30 @@ def identify() -> tuple[Any, Any]:
     require(version("modal") == "1.5.5", "unsupported Modal SDK")
     import modal
 
-    client = modal.Client.from_env()
-    workspace = modal.Workspace.from_context(client=client)
-    workspace.hydrate(client=client)
-    require(str(workspace.name) == private_phase.WORKSPACE, "workspace mismatch")
-    return modal, client
+    client = None
+    try:
+        client = modal.Client.from_env()
+        workspace = modal.Workspace.from_context(client=client)
+        workspace.hydrate(client=client)
+        require(str(workspace.name) == private_phase.WORKSPACE, "workspace mismatch")
+        return modal, client
+    except Exception:
+        if client is not None:
+            close_client(client)
+        raise private_phase.PrivatePhaseError("private SDK identity unavailable") from None
+
+
+def close_client(client: Any) -> bool:
+    try:
+        client.close()
+    except Exception:
+        return False
+    return True
 
 
 def _remote_phase(
     manifest: dict[str, Any], packet: bytes, checkpoint: bytes | None
-) -> tuple[dict[str, object], bytes]:
+) -> tuple[dict[str, object], bytes | None]:
     """Runs only in the reviewed public-code image; no caller worktree mount."""
     import subprocess
     from pathlib import Path
@@ -115,15 +130,17 @@ def factory(modal: Any, manifest: dict[str, Any]) -> tuple[Any, Any]:
             "PyYAML==6.0.3",
             "numpy==2.2.6",
             "opencv-python-headless==4.12.0.88",
-            "gdown==5.2.0",
-            "yt-dlp==2026.3.17",
+            "gdown==6.1.0",
+            "yt-dlp==2026.7.4",
             "torch==2.8.0",
             "transformers==4.57.3",
             "lm-format-enforcer==0.11.3",
         )
         .env({"PYTHONPATH": "/opt/clipper/src", "HF_HOME": "/opt/hf"})
         .run_commands(
-            "python -c 'from clipper.books.scripting import _pinned_qwen_snapshot; "
+            "python -c 'from clipper.books.private_modal import _remote_phase; "
+            "from clipper.books import constrained, private_phase; "
+            "from clipper.books.scripting import _pinned_qwen_snapshot; "
             "_pinned_qwen_snapshot()'"
         )
         .env({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
@@ -217,13 +234,15 @@ def observe(app_id: str) -> bool:
         and row["tasks"].isdecimal(),
         "invalid app state evidence",
     )
-    return row["state"] == "stopped" and row["tasks"] == "0"
+    return bool(row["state"] == "stopped" and row["tasks"] == "0")
 
 
 def cleanup(app_id: str, journal: Journal) -> bool:
     try:
         # Recheck credentials/workspace before using the independently invoked CLI.
-        identify()
+        _, observer = identify()
+        if not close_client(observer):
+            raise private_phase.PrivatePhaseError("observer client close failed")
         journal.record("OBSERVE_BEGIN", app_id=app_id)
         if observe(app_id):
             journal.record("STOPPED_ZERO_TASKS", app_id=app_id)
@@ -236,14 +255,102 @@ def cleanup(app_id: str, journal: Journal) -> bool:
             timeout=8,
         )
         journal.record("EXACT_STOP_RETURNED", app_id=app_id, returncode=proc.returncode)
-        for _ in range(3):
+        for delay in (0.5, 1.0, 2.0):
+            time.sleep(delay)
             if observe(app_id):
                 journal.record("STOPPED_ZERO_TASKS", app_id=app_id)
                 return True
     except Exception:
-        pass
+        journal.record("CLEANUP_OBSERVATION_FAILED", app_id=app_id)
     journal.record("CLEANUP_UNVERIFIED", app_id=app_id)
     return False
+
+
+def private_directory(path: Path) -> bool:
+    return (
+        path.is_dir()
+        and path.resolve() == path.absolute()
+        and path.stat().st_uid == os.getuid()
+        and path.stat().st_mode & 0o077 == 0
+    )
+
+
+def response(
+    report: object, raw: object, run: dict[str, Any], identity: str
+) -> dict[str, Any]:
+    if not isinstance(report, dict):
+        raise private_phase.PrivatePhaseError("invalid phase envelope")
+    expected = (
+        "BRIEF_READY_UNREVIEWED" if run["phase"] == "brief" else "CHAPTER_SCRIPT_READY_UNREVIEWED"
+    )
+    status = report.get("status")
+    require(
+        status in (expected, "PRIVATE_PHASE_FAILED_NO_RETRY")
+        and report.get("manifest_sha256") == identity
+        and report.get("owner") == run["owner"]
+        and report.get("publish_eligible") is False,
+        "private response identity mismatch",
+    )
+    retention = report.get("retention")
+    if raw is None:
+        require(
+            status == "PRIVATE_PHASE_FAILED_NO_RETRY"
+            and retention == "OUTPUT_NOT_RETAINED"
+            and report.get("checkpoint_sha256") is None
+            and report.get("checkpoint_bytes") == 0,
+            "missing checkpoint evidence",
+        )
+    else:
+        if not isinstance(raw, bytes):
+            raise private_phase.PrivatePhaseError("invalid checkpoint type")
+        require(
+            type(report.get("checkpoint_bytes")) is int
+            and report["checkpoint_bytes"] == len(raw)
+            and report.get("checkpoint_sha256") == private_phase.sha(raw)
+            and retention == ("COMPLETE" if status == expected else "PARTIAL_NONRESUMABLE"),
+            "private checkpoint response mismatch",
+        )
+        files = private_phase.unpack(raw)
+        require(
+            all(private_phase.NATIVE_PATH.fullmatch(name) for name in files),
+            "response checkpoint inventory",
+        )
+        require(
+            ("book-candidates/failed-phase.json" in files) == (status != expected),
+            "checkpoint retention marker mismatch",
+        )
+    safe: dict[str, Any] = {
+        key: report[key]
+        for key in (
+            "status",
+            "manifest_sha256",
+            "owner",
+            "retention",
+            "checkpoint_sha256",
+            "checkpoint_bytes",
+            "publish_eligible",
+        )
+    }
+    for key in ("brief_identity", "configured_execution_receipt_identity", "final_result_identity"):
+        if pipeline_plan.is_digest(report.get(key)):
+            safe[key] = report[key]
+    if status == expected:
+        require(
+            "brief_identity" in safe
+            and "configured_execution_receipt_identity" in safe
+            and (run["phase"] != "script" or "final_result_identity" in safe),
+            "missing completed artifact identity",
+        )
+    else:
+        require(
+            type(report.get("omitted_members")) is int
+            and report["omitted_members"] >= 0
+            and type(report.get("inventory_truncated")) is bool,
+            "missing partial inventory evidence",
+        )
+        safe["omitted_members"] = report["omitted_members"]
+        safe["inventory_truncated"] = report["inventory_truncated"]
+    return safe
 
 
 def launch(
@@ -265,23 +372,26 @@ def launch(
         return {"status": "PREFLIGHT_ONLY", "manifest_sha256": identity}
     verify_checkout(checkout, run["commit"])
     require(
-        journal_root.is_dir() and journal_root.resolve() == journal_root.absolute(),
+        private_directory(journal_root),
         "existing private journal root required",
     )
     require(
-        output.parent.is_dir() and output.parent.resolve() == output.parent.absolute(),
+        private_directory(output.parent),
         "private output parent required",
     )
     require(not output.exists() and not output.is_symlink(), "checkpoint output already exists")
-    modal, client = identify()
     journal = Journal(journal_root, run)
+    client = None
     app_id: str | None = None
     call_id: str | None = None
     saved = False
-    result: dict[str, object] = {}
+    result: dict[str, Any] = {}
     cleaned = False
     scope_exited = False
     try:
+        journal.record("IDENTIFY_BEGIN")
+        modal, client = identify()
+        journal.record("WORKSPACE_VERIFIED")
         journal.record("BUILD_BEGIN")
         app, function = factory(modal, run)
         journal.record("APP_RUN_BEGIN")
@@ -304,45 +414,47 @@ def launch(
             journal.record("CALL_ID", app_id=app_id, call_id=call_id)
             journal.record("GET_BEGIN", app_id=app_id, call_id=call_id)
             report, raw = call.get(timeout=run["timeout_seconds"] + 120)
-            require(
-                isinstance(report, dict)
-                and report.get("manifest_sha256") == identity
-                and report.get("owner") == run["owner"]
-                and report.get("publish_eligible") is False
-                and type(raw) is bytes
-                and report.get("checkpoint_bytes") == len(raw)
-                and report.get("checkpoint_sha256") == private_phase.sha(raw),
-                "private response identity mismatch",
-            )
-            journal.record("CHECKPOINT_WRITE_BEGIN", app_id=app_id, call_id=call_id)
-            private_phase.persist_checkpoint(output, raw, report["checkpoint_sha256"])
-            saved = True
-            result = report
-            journal.record(
-                "CHECKPOINT_VERIFIED", app_id=app_id, call_id=call_id,
-                checkpoint_sha256=report["checkpoint_sha256"],
-            )
+            result = response(report, raw, run, identity)
+            journal.record("RESPONSE_VERIFIED", app_id=app_id, call_id=call_id, response=result)
+            if raw is not None:
+                journal.record("CHECKPOINT_WRITE_BEGIN", app_id=app_id, call_id=call_id)
+                private_phase.persist_checkpoint(output, raw, result["checkpoint_sha256"])
+                saved = True
+                journal.record(
+                    "CHECKPOINT_VERIFIED",
+                    app_id=app_id,
+                    call_id=call_id,
+                    checkpoint_sha256=result["checkpoint_sha256"],
+                )
             journal.record("APP_SCOPE_EXIT_BEGIN", app_id=app_id, call_id=call_id)
         journal.record("APP_SCOPE_EXIT_RETURNED", app_id=app_id)
         scope_exited = True
     except Exception:
         journal.record("DISPATCH_FAILED_NO_RETRY", app_id=app_id, call_id=call_id)
     finally:
-        if app_id is not None:
-            cleaned = cleanup(app_id, journal)
-        else:
-            journal.record("RESOURCE_IDENTITY_UNVERIFIED")
+        try:
+            if app_id is not None:
+                cleaned = cleanup(app_id, journal)
+            else:
+                journal.record("RESOURCE_IDENTITY_UNVERIFIED")
+        finally:
+            if client is not None:
+                closed = close_client(client)
+                journal.record("CLIENT_CLOSED" if closed else "CLIENT_CLOSE_FAILED")
+                cleaned = cleaned and closed
     expected = (
         "BRIEF_READY_UNREVIEWED" if run["phase"] == "brief" else "CHAPTER_SCRIPT_READY_UNREVIEWED"
     )
     return {
         "status": (
-            expected if saved and cleaned and scope_exited and result.get("status") == expected
+            expected
+            if saved and cleaned and scope_exited and result.get("status") == expected
             else "PRIVATE_PHASE_BLOCKED_NO_RETRY"
         ),
         "app_id": app_id,
         "call_id": call_id,
         "checkpoint_saved": saved,
+        "retention": result.get("retention") if saved else "OUTPUT_NOT_RETAINED",
         "cleanup_verified": cleaned,
         "manifest_sha256": identity,
         "checkpoint_sha256": result.get("checkpoint_sha256"),
