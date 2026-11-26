@@ -1268,16 +1268,6 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
             f"expected={requested_git_sha} deployed={DEPLOYED_GIT_SHA}"
         )
 
-    max_gpu_seconds = float(payload.get("max_gpu_seconds") or 0.0)
-    max_estimated_usd = float(payload.get("max_estimated_usd") or 0.0)
-    if (
-        not math.isfinite(max_gpu_seconds)
-        or not math.isfinite(max_estimated_usd)
-        or max_gpu_seconds <= 0
-        or max_estimated_usd <= 0
-    ):
-        raise ValueError("run_full_cycle requires finite positive compute budget limits")
-
     editorial_producer_lifecycle_id = uuid.uuid4().hex
     os.environ.update(
         {
@@ -1285,8 +1275,6 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
             "CLIPPER_ACCEPTANCE_SHA": requested_git_sha,
             "CLIPPER_EXECUTION_ID": execution_id.lower(),
             "CLIPPER_EDITORIAL_PRODUCER_LIFECYCLE_ID": editorial_producer_lifecycle_id,
-            "CLIPPER_MAX_GPU_SECONDS": str(max_gpu_seconds),
-            "CLIPPER_MAX_ESTIMATED_USD": str(max_estimated_usd),
         }
     )
 

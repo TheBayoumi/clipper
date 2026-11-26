@@ -236,8 +236,6 @@ jobs:
                   "campaign_brief": str(marker.get("campaign_brief") or ""),
                   "target_video_id": str(marker.get("target_video_id") or ""),
                   "editorial_acceptance_only": "true" if marker.get("editorial_acceptance_only") is True else "false",
-                  "max_gpu_seconds": str(marker.get("max_gpu_seconds", 21600)),
-                  "max_estimated_usd": str(marker.get("max_estimated_usd", 10)),
               },
           }
           print(json.dumps(payload))

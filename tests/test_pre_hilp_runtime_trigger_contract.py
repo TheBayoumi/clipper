@@ -52,8 +52,8 @@ def test_bootstrap_serializes_workflow_dispatch_inputs_as_strings() -> None:
     assert '"fresh_inference") is True else "false"' in workflow
     assert '"editorial_acceptance_only": "true"' in workflow
     assert '"editorial_acceptance_only") is True else "false"' in workflow
-    assert '"max_gpu_seconds": str(marker.get("max_gpu_seconds", 21600))' in workflow
-    assert '"max_estimated_usd": str(marker.get("max_estimated_usd", 10))' in workflow
+    assert "max_gpu_seconds" not in workflow
+    assert "max_estimated_usd" not in workflow
 
 
 def test_runtime_tag_name_is_content_addressed_to_full_sha() -> None:

@@ -46,7 +46,8 @@ def test_production_workflow_is_single_pass_resumable_and_exact_head() -> None:
     assert "function.spawn(request)" not in watchdog
     assert "call, call_started, submission_error = _spawn_recoverable_modal_call(" in watchdog
     assert "call.get(timeout=poll_seconds)" in watchdog
-    assert "enforce_budget=False" in watchdog
+    assert "enforce_budget" not in watchdog
+    assert "max_gpu_seconds" not in watchdog
     assert "remaining_wall_seconds" not in watchdog
     assert "production_call_cancel_retry" in watchdog
     assert "production_call_cancel_requested" in watchdog
@@ -168,8 +169,10 @@ def test_production_workflow_enforces_current_model_and_budget_evidence() -> Non
         'estimated_usd = sum(float(item.get("estimated_cost_usd") or 0) for item in usage_records)'
         in workflow
     )
-    assert 'gpu_limit = float(os.environ["CLIPPER_MAX_GPU_SECONDS"])' in workflow
-    assert 'cost_limit = float(os.environ["CLIPPER_MAX_ESTIMATED_USD"])' in workflow
+    assert "CLIPPER_MAX_GPU_SECONDS" not in workflow
+    assert "CLIPPER_MAX_ESTIMATED_USD" not in workflow
+    assert "gpu_limit" not in workflow
+    assert "cost_limit" not in workflow
     assert "gpu_seconds > gpu_limit" not in workflow
     assert "estimated_usd > cost_limit" not in workflow
     assert "GPU budget exceeded" not in workflow

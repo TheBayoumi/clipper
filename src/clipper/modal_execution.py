@@ -231,17 +231,6 @@ def _verify_deployed_runtime_sha(*, model_app: str, pipeline_app: str) -> str:
     return expected
 
 
-def _positive_budget(value: float, *, name: str) -> float:
-    resolved = float(value)
-    if not math.isfinite(resolved) or resolved <= 0:
-        raise ValueError(f"{name} must be finite and positive")
-    return resolved
-
-
-class ProductionBudgetExceeded(RuntimeError):
-    pass
-
-
 class ProductionCallNotTerminated(RuntimeError):
     """Cancellation could not be confirmed for an exact spawned Modal call."""
 
@@ -269,15 +258,11 @@ class ProductionCallSubmissionFailed(RuntimeError):
 
 
 @dataclass(slots=True)
-class _BudgetLedger:
-    max_gpu_seconds: float
-    max_estimated_usd: float
+class _UsageLedger:
+    """Accounting only: records GPU seconds and estimated cost. It never limits a run."""
+
     gpu_seconds: float = 0.0
     estimated_usd: float = 0.0
-
-    def __post_init__(self) -> None:
-        self.max_gpu_seconds = _positive_budget(self.max_gpu_seconds, name="max_gpu_seconds")
-        self.max_estimated_usd = _positive_budget(self.max_estimated_usd, name="max_estimated_usd")
 
     @staticmethod
     def _rate(value: float, *, name: str) -> float:
@@ -285,35 +270,6 @@ class _BudgetLedger:
         if not math.isfinite(resolved) or resolved < 0:
             raise ValueError(f"{name} must be finite and nonnegative")
         return resolved
-
-    def projected_usage(
-        self, elapsed_seconds: float, *, gpu_count: float, estimated_usd_per_second: float
-    ) -> tuple[float, float]:
-        elapsed = max(0.0, float(elapsed_seconds))
-        gpu_rate = self._rate(gpu_count, name="gpu_count")
-        cost_rate = self._rate(estimated_usd_per_second, name="estimated_usd_per_second")
-        return (self.gpu_seconds + elapsed * gpu_rate, self.estimated_usd + elapsed * cost_rate)
-
-    def remaining_wall_seconds(
-        self, elapsed_seconds: float, *, gpu_count: float, estimated_usd_per_second: float
-    ) -> float:
-        projected_gpu, projected_cost = self.projected_usage(
-            elapsed_seconds,
-            gpu_count=gpu_count,
-            estimated_usd_per_second=estimated_usd_per_second,
-        )
-        gpu_rate = self._rate(gpu_count, name="gpu_count")
-        cost_rate = self._rate(estimated_usd_per_second, name="estimated_usd_per_second")
-        limits: list[float] = []
-        if gpu_rate > 0:
-            limits.append((self.max_gpu_seconds - projected_gpu) / gpu_rate)
-        elif projected_gpu > self.max_gpu_seconds:
-            return 0.0
-        if cost_rate > 0:
-            limits.append((self.max_estimated_usd - projected_cost) / cost_rate)
-        elif projected_cost > self.max_estimated_usd:
-            return 0.0
-        return min(limits) if limits else float("inf")
 
     def charge(
         self, elapsed_seconds: float, *, gpu_count: float, estimated_usd_per_second: float
@@ -324,22 +280,8 @@ class _BudgetLedger:
             estimated_usd_per_second, name="estimated_usd_per_second"
         )
 
-    def remaining_budgets(self) -> tuple[float, float]:
-        return (
-            max(0.0, self.max_gpu_seconds - self.gpu_seconds),
-            max(0.0, self.max_estimated_usd - self.estimated_usd),
-        )
-
     def to_dict(self) -> dict[str, float]:
-        remaining_gpu, remaining_cost = self.remaining_budgets()
-        return {
-            "max_gpu_seconds": self.max_gpu_seconds,
-            "max_estimated_usd": self.max_estimated_usd,
-            "gpu_seconds": self.gpu_seconds,
-            "estimated_usd": self.estimated_usd,
-            "remaining_gpu_seconds": remaining_gpu,
-            "remaining_estimated_usd": remaining_cost,
-        }
+        return {"gpu_seconds": self.gpu_seconds, "estimated_usd": self.estimated_usd}
 
 
 def _cancel_remote_call(call: Any) -> None:
@@ -379,10 +321,9 @@ def _spawn_recoverable_modal_call(
     function: Any,
     request: dict[str, Any],
     *,
-    budget: _BudgetLedger,
+    budget: _UsageLedger,
     gpu_count: float,
     estimated_usd_per_second: float,
-    enforce_budget: bool = True,
 ) -> tuple[Any, float, RuntimeError | None]:
     """Allocate a Modal call ID before attaching the producer input.
 
@@ -459,19 +400,6 @@ def _spawn_recoverable_modal_call(
         estimated_usd_per_second=estimated_usd_per_second,
     )
     started = time.monotonic()
-    if enforce_budget:
-        remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
-        if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
-            return (
-                call,
-                started,
-                ProductionBudgetExceeded(
-                    "production budget exhausted before Modal producer input attachment: "
-                    f"gpu_seconds={budget.gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
-                    f"estimated_usd={budget.estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
-                ),
-            )
-
     async def submit_input() -> None:
         nonlocal started
         attachment_boundary = time.monotonic()
@@ -481,14 +409,6 @@ def _spawn_recoverable_modal_call(
             estimated_usd_per_second=estimated_usd_per_second,
         )
         started = attachment_boundary
-        if enforce_budget:
-            remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
-            if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
-                raise ProductionBudgetExceeded(
-                    "production budget exhausted at Modal producer input attachment boundary: "
-                    f"gpu_seconds={budget.gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
-                    f"estimated_usd={budget.estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
-                )
         response = await internal_function.client.stub.FunctionPutInputs(
             api_pb2.FunctionPutInputsRequest(
                 function_id=function_id,
@@ -504,8 +424,6 @@ def _spawn_recoverable_modal_call(
     submit = synchronizer.create_blocking(submit_input)
     try:
         submit()
-    except ProductionBudgetExceeded as exc:
-        return call, started, exc
     except Exception as exc:
         return (
             call,
@@ -519,60 +437,30 @@ def _spawn_recoverable_modal_call(
     return call, started, None
 
 
-def _invoke_remote_with_budget(
+def _invoke_remote_tracked(
     function: Any,
     request: dict[str, Any],
     *,
-    max_gpu_seconds: float | None = None,
-    max_estimated_usd: float | None = None,
-    budget: _BudgetLedger | None = None,
+    budget: _UsageLedger | None = None,
     gpu_count: float = _MODAL_ROOT_GPU_COUNT,
     estimated_usd_per_second: float = _MODAL_ROOT_ESTIMATED_USD_PER_SECOND,
-    enforce_budget: bool = True,
 ) -> object:
     if budget is None:
-        if max_gpu_seconds is None or max_estimated_usd is None:
-            raise ValueError("remote invocation requires a complete compute budget")
-        budget = _BudgetLedger(max_gpu_seconds, max_estimated_usd)
+        budget = _UsageLedger()
     poll_seconds = float(os.getenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "5"))
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("CLIPPER_MODAL_SPY_POLL_SECONDS must be finite and positive")
     budget._rate(gpu_count, name="gpu_count")
     budget._rate(estimated_usd_per_second, name="estimated_usd_per_second")
-    if enforce_budget:
-        remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
-        if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
-            raise ProductionBudgetExceeded(
-                "production budget exhausted before recoverable Modal call allocation"
-            )
     call, started, submission_error = _spawn_recoverable_modal_call(
         function,
         request,
         budget=budget,
         gpu_count=gpu_count,
         estimated_usd_per_second=estimated_usd_per_second,
-        enforce_budget=enforce_budget,
     )
     terminal_result = False
     charged_elapsed_seconds = 0.0
-
-    def uncharged_elapsed_seconds() -> float:
-        elapsed = max(0.0, time.monotonic() - started)
-        return max(0.0, elapsed - charged_elapsed_seconds)
-
-    def budget_usage() -> tuple[float, float]:
-        return budget.projected_usage(
-            uncharged_elapsed_seconds(),
-            gpu_count=gpu_count,
-            estimated_usd_per_second=estimated_usd_per_second,
-        )
-
-    def remaining_budget_wall_seconds() -> float:
-        return budget.remaining_wall_seconds(
-            uncharged_elapsed_seconds(),
-            gpu_count=gpu_count,
-            estimated_usd_per_second=estimated_usd_per_second,
-        )
 
     def charge_elapsed() -> None:
         nonlocal charged_elapsed_seconds
@@ -592,32 +480,12 @@ def _invoke_remote_with_budget(
             raise submission_error
         call.hydrate()
         while True:
-            timeout = poll_seconds
-            if enforce_budget:
-                gpu_seconds, estimated_usd = budget_usage()
-                remaining_seconds = remaining_budget_wall_seconds()
-                if remaining_seconds <= 0:
-                    raise ProductionBudgetExceeded(
-                        "CLI production call exceeded its in-flight compute budget: "
-                        f"gpu_seconds={gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
-                        f"estimated_usd={estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
-                    )
-                timeout = min(poll_seconds, remaining_seconds)
             try:
-                result = call.get(timeout=timeout)
+                result = call.get(timeout=poll_seconds)
             except TimeoutError:
                 continue
             terminal_result = True
             charge_elapsed()
-            if enforce_budget:
-                gpu_seconds = budget.gpu_seconds
-                estimated_usd = budget.estimated_usd
-                if gpu_seconds > budget.max_gpu_seconds or estimated_usd > budget.max_estimated_usd:
-                    raise ProductionBudgetExceeded(
-                        "CLI production call exceeded its compute budget on the final poll: "
-                        f"gpu_seconds={gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
-                        f"estimated_usd={estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
-                    )
             return result
     finally:
         if not terminal_result:
@@ -625,16 +493,6 @@ def _invoke_remote_with_budget(
                 _cancel_remote_call(call)
             finally:
                 charge_elapsed()
-            if enforce_budget:
-                gpu_seconds = budget.gpu_seconds
-                estimated_usd = budget.estimated_usd
-                if gpu_seconds > budget.max_gpu_seconds or estimated_usd > budget.max_estimated_usd:
-                    raise ProductionBudgetExceeded(
-                        "CLI production call exceeded its compute budget through cancellation "
-                        "acknowledgement: "
-                        f"gpu_seconds={gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
-                        f"estimated_usd={estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
-                    )
 
 
 def _deploy(script: Path) -> None:
@@ -798,17 +656,16 @@ def _acquire_remote_source(
     candidate: VideoCandidate,
     *,
     expected_git_sha: str,
-    budget: _BudgetLedger | None = None,
+    budget: _UsageLedger | None = None,
     attempt_evidence: list[dict[str, object]] | None = None,
     execution_id: str | None = None,
-    enforce_budget: bool = True,
 ) -> dict[str, Any]:
     if len(expected_git_sha) != 40 or any(
         character not in "0123456789abcdef" for character in expected_git_sha.lower()
     ):
         raise ValueError("source acquisition requires a full expected_git_sha")
     if budget is None:
-        budget = _BudgetLedger(21600.0, 10.0)
+        budget = _UsageLedger()
     payload: dict[str, Any] = {
         "video_id": candidate.video_id,
         "channel_id": candidate.channel_id,
@@ -880,26 +737,13 @@ def _acquire_remote_source(
             continue
 
         try:
-            result = _invoke_remote_with_budget(
+            result = _invoke_remote_tracked(
                 variant,
                 payload,
                 budget=budget,
                 gpu_count=0.0,
                 estimated_usd_per_second=_MODAL_ACQUISITION_ESTIMATED_USD_PER_SECOND,
-                enforce_budget=enforce_budget,
             )
-        except ProductionBudgetExceeded:
-            if attempt_evidence is not None:
-                attempt_evidence.append(
-                    {
-                        "egress": label,
-                        "status": "BUDGET_EXCEEDED",
-                        "phase": "invoke",
-                        "estimated_usd": budget.estimated_usd - before_cost,
-                        "gpu_seconds": budget.gpu_seconds - before_gpu,
-                    }
-                )
-            raise
         except ProductionCallNotTerminated as exc:
             if attempt_evidence is not None:
                 attempt_evidence.append(
@@ -1128,8 +972,6 @@ def run_modal_pipeline(
     resume_from_run_id: str | None,
     render: bool,
     fresh_inference: bool,
-    max_gpu_seconds: float = 21600.0,
-    max_estimated_usd: float = 10.0,
 ) -> Path:
     """Execute every explicit campaign target inside one content-addressed Modal run."""
     brief = load_brief(brief_path)
@@ -1154,7 +996,7 @@ def run_modal_pipeline(
         pipeline_app=pipeline_app,
     )
     execution_id = uuid.uuid4().hex
-    budget = _BudgetLedger(max_gpu_seconds, max_estimated_usd)
+    budget = _UsageLedger()
     acquire = _function(pipeline_app, "acquire_source")
     runner = _function(pipeline_app, "run_full_cycle")
 
@@ -1168,11 +1010,6 @@ def run_modal_pipeline(
         )
         for candidate in candidates
     ]
-    remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
-    if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
-        raise ProductionBudgetExceeded(
-            "source acquisition exhausted the production compute budget before pipeline execution"
-        )
     source_payloads = [
         {
             "evidence": evidence,
@@ -1204,10 +1041,8 @@ def run_modal_pipeline(
         "resume_provenance": resume_provenance,
         "git_sha": verified_git_sha,
         "execution_id": execution_id,
-        "max_gpu_seconds": remaining_gpu_seconds,
-        "max_estimated_usd": remaining_estimated_usd,
     }
-    response = _invoke_remote_with_budget(
+    response = _invoke_remote_tracked(
         runner,
         request,
         budget=budget,

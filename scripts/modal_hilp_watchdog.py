@@ -17,7 +17,7 @@ from modal_execution_spy import ModalExecutionSpy
 from clipper.modal_execution import (
     ProductionCallNotTerminated,
     _acquire_remote_source,
-    _BudgetLedger,
+    _UsageLedger,
     _spawn_recoverable_modal_call,
 )
 from clipper.models import VideoCandidate
@@ -97,7 +97,7 @@ def _cached_source_evidence() -> dict[str, Any] | None:
 
 def _source_payload(
     modal: Any,
-    budget: _BudgetLedger,
+    budget: _UsageLedger,
     *,
     execution_id: str,
 ) -> dict[str, Any]:
@@ -124,7 +124,6 @@ def _source_payload(
                 budget=budget,
                 attempt_evidence=attempts,
                 execution_id=execution_id,
-                enforce_budget=False,
             )
             _write_json(Path("open-evidence/source-master.json"), evidence)
         finally:
@@ -287,9 +286,7 @@ def run(*, render: bool) -> dict[str, Any]:
     execution_id = uuid.uuid4().hex
     os.environ["CLIPPER_EXECUTION_ID"] = execution_id
 
-    max_gpu_seconds = _finite_positive_env("CLIPPER_MAX_GPU_SECONDS")
-    max_estimated_usd = _finite_positive_env("CLIPPER_MAX_ESTIMATED_USD")
-    budget = _BudgetLedger(max_gpu_seconds, max_estimated_usd)
+    budget = _UsageLedger()
     poll_seconds = _finite_positive_env("CLIPPER_MODAL_SPY_POLL_SECONDS", default="5")
     barrier_timeout_seconds = _finite_positive_env(
         "CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS",
@@ -517,8 +514,6 @@ def run(*, render: bool) -> dict[str, Any]:
             "resume_provenance": resume_provenance,
             "git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
             "execution_id": execution_id,
-            "max_gpu_seconds": max_gpu_seconds,
-            "max_estimated_usd": max_estimated_usd,
         }
 
         function = modal.Function.from_name(
@@ -531,7 +526,6 @@ def run(*, render: bool) -> dict[str, Any]:
             budget=budget,
             gpu_count=2.0,
             estimated_usd_per_second=0.000444,
-            enforce_budget=False,
         )
         # FunctionCall.from_id(...) is intentionally recoverable but unhydrated.
         # Hydrate it before reading object_id; Modal 1.5.x raises AttributeError
@@ -556,9 +550,6 @@ def run(*, render: bool) -> dict[str, Any]:
             "fresh_inference": request["fresh_inference"],
             "render": render,
             "editorial_acceptance_probe": request["editorial_acceptance_probe"],
-            "max_gpu_seconds": max_gpu_seconds,
-            "max_estimated_usd": max_estimated_usd,
-            "budget_enforcement": False,
             "spawned_at": datetime.now(UTC).isoformat(),
         }
         _write_json(evidence_dir / "modal-function-call.json", metadata)
@@ -674,8 +665,7 @@ def run(*, render: bool) -> dict[str, Any]:
                     cancellation_failure_reason or cleanup_failure_reason
                 ),
                 "render": render,
-                "budget_enforcement": False,
-                "budget": budget.to_dict(),
+                    "budget": budget.to_dict(),
             }
         )
         if not run_succeeded:

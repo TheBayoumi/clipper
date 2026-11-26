@@ -31,16 +31,6 @@ on:
         required: true
         type: boolean
         default: false
-      max_gpu_seconds:
-        description: Maximum aggregate recorded GPU seconds for the acceptance run
-        required: true
-        type: number
-        default: 21600
-      max_estimated_usd:
-        description: Maximum aggregate recorded estimated inference cost in USD
-        required: true
-        type: number
-        default: 10
   push:
     paths:
       - "acceptance/production-run-request.json"
@@ -115,7 +105,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e '.[modal]'
 
-      - name: Resolve campaign, explicit target, confirmation, and budget
+      - name: Resolve campaign, explicit target, and confirmation
         env:
           REQUEST_CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
           REQUEST_FRESH_INFERENCE: ${{ inputs.fresh_inference }}
@@ -123,8 +113,6 @@ jobs:
           REQUEST_CAMPAIGN_BRIEF: ${{ inputs.campaign_brief }}
           REQUEST_TARGET_VIDEO_ID: ${{ inputs.target_video_id }}
           REQUEST_EDITORIAL_ACCEPTANCE_ONLY: ${{ inputs.editorial_acceptance_only }}
-          REQUEST_MAX_GPU_SECONDS: ${{ inputs.max_gpu_seconds }}
-          REQUEST_MAX_ESTIMATED_USD: ${{ inputs.max_estimated_usd }}
         run: |
           set -euo pipefail
           mkdir -p open-evidence
@@ -144,8 +132,6 @@ jobs:
               )
               brief_value = os.environ.get("REQUEST_CAMPAIGN_BRIEF", "").strip()
               target_value = os.environ.get("REQUEST_TARGET_VIDEO_ID", "").strip()
-              gpu_limit_raw = os.environ.get("REQUEST_MAX_GPU_SECONDS", "21600")
-              cost_limit_raw = os.environ.get("REQUEST_MAX_ESTIMATED_USD", "10")
               editorial_acceptance_only = (
                   os.environ.get("REQUEST_EDITORIAL_ACCEPTANCE_ONLY", "").lower() == "true"
               )
@@ -160,8 +146,6 @@ jobs:
               resume_from_run_id = str(marker.get("resume_from_run_id") or "").strip() or None
               brief_value = str(marker.get("campaign_brief") or "").strip()
               target_value = str(marker.get("target_video_id") or "").strip()
-              gpu_limit_raw = marker.get("max_gpu_seconds", 21600)
-              cost_limit_raw = marker.get("max_estimated_usd", 10)
               editorial_acceptance_only = marker.get("editorial_acceptance_only") is True
 
           if not confirmed:
@@ -169,16 +153,6 @@ jobs:
           if fresh_inference and resume_from_run_id is not None:
               raise RuntimeError("fresh inference cannot be combined with a resume_from_run_id")
           execution_mode = "fresh-inference" if fresh_inference else "content-addressed-resume"
-          gpu_limit = float(gpu_limit_raw)
-          cost_limit = float(cost_limit_raw)
-          if (
-              not math.isfinite(gpu_limit)
-              or not math.isfinite(cost_limit)
-              or gpu_limit <= 0
-              or cost_limit <= 0
-          ):
-              raise RuntimeError("production acceptance budget limits must be finite and positive")
-
           brief_path = Path(brief_value)
           if (
               not brief_value
@@ -268,8 +242,6 @@ jobs:
               "resume_from_run_id": resume_from_run_id,
               "resume_provenance": resume_provenance,
               "execution_mode": execution_mode,
-              "max_gpu_seconds": gpu_limit,
-              "max_estimated_usd": cost_limit,
               "editorial_acceptance_only": editorial_acceptance_only,
               "render": not editorial_acceptance_only,
           }
@@ -288,8 +260,6 @@ jobs:
                   f"{'open-evidence/resume-provenance-request.json' if resume_provenance else ''}\n"
               )
               handle.write(f"CLIPPER_EXECUTION_MODE={execution_mode}\n")
-              handle.write(f"CLIPPER_MAX_GPU_SECONDS={gpu_limit}\n")
-              handle.write(f"CLIPPER_MAX_ESTIMATED_USD={cost_limit}\n")
               handle.write(
                   f"CLIPPER_RENDER={'false' if editorial_acceptance_only else 'true'}\n"
               )
@@ -1094,8 +1064,6 @@ jobs:
               raise RuntimeError("fresh inference persisted no current-model usage records")
           gpu_seconds = sum(float(item.get("gpu_seconds") or 0) for item in usage_records)
           estimated_usd = sum(float(item.get("estimated_cost_usd") or 0) for item in usage_records)
-          gpu_limit = float(os.environ["CLIPPER_MAX_GPU_SECONDS"])
-          cost_limit = float(os.environ["CLIPPER_MAX_ESTIMATED_USD"])
 
           review_root = Path("hilp-review")
           review_root.mkdir(parents=True, exist_ok=True)

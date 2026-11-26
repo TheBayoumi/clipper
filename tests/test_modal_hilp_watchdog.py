@@ -92,8 +92,6 @@ def _environment(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("CLIPPER_RESUME_PROVENANCE_PATH", str(provenance))
     monkeypatch.setenv("CLIPPER_ACCEPTANCE_SHA", "a" * 40)
     monkeypatch.setenv("CLIPPER_EXECUTION_MODE", "resume")
-    monkeypatch.setenv("CLIPPER_MAX_GPU_SECONDS", "1000")
-    monkeypatch.setenv("CLIPPER_MAX_ESTIMATED_USD", "100")
     monkeypatch.setenv("CLIPPER_MODAL_APP", "models")
     monkeypatch.setenv("CLIPPER_MODAL_PIPELINE_APP", "pipeline")
     monkeypatch.setenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "0.001")
@@ -244,7 +242,7 @@ def test_source_payload_persists_failed_attempt_and_budget_evidence(
         raise RuntimeError("synthetic acquisition failure")
 
     monkeypatch.setattr(module, "_acquire_remote_source", fail_acquisition)
-    budget = module._BudgetLedger(100.0, 1.0)
+    budget = module._UsageLedger()
 
     with pytest.raises(RuntimeError, match="synthetic acquisition failure"):
         module._source_payload(
@@ -538,7 +536,7 @@ def test_watchdog_uses_hard_cancel_ack_when_terminal_confirmation_transport_fail
     assert summary["root_call_cancellation_failure"] is None
 
 
-def test_watchdog_accounting_threshold_does_not_stop_after_hydration(
+def test_watchdog_poll_timeout_is_the_configured_cadence(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -546,51 +544,6 @@ def test_watchdog_accounting_threshold_does_not_stop_after_hydration(
     _environment(tmp_path, monkeypatch)
     monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
     monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
-    monkeypatch.setenv("CLIPPER_MAX_GPU_SECONDS", "1")
-    clock = {"now": 0.0}
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
-
-    class SlowHydrateCall(_Call):
-        def hydrate(self) -> None:
-            clock["now"] = 0.6
-
-        def get(self, *, timeout: float):
-            assert timeout == pytest.approx(0.001)
-            clock["now"] = 1.0
-            return {
-                "status": "PASS",
-                "execution_mode": "resume",
-                "execution_id": "e" * 32,
-                "deployed_git_sha": "a" * 40,
-                "pipeline_status": "SUCCESS",
-                "review_status": "NOT_RENDERED",
-                "run_volume": "volume",
-                "run_path": "/run",
-            }
-
-    call = SlowHydrateCall({})
-    monkeypatch.setitem(sys.modules, "modal", _modal(call))
-
-    result = module.run(render=False)
-
-    assert result["status"] == "PASS"
-    assert call.cancel_args == []
-    summary = json.loads(
-        (tmp_path / "open-evidence" / "modal-spy-summary.json").read_text(encoding="utf-8")
-    )
-    assert summary["budget_enforcement"] is False
-    assert summary["budget"]["gpu_seconds"] > summary["budget"]["max_gpu_seconds"]
-
-
-def test_watchdog_poll_timeout_is_not_capped_by_accounting_threshold(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    module = _module()
-    _environment(tmp_path, monkeypatch)
-    monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
-    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
-    monkeypatch.setenv("CLIPPER_MAX_GPU_SECONDS", "1")
     monkeypatch.setenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "5")
     clock = {"now": 0.0}
     monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
@@ -627,7 +580,7 @@ def test_watchdog_poll_timeout_is_not_capped_by_accounting_threshold(
     summary = json.loads(
         (tmp_path / "open-evidence" / "modal-spy-summary.json").read_text(encoding="utf-8")
     )
-    assert summary["budget"]["gpu_seconds"] > summary["budget"]["max_gpu_seconds"]
+    assert summary["budget"]["gpu_seconds"] > 0
 
 
 def test_watchdog_retries_exact_call_cancellation_before_marking_cancelled(
@@ -660,74 +613,6 @@ def test_watchdog_retries_exact_call_cancellation_before_marking_cancelled(
 
     assert call.cancel_attempts == 2
     assert call.cancel_args == [False]
-
-
-def test_watchdog_records_threshold_overrun_without_rejecting_final_poll(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    module = _module()
-    _environment(tmp_path, monkeypatch)
-    monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
-    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
-    monkeypatch.setenv("CLIPPER_MAX_GPU_SECONDS", "1")
-    clock = {"now": 0.0}
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
-
-    class AccountingCall(_Call):
-        def get(self, *, timeout: float):
-            assert timeout > 0
-            clock["now"] = 1.0
-            return {
-                "status": "PASS",
-                "execution_mode": "resume",
-                "execution_id": "e" * 32,
-                "deployed_git_sha": "a" * 40,
-                "pipeline_status": "SUCCESS",
-                "review_status": "NOT_RENDERED",
-                "run_volume": "volume",
-                "run_path": "/run",
-            }
-
-    call = AccountingCall({})
-    monkeypatch.setitem(sys.modules, "modal", _modal(call))
-
-    result = module.run(render=False)
-
-    assert result["status"] == "PASS"
-    assert call.cancel_args == []
-    summary = json.loads(
-        (tmp_path / "open-evidence" / "modal-spy-summary.json").read_text(encoding="utf-8")
-    )
-    assert summary["budget_enforcement"] is False
-    assert summary["budget"]["gpu_seconds"] == pytest.approx(2.0)
-    assert summary["budget"]["remaining_gpu_seconds"] == pytest.approx(0.0)
-
-
-@pytest.mark.parametrize(
-    ("name", "value"),
-    [
-        ("CLIPPER_MAX_GPU_SECONDS", "nan"),
-        ("CLIPPER_MAX_GPU_SECONDS", "inf"),
-        ("CLIPPER_MAX_GPU_SECONDS", "-inf"),
-        ("CLIPPER_MAX_ESTIMATED_USD", "nan"),
-        ("CLIPPER_MAX_ESTIMATED_USD", "inf"),
-        ("CLIPPER_MAX_ESTIMATED_USD", "-inf"),
-    ],
-)
-def test_watchdog_rejects_nonfinite_production_budgets(
-    tmp_path: Path,
-    monkeypatch,
-    name: str,
-    value: str,
-) -> None:
-    module = _module()
-    _environment(tmp_path, monkeypatch)
-    monkeypatch.setitem(sys.modules, "modal", _modal(_Call({})))
-    monkeypatch.setenv(name, value)
-
-    with pytest.raises(ValueError, match="finite and positive"):
-        module.run(render=False)
 
 
 @pytest.mark.parametrize(
@@ -826,53 +711,3 @@ def test_watchdog_cancels_exact_call_if_spy_thread_dies(
     assert call.cancel_args == [False]
 
 
-def test_watchdog_disables_budget_enforcement_for_source_and_root_calls(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    module = _module()
-    _environment(tmp_path, monkeypatch)
-    monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
-    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
-    source_modes: list[bool] = []
-    root_modes: list[bool] = []
-
-    def acquire(*_args: object, **kwargs: object) -> dict[str, object]:
-        source_modes.append(bool(kwargs.get("enforce_budget")))
-        return {
-            "video_id": "video",
-            "channel_id": "channel",
-            "quality_policy": "highest_available_no_transcode",
-            "sha256": "s" * 64,
-            "volume_path": "/inputs/video/master.mp4",
-        }
-
-    class Call(_Call):
-        def get(self, *, timeout: float):
-            return {
-                "status": "PASS",
-                "execution_mode": "resume",
-                "execution_id": "e" * 32,
-                "deployed_git_sha": "a" * 40,
-                "pipeline_status": "SUCCESS",
-                "review_status": "NOT_RENDERED",
-                "run_volume": "volume",
-                "run_path": "/run",
-            }
-
-    call = Call({})
-
-    def spawn(*_args: object, **kwargs: object):
-        root_modes.append(bool(kwargs.get("enforce_budget")))
-        return call, module.time.monotonic(), None
-
-    monkeypatch.setattr(module, "_acquire_remote_source", acquire)
-    monkeypatch.setattr(module, "_spawn_recoverable_modal_call", spawn)
-    monkeypatch.setattr(module, "_cached_source_evidence", lambda: None)
-    monkeypatch.setitem(sys.modules, "modal", _modal(call))
-
-    result = module.run(render=False)
-
-    assert result["status"] == "PASS"
-    assert source_modes == [False]
-    assert root_modes == [False]
