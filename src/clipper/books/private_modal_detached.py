@@ -232,10 +232,10 @@ def poll(
         modal, client = private_modal.identify()
         journal.record("POLL_BEGIN", app_id=app_id)
         call = modal.FunctionCall.from_id(record["call_id"], client=client)
+        deadline = record["started_at"] + record["timeout_seconds"] + DEADLINE_MARGIN_SECONDS
         try:
             report, _unused = call.get(timeout=0)
         except TimeoutError:
-            deadline = record["started_at"] + record["timeout_seconds"] + DEADLINE_MARGIN_SECONDS
             if now() <= deadline:
                 journal.record("POLL_PENDING", app_id=app_id)
                 pending = True
@@ -245,11 +245,21 @@ def poll(
             require(not output.exists() and not output.is_symlink(), "checkpoint output exists")
             raw = None
             if isinstance(report, dict) and report.get("checkpoint_bytes"):
-                volume = modal.Volume.from_name(name, environment_name="main", client=client)
-                blob = _read_volume_file(volume, private_modal.VOLUME_CHECKPOINT)
-                raw = private_modal.decompress_checkpoint(blob)
-            result = private_modal.response(report, raw, run, identity)
-            journal.record("RESPONSE_VERIFIED", app_id=app_id, response=result)
+                try:
+                    volume = modal.Volume.from_name(name, environment_name="main", client=client)
+                    blob = _read_volume_file(volume, private_modal.VOLUME_CHECKPOINT)
+                except Exception:
+                    # A transport failure is not a verdict on the checkpoint: keep the
+                    # Volume and the App so a later poll can read it again, until the deadline.
+                    if now() > deadline:
+                        raise
+                    journal.record("VOLUME_READ_RETRYABLE", app_id=app_id)
+                    pending = True
+                else:
+                    raw = private_modal.decompress_checkpoint(blob)
+            if not pending:
+                result = private_modal.response(report, raw, run, identity)
+                journal.record("RESPONSE_VERIFIED", app_id=app_id, response=result)
             if raw is not None:
                 journal.record("CHECKPOINT_WRITE_BEGIN", app_id=app_id)
                 private_phase.persist_checkpoint(output, raw, result["checkpoint_sha256"])
