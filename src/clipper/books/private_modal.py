@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib
 import json
 import lzma
@@ -110,10 +111,10 @@ def close_client(client: Any) -> bool:
     return True
 
 
-def _remote_phase(
+def _execute_in_container(
     manifest: dict[str, Any], packet: bytes, checkpoint: bytes | None
 ) -> tuple[dict[str, object], bytes | None]:
-    """Reviewed image; workspace scope comes from the authenticated caller guard."""
+    """Source pin check plus the private phase; shared by both remote entry points."""
     import subprocess
     from pathlib import Path
 
@@ -134,6 +135,9 @@ def _remote_phase(
     ).returncode
     if head != manifest["commit"] or dirty:
         raise RuntimeError("remote source commit mismatch")
+    import os
+
+    os.environ["CLIPPER_QWEN_DEVICE"] = "cuda" if manifest["accelerator"] == "L4" else "cpu"
     report, raw = execute_private_phase(
         manifest,
         packet,
@@ -141,6 +145,15 @@ def _remote_phase(
         verified_commit=head,
         verified_workspace="mahmoud-bayoumi-mm",
     )
+    return report, raw
+
+
+def _remote_phase(
+    manifest: dict[str, Any], packet: bytes, checkpoint: bytes | None
+) -> tuple[dict[str, object], bytes | None]:
+    """Reviewed image; workspace scope comes from the authenticated caller guard."""
+    report, raw = _execute_in_container(manifest, packet, checkpoint)
+
     if raw is None:
         return report, None
     try:
@@ -164,8 +177,54 @@ def _remote_phase(
     return report, blob
 
 
-def factory(modal: Any, manifest: dict[str, Any]) -> tuple[Any, Any]:
-    """Pinned public source and dependencies; no local file upload or secret mount."""
+VOLUME_MOUNT = "/vol"
+VOLUME_PACKET = "packet.bin"
+VOLUME_CHECKPOINT = "checkpoint.bin"
+VOLUME_CHECKPOINT_SIZE_LIMIT = 256 * 1024 * 1024
+
+
+def volume_name(manifest: dict[str, Any]) -> str:
+    """Dedicated per-run Volume name derived from the reviewed manifest digest."""
+    return "clipper-private-" + content_fingerprint(manifest)[:40]
+
+
+def _remote_phase_volume(manifest: dict[str, Any], volume: str) -> tuple[dict[str, object], None]:
+    """Detached entry point: packet in and checkpoint out through the run's own Volume.
+
+    The return value is the small envelope only. The compressed checkpoint is written to
+    the Volume and committed before returning."""
+    from pathlib import Path
+
+    import modal
+
+    root = Path(VOLUME_MOUNT)
+    packet = (root / VOLUME_PACKET).read_bytes()
+    prior = root / "prior.bin"
+    checkpoint = prior.read_bytes() if prior.exists() else None
+    report, raw = _execute_in_container(manifest, packet, checkpoint)
+    if raw is not None:
+        blob = compress_checkpoint(raw)
+        temporary = root / (VOLUME_CHECKPOINT + ".tmp")
+        temporary.write_bytes(blob)
+        temporary.rename(root / VOLUME_CHECKPOINT)
+        # Restricted containers cannot call the API; the Volume is committed when the
+        # container exits (probe-verified), and the client verifies the sha before use.
+        with contextlib.suppress(Exception):
+            modal.Volume.from_name(volume).commit()
+    return report, None
+
+
+def factory(
+    modal: Any,
+    manifest: dict[str, Any],
+    *,
+    restrict_access: bool = True,
+    volume: Any = None,
+) -> tuple[Any, Any]:
+    """Pinned public source and dependencies; no local file upload or secret mount.
+
+    restrict_access=False is only for the detached launcher, whose spawned result must
+    leave the container through Modal's result blob path. Network stays blocked."""
     sha = manifest["commit"]
     require(private_phase.HEX40.fullmatch(sha) is not None, "invalid source commit")
     clone = (
@@ -174,6 +233,14 @@ def factory(modal: Any, manifest: dict[str, Any]) -> tuple[Any, Any]:
         f"git -C /opt/clipper checkout --detach {sha}; "
         f'test "$(git -C /opt/clipper rev-parse HEAD)" = {sha}; '
         'test -z "$(git -C /opt/clipper status --porcelain=v1 --untracked-files=all)"'
+    )
+    gpu = manifest["accelerator"] == "L4"
+    torch_install = (
+        # PyPI's torch 2.6.0 wheel carries its own CUDA 12.4 runtime libraries.
+        "python -m pip install --no-cache-dir torch==2.6.0"
+        if gpu
+        else "python -m pip install --no-cache-dir "
+        "--index-url https://download.pytorch.org/whl/cpu torch==2.6.0+cpu"
     )
     image = (
         modal.Image.debian_slim(python_version="3.11")
@@ -189,10 +256,7 @@ def factory(modal: Any, manifest: dict[str, Any]) -> tuple[Any, Any]:
             "huggingface_hub==0.36.2",
             "lm-format-enforcer==0.11.3",
         )
-        .run_commands(
-            "python -m pip install --no-cache-dir "
-            "--index-url https://download.pytorch.org/whl/cpu torch==2.6.0+cpu"
-        )
+        .run_commands(torch_install)
         .env({"PYTHONPATH": "/opt/clipper/src", "HF_HOME": "/opt/hf"})
         .run_commands(
             "python -c 'from clipper.books.private_modal import _remote_phase; "
@@ -203,14 +267,17 @@ def factory(modal: Any, manifest: dict[str, Any]) -> tuple[Any, Any]:
         .env({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
     )
     app = modal.App(include_source=False)
+    options: dict[str, Any] = {}
+    if volume is not None:
+        options["volumes"] = {VOLUME_MOUNT: volume}
     function = app.function(
         image=image,
         include_source=False,
         cpu=(4, 4),
         memory=(16384, 16384),
-        gpu=None,
+        gpu="L4" if gpu else None,
         block_network=True,
-        restrict_modal_access=True,
+        restrict_modal_access=restrict_access,
         single_use_containers=True,
         min_containers=0,
         max_containers=1,
@@ -219,7 +286,8 @@ def factory(modal: Any, manifest: dict[str, Any]) -> tuple[Any, Any]:
         startup_timeout=STARTUP_TIMEOUT,
         timeout=manifest["timeout_seconds"],
         scaledown_window=2,
-    )(_remote_phase)
+        **options,
+    )(_remote_phase if volume is None else _remote_phase_volume)
     return app, function
 
 
@@ -231,6 +299,13 @@ class Journal:
         self.manifest = manifest
         self.identity = content_fingerprint(manifest)
         self.sequence = 0
+        self.directory = self.directory_for(root, manifest)
+        self.directory.mkdir(mode=0o700, exist_ok=False)
+        self.record("CLAIMED")
+        self.sync(root)
+
+    @staticmethod
+    def directory_for(root: Path, manifest: dict[str, Any]) -> Path:
         # Exclude owner/config changes from dispatch uniqueness for this source phase.
         key = content_fingerprint(
             {
@@ -239,10 +314,25 @@ class Journal:
                 "phase": manifest["phase"],
             }
         )
-        self.directory = root / key
-        self.directory.mkdir(mode=0o700, exist_ok=False)
-        self.record("CLAIMED")
-        self.sync(root)
+        return root / key
+
+    @classmethod
+    def reopen(cls, root: Path, manifest: dict[str, Any]) -> Journal:
+        """Continue an existing claimed journal; never creates or re-claims."""
+        self = object.__new__(cls)
+        self.root = root
+        self.manifest = manifest
+        self.identity = content_fingerprint(manifest)
+        self.directory = cls.directory_for(root, manifest)
+        require(private_directory(self.directory), "existing private journal required")
+        numbers = [
+            int(path.stem)
+            for path in self.directory.glob("[0-9][0-9][0-9][0-9].json")
+            if path.stem.isdecimal()
+        ]
+        require(bool(numbers), "journal has no claim record")
+        self.sequence = max(numbers)
+        return self
 
     @staticmethod
     def sync(path: Path) -> None:

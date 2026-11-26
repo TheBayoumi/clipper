@@ -161,3 +161,25 @@ def test_missing_optional_qwen_runtime_fails_without_loading_weights(
             scripting._script_pipeline()
     finally:
         scripting._script_pipeline.cache_clear()
+
+
+def test_qwen_device_defaults_to_cpu_and_rejects_unknown(monkeypatch):
+    monkeypatch.delenv("CLIPPER_QWEN_DEVICE", raising=False)
+    assert scripting._qwen_device() == "cpu"
+    monkeypatch.setenv("CLIPPER_QWEN_DEVICE", "cuda")
+    assert scripting._qwen_device() == "cuda"
+    monkeypatch.setenv("CLIPPER_QWEN_DEVICE", "mps")
+    with pytest.raises(scripting.NicheVideoError):
+        scripting._qwen_device()
+
+
+def test_inputs_follow_cuda_model_but_cpu_inputs_are_untouched():
+    class Inputs:
+        def to(self, device):
+            return ("moved", device)
+
+    cuda = type("M", (), {"device": type("D", (), {"type": "cuda"})()})()
+    cpu = type("M", (), {"device": "cpu"})()
+    items = Inputs()
+    assert scripting._to_model_device(items, cpu) is items
+    assert scripting._to_model_device(items, cuda)[0] == "moved"

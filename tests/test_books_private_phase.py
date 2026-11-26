@@ -33,6 +33,7 @@ def _brief():
         "memory_mib": 16384,
         "timeout_seconds": 900,
         "resource_approval": "EXPLICIT_PRIVATE_CPU_PHASE",
+        "accelerator": "none",
     }
     packet = phase.pack(
         {

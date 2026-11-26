@@ -120,6 +120,13 @@ def unpack(packet: bytes) -> dict[str, bytes]:
     return files
 
 
+# Accelerator and the explicit owner approval marker must agree; neither is a cost limit.
+RESOURCE_APPROVALS = (
+    ("none", "EXPLICIT_PRIVATE_CPU_PHASE"),
+    ("L4", "EXPLICIT_PRIVATE_L4_PHASE"),
+)
+
+
 def validate_manifest(raw: object) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise PrivatePhaseError("manifest object required")
@@ -141,6 +148,7 @@ def validate_manifest(raw: object) -> dict[str, Any]:
             "memory_mib",
             "timeout_seconds",
             "resource_approval",
+            "accelerator",
         },
         "manifest fields",
     )
@@ -158,7 +166,7 @@ def validate_manifest(raw: object) -> dict[str, Any]:
         and raw["memory_mib"] == 16384
         and type(raw["timeout_seconds"]) is int
         and 60 <= raw["timeout_seconds"] <= 43200
-        and raw["resource_approval"] == "EXPLICIT_PRIVATE_CPU_PHASE",
+        and (raw["accelerator"], raw["resource_approval"]) in RESOURCE_APPROVALS,
         "manifest resource bounds or approval",
     )
     require(raw["phase"] in ("brief", "script"), "manifest phase")

@@ -515,6 +515,24 @@ def _public_book_context(*, local_files_only: bool = False) -> tuple[Any, int]:
         raise PinnedQwenSnapshotError("pinned public context preflight unavailable") from exc
 
 
+def _qwen_device() -> str:
+    """Pinned Qwen device: CPU unless a reviewed private phase selects CUDA."""
+    device = os.environ.get("CLIPPER_QWEN_DEVICE", "cpu")
+    if device not in ("cpu", "cuda"):
+        raise NicheVideoError("unsupported pinned Qwen device")
+    return device
+
+
+def _device_type(model: Any) -> str:
+    device = getattr(model, "device", "cpu")
+    return str(getattr(device, "type", device))
+
+
+def _to_model_device(inputs: Any, model: Any) -> Any:
+    """Tokenized tensors follow the model; CPU inputs stay untouched."""
+    return inputs if _device_type(model) == "cpu" else inputs.to(model.device)
+
+
 @lru_cache(maxsize=1)
 def _script_pipeline() -> tuple[Any, Any]:
     """Lazy, single initialization using an exact local Qwen snapshot path."""
@@ -537,6 +555,10 @@ def _script_pipeline() -> tuple[Any, Any]:
         snapshot, local_files_only=True, dtype="auto"
     ).eval()
     _public_cpu_smoke_phase("cpu_weight_loading_complete")
+    if _qwen_device() == "cuda":
+        if not torch.cuda.is_available():
+            raise NicheVideoError("CUDA device requested but unavailable")
+        model = model.to("cuda")
     return model, tokenizer
 
 
@@ -576,6 +598,7 @@ def _run_pinned_qwen(
         return_tensors="pt",
     )
     _public_cpu_smoke_phase("real_generation_start")
+    inputs = _to_model_device(inputs, model)
     with torch.inference_mode():
         output = model.generate(
             **inputs,
@@ -786,8 +809,8 @@ def _local_chapter_completion(request: dict[str, object]) -> PinnedQwenRawReceip
     gc.collect()
     torch = importlib.import_module("torch")
     model, tokenizer = _script_pipeline()
-    if str(model.device) != "cpu":
-        raise NicheVideoError("chapter requires CPU-resident pinned Qwen weights")
+    if _device_type(model) != _qwen_device():
+        raise NicheVideoError("chapter requires pinned Qwen weights on the configured device")
     torch.manual_seed(42)
     inputs = tokenizer.apply_chat_template(
         request["messages"],
@@ -810,6 +833,7 @@ def _local_chapter_completion(request: dict[str, object]) -> PinnedQwenRawReceip
             raise NicheVideoError("chapter generator rendered tokens differ from reserved input")
     if inputs["input_ids"].shape[-1] + cast(int, request["max_new_tokens"]) > MAX_CHAPTER_CONTEXT:
         raise NicheVideoError("chapter final token context differs from preflight")
+    inputs = _to_model_device(inputs, model)
     with torch.inference_mode():
         output = model.generate(
             **inputs,
@@ -866,8 +890,10 @@ def _local_book_generate(
     public_tokenizer, context_limit = _public_book_context()
     constrained.check_prompt_context(request, public_tokenizer, context_limit)
     model, _tokenizer = _script_pipeline()
-    if str(model.device) != "cpu":
-        raise NicheVideoError("local book completion requires CPU-resident pinned Qwen weights")
+    if _device_type(model) != _qwen_device():
+        raise NicheVideoError(
+            "local book completion requires pinned Qwen weights on the configured device"
+        )
     return _run_pinned_qwen(request, normalize_script=False, capture_receipt=capture_receipt)
 
 

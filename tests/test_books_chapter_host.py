@@ -620,7 +620,7 @@ def test_pinned_chapter_cpu_adapter_generate_eos_and_memory_error_paths_are_mode
         scripting._local_chapter_completion(request)
     assert incomplete.value.raw == expected_raw
     model.device = "cuda"
-    with pytest.raises(scripting.NicheVideoError, match="CPU"):
+    with pytest.raises(scripting.NicheVideoError, match="configured device"):
         scripting._local_chapter_completion(request)
     model.device = "cpu"
     tokenizer.length = 40960
