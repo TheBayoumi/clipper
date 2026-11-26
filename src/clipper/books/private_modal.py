@@ -219,7 +219,7 @@ class Journal:
         self.sync(self.directory)
 
 
-def observe(app_id: str) -> bool:
+def observe(app_id: str, *, timeout: float = 8.0) -> bool:
     """Exact positive terminal evidence; no absent-ID success."""
     require(APP.fullmatch(app_id) is not None, "invalid App ID")
     proc = subprocess.run(
@@ -227,7 +227,7 @@ def observe(app_id: str) -> bool:
         capture_output=True,
         text=True,
         check=True,
-        timeout=8,
+        timeout=timeout,
     )
     rows = json.loads(proc.stdout)
     require(isinstance(rows, list), "invalid app inventory")
@@ -250,21 +250,36 @@ def cleanup(app_id: str, journal: Journal) -> bool:
         _, observer = identify()
         if not close_client(observer):
             raise private_phase.PrivatePhaseError("observer client close failed")
+        deadline = time.monotonic() + 45.0
         journal.record("OBSERVE_BEGIN", app_id=app_id)
-        if observe(app_id):
+        if observe(app_id, timeout=min(8.0, deadline - time.monotonic())):
             journal.record("STOPPED_ZERO_TASKS", app_id=app_id)
             return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise private_phase.PrivatePhaseError("cleanup deadline exhausted")
         journal.record("EXACT_STOP_BEGIN", app_id=app_id)
-        proc = subprocess.run(
-            [sys.executable, "-m", "modal", "app", "stop", "-y", "--env", "main", app_id],
-            capture_output=True,
-            check=False,
-            timeout=8,
-        )
-        journal.record("EXACT_STOP_RETURNED", app_id=app_id, returncode=proc.returncode)
-        for delay in (0.5, 1.0, 2.0):
-            time.sleep(delay)
-            if observe(app_id):
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "modal", "app", "stop", "-y", "--env", "main", app_id],
+                capture_output=True,
+                check=False,
+                timeout=min(8.0, remaining),
+            )
+        except subprocess.TimeoutExpired:
+            journal.record("EXACT_STOP_TIMEOUT_AMBIGUOUS", app_id=app_id)
+        else:
+            journal.record("EXACT_STOP_RETURNED", app_id=app_id, returncode=proc.returncode)
+        # A timed-out stop can have succeeded remotely. Never submit a second stop.
+        for delay in (1.0, 2.0, 4.0, 8.0, 8.0, 8.0):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(delay, remaining))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if observe(app_id, timeout=min(8.0, remaining)):
                 journal.record("STOPPED_ZERO_TASKS", app_id=app_id)
                 return True
     except Exception:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -224,5 +225,51 @@ def test_cleanup_one_stop_without_terminal_state(
     commands = [call.args[0] for call in run.call_args_list]
     assert all(command[:3] == [sys.executable, "-m", "modal"] for command in commands)
     assert len([command for command in commands if command[4] == "stop"]) == 1
-    assert sleep.call_count == 3
+    assert sleep.call_count == 6
     client.close.assert_called_once()
+
+
+@pytest.mark.parametrize("terminal", ["stopped", "running", "absent"])
+def test_stop_timeout_reobserves_exact_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal: str
+) -> None:
+    manifest, _ = _brief()
+    journal = private_modal.Journal(tmp_path, manifest)
+    app_id = "ap-" + "a" * 22
+    monkeypatch.setattr(private_modal, "identify", lambda: (Mock(), Mock()))
+    clock = [0.0]
+    commands = []
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    def run(command, **kwargs):
+        commands.append(command)
+        timeout = kwargs["timeout"]
+        assert 0 < timeout <= 8.0
+        assert clock[0] + timeout <= 45.0
+        if command[4] == "stop":
+            clock[0] += timeout
+            raise subprocess.TimeoutExpired(command, timeout)
+        clock[0] += min(1.0, timeout)
+        if len(commands) == 1 or terminal == "running":
+            rows = [{"app_id": app_id, "state": "running", "tasks": "1"}]
+        elif terminal == "absent":
+            rows = []
+        else:
+            rows = [{"app_id": app_id, "state": "stopped", "tasks": "0"}]
+        return Mock(stdout=json.dumps(rows))
+
+    monkeypatch.setattr(private_modal.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(private_modal.time, "sleep", sleep)
+    monkeypatch.setattr(private_modal.subprocess, "run", run)
+    assert private_modal.cleanup(app_id, journal) is (terminal == "stopped")
+    assert clock[0] <= 45.0
+    stops = [command for command in commands if command[4] == "stop"]
+    assert len(stops) == 1
+    assert stops[0][-1] == app_id
+    events = [json.loads(path.read_bytes()) for path in journal.directory.glob("*.json")]
+    assert any(event["event"] == "EXACT_STOP_TIMEOUT_AMBIGUOUS" for event in events)
+    assert any(event["event"] == "STOPPED_ZERO_TASKS" for event in events) is (
+        terminal == "stopped"
+    )

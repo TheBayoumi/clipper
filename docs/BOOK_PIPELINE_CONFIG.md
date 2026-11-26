@@ -280,3 +280,8 @@ separate 180-second result/transport margin beyond the phase timeout.
 The exclusive dispatch claim is permanent on failure or uncertainty; any
 manual operator reset requires explicit new approval and reconciliation of
 the original exact App/Call, never automatic retry.
+
+Cleanup uses a 45-second monotonic observation/stop budget after workspace
+verification, with bounded CLI calls and increasing backoff. A timed-out exact
+stop is recorded as ambiguous; the same App is reobserved without resubmitting
+the stop. Missing or malformed exact-App evidence remains unverified.
