@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import lzma
 import os
 import re
 import subprocess
@@ -23,6 +24,32 @@ CALL = re.compile(r"fc-[A-Za-z0-9_-]{3,128}")
 SOURCE = "https://github.com/TheBayoumi/clipper.git"
 STARTUP_TIMEOUT = 120
 RESULT_TRANSPORT_MARGIN = 180
+# Modal returns values above 2 MiB through its API, which restricted containers cannot call.
+INLINE_RESULT_LIMIT = 1_900_000
+COMPRESSED_MAGIC = b"CXZ1"
+
+
+def compress_checkpoint(raw: bytes) -> bytes:
+    return COMPRESSED_MAGIC + lzma.compress(raw, preset=9 | lzma.PRESET_EXTREME)
+
+
+def decompress_checkpoint(blob: bytes) -> bytes:
+    require(
+        isinstance(blob, bytes) and blob.startswith(COMPRESSED_MAGIC),
+        "invalid compressed checkpoint",
+    )
+    decoder = lzma.LZMADecompressor()
+    try:
+        raw = decoder.decompress(
+            blob[len(COMPRESSED_MAGIC) :], max_length=private_phase.MAX_PACKET + 1
+        )
+    except lzma.LZMAError:
+        raise private_phase.PrivatePhaseError("invalid compressed checkpoint") from None
+    require(
+        decoder.eof and not decoder.unused_data and len(raw) <= private_phase.MAX_PACKET,
+        "invalid compressed checkpoint",
+    )
+    return raw
 
 
 def require(ok: bool, reason: str) -> None:
@@ -106,13 +133,30 @@ def _remote_phase(
     ).returncode
     if head != manifest["commit"] or dirty:
         raise RuntimeError("remote source commit mismatch")
-    return execute_private_phase(
+    report, raw = execute_private_phase(
         manifest,
         packet,
         checkpoint,
         verified_commit=head,
         verified_workspace="mahmoud-bayoumi-mm",
     )
+    if raw is None:
+        return report, None
+    blob = compress_checkpoint(raw)
+    if len(blob) > INLINE_RESULT_LIMIT:
+        # Fail closed: a larger result would need Modal API access this container lacks.
+        return {
+            "status": "PRIVATE_PHASE_FAILED_NO_RETRY",
+            "manifest_sha256": report.get("manifest_sha256"),
+            "owner": report.get("owner"),
+            "publish_eligible": False,
+            "retention": "OUTPUT_NOT_RETAINED",
+            "checkpoint_sha256": None,
+            "checkpoint_bytes": 0,
+            "omitted_members": 0,
+            "inventory_truncated": True,
+        }, None
+    return report, blob
 
 
 def factory(modal: Any, manifest: dict[str, Any]) -> tuple[Any, Any]:
@@ -434,9 +478,10 @@ def _dispatch_qualified(
             call_id = candidate
             journal.record("CALL_ID", app_id=app_id, call_id=call_id)
             journal.record("GET_BEGIN", app_id=app_id, call_id=call_id)
-            report, raw = call.get(
+            report, blob = call.get(
                 timeout=run["timeout_seconds"] + STARTUP_TIMEOUT + RESULT_TRANSPORT_MARGIN
             )
+            raw = None if blob is None else decompress_checkpoint(blob)
             result = response(report, raw, run, identity)
             journal.record("RESPONSE_VERIFIED", app_id=app_id, call_id=call_id, response=result)
             if raw is not None:

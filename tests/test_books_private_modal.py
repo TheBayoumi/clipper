@@ -118,7 +118,10 @@ def test_dispatch_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fau
     function = Mock()
     call = Mock(object_id="fc-fixture")
     function.spawn.return_value = call
-    call.get.return_value = (report, raw)
+    call.get.return_value = (
+        report,
+        None if raw is None else private_modal.compress_checkpoint(raw),
+    )
     if fault == "spawn":
         function.spawn.side_effect = TimeoutError("ambiguous")
     if fault == "call_journal":

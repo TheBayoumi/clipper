@@ -285,3 +285,9 @@ Cleanup uses a 45-second monotonic observation/stop budget after workspace
 verification, with bounded CLI calls and increasing backoff. A timed-out exact
 stop is recorded as ambiguous; the same App is reobserved without resubmitting
 the stop. Missing or malformed exact-App evidence remains unverified.
+
+Checkpoints cross the restricted Modal container boundary LZMA-compressed with
+a 1.9 MB inline limit. Larger compressed checkpoints fail closed with
+`PRIVATE_PHASE_FAILED_NO_RETRY` and `OUTPUT_NOT_RETAINED`, without a Volume
+or relaxing `restrict_modal_access=True`. The caller performs bounded
+decompression before existing checkpoint identity and checksum verification.

@@ -94,7 +94,9 @@ def test_remote_worker_requires_exact_image_commit_before_consumer(monkeypatch, 
             host._remote_phase(manifest, packet, None)
         consumer.assert_not_called()
     else:
-        assert host._remote_phase(manifest, packet, None) == consumer.return_value
+        report, blob = host._remote_phase(manifest, packet, None)
+        assert report == consumer.return_value[0]
+        assert host.decompress_checkpoint(blob) == b"checkpoint"
         assert consumer.call_args.kwargs == {
             "verified_commit": manifest["commit"],
             "verified_workspace": phase.WORKSPACE,
@@ -142,3 +144,41 @@ def test_private_cli_only_preflights_and_never_opens_provider(
     assert report["status"] == ("PRIVATE_PHASE_BLOCKED_NO_RETRY" if execute else "PREFLIGHT_ONLY")
     forbidden.assert_not_called()
     assert not (tmp_path / "output.bin").exists()
+
+
+def test_remote_result_fails_closed_when_compressed_checkpoint_exceeds_inline_limit(monkeypatch):
+    manifest, packet = _brief()
+    run = Mock(side_effect=[Mock(stdout=manifest["commit"] + "\n"), Mock(returncode=0)])
+    monkeypatch.setattr(host.subprocess, "run", run)
+    monkeypatch.setattr(host, "INLINE_RESULT_LIMIT", 8)
+    report = {"status": "BRIEF_READY_UNREVIEWED", "manifest_sha256": "m", "owner": "o"}
+    monkeypatch.setattr(phase, "execute_private_phase", Mock(return_value=(report, b"x" * 1000)))
+    result, blob = host._remote_phase(manifest, packet, None)
+    assert blob is None
+    assert result["status"] == "PRIVATE_PHASE_FAILED_NO_RETRY"
+    assert result["retention"] == "OUTPUT_NOT_RETAINED"
+    assert result["checkpoint_bytes"] == 0
+
+
+def test_remote_result_without_checkpoint_passes_through(monkeypatch):
+    manifest, packet = _brief()
+    run = Mock(side_effect=[Mock(stdout=manifest["commit"] + "\n"), Mock(returncode=0)])
+    monkeypatch.setattr(host.subprocess, "run", run)
+    report = {"status": "PRIVATE_PHASE_FAILED_NO_RETRY"}
+    monkeypatch.setattr(phase, "execute_private_phase", Mock(return_value=(report, None)))
+    assert host._remote_phase(manifest, packet, None) == (report, None)
+
+
+@pytest.mark.parametrize(
+    "blob",
+    [b"", b"CXZ1", b"CXZ1not-xz", host.compress_checkpoint(b"a") + b"junk", b"XXXX" + b"\0" * 8],
+)
+def test_decompress_checkpoint_rejects_malformed_blobs(blob):
+    with pytest.raises(phase.PrivatePhaseError, match="invalid compressed checkpoint"):
+        host.decompress_checkpoint(blob)
+
+
+def test_decompress_checkpoint_rejects_oversize_expansion(monkeypatch):
+    monkeypatch.setattr(phase, "MAX_PACKET", 100)
+    with pytest.raises(phase.PrivatePhaseError, match="invalid compressed checkpoint"):
+        host.decompress_checkpoint(host.compress_checkpoint(b"\0" * 1000))
