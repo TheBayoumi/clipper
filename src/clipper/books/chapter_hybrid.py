@@ -379,7 +379,11 @@ def reject_template_echo(raw: object) -> None:
     if isinstance(raw, dict):
         for key in ("hypothesis", "argument"):
             value = raw.get(key)
-            if isinstance(value, str) and value.lstrip().startswith("<") and value.rstrip().endswith(">"):
+            if (
+                isinstance(value, str)
+                and value.lstrip().startswith("<")
+                and value.rstrip().endswith(">")
+            ):
                 raise HybridStop("hybrid response repeated a contract placeholder")
 
 
