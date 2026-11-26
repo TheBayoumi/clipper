@@ -44,6 +44,16 @@ def configure_books_parser(subparsers: Any) -> None:
     pipeline_plan.add_argument("--config", type=Path, required=True)
     pipeline_plan.add_argument("--artifact-root", type=Path, required=True)
 
+    replay = actions.add_parser(
+        "pipeline-replay", help="private configured native replay, no inference"
+    )
+    replay.add_argument("--config", type=Path, required=True)
+    replay.add_argument("--selected-source", type=Path, required=True)
+    replay.add_argument("--section-manifest", type=Path, required=True)
+    replay.add_argument("--artifact-root", type=Path, required=True)
+    replay.add_argument("--review-file", type=Path)
+    replay.add_argument("--expected-brief-identity")
+
     discover = actions.add_parser(
         "candidates", help="resolve reviewed title/author/edition without network"
     )
@@ -218,6 +228,29 @@ def _run_legacy_private_evaluation(
 
 
 def dispatch_books(args: argparse.Namespace) -> int:
+    if args.books_action == "pipeline-replay":
+        from .configured_replay import replay_configured
+
+        try:
+            with (
+                tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as sink,
+                redirect_stdout(sink),
+                redirect_stderr(sink),
+            ):
+                report = replay_configured(
+                    config_path=args.config,
+                    selected_source=args.selected_source,
+                    section_manifest=args.section_manifest,
+                    artifact_root=args.artifact_root,
+                    review_file=args.review_file,
+                    expected_brief_identity=args.expected_brief_identity,
+                )
+        except Exception:
+            print(json.dumps({"status": "CONFIGURED_REPLAY_FAILED_CLOSED", "inference_calls": 0}))
+            return 2
+        print(json.dumps(report, sort_keys=True))
+        return 0
+
     if args.books_action == "pipeline-plan":
         from .pipeline_plan import plan_file
 

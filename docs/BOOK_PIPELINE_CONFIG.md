@@ -148,3 +148,19 @@ descriptor, but the native evaluator does not yet implement that descriptor brid
 text stages are provenance bindings for exact native cache verification, never
 permission to invoke them. Human review disabled means reuse a matching actual
 attestation, never waive the review requirement.
+
+## Native replay CLI
+
+`clipper books pipeline-replay --config PRIVATE/config.json --selected-source
+PRIVATE/chapter.json --section-manifest PRIVATE/sections.json --artifact-root PRIVATE`
+consumes the configuration in the existing hybrid evaluator. Disable all compute
+stages in this replay-only command; source validation stays enabled. For a script
+replay, also pass `--review-file` and `--expected-brief-identity`. Only retained
+actual-Qwen native artifacts with matching provenance can pass; injected test
+artifacts do not become actual-model output. Missing caches fail closed without
+inference, model downloads or network tokenizer fallback.
+
+This is an actual configuration-consuming cache replay entrypoint, not permission
+to generate missing work. Real inference still needs the separately verified
+private execution host and resource approval. No Modal launch or private transfer
+bridge is implemented by this command.
