@@ -530,7 +530,11 @@ def _device_type(model: Any) -> str:
 
 def _to_model_device(inputs: Any, model: Any) -> Any:
     """Tokenized tensors follow the model; CPU inputs stay untouched."""
-    return inputs if _device_type(model) == "cpu" else inputs.to(model.device)
+    device = getattr(model, "device", "cpu")
+    kind = getattr(device, "type", device)
+    if not isinstance(kind, str) or kind == "cpu":
+        return inputs
+    return inputs.to(device)
 
 
 @lru_cache(maxsize=1)
