@@ -195,7 +195,7 @@ def _remote_phase_volume(manifest: dict[str, Any], volume: str) -> tuple[dict[st
     the Volume and committed before returning."""
     from pathlib import Path
 
-    import modal
+    modal = importlib.import_module("modal")
 
     root = Path(VOLUME_MOUNT)
     packet = (root / VOLUME_PACKET).read_bytes()
