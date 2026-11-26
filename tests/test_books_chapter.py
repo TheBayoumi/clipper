@@ -16,7 +16,7 @@ from unittest.mock import Mock
 import pytest
 from test_books_whole_book import ingested
 
-from clipper.books import chapter, cli, evaluation, narration, scripting, selection, whole_book
+from clipper.books import chapter, chapter_hybrid, cli, evaluation, narration, scripting, selection, whole_book
 from clipper.books.orchestrator import BookOrchestrator
 from clipper.stage_contracts import content_fingerprint
 
@@ -1948,6 +1948,26 @@ def test_healthy_rejected_chapter_first_attempt_retries_with_distinct_claims(
     replay, replay_id, _, replay_attempts = chapter._stage(*args, lambda x: x, answers)
     assert (replay, replay_id, replay_attempts) == (first, identity, 0)
     assert answers.call_count == 2
+
+
+def test_hybrid_validator_rejection_allows_the_second_recorded_attempt(tmp_path: Path) -> None:
+    root = tmp_path / "private"
+    answers = Mock(side_effect=['{"wrapped":true}', '{"value":"accepted synthetic"}'])
+
+    def validator(value: object) -> dict:
+        assert isinstance(value, dict)
+        if "wrapped" in value:
+            raise chapter_hybrid.HybridStop("synthetic hybrid rejection")
+        return value
+
+    args = (root, "brief", {"fixture": "hybrid-rejection-retry"}, _plan())
+    result, _identity, _origin, attempts = chapter._stage(*args, validator, answers)
+    assert result == {"value": "accepted synthetic"}
+    assert attempts == 2
+    directory = next((root / "brief").iterdir())
+    failed = json.loads((directory / "failed-1.json").read_bytes())
+    assert failed["status"] == "SCHEMA_OR_SOURCE_REJECTED"
+    assert failed["validation_evidence"]["failure_type"] == "HybridStop"
 
 
 @pytest.mark.parametrize("envelope", ["claim", "raw", "validated"])

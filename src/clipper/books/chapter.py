@@ -1140,6 +1140,9 @@ def _verified_rejected_attempt(
                     "KeyError",
                     "RecursionError",
                     "ChapterStop",
+                    # Hybrid validators raise HybridStop (a ValueError subclass); without
+                    # it a first rejection could never be followed by the second attempt.
+                    "HybridStop",
                 }
                 or not isinstance(evidence["failure_sha256"], str)
                 or re.fullmatch(r"[0-9a-f]{64}", evidence["failure_sha256"]) is None

@@ -212,6 +212,74 @@ def producer_identity(
     }
 
 
+_STAGE_GUIDANCE = {
+    "argument": (
+        "Each source_links item is one object with exactly id, start, end and role. "
+        "id is an id taken from original_source. start and end are character offsets "
+        "inside that unit's own text, with 0 <= start < end <= the unit's text length "
+        "and end - start <= 700. role is exactly one of ASSERTION, AUTHOR_EXAMPLE, "
+        "COUNTEREXAMPLE or QUALIFICATION. Link counterexamples and author "
+        "qualifications whenever the source contains them, not only assertions."
+    ),
+}
+
+
+def _json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+_INPUT_MARK = "INPUT (JSON, read-only source material):\n"
+_TASK_MARK = "\n\nTASK:"
+
+
+def input_payload(messages: list[dict[str, str]]) -> dict[str, Any]:
+    """The input object of a hybrid request (the response contract is stated in prose)."""
+    content = messages[1]["content"]
+    start = content.index(_INPUT_MARK) + len(_INPUT_MARK)
+    value = json.loads(content[start : content.index(_TASK_MARK, start)])
+    if not isinstance(value, dict):
+        raise HybridStop("hybrid request input is malformed")
+    return value
+
+
+def _messages(stage: str, payload: dict[str, object]) -> list[dict[str, str]]:
+    """Source first, then a plain-language task with the answer shape read last.
+
+    The shape is not a JSON key of the input, so a small model has no slot to fill in
+    except its own answer. Top-level key names are stated in prose.
+    """
+    data = dict(payload)
+    contract = data.pop("response_contract", None)
+    system = (
+        "You are preparing source-driven chapter evidence, not extracting lessons. "
+        "An argument draft is revisable. Preserve omissions, contradictions, "
+        "counterexamples, causal links, provenance and author qualifications. "
+        "Return one strict JSON object; never invent original-source quotes. "
+        f"This request is for the {stage} step. "
+        "No conclusions are approved without human review."
+    )
+    if isinstance(contract, dict):
+        keys = ", ".join(sorted(contract))
+        shape = (
+            f"Reply with ONE JSON object whose top-level keys are exactly: {keys}. "
+            "Put your answer directly at the top level. Do not wrap it in another "
+            "object and do not repeat the input or these instructions. Shape of each "
+            f"key (angle-bracket text is a description to replace, never to copy): {_json(contract)}"
+        )
+    else:
+        shape = (
+            "Reply with ONE JSON object and nothing else. Do not repeat the input or "
+            f"these instructions. Required content: {contract}"
+        )
+    guidance = _STAGE_GUIDANCE.get(stage, "")
+    user = (
+        f"{_INPUT_MARK}{_json(data)}{_TASK_MARK} write the {stage} answer for the input above.\n"
+        f"{shape}\n{guidance}\nNow write the JSON object."
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+
 def request(
     stage: str,
     payload: dict[str, object],
@@ -241,20 +309,7 @@ def request(
         or not producer_identity
     ):
         raise HybridStop("hybrid stage capacity or producer identity is invalid")
-    message = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are preparing source-driven chapter evidence, not extracting lessons. "
-                "An argument draft is revisable. Preserve omissions, contradictions, "
-                "counterexamples, causal links, provenance and author qualifications. "
-                "Return one strict JSON object; never invent original-source quotes. "
-                f"Stage: {stage}. No conclusions are approved without human review."
-            ),
-        },
-        {"role": "user", "content": message},
-    ]
+    messages = _messages(stage, payload)
     if len(_canonical(messages)) > MAX_REQUEST_BYTES:
         raise HybridStop("hybrid complete request exceeds finite byte cap")
     try:

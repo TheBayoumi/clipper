@@ -14,7 +14,7 @@ import zipfile
 from dataclasses import replace
 from pathlib import Path
 
-from clipper.books import acquisition, evaluation, selected_scope, whole_book
+from clipper.books import acquisition, chapter_hybrid, evaluation, selected_scope, whole_book
 from clipper.books.orchestrator import BookOrchestrator
 
 BASE = Path(__file__).resolve().parents[1] / "niches/book-source-candidates-v1.json"
@@ -161,7 +161,7 @@ def _selected_hybrid_source(
 
 
 def _injected_hybrid_response(kind: str, request: dict[str, object]) -> str:
-    context = json.loads(request["messages"][1]["content"])
+    context = chapter_hybrid.input_payload(request["messages"])  # type: ignore[arg-type]
     if kind == "argument":
         source = next(item for item in context["original_source"] if item[1] == "text")
         return json.dumps(
@@ -222,7 +222,7 @@ def _injected_hybrid_response(kind: str, request: dict[str, object]) -> str:
 
 
 def _hybrid_creative_output(kind: str, request: dict[str, object]) -> str:
-    data = json.loads(request["messages"][1]["content"])
+    data = chapter_hybrid.input_payload(request["messages"])  # type: ignore[arg-type]
     if kind == "adaptation":
         return json.dumps(
             {

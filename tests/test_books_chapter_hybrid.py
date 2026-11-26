@@ -2933,3 +2933,61 @@ def test_configured_auto_output_budget_reaches_every_brief_request(
     assert waiting["status"] == "BRIEF_READY_UNREVIEWED"
     assert {kind for kind, _ in seen} == {"argument", "audit", "reconcile"}
     assert {budget for _, budget in seen} == {expected}
+
+
+_ARGUMENT_CONTRACT = {
+    "hypothesis": hybrid.HYPOTHESIS_PLACEHOLDER,
+    "questions": [hybrid.QUESTION_PLACEHOLDER],
+    "source_links": [{"id": "<id>", "start": "<n>", "end": "<n>", "role": "<role>"}],
+}
+
+
+def _argument_request(contract: object = _ARGUMENT_CONTRACT) -> dict[str, object]:
+    payload = {
+        "schema": hybrid.ARGUMENT_SCHEMA,
+        "original_source": hybrid.projection(hybrid.validate_ledger(_ledger())),
+        "response_contract": contract,
+    }
+    request, _key, _count = hybrid.request(
+        "argument",
+        payload,
+        output_tokens=4096,
+        token_count=lambda _messages: 7968,
+        producer_identity={"schema": "runtime-v1", "runtime": "CPU", "producer": "a" * 64},
+    )
+    return request
+
+
+def test_hybrid_prompt_reads_the_source_first_and_the_task_last() -> None:
+    request = _argument_request()
+    system, user = (message["content"] for message in request["messages"])  # type: ignore[index]
+    assert "argument step" in system
+    assert "Stage:" not in system
+    # The shape is prose after the source, not a JSON key a model can fill in.
+    assert user.index("INPUT (JSON") < user.index("TASK:") < user.index("hypothesis")
+    assert "top-level keys are exactly: hypothesis, questions, source_links" in user
+    assert "Do not wrap it in another object" in user
+    assert user.rstrip().endswith("Now write the JSON object.")
+    assert "COUNTEREXAMPLE" in user and "end - start <= 700" in user
+    parsed = hybrid.input_payload(request["messages"])  # type: ignore[arg-type]
+    assert "response_contract" not in parsed
+    assert parsed["schema"] == hybrid.ARGUMENT_SCHEMA
+    assert parsed["original_source"] == hybrid.projection(hybrid.validate_ledger(_ledger()))
+
+
+def test_hybrid_prompt_states_a_prose_contract_for_creative_stages() -> None:
+    request = _argument_request("Existing chapter adaptation JSON: throughline, beats.")
+    user = request["messages"][1]["content"]  # type: ignore[index]
+    assert "Required content: Existing chapter adaptation JSON: throughline, beats." in user
+
+
+def test_wrapped_answer_in_the_contract_slot_is_still_rejected_as_an_echo() -> None:
+    ledger = _ledger()
+    wrapped = {"stage": "argument", "response_contract": dict(_ARGUMENT_CONTRACT)}
+    with pytest.raises(hybrid.HybridStop, match="echoed the request contract"):
+        hybrid.validate_argument(wrapped, ledger)
+
+
+def test_input_payload_rejects_a_malformed_request() -> None:
+    with pytest.raises(ValueError):
+        hybrid.input_payload([{"role": "system", "content": "s"}, {"role": "user", "content": "x"}])
