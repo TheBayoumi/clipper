@@ -164,3 +164,35 @@ This is an actual configuration-consuming cache replay entrypoint, not permissio
 to generate missing work. Real inference still needs the separately verified
 private execution host and resource approval. No Modal launch or private transfer
 bridge is implemented by this command.
+
+
+## Private phase packet boundary (not a launch command)
+
+The `clipper.books.private_phase` module defines a bounded binary packet,
+reviewed phase manifest, restore/collect functions and the worker consumer
+`execute_private_phase`. The packet carries only explicit selected source,
+section manifest, configuration and optional review bytes. The separate
+checkpoint contains allowlisted native evidence, not a mounted repository.
+The worker uses the configured hybrid evaluator, not a synthetic launcher.
+
+The manifest binds exact commit, workspace, configuration, source, section,
+phase, checkpoint, review and brief identities plus owner and resource bounds.
+Four CPU cores and 16 GiB are candidate limits, not measured performance.
+The timeout is a finite platform phase bound, not a whole-campaign deadline.
+
+The intended caller is an authenticated private SDK client. This commit does
+not supply that client, authenticate credentials, independently establish
+workspace identity, reserve a durable dispatch claim, create an App/Function,
+or verify teardown. The manifest approval field is a required declaration,
+not authenticated authority by itself. Do not call the worker as a standalone
+launch route. The future launcher must establish these prerequisites before
+dispatch and bind the actual App/Call identity to durable owner evidence.
+The existing Actions secret must not receive private book bytes or be exported.
+
+The caller can use `pack`, `preflight` and `persist_checkpoint` offline.
+Checkpoint output must be durably saved and verified before remote teardown.
+An owner-only Drive backup is a separate caller operation, not an in-container
+backup. The worker returns a private review packet at the brief boundary and
+native script evidence after review; a failed phase may return partial evidence
+with a no-retry status. Platform termination can still prevent output return.
+No automatic retry or recovery of an ambiguous remote invocation is authorized.
