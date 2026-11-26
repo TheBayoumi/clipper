@@ -370,21 +370,32 @@ def _span(
 
 
 _ECHO_KEYS = frozenset({"response_contract", "schema", "stage", "input", "original_source"})
+HYPOTHESIS_PLACEHOLDER = "<your own revisable argument of this chapter, as text>"
+QUESTION_PLACEHOLDER = "<one disputed, source-grounded question per item>"
+
+
+def _is_placeholder(value: object) -> bool:
+    """True for a whole angle-bracket contract token or a known placeholder prefix."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if text.startswith((HYPOTHESIS_PLACEHOLDER, QUESTION_PLACEHOLDER)):
+        return True
+    return text.startswith("<") and text.endswith(">") and ">" not in text[1:-1]
 
 
 def reject_template_echo(raw: object) -> None:
     """Reject a response that repeats the request/contract instead of answering."""
-    if isinstance(raw, dict) and _ECHO_KEYS & set(raw):
+    if not isinstance(raw, dict):
+        return
+    if _ECHO_KEYS & set(raw):
         raise HybridStop("hybrid response echoed the request contract instead of answering")
-    if isinstance(raw, dict):
-        for key in ("hypothesis", "argument"):
-            value = raw.get(key)
-            if (
-                isinstance(value, str)
-                and value.lstrip().startswith("<")
-                and value.rstrip().endswith(">")
-            ):
-                raise HybridStop("hybrid response repeated a contract placeholder")
+    texts = [raw.get("hypothesis"), raw.get("argument")]
+    questions = raw.get("questions")
+    if isinstance(questions, list):
+        texts.extend(questions)
+    if any(_is_placeholder(value) for value in texts):
+        raise HybridStop("hybrid response repeated a contract placeholder")
 
 
 def validate_argument(raw: object, ledger: dict[str, Any]) -> dict[str, Any]:

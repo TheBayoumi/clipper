@@ -2550,8 +2550,8 @@ def evaluate_hybrid_chapter(
             "ledger_sha256": ledger["ledger_sha256"],
             "original_source": projection,
             "response_contract": {
-                "hypothesis": "<your own revisable argument of this chapter, as text>",
-                "questions": ["<one disputed, source-grounded question per item>"],
+                "hypothesis": chapter_hybrid.HYPOTHESIS_PLACEHOLDER,
+                "questions": [chapter_hybrid.QUESTION_PLACEHOLDER],
                 "source_links": [
                     {
                         "id": "<an id from original_source>",

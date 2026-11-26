@@ -2842,28 +2842,50 @@ def test_configured_execution_guard_matrix_no_provider(
     assert not list(runner.root.rglob("started-*.json"))
 
 
+def _real_argument_contract() -> dict[str, object]:
+    """The placeholder values the producer prompt really sends (shared constants)."""
+    return {
+        "hypothesis": hybrid.HYPOTHESIS_PLACEHOLDER,
+        "questions": [hybrid.QUESTION_PLACEHOLDER],
+    }
+
+
 def test_argument_rejects_request_template_echo_with_clear_error() -> None:
     ledger = _ledger(25)
     echoed = {
         "stage": "argument",
         "schema": hybrid.ARGUMENT_SCHEMA,
-        "response_contract": {
-            "hypothesis": "revisable chapter argument, not a factual conclusion",
-            "questions": ["disputed source-grounded arguments to investigate"],
-            "source_links": [{"id": "s0001", "start": 0, "end": 10, "role": "ASSERTION"}],
-        },
+        "response_contract": _real_argument_contract(),
     }
     with pytest.raises(hybrid.HybridStop, match="echoed the request contract"):
         hybrid.validate_argument(echoed, ledger)
 
 
-def test_argument_rejects_contract_placeholder_text_but_accepts_real_answer() -> None:
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda a: a.update(hypothesis=hybrid.HYPOTHESIS_PLACEHOLDER),
+        lambda a: a.update(hypothesis=hybrid.HYPOTHESIS_PLACEHOLDER + " extra words"),
+        lambda a: a.update(questions=[hybrid.QUESTION_PLACEHOLDER]),
+        lambda a: a.update(questions=["Real question?", "<anything in angle brackets>"]),
+    ),
+)
+def test_argument_rejects_contract_placeholders_in_answer_keys(mutate) -> None:
     ledger = _ledger(25)
-    placeholder = _argument(ledger)
-    placeholder["hypothesis"] = "<your own revisable argument of this chapter, as text>"
+    argument = _argument(ledger)
+    mutate(argument)
     with pytest.raises(hybrid.HybridStop, match="placeholder"):
-        hybrid.validate_argument(placeholder, ledger)
+        hybrid.validate_argument(argument, ledger)
+
+
+def test_argument_accepts_real_answer_and_prompt_uses_shared_placeholders() -> None:
+    ledger = _ledger(25)
     assert hybrid.validate_argument(_argument(ledger), ledger)["hypothesis"]
+    import inspect
+
+    source = inspect.getsource(chapter)
+    assert "chapter_hybrid.HYPOTHESIS_PLACEHOLDER" in source
+    assert "chapter_hybrid.QUESTION_PLACEHOLDER" in source
 
 
 def test_argument_prompt_contract_has_no_copyable_filled_example() -> None:
