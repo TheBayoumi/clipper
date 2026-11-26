@@ -2840,3 +2840,34 @@ def test_configured_execution_guard_matrix_no_provider(
         )
     forbidden.assert_not_called()
     assert not list(runner.root.rglob("started-*.json"))
+
+
+def test_argument_rejects_request_template_echo_with_clear_error() -> None:
+    ledger = _ledger(25)
+    echoed = {
+        "stage": "argument",
+        "schema": hybrid.ARGUMENT_SCHEMA,
+        "response_contract": {
+            "hypothesis": "revisable chapter argument, not a factual conclusion",
+            "questions": ["disputed source-grounded arguments to investigate"],
+            "source_links": [{"id": "s0001", "start": 0, "end": 10, "role": "ASSERTION"}],
+        },
+    }
+    with pytest.raises(hybrid.HybridStop, match="echoed the request contract"):
+        hybrid.validate_argument(echoed, ledger)
+
+
+def test_argument_rejects_contract_placeholder_text_but_accepts_real_answer() -> None:
+    ledger = _ledger(25)
+    placeholder = _argument(ledger)
+    placeholder["hypothesis"] = "<your own revisable argument of this chapter, as text>"
+    with pytest.raises(hybrid.HybridStop, match="placeholder"):
+        hybrid.validate_argument(placeholder, ledger)
+    assert hybrid.validate_argument(_argument(ledger), ledger)["hypothesis"]
+
+
+def test_argument_prompt_contract_has_no_copyable_filled_example() -> None:
+    import inspect
+
+    source = inspect.getsource(chapter)
+    assert '"source_links": [{"id": "s0001", "start": 0, "end": 10' not in source

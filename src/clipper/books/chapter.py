@@ -2550,9 +2550,16 @@ def evaluate_hybrid_chapter(
             "ledger_sha256": ledger["ledger_sha256"],
             "original_source": projection,
             "response_contract": {
-                "hypothesis": "revisable chapter argument, not a factual conclusion",
-                "questions": ["disputed source-grounded arguments to investigate"],
-                "source_links": [{"id": "s0001", "start": 0, "end": 10, "role": "ASSERTION"}],
+                "hypothesis": "<your own revisable argument of this chapter, as text>",
+                "questions": ["<one disputed, source-grounded question per item>"],
+                "source_links": [
+                    {
+                        "id": "<an id from original_source>",
+                        "start": "<integer character offset inside that source>",
+                        "end": "<integer character offset after start>",
+                        "role": "<one of ASSERTION, AUTHOR_EXAMPLE, COUNTEREXAMPLE, QUALIFICATION>",
+                    }
+                ],
             },
         },
         lambda raw: chapter_hybrid.validate_argument(raw, ledger),

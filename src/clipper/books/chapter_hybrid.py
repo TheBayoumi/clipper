@@ -369,7 +369,22 @@ def _span(
     }
 
 
+_ECHO_KEYS = frozenset({"response_contract", "schema", "stage", "input", "original_source"})
+
+
+def reject_template_echo(raw: object) -> None:
+    """Reject a response that repeats the request/contract instead of answering."""
+    if isinstance(raw, dict) and _ECHO_KEYS & set(raw):
+        raise HybridStop("hybrid response echoed the request contract instead of answering")
+    if isinstance(raw, dict):
+        for key in ("hypothesis", "argument"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.lstrip().startswith("<") and value.rstrip().endswith(">"):
+                raise HybridStop("hybrid response repeated a contract placeholder")
+
+
 def validate_argument(raw: object, ledger: dict[str, Any]) -> dict[str, Any]:
+    reject_template_echo(raw)
     data = _object(raw, {"hypothesis", "questions", "source_links"})
     _text(data["hypothesis"], 3000)
     _list(data["questions"], 24)
