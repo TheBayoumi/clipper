@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import re
@@ -58,7 +59,7 @@ def identify() -> tuple[Any, Any]:
     )
     require(os.environ.get("MODAL_ENVIRONMENT") == "main", "environment must be main")
     require(version("modal") == "1.5.5", "unsupported Modal SDK")
-    import modal
+    modal = importlib.import_module("modal")
 
     client = None
     try:
