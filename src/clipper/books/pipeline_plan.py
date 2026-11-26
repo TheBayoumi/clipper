@@ -7,12 +7,15 @@ import hashlib
 import json
 import re
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from clipper.stage_contracts import StageContract, content_fingerprint, stage_identity
+
+from . import model_profile
 
 SCHEMA = "clipper-book-pipeline-config-v1"
 REPORT_SCHEMA = "clipper-book-pipeline-plan-v1"
@@ -20,8 +23,6 @@ DESCRIPTOR_SCHEMA = "clipper-book-pipeline-input-v1"
 MAX_JSON = 256_000
 MAX_ARTIFACT = 2_000_000
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
-MODEL = "Qwen/Qwen3-1.7B"
-REVISION = "8d4744f9e13072f4920c326350fa81eedb74eae9"
 
 
 class PlanError(ValueError):
@@ -47,8 +48,8 @@ def registry() -> dict[str, StageSpec]:
             deps,
             schema,
             "pinned-qwen-cpu",
-            model=MODEL,
-            revision=REVISION,
+            model=model_profile.active().model,
+            revision=model_profile.active().revision,
             limit_fields=("max_new_tokens", "max_attempts", "max_runtime_seconds", *limits),
         )
 
@@ -225,16 +226,41 @@ def _descriptor(value: object) -> None:
     )
 
 
+def config_profile_name(raw: object) -> str:
+    """Model profile named by a configuration; absent means the default profile."""
+    if isinstance(raw, dict) and "model_profile" in raw:
+        name = raw["model_profile"]
+        require(isinstance(name, str) and name in model_profile.profiles(), "unknown model profile")
+        return str(name)
+    return model_profile.DEFAULT_PROFILE
+
+
+@contextmanager
+def profile_scope(raw: object) -> Iterator[None]:
+    """Run a block with the model profile the configuration selects.
+
+    An unknown name is left to validate_config to reject, so the error stays the
+    configuration error rather than a lookup failure.
+    """
+    try:
+        name = config_profile_name(raw)
+    except PlanError:
+        name = model_profile.DEFAULT_PROFILE
+    with model_profile.use(name):
+        yield
+
+
 def validate_config(raw: object, specs: Mapping[str, StageSpec]) -> dict[str, Any]:
     ordered_stages(specs)
     if not isinstance(raw, dict):
         raise PlanError("pipeline config object required")
     require(
-        set(raw) == {"schema", "source_sha256", "targets", "stages"}
+        set(raw) - {"model_profile"} == {"schema", "source_sha256", "targets", "stages"}
         and raw["schema"] == SCHEMA
         and is_digest(raw["source_sha256"]),
         "pipeline config schema mismatch",
     )
+    config_profile_name(raw)
     targets = raw["targets"]
     require(
         isinstance(targets, list)
@@ -462,11 +488,16 @@ def resolve(
     }
 
 
-def template(source_sha256: str, target: str = "script") -> dict[str, Any]:
+def template(
+    source_sha256: str, target: str = "script", profile: str | None = None
+) -> dict[str, Any]:
     """Explicit stage selection for one named target; never grants execution authority."""
     require(is_digest(source_sha256), "invalid source digest")
     require(target in TARGETS, "unknown target")
-    specs = registry()
+    if profile is not None:
+        require(profile in model_profile.profiles(), "unknown model profile")
+    with model_profile.use(profile or model_profile.DEFAULT_PROFILE):
+        specs = registry()
     selected: set[str] = set()
 
     def visit(name: str) -> None:
@@ -487,7 +518,7 @@ def template(source_sha256: str, target: str = "script") -> dict[str, Any]:
         "max_shots_per_scene": 3,
         "voice": "af_heart",
     }
-    return {
+    document: dict[str, Any] = {
         "schema": SCHEMA,
         "source_sha256": source_sha256,
         "targets": [target],
@@ -500,6 +531,9 @@ def template(source_sha256: str, target: str = "script") -> dict[str, Any]:
             for name, spec in specs.items()
         },
     }
+    if profile is not None:
+        document["model_profile"] = profile
+    return document
 
 
 def verify_selected_source(

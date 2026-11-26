@@ -20,6 +20,7 @@ from . import (
     acquisition,
     chapter_hybrid,
     evaluation,
+    model_profile,
     narration,
     pipeline_plan,
     scripting,
@@ -37,11 +38,10 @@ ADAPT_SCHEMA = "clipper-chapter-adaptation-v1"
 SCRIPT_SCHEMA = "clipper-chapter-script-graph-v1"
 DIRECTION_SCHEMA = "clipper-chapter-continuity-shots-v2"
 MAX_RAW_BYTES = 100_000
-MAX_CONTEXT_TOKENS = 40_960
 CHAT_TOKEN_RESERVE = 512
 # Byte ceiling bounds retained private source metadata, not the model context.
 # Real Qwen requests receive an independent exact pinned-tokenizer preflight.
-MAX_SOURCE_BYTES = MAX_CONTEXT_TOKENS * 4
+MAX_SOURCE_BYTES = 163_840
 MAX_SOURCE_UNITS = 64
 ENTITY_ID = re.compile(r"[a-z][a-z0-9-]{1,60}\Z")
 TEXT_STAGES = ("brief", "adaptation", "chapter_script", "chapter_direction")
@@ -929,7 +929,7 @@ def _request(
     bound = (
         len(system_message.encode("utf-8")) + len(user_message.encode("utf-8")) + CHAT_TOKEN_RESERVE
     )
-    if not exact_context and bound + plan.max_new_tokens > MAX_CONTEXT_TOKENS:
+    if not exact_context and bound + plan.max_new_tokens > model_profile.active().context_window:
         raise ChapterStop(
             "complete chapter source+context+reserved output exceeds conservative "
             "pinned model context; freeze a narrower exact canonical section"
@@ -1660,7 +1660,7 @@ def _narrate(
         # Script weights must be released before CPU TTS model initialization.
         import gc
 
-        scripting._script_pipeline.cache_clear()
+        scripting._script_pipeline.cache_clear()  # type: ignore[attr-defined]
         gc.collect()
     config = NicheConfig(
         niche="private_chapter_preproduction",
@@ -2164,7 +2164,13 @@ def evaluate_chapter(
     }
 
 
-def evaluate_hybrid_chapter(
+def evaluate_hybrid_chapter(*args: Any, **kwargs: Any) -> dict[str, object]:
+    """Run the hybrid chapter evaluation under the model profile its configuration selects."""
+    with pipeline_plan.profile_scope(kwargs.get("pipeline_config")):
+        return _evaluate_hybrid_chapter(*args, **kwargs)
+
+
+def _evaluate_hybrid_chapter(
     runner: BookOrchestrator,
     selected_scope_path: Path,
     section_manifest: Path,

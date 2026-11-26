@@ -353,7 +353,7 @@ def _review_packet(
 
 
 def _release_models() -> None:
-    scripting._script_pipeline.cache_clear()
+    scripting._script_pipeline.cache_clear()  # type: ignore[attr-defined]
     narration._kokoro_pipeline.cache_clear()
     gc.collect()
 

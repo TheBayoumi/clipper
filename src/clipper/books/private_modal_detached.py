@@ -87,6 +87,7 @@ def start(
     now: Callable[[], float] = time.time,
 ) -> dict[str, object]:
     run, _, _ = private_phase.preflight(manifest, packet, checkpoint)
+    private_phase.require_default_profile(packet)
     identity = content_fingerprint(run)
     require(identity == approved_manifest_sha256, "reviewed manifest digest mismatch")
     require(type(execute) is bool, "explicit execution boolean required")

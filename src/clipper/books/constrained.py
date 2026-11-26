@@ -10,12 +10,11 @@ from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, cast
 
-from . import selection
+from . import model_profile, selection
 
 DECODER_PACKAGE = "lm-format-enforcer"
 DECODER_VERSION = "0.11.3"
 GRAMMAR_CONTRACT = "book-seven-field-blank-safe-public-callback-v5"
-PINNED_TOKENIZER_SHA256 = "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
 SPAN_POLICY = "bounded-multilingual-clauses-occurrences-v4"
 POOL_SCHEMA = "clipper-book-exact-source-spans-v3"
 MAX_SOURCE_CHARS = 12_000
@@ -816,3 +815,10 @@ def prefix_for(request: dict[str, object], tokenizer: Any, revision: str) -> Any
     tokenizer_data = _tokenizer_data(tokenizer, revision)
     base = integration.build_transformers_prefix_allowed_tokens_fn(tokenizer_data, parser)
     return _BlankSafePrefixFn(base, parser, tokenizer_data)
+
+
+def __getattr__(name: str) -> str:
+    """Historical name for the active profile's pinned tokenizer hash."""
+    if name == "PINNED_TOKENIZER_SHA256":
+        return model_profile.active().tokenizer_json_sha256
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

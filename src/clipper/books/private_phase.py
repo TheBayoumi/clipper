@@ -7,7 +7,7 @@ import os
 import re
 import stat
 import tempfile
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import AbstractContextManager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ from . import (
     chapter,
     chapter_host,
     evaluation,
+    model_profile,
     pipeline_plan,
     scripting,
     selected_scope,
@@ -178,10 +179,35 @@ def validate_manifest(raw: object) -> dict[str, Any]:
     return dict(raw)
 
 
+def _packet_profile_scope(packet: bytes) -> AbstractContextManager[None]:
+    """Model profile named by the packet's configuration (default when unreadable)."""
+    try:
+        config = pipeline_plan.strict_json(unpack(packet)["config.json"])
+    except Exception:
+        config = None
+    return pipeline_plan.profile_scope(config)
+
+
+def require_default_profile(packet: bytes) -> None:
+    """The Modal image build still downloads only the default profile's snapshot."""
+    with _packet_profile_scope(packet):
+        require(
+            model_profile.active().name == model_profile.DEFAULT_PROFILE,
+            "Modal private phase supports only the default model profile",
+        )
+
+
 def preflight(
     manifest: object, packet: bytes, checkpoint: bytes | None = None
 ) -> tuple[dict[str, Any], dict[str, bytes], dict[str, bytes]]:
     """Byte-only validation, no model or provider activity."""
+    with _packet_profile_scope(packet):
+        return _preflight(manifest, packet, checkpoint)
+
+
+def _preflight(
+    manifest: object, packet: bytes, checkpoint: bytes | None = None
+) -> tuple[dict[str, Any], dict[str, bytes], dict[str, bytes]]:
     run = validate_manifest(manifest)
     inputs = unpack(packet)
     expected = {"config.json", "selected.json", "section.json"}
@@ -397,6 +423,24 @@ def persist_checkpoint(path: Path, packet: bytes, expected_sha256: str) -> None:
 
 
 def execute_private_phase(
+    manifest: object,
+    packet: bytes,
+    checkpoint: bytes | None,
+    *,
+    verified_commit: str,
+    verified_workspace: str,
+) -> tuple[dict[str, object], bytes | None]:
+    with _packet_profile_scope(packet):
+        return _execute_private_phase(
+            manifest,
+            packet,
+            checkpoint,
+            verified_commit=verified_commit,
+            verified_workspace=verified_workspace,
+        )
+
+
+def _execute_private_phase(
     manifest: object,
     packet: bytes,
     checkpoint: bytes | None,

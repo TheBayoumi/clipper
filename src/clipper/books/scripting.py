@@ -21,21 +21,31 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from . import constrained, model_profile
+
 # Pin the script weights; keep TTS identity versioned to invalidate cache on upgrades.
-SCRIPT_MODEL = "Qwen/Qwen3-1.7B"
-SCRIPT_REVISION = "8d4744f9e13072f4920c326350fa81eedb74eae9"
 VOICE_MODEL = "hexgrad/Kokoro-82M"
 VOICE_REVISION = "v1.0"
 SCRIPT_CONTRACT = "niche-scenes-open-v3"
 BOOK_EDIT_CONTRACT = "book-lesson-complete-sentences-v2"
 MAX_SCRIPT_ATTEMPTS = 3
-QWEN_GENERATION_SETTINGS: dict[str, object] = {
-    "do_sample": True,
-    "temperature": 0.7,
-    "top_p": 0.8,
-}
 VOICE_CONTRACT = "kokoro-24khz-wav-v1"
 VOICES = frozenset({"af_heart", "af_bella", "am_adam", "am_michael", "bf_emma"})
+
+
+_PROFILE_ALIASES = {
+    "SCRIPT_MODEL": lambda profile: profile.model,
+    "SCRIPT_REVISION": lambda profile: profile.revision,
+    "QWEN_GENERATION_SETTINGS": lambda profile: profile.sampling,
+    "MAX_CHAPTER_CONTEXT": lambda profile: profile.context_window,
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Read-only views of the active model profile under the historical names."""
+    if name in _PROFILE_ALIASES:
+        return _PROFILE_ALIASES[name](model_profile.active())
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class NicheVideoError(RuntimeError):
@@ -240,8 +250,8 @@ def _script_request(
     config: NicheConfig, *, evaluation_context: dict[str, object] | None = None
 ) -> dict[str, object]:
     request = {
-        "model": SCRIPT_MODEL,
-        "revision": SCRIPT_REVISION,
+        "model": model_profile.active().model,
+        "revision": model_profile.active().revision,
         "seed": 42,
         "max_new_tokens": 960,
         "messages": [
@@ -351,9 +361,10 @@ def _pinned_qwen_snapshot() -> Path:
             raise PinnedQwenSnapshotError("pinned Qwen snapshot is missing") from exc
         if (
             not path.is_dir()
-            or path.name != SCRIPT_REVISION
+            or path.name != model_profile.active().revision
             or path.parent.name != "snapshots"
-            or path.parent.parent.name != "models--" + SCRIPT_MODEL.replace("/", "--")
+            or path.parent.parent.name
+            != "models--" + model_profile.active().model.replace("/", "--")
         ):
             raise PinnedQwenSnapshotError("pinned Qwen snapshot identity mismatch")
         for name in ("config.json", "tokenizer_config.json", "tokenizer.json"):
@@ -391,7 +402,9 @@ def _pinned_qwen_snapshot() -> Path:
 
     try:
         locally_cached = hub.snapshot_download(
-            repo_id=SCRIPT_MODEL, revision=SCRIPT_REVISION, local_files_only=True
+            repo_id=model_profile.active().model,
+            revision=model_profile.active().revision,
+            local_files_only=True,
         )
         return verify(locally_cached)
     except PinnedQwenSnapshotError:
@@ -406,7 +419,9 @@ def _pinned_qwen_snapshot() -> Path:
     # invocation may acquire public pinned weights, never another revision.
     try:
         downloaded = hub.snapshot_download(
-            repo_id=SCRIPT_MODEL, revision=SCRIPT_REVISION, local_files_only=False
+            repo_id=model_profile.active().model,
+            revision=model_profile.active().revision,
+            local_files_only=False,
         )
         return verify(downloaded)
     except PinnedQwenSnapshotError:
@@ -435,10 +450,19 @@ def _public_cpu_smoke_phase(phase: str) -> None:
             path.chmod(0o600)
 
 
-@lru_cache(maxsize=2)
 def _public_book_context(*, local_files_only: bool = False) -> tuple[Any, int]:
-    """Validate pinned public-only tokenizer/config before loading book weights."""
-    from . import constrained
+    """Pinned public tokenizer and context limit, cached per model profile."""
+    return _public_book_context_cached(model_profile.active().fingerprint, local_files_only)
+
+
+@lru_cache(maxsize=4)
+def _public_book_context_cached(
+    profile_fingerprint: str, local_files_only: bool
+) -> tuple[Any, int]:
+    """Validate pinned public-only tokenizer/config before loading book weights.
+
+    The profile fingerprint is only the cache key; the facts come from the active profile.
+    """
 
     try:
         hub = importlib.import_module("huggingface_hub")
@@ -463,8 +487,8 @@ def _public_book_context(*, local_files_only: bool = False) -> tuple[Any, int]:
     def fetch(*, local_files_only: bool) -> Path:
         return Path(
             hub.snapshot_download(
-                repo_id=SCRIPT_MODEL,
-                revision=SCRIPT_REVISION,
+                repo_id=model_profile.active().model,
+                revision=model_profile.active().revision,
                 allow_patterns=list(public),
                 local_files_only=local_files_only,
             )
@@ -481,9 +505,10 @@ def _public_book_context(*, local_files_only: bool = False) -> tuple[Any, int]:
             snapshot = fetch(local_files_only=False)
         snapshot = snapshot.resolve(strict=True)
         if (
-            snapshot.name != SCRIPT_REVISION
+            snapshot.name != model_profile.active().revision
             or snapshot.parent.name != "snapshots"
-            or snapshot.parent.parent.name != "models--" + SCRIPT_MODEL.replace("/", "--")
+            or snapshot.parent.parent.name
+            != "models--" + model_profile.active().model.replace("/", "--")
         ):
             raise PinnedQwenSnapshotError("pinned public tokenizer snapshot mismatch")
         if hashlib.sha256((snapshot / "tokenizer.json").read_bytes()).hexdigest() != (
@@ -501,8 +526,8 @@ def _public_book_context(*, local_files_only: bool = False) -> tuple[Any, int]:
         if (
             type(model_limit) is not int
             or type(tokenizer_limit) is not int
-            or model_limit != 40_960
-            or tokenizer_limit != 131_072
+            or model_limit != model_profile.active().context_window
+            or tokenizer_limit != model_profile.active().tokenizer_max_length
         ):
             raise PinnedQwenSnapshotError("pinned public context limits mismatch")
         tokenizer = transformers.AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
@@ -537,9 +562,14 @@ def _to_model_device(inputs: Any, model: Any) -> Any:
     return inputs.to(device)
 
 
-@lru_cache(maxsize=1)
 def _script_pipeline() -> tuple[Any, Any]:
-    """Lazy, single initialization using an exact local Qwen snapshot path."""
+    """Pinned model and tokenizer for the active profile, initialized once per profile."""
+    return _script_pipeline_cached(model_profile.active().fingerprint)
+
+
+@lru_cache(maxsize=1)
+def _script_pipeline_cached(profile_fingerprint: str) -> tuple[Any, Any]:
+    """Lazy, single initialization using an exact local snapshot path."""
     try:
         torch = importlib.import_module("torch")
         transformers = importlib.import_module("transformers")
@@ -590,14 +620,14 @@ def _run_pinned_qwen(
         from . import constrained
 
         kwargs["prefix_allowed_tokens_fn"] = constrained.prefix_for(
-            request, tokenizer, SCRIPT_REVISION
+            request, tokenizer, model_profile.active().revision
         )
     torch.manual_seed(int(cast(int, request["seed"])))
     inputs = tokenizer.apply_chat_template(
         request["messages"],
         tokenize=True,
         add_generation_prompt=True,
-        enable_thinking=False,
+        **model_profile.active().template_kwargs,
         return_dict=True,
         return_tensors="pt",
     )
@@ -607,7 +637,7 @@ def _run_pinned_qwen(
         output = model.generate(
             **inputs,
             max_new_tokens=int(cast(int, request["max_new_tokens"])),
-            **QWEN_GENERATION_SETTINGS,
+            **model_profile.active().sampling,
             pad_token_id=tokenizer.eos_token_id,
             **kwargs,
         )
@@ -654,15 +684,15 @@ def _chapter_tokenizer_material(tokenizer: Any) -> dict[str, str]:
     Use the same exact-revision snapshot for public preflight and final CPU
     generation. Do not trust a symbolic template name or token count alone.
     """
-    from . import constrained
 
     path = Path(str(getattr(tokenizer, "name_or_path", "")))
     try:
         snapshot = path.resolve(strict=True)
         if (
-            snapshot.name != SCRIPT_REVISION
+            snapshot.name != model_profile.active().revision
             or snapshot.parent.name != "snapshots"
-            or snapshot.parent.parent.name != "models--" + SCRIPT_MODEL.replace("/", "--")
+            or snapshot.parent.parent.name
+            != "models--" + model_profile.active().model.replace("/", "--")
         ):
             raise PinnedQwenSnapshotError("chapter tokenizer snapshot identity mismatch")
         raw = (snapshot / "tokenizer_config.json").read_bytes()
@@ -695,12 +725,15 @@ def _chapter_prompt_encoding(
     if tokenizer is None:
         tokenizer, _limit = _public_book_context()
     ids = tokenizer.apply_chat_template(
-        messages, tokenize=True, add_generation_prompt=True, enable_thinking=False
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        **model_profile.active().template_kwargs,
     )
     if (
         not isinstance(ids, list)
         or not ids
-        or len(ids) > MAX_CHAPTER_CONTEXT
+        or len(ids) > model_profile.active().context_window
         or any(type(value) is not int or value < 0 for value in ids)
     ):
         raise PinnedQwenSnapshotError("chapter rendered input token encoding invalid")
@@ -731,17 +764,15 @@ def _cached_chapter_tokenizer_material() -> dict[str, str]:
     snapshot = (
         home
         / "hub"
-        / ("models--" + SCRIPT_MODEL.replace("/", "--"))
+        / ("models--" + model_profile.active().model.replace("/", "--"))
         / "snapshots"
-        / SCRIPT_REVISION
+        / model_profile.active().revision
     )
     config = snapshot / "tokenizer_config.json"
     tokenizer_file = snapshot / "tokenizer.json"
     if not config.is_file() or not tokenizer_file.is_file():
         return {"status": "TOKENIZER_NOT_CACHED"}
     try:
-        from . import constrained
-
         raw = config.read_bytes()
         if not 0 < len(raw) <= 1_000_000:
             return {"status": "TOKENIZER_CONFIG_UNVERIFIED"}
@@ -763,8 +794,8 @@ def _chapter_context_tokens(
 ) -> int:
     """Preflight the full real chapter chat with the pinned tokenizer, before weights."""
     if (
-        request.get("model") != SCRIPT_MODEL
-        or request.get("revision") != SCRIPT_REVISION
+        request.get("model") != model_profile.active().model
+        or request.get("revision") != model_profile.active().revision
         or type(request.get("seed")) is not int
         or request["seed"] != 42
         or type(request.get("max_new_tokens")) is not int
@@ -786,7 +817,7 @@ def _chapter_context_tokens(
                 request["messages"],
                 tokenize=True,
                 add_generation_prompt=True,
-                enable_thinking=False,
+                **model_profile.active().template_kwargs,
             )
             count = len(tokens)
     except NicheVideoError:
@@ -820,7 +851,7 @@ def _local_chapter_completion(request: dict[str, object]) -> PinnedQwenRawReceip
         request["messages"],
         tokenize=True,
         add_generation_prompt=True,
-        enable_thinking=False,
+        **model_profile.active().template_kwargs,
         return_dict=True,
         return_tensors="pt",
     )
@@ -835,14 +866,17 @@ def _local_chapter_completion(request: dict[str, object]) -> PinnedQwenRawReceip
         )
         if identity != request["verified_input_encoding"]:
             raise NicheVideoError("chapter generator rendered tokens differ from reserved input")
-    if inputs["input_ids"].shape[-1] + cast(int, request["max_new_tokens"]) > MAX_CHAPTER_CONTEXT:
+    if (
+        inputs["input_ids"].shape[-1] + cast(int, request["max_new_tokens"])
+        > model_profile.active().context_window
+    ):
         raise NicheVideoError("chapter final token context differs from preflight")
     inputs = _to_model_device(inputs, model)
     with torch.inference_mode():
         output = model.generate(
             **inputs,
             max_new_tokens=cast(int, request["max_new_tokens"]),
-            **QWEN_GENERATION_SETTINGS,
+            **model_profile.active().sampling,
             pad_token_id=tokenizer.eos_token_id,
         )
     ids = output[0][inputs["input_ids"].shape[-1] :]
@@ -869,9 +903,6 @@ def _local_chapter_completion(request: dict[str, object]) -> PinnedQwenRawReceip
 # Pin the actual implementation's identity; an injected callable must never
 # acquire production token/EOS provenance just by replacing a module attribute.
 _ORIGINAL_LOCAL_CHAPTER_COMPLETION = _local_chapter_completion
-
-
-MAX_CHAPTER_CONTEXT = 40_960
 
 
 def _local_script_completion(request: dict[str, object]) -> str:
@@ -1158,3 +1189,13 @@ def generate_episode(
         return episode, digest
 
     raise NicheVideoError("bounded script generation unexpectedly exhausted")
+
+
+def clear_model_caches() -> None:
+    """Drop every cached tokenizer and model (all profiles)."""
+    _public_book_context_cached.cache_clear()
+    _script_pipeline_cached.cache_clear()
+
+
+_public_book_context.cache_clear = _public_book_context_cached.cache_clear  # type: ignore[attr-defined]
+_script_pipeline.cache_clear = _script_pipeline_cached.cache_clear  # type: ignore[attr-defined]

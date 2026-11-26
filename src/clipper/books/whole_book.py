@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from clipper.stage_contracts import content_fingerprint
 
-from . import constrained, faithful, mining, scripting, selection
+from . import constrained, faithful, mining, model_profile, scripting, selection
 from .contracts import BookSource, BookText
 
 if TYPE_CHECKING:
@@ -45,19 +45,22 @@ MAX_PLAN_UNITS = 20_000
 MAX_RECORDED_REPLY_BYTES = 16_384
 LOCAL_COMPLETION_SCHEMA = "clipper-book-local-completion-v1"
 LOCAL_PRODUCER_CONTRACT = "clipper-book-cpu-qwen-evidence-support-public-callback-v8"
-LOCAL_GENERATION = {
-    "model": scripting.SCRIPT_MODEL,
-    "revision": scripting.SCRIPT_REVISION,
-    "seed": 42,
-    "max_new_tokens": 960,
-    "do_sample": True,
-    "temperature": 0.7,
-    "top_p": 0.8,
-    "enable_thinking": False,
-    "dtype": "auto",
-    "device": "cpu",
-    "cpu_threads_max": 4,
-}
+
+
+def _local_generation() -> dict[str, object]:
+    """Generation identity of the CPU producer, derived from the active model profile."""
+    profile = model_profile.active()
+    return {
+        "model": profile.model,
+        "revision": profile.revision,
+        "seed": 42,
+        "max_new_tokens": 960,
+        **profile.sampling,
+        **profile.template_kwargs,
+        "dtype": "auto",
+        "device": "cpu",
+        "cpu_threads_max": 4,
+    }
 
 
 def local_producer_material() -> dict[str, object]:
@@ -71,7 +74,7 @@ def local_producer_material() -> dict[str, object]:
     return {
         "contract": LOCAL_PRODUCER_CONTRACT,
         "schema": LOCAL_COMPLETION_SCHEMA,
-        "generation": {**LOCAL_GENERATION, **scripting.QWEN_GENERATION_SETTINGS},
+        "generation": {**_local_generation(), **scripting.QWEN_GENERATION_SETTINGS},
         "runtime": runtime,
         "request_schema": PLAN_SCHEMA,
         "reply_max_bytes": MAX_RECORDED_REPLY_BYTES,
@@ -496,3 +499,10 @@ def candidate_for(
 def recorded_answer(replies: dict[str, object], request: dict[str, object]) -> object | None:
     """Absent answer means unresolved work; malformed answer remains a failure."""
     return replies.get(content_fingerprint(request))
+
+
+def __getattr__(name: str) -> dict[str, object]:
+    """Historical name for the CPU producer's generation identity under the active profile."""
+    if name == "LOCAL_GENERATION":
+        return _local_generation()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
