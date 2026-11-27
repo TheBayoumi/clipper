@@ -37,11 +37,7 @@ def test_gpt1_08_duplicate_legacy_spans_preserved() -> None:
     # audits are model outputs; reuse as in existing tests
     raw = _reconciliation(ledger)
     span = raw["beats"][0]["spans"][0]  # type: ignore[index]
-    raw["beats"][0]["spans"] = (
-        [copy.deepcopy(span), copy.deepcopy(span)]
-        + raw["beats"][0][  # type: ignore[index]
-            "spans"
-        ][1:]
-    )
+    rest = raw["beats"][0]["spans"][1:]  # type: ignore[index]
+    raw["beats"][0]["spans"] = [copy.deepcopy(span), copy.deepcopy(span), *rest]  # type: ignore[index]
     brief = hybrid.reconcile(raw, ledger, _argument(ledger), audits)
     assert len(brief["beats"][0]["spans"]) == len(raw["beats"][0]["spans"])  # type: ignore[index]

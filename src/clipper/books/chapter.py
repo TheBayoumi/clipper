@@ -2769,7 +2769,7 @@ def _evaluate_hybrid_chapter(
                     ],
                     "disagreements": [
                         {
-                            "id": "audit-d01",
+                            "id": f"{window['audit_id']}-d01",
                             "issue": "missing/contradictory arguments requiring revision",
                             "proposed_change": "What should change and why",
                             "evidence": [{"id": "core ID", "role": "ASSERTION"}],

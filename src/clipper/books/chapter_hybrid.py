@@ -257,6 +257,11 @@ _STAGE_GUIDANCE = {
         "unit does in the argument. Link counterexamples and author qualifications "
         "whenever the source contains them, not only assertions."
     ),
+    "audit": (
+        "Give exactly one decision for every core id. A core id whose source is an "
+        "unrecovered marker (a gap) has no text: its decision must be omit and its "
+        "evidence must be an empty list. Never cite a gap id as evidence."
+    ),
 }
 
 
