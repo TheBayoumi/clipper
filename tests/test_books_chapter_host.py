@@ -12,6 +12,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier
+from time import sleep
 from unittest.mock import Mock
 
 import pytest
@@ -1219,6 +1220,78 @@ def test_full_execute_losing_concurrent_mining_claim_cannot_stop_winner(
         == "PRIVATE_CHAPTER_PHASE_STOPPED_REVIEW_PRIVATE_EVIDENCE"
         for outcome in both
     )
+    records = chapter_host._phase_records(
+        runner.root, 1, first["bundle_sha256"], first["scope_sha256"]
+    )
+    assert [record["phase"] for record in records] == [
+        "NOT_STARTED",
+        "MINING_IN_FLIGHT",
+        "SCOPED_MINING_INCOMPLETE",
+    ]
+
+
+def test_losing_claim_observation_read_never_sees_uncommitted_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A preempted losing caller must not fail closed on a mid-append journal.
+
+    The winner publishes the next phase event and then replaces the committed
+    head while still holding the phase lock. A loser preempted between its
+    lost MINING_IN_FLIGHT claim and its observation read could previously
+    observe the new event beside the stale head and raise PrivateHostStop as
+    if the journal had been tampered with. The stalls below make that
+    interleaving deterministic: this test fails without the locked
+    observation read.
+    """
+    runner, path, config = _private_setup(tmp_path, monkeypatch)
+    _locked(runner, path, config)
+    first = config["chapter_1"]
+    second = config["chapter_7"]
+    chapter_host._phase(runner, 1, first["bundle_sha256"], first["scope_sha256"], "NOT_STARTED")
+    chapter_host._phase(runner, 7, second["bundle_sha256"], second["scope_sha256"], "NOT_STARTED")
+    chapter_host._phase(
+        runner, 7, second["bundle_sha256"], second["scope_sha256"], "MINING_IN_FLIGHT"
+    )
+    both_preflighted = Barrier(2)
+    original = chapter_host._phase
+    real_commit = chapter_host._commit_phase_head
+    models = Mock(return_value={"status": "incomplete", "total_work_units": 1})
+
+    def stalling_commit(root: Path, number: int, record: dict, raw: bytes) -> None:
+        if number == 1 and record["phase"] == "SCOPED_MINING_INCOMPLETE":
+            sleep(0.4)  # fsync stall before the committed head replace
+        real_commit(root, number, record, raw)
+
+    def competing_phase(
+        owner: BookOrchestrator,
+        chapter_number: int,
+        digest: str,
+        scope: str,
+        phase: str,
+        artifacts: dict[str, object] | None = None,
+    ) -> dict:
+        if chapter_number == 1 and phase == "MINING_IN_FLIGHT":
+            both_preflighted.wait(timeout=15)
+            try:
+                return original(owner, chapter_number, digest, scope, phase, artifacts)
+            except chapter_host.PhaseClaimContended:
+                sleep(0.2)  # loser preempted before its observation read
+                raise
+        return original(owner, chapter_number, digest, scope, phase, artifacts)
+
+    monkeypatch.setattr(chapter_host, "_commit_phase_head", stalling_commit)
+    monkeypatch.setattr(chapter_host, "_phase", competing_phase)
+    monkeypatch.setattr(BookOrchestrator, "mine_candidate", models)
+    monkeypatch.setattr(chapter_host, "_release_models", lambda: None)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(_call, runner, path, "brief") for _ in range(2)]
+        both = [future.result(timeout=25) for future in futures]
+    models.assert_called_once()
+    for outcome in both:
+        assert outcome["chapters"]["1"]["status"] in {
+            "INTERRUPTED_DURING_MINING",
+            "SCOPED_MINING_INCOMPLETE",
+        }
     records = chapter_host._phase_records(
         runner.root, 1, first["bundle_sha256"], first["scope_sha256"]
     )

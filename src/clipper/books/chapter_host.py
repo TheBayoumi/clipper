@@ -512,6 +512,21 @@ def _phase(
         return _append_phase_locked(runner, number, bundle, scope, state, artifacts)
 
 
+def _observed_phase_records(
+    root: Path, number: int, bundle: str, scope: str
+) -> list[dict[str, Any]]:
+    """Read the journal only while holding the same exclusive claim as writers.
+
+    A writer holds the phase lock across the whole event append plus committed
+    head replace, so a reader under the same lock sees either the prior or the
+    next committed tail, never the mid-append state (event file published while
+    the head still names its predecessor). An unlocked reader can observe that
+    transient state and fail closed as if the journal had been tampered with.
+    """
+    with _phase_lock(root, number):
+        return _phase_records(root, number, bundle, scope)
+
+
 def _append_phase_locked(
     runner: BookOrchestrator,
     number: int,
@@ -715,7 +730,7 @@ def execute(
     # BOTH chapters have durable NOT_STARTED checkpoints before the first
     # irreversible call. A terminated process leaves an IN_FLIGHT marker.
     for number, _block, _bundle, verified, _section, scope_sha, _counts in prepared:
-        if not _phase_records(root, number, verified.bundle_sha256, scope_sha):
+        if not _observed_phase_records(root, number, verified.bundle_sha256, scope_sha):
             # A concurrent initialization may already own this immutable phase.
             with suppress(PhaseClaimContended):
                 _phase(runner, number, verified.bundle_sha256, scope_sha, "NOT_STARTED")
@@ -723,7 +738,7 @@ def execute(
     outcomes: dict[str, object] = {}
     for number, block, bundle, verified, section_path, scope_sha, counts in prepared:
         digest = verified.bundle_sha256
-        records = _phase_records(root, number, digest, scope_sha)
+        records = _observed_phase_records(root, number, digest, scope_sha)
         last = records[-1]
         state = str(last["phase"])
         if mode == "brief" and state != "NOT_STARTED":
@@ -921,7 +936,7 @@ def execute(
             outcomes[str(number)] = _outcome_from_phase(last)
         except PhaseClaimContended:
             # The caller that lost a MINING/RESUME claim can only observe.
-            current = _phase_records(root, number, digest, scope_sha)[-1]
+            current = _observed_phase_records(root, number, digest, scope_sha)[-1]
             outcomes[str(number)] = _outcome_from_phase(current)
         except chapter.ChapterReviewPending:
             # No RESUME_IN_FLIGHT claim was written; a corrected human decision
@@ -933,7 +948,7 @@ def execute(
         except (ValueError, OSError, TypeError, RuntimeError):
             # An integrity/preflight refusal before the resume claim must not
             # consume a previously reviewable chapter.
-            current = _phase_records(root, number, digest, scope_sha)[-1]
+            current = _observed_phase_records(root, number, digest, scope_sha)[-1]
             if mode == "resume" and current["phase"] == "AWAITING_HUMAN_REVIEW":
                 outcomes[str(number)] = {
                     **_outcome_from_phase(current),
@@ -950,7 +965,7 @@ def execute(
                         {"claim_owner": claim_owner},
                     )
                 except PhaseClaimContended:
-                    stopped = _phase_records(root, number, digest, scope_sha)[-1]
+                    stopped = _observed_phase_records(root, number, digest, scope_sha)[-1]
                 outcomes[str(number)] = _outcome_from_phase(stopped)
         finally:
             _release_models()
@@ -1080,13 +1095,13 @@ def _execute_hybrid(
     if any(block["scope_sha256"] != scope for _, block, _, _, _, scope, _ in prepared):
         raise PrivateHostStop("hybrid requires operator-locked original selected scopes")
     for number, _block, _bundle, verified, _section, scope, _counts in prepared:
-        if not _phase_records(root, number, verified.bundle_sha256, scope):
+        if not _observed_phase_records(root, number, verified.bundle_sha256, scope):
             with suppress(PhaseClaimContended):
                 _phase(runner, number, verified.bundle_sha256, scope, "NOT_STARTED")
     outcomes: dict[str, object] = {}
     for number, block, bundle, verified, section, scope, _counts in prepared:
         bundle_sha = verified.bundle_sha256
-        prior = _phase_records(root, number, bundle_sha, scope)[-1]
+        prior = _observed_phase_records(root, number, bundle_sha, scope)[-1]
         state = str(prior["phase"])
         if (mode == "hybrid-brief" and state != "NOT_STARTED") or (
             mode == "hybrid-resume" and state != "AWAITING_HUMAN_REVIEW"
@@ -1300,7 +1315,7 @@ def _execute_hybrid(
                 )
             outcomes[str(number)] = _outcome_from_phase(final)
         except PhaseClaimContended:
-            current = _phase_records(root, number, bundle_sha, scope)[-1]
+            current = _observed_phase_records(root, number, bundle_sha, scope)[-1]
             outcomes[str(number)] = _outcome_from_phase(current)
         except chapter.ChapterReviewPending:
             outcomes[str(number)] = {
@@ -1308,7 +1323,7 @@ def _execute_hybrid(
                 "review_status": "REVIEW_REQUIRED",
             }
         except (ValueError, OSError, RuntimeError, TypeError, KeyError):
-            current = _phase_records(root, number, bundle_sha, scope)[-1]
+            current = _observed_phase_records(root, number, bundle_sha, scope)[-1]
             if mode == "hybrid-resume" and current["phase"] == "AWAITING_HUMAN_REVIEW":
                 outcomes[str(number)] = {
                     **_outcome_from_phase(current),
@@ -1325,7 +1340,7 @@ def _execute_hybrid(
                         {"claim_owner": owner},
                     )
                 except PhaseClaimContended:
-                    stopped = _phase_records(root, number, bundle_sha, scope)[-1]
+                    stopped = _observed_phase_records(root, number, bundle_sha, scope)[-1]
                 outcomes[str(number)] = _outcome_from_phase(stopped)
         finally:
             _release_models()
