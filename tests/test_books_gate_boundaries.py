@@ -1,10 +1,10 @@
 import dataclasses
 
 import pytest
+from test_books_chapter_hybrid import _keep_only, _synthetic_ledger
 
 from clipper.books import chapter_hybrid as hybrid
 from clipper.books import model_profile
-from tests.test_books_chapter_hybrid import _keep_only, _synthetic_ledger
 
 
 def _links(n_units: list[int], roles: list[str]) -> list[dict[str, object]]:
