@@ -2411,14 +2411,12 @@ def test_rejected_attempt_with_diagnostics_gets_a_distinct_bounded_feedback_requ
     args, provider, builder, built, result = _run_feedback_stage(tmp_path / "root", seen)
     assert result[3] == 2
     assert "retry_feedback" not in seen[0] and "retry_feedback" in seen[1]
-    assert built == [
-        {
-            "reason": "INVALID_CITATIONS",
-            "invalid_links": [
-                {"where": "source_links", "index": 3, "id": None, "code": "UNKNOWN_ID"}
-            ],
-        }
-    ]
+    expected_feedback = {
+        "reason": "INVALID_CITATIONS",
+        "invalid_links": [{"where": "source_links", "index": 3, "id": None, "code": "UNKNOWN_ID"}],
+    }
+    # Built once for the live retry and rebuilt by the verifier; always identical.
+    assert built and all(item == expected_feedback for item in built)
     directory = next((tmp_path / "root" / "brief").iterdir())
     # No new file kinds: the checkpoint and recovery allowlists stay valid.
     assert {f.name for f in directory.iterdir()} == {
@@ -2528,3 +2526,26 @@ def test_rejected_attempt_without_a_builder_retries_the_identical_request(tmp_pa
     assert seen[0] == seen[1]
     directory = next((tmp_path / "root" / "brief").iterdir())
     assert "attempt_request" not in json.loads((directory / "validated.json").read_bytes())
+
+
+def test_replay_requires_and_rebuilds_the_retry_request_receipt(tmp_path: Path) -> None:
+    seen: list[dict[str, object]] = []
+    args, provider, builder, _built, _result = _run_feedback_stage(tmp_path / "root", seen)
+    directory = next((tmp_path / "root" / "brief").iterdir())
+    path = directory / "validated.json"
+    original = path.read_bytes()
+
+    def wrong_builder(feedback: dict[str, object]) -> tuple[dict[str, object], str]:
+        request, _key = builder(feedback)
+        return request, "f" * 64
+
+    with pytest.raises(chapter.ChapterStop):
+        chapter._stage(*args, _feedback_validator, provider, retry_builder=wrong_builder)
+    # An explicit null receipt and a removed receipt are both refused under a builder.
+    saved = json.loads(original)
+    saved["attempt_request"] = None
+    path.write_bytes(evaluation._json_bytes(saved))
+    with pytest.raises(chapter.ChapterStop):
+        chapter._stage(*args, _feedback_validator, provider, retry_builder=builder)
+    path.write_bytes(original)
+    assert chapter._stage(*args, _feedback_validator, provider, retry_builder=builder)[3] == 0

@@ -33,6 +33,7 @@ from . import (
     chapter_hybrid,
     chapter_lifecycle,
     evaluation,
+    model_profile,
     narration,
     scripting,
     selected_scope,
@@ -1425,6 +1426,7 @@ def _stage_output_entries(
                     record["payload_sha256"],
                     record["token_receipt"],
                     record.get("prior_rejection_sha256"),
+                    attempt_request=record.get("attempt_request"),
                 )
                 != identity
             ):
@@ -1484,7 +1486,7 @@ def _stage_output_entries(
             if validate is not None
             else lambda raw: chapter._shape(raw, shapes[stage], "chapter recovery shape invalid"),
             2,
-            8192,
+            model_profile.output_bounds()[1],
             recovery_evidence_only=True,
         )
     except chapter.ChapterStop:

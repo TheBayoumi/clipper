@@ -317,31 +317,40 @@ def _messages(stage: str, payload: dict[str, object]) -> list[dict[str, str]]:
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+_LOCATION = re.compile(
+    r"source_links|decision:[A-Za-z0-9_.-]{1,32}|disagreement:[0-9]{1,3}|"
+    r"amendment:[A-Za-z0-9_.-]{1,32}|resolution:[A-Za-z0-9_.-]{1,32}|beat:beat-[0-9]{3}"
+)
+
+
 def retry_feedback(error: BaseException) -> dict[str, object] | None:
     """Bounded, source-free feedback for one retry, or None when there is none.
 
-    Only the stored validator diagnostics are used: where, index, a ledger id that
-    exists in the request, and a fixed code. No model output or source text.
+    Only validator diagnostics are used (where, index, a ledger id that exists in the
+    request, a fixed code), and only from a HybridStop. Anything else is refused.
+    No model output or source text is ever forwarded.
     """
-    diagnostics = getattr(error, "diagnostics", None)
+    if not isinstance(error, HybridStop):
+        return None
+    diagnostics = error.diagnostics
     if not isinstance(diagnostics, list) or not diagnostics:
         return None
     links: list[dict[str, object]] = []
     for item in diagnostics[:MAX_DIAGNOSTICS]:
+        if not isinstance(item, dict) or set(item) != {"where", "index", "id", "code"}:
+            return None
+        where, index, sid, code = item["where"], item["index"], item["id"], item["code"]
         if (
-            not isinstance(item, dict)
-            or set(item) != {"where", "index", "id", "code"}
-            or item["code"] not in _CODES
-            or type(item["index"]) is not int
-            or not isinstance(item["where"], str)
-            or _SAFE_LABEL.fullmatch(item["where"]) is None
-            or not (
-                item["id"] is None
-                or (isinstance(item["id"], str) and _SAFE_LABEL.fullmatch(item["id"]) is not None)
-            )
+            not isinstance(code, str)
+            or code not in _CODES
+            or type(index) is not int
+            or not 0 <= index < MAX_ENTRIES
+            or not isinstance(where, str)
+            or _LOCATION.fullmatch(where) is None
+            or not (sid is None or (isinstance(sid, str) and _SAFE_LABEL.fullmatch(sid)))
         ):
             return None
-        links.append({key: item[key] for key in ("where", "index", "id", "code")})
+        links.append({"where": where, "index": index, "id": sid, "code": code})
     return {"reason": "INVALID_CITATIONS", "invalid_links": links}
 
 

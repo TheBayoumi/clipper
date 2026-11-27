@@ -3308,3 +3308,21 @@ def test_final_beat_citation_errors_carry_actionable_diagnostics() -> None:
         {"where": "beat:beat-001", "index": 0, "id": None, "code": "UNKNOWN_ID"}
     ]
     assert hybrid.retry_feedback(caught.value) is not None
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    (
+        {"where": "source_links", "index": -1, "id": None, "code": "BAD_ROLE"},
+        {"where": "source_links", "index": 10**6, "id": None, "code": "BAD_ROLE"},
+        {"where": "source_links", "index": 0, "id": None, "code": ["BAD_ROLE"]},
+        {"where": "source_links", "index": 0, "id": None, "code": {"a": 1}},
+        {"where": "private-secret-text", "index": 0, "id": None, "code": "BAD_ROLE"},
+        {"where": "source_links", "index": True, "id": None, "code": "BAD_ROLE"},
+        {"where": "source_links", "index": 0, "id": ["s1"], "code": "BAD_ROLE"},
+    ),
+)
+def test_retry_feedback_refuses_malformed_or_untrusted_diagnostics(
+    diagnostic: dict[str, object],
+) -> None:
+    assert hybrid.retry_feedback(hybrid.HybridStop("x", diagnostics=[diagnostic])) is None

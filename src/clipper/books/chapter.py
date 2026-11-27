@@ -1211,6 +1211,7 @@ def _verified_text_artifact(
     max_new_tokens: int,
     *,
     recovery_evidence_only: bool = False,
+    retry_builder: Callable[[dict[str, object]], tuple[dict[str, object], str]] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Require exact raw, validated bytes, schema and exclusive owner on replay."""
     try:
@@ -1266,6 +1267,16 @@ def _verified_text_artifact(
             raise ChapterStop("chapter winning attempt missing bound original rejection")
         attempt_request = saved.get("attempt_request")
         resolved_budget = max_new_tokens
+        if "attempt_request" in saved and attempt_request is None:
+            raise ChapterStop("chapter retry request receipt is malformed")
+        if (
+            attempt_request is None
+            and retry_builder is not None
+            and attempt > 1
+            and not recovery_evidence_only
+        ):
+            # Under feedback-enabled execution a winning retry must carry its receipt.
+            raise ChapterStop("chapter winning retry lacks its request receipt")
         if attempt_request is not None:
             if (
                 attempt != 2
@@ -1306,6 +1317,15 @@ def _verified_text_artifact(
                     != attempt_request["feedback_sha256"]
                 ):
                     raise ChapterStop("chapter retry feedback differs from the original rejection")
+                if retry_builder is not None:
+                    rebuilt, rebuilt_key = retry_builder(expected)
+                    if (
+                        rebuilt_key != attempt_request["request_sha256"]
+                        or rebuilt["max_new_tokens"] != attempt_request["resolved_max_new_tokens"]
+                    ):
+                        raise ChapterStop(
+                            "chapter retry request differs from reconstructed request"
+                        )
         for prior in range(1, attempt):
             _verified_rejected_attempt(
                 root,
@@ -1516,6 +1536,7 @@ def _stage(
             validate,
             plan.max_attempts_per_stage,
             plan.max_new_tokens,
+            retry_builder=retry_builder,
         )
         return validated, artifact_key, provenance, 0
     if replay_only:
@@ -1738,6 +1759,7 @@ def _stage(
             validate,
             plan.max_attempts_per_stage,
             plan.max_new_tokens,
+            retry_builder=retry_builder,
         )
         return verified, verified_key, provenance, index
     raise ChapterStop("chapter stage exhausted bounded attempts")
