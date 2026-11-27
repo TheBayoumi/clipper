@@ -672,7 +672,13 @@ def validate_audit(
     for value in decisions:
         item = _object(value, {"id", "decision", "reason", "evidence"})
         sid = item["id"]
-        if sid not in expected or sid in seen or item["decision"] not in DECISIONS:
+        if (
+            not isinstance(sid, str)
+            or not isinstance(item["decision"], str)
+            or sid not in expected
+            or sid in seen
+            or item["decision"] not in DECISIONS
+        ):
             raise HybridStop("hybrid audit source decision missing or duplicated")
         seen.add(sid)
         _text(item["reason"], 800)
@@ -706,8 +712,7 @@ def reconcile(
     """Use only actual model decisions and explicit grounded amendments."""
     entries = validate_ledger(ledger)
     source = {entry["id"]: entry for entry in entries}
-    if not isinstance(argument, dict):
-        raise HybridStop("hybrid initial argument is absent")
+    validate_argument(argument, ledger)
     windows = audit_windows(ledger)
     if len(audits) != len(windows):
         raise HybridStop("hybrid audits are incomplete")
@@ -725,13 +730,18 @@ def reconcile(
         raise HybridStop("hybrid original source decisions incomplete")
     data = _object(raw, {"argument", "amendments", "resolutions", "beats"})
     _text(data["argument"], 3500)
+    if _is_placeholder(data["argument"]):
+        raise HybridStop("hybrid response repeated a contract placeholder")
     decisions = {sid: dict(value) for sid, value in original.items()}
     edited: set[str] = set()
     for value in _list(data["amendments"], MAX_ENTRIES):
         amendment = _object(value, {"id", "from", "to", "reason", "evidence"})
         sid = amendment["id"]
         if (
-            sid not in decisions
+            not isinstance(sid, str)
+            or not isinstance(amendment["from"], str)
+            or not isinstance(amendment["to"], str)
+            or sid not in decisions
             or sid in edited
             or amendment["from"] != decisions[sid]["decision"]
             or amendment["to"] not in DECISIONS
@@ -756,10 +766,14 @@ def reconcile(
     resolved: set[str] = set()
     for value in _list(data["resolutions"], MAX_AUDITS * 24):
         item = _object(value, {"id", "resolution", "reason", "evidence"})
-        if item["id"] not in disputes or item["id"] in resolved:
+        if not isinstance(item["id"], str) or item["id"] not in disputes or item["id"] in resolved:
             raise HybridStop("hybrid duplicate or unknown audit disagreement")
         resolved.add(item["id"])
-        if item["resolution"] not in {"accepted", "rejected", "qualified"}:
+        if not isinstance(item["resolution"], str) or item["resolution"] not in {
+            "accepted",
+            "rejected",
+            "qualified",
+        }:
             raise HybridStop("unresolved hybrid argument disagreement")
         _text(item["reason"], 800)
         if not _list(item["evidence"], 12):
@@ -872,7 +886,11 @@ def validate_human_review(
     seen: set[str] = set()
     for value in units:
         item = _object(value, {"id", "review", "reason"})
-        if item["id"] not in {entry["id"] for entry in entries} or item["id"] in seen:
+        if (
+            not isinstance(item["id"], str)
+            or item["id"] not in {entry["id"] for entry in entries}
+            or item["id"] in seen
+        ):
             raise HybridStop("hybrid human review omitted original source units")
         if item["review"] != "accept":
             raise HybridStop("hybrid original source decision needs human revision")
@@ -884,7 +902,11 @@ def validate_human_review(
     decided: set[str] = set()
     for value in _list(doc["beat_decisions"], len(beat_ids)):
         item = _object(value, {"beat_id", "review", "reason"})
-        if item["beat_id"] not in beat_ids or item["beat_id"] in decided:
+        if (
+            not isinstance(item["beat_id"], str)
+            or item["beat_id"] not in beat_ids
+            or item["beat_id"] in decided
+        ):
             raise HybridStop("hybrid human beat decisions incomplete")
         if item["review"] != "support_attested":
             raise HybridStop("hybrid semantic beat review rejected source interpretation")

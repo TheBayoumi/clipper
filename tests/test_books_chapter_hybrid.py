@@ -3326,3 +3326,35 @@ def test_retry_feedback_refuses_malformed_or_untrusted_diagnostics(
     diagnostic: dict[str, object],
 ) -> None:
     assert hybrid.retry_feedback(hybrid.HybridStop("x", diagnostics=[diagnostic])) is None
+
+
+def test_reconcile_rejects_placeholder_argument_and_non_string_amendment_fields() -> None:
+    ledger = _ledger()
+    audits = _audit_outputs(ledger)
+    initial = hybrid.validate_argument(_argument(ledger), ledger)
+    echoed = {**_reconciliation(ledger), "argument": "<your final argument>"}
+    with pytest.raises(hybrid.HybridStop, match="placeholder"):
+        hybrid.reconcile(echoed, ledger, initial, audits)
+    for bad in (["s0001"], {"a": 1}, 7):
+        response = {
+            **_reconciliation(ledger),
+            "amendments": [
+                {"id": bad, "from": "x", "to": "y", "reason": "r", "evidence": []},
+            ],
+        }
+        with pytest.raises(hybrid.HybridStop):
+            hybrid.reconcile(response, ledger, initial, audits)
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.reconcile(_reconciliation(ledger), ledger, "not an argument", audits)
+
+
+def test_audit_rejects_non_string_decision_fields_without_type_errors() -> None:
+    ledger = _ledger()
+    window = hybrid.audit_windows(ledger)[0]
+    good = _audit_outputs(ledger)[0]
+    for field in ("id", "decision"):
+        for bad in (["x"], {"a": 1}):
+            raw = json.loads(json.dumps(good))
+            raw["decisions"][0][field] = bad
+            with pytest.raises(hybrid.HybridStop):
+                hybrid.validate_audit(raw, ledger, window)

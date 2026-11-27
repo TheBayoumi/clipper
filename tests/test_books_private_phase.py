@@ -186,3 +186,12 @@ def test_empty_partial_is_not_archive(tmp_path: Path) -> None:
     assert raw is None
     assert report["retention"] == "OUTPUT_NOT_RETAINED"
     assert report["checkpoint_sha256"] is None
+
+
+def test_partial_checkpoint_keeps_room_for_the_failed_phase_report(tmp_path: Path) -> None:
+    base = tmp_path / "book-candidates" / "selected-scopes"
+    base.mkdir(parents=True)
+    for i in range(phase.MAX_FILES):
+        (base / f"{i:064x}.json").write_bytes(b"{}")
+    report, _out = phase.failed_phase(tmp_path, {"owner": "a" * 64}, {})
+    assert report["omitted_members"] >= 1

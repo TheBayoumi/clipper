@@ -353,7 +353,7 @@ def partial_checkpoint(root: Path) -> tuple[bytes | None, int, bool]:
                         not NATIVE_PATH.fullmatch(relative)
                         or not stat.S_ISREG(path.lstat().st_mode)
                         or path.resolve() != path.absolute()
-                        or len(files) >= MAX_FILES
+                        or len(files) >= MAX_FILES - 1
                     ):
                         omitted += 1
                         continue
