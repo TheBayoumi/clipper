@@ -47,6 +47,9 @@ class HybridStop(ValueError):
 
 
 MAX_DIAGNOSTICS = 24
+FIRST_ATTEMPT_SEED = 42
+RETRY_ATTEMPT_SEED = 43
+ALLOWED_SEEDS = (FIRST_ATTEMPT_SEED, RETRY_ATTEMPT_SEED)
 _SAFE_LABEL = re.compile(r"[A-Za-z0-9_:.-]{1,40}")
 _CODES = frozenset(
     {
@@ -364,6 +367,7 @@ def request(
     token_count: Callable[[list[dict[str, str]]], int | dict[str, object]],
     producer_identity: dict[str, object],
     auto_output: bool = False,
+    seed: int = FIRST_ATTEMPT_SEED,
 ) -> tuple[dict[str, object], str, int]:
     """Exact pinned-template preflight supplied by caller, never a byte proxy.
 
@@ -437,6 +441,8 @@ def request(
             output_tokens = model_profile.active().auto_output_tokens(count)
         except model_profile.ModelProfileError as exc:
             raise HybridStop("hybrid prompt leaves too little room for the minimum output") from exc
+    if seed not in ALLOWED_SEEDS or type(seed) is not int:
+        raise HybridStop("hybrid request seed is not a pinned attempt seed")
     if (
         type(count) is not int
         or count < 1
@@ -446,7 +452,7 @@ def request(
     result: dict[str, object] = {
         "model": scripting.SCRIPT_MODEL,
         "revision": scripting.SCRIPT_REVISION,
-        "seed": 42,
+        "seed": seed,
         "max_new_tokens": output_tokens,
         "messages": messages,
         **({"verified_input_encoding": encoding} if encoding is not None else {}),

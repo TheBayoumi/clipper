@@ -3380,3 +3380,26 @@ def test_degenerate_argument_links_fail_with_source_free_diagnostics() -> None:
     assert hybrid.validate_argument(_linked(ledger, mixed), ledger)["source_links"]
     # Small arguments are not judged on mix.
     assert hybrid.validate_argument(_linked(ledger, one_role[:5]), ledger)["source_links"]
+
+
+def test_retry_attempt_uses_its_own_pinned_seed_bound_into_the_request_key() -> None:
+    payload = {"source": hybrid.projection(hybrid.validate_ledger(_ledger()))}
+    identity = {"schema": "runtime-v1", "runtime": "CPU", "producer": "a" * 64}
+
+    def build(seed: int | None = None) -> tuple[dict[str, object], str, int]:
+        extra = {} if seed is None else {"seed": seed}
+        return hybrid.request(
+            "argument",
+            payload,
+            output_tokens=4096,
+            token_count=lambda _m: 7968,
+            producer_identity=identity,
+            **extra,
+        )
+
+    first, first_key, _ = build()
+    retry, retry_key, _ = build(hybrid.RETRY_ATTEMPT_SEED)
+    assert first["seed"] == 42 and retry["seed"] == 43 and first_key != retry_key
+    for bad in (0, 41, 44, True, "42"):
+        with pytest.raises(hybrid.HybridStop, match="seed"):
+            build(bad)  # type: ignore[arg-type]

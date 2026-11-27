@@ -2682,6 +2682,7 @@ def _evaluate_hybrid_chapter(
                     token_count=tokens,
                     producer_identity=_producer,
                     auto_output=_auto,
+                    seed=chapter_hybrid.RETRY_ATTEMPT_SEED,
                 )
             except chapter_hybrid.HybridStop as error:
                 raise ChapterStop("hybrid retry request preflight refused") from error

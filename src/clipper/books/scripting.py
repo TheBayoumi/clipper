@@ -797,7 +797,7 @@ def _chapter_context_tokens(
         request.get("model") != model_profile.active().model
         or request.get("revision") != model_profile.active().revision
         or type(request.get("seed")) is not int
-        or request["seed"] != 42
+        or request["seed"] not in (42, 43)
         or type(request.get("max_new_tokens")) is not int
         or not model_profile.output_bounds()[0]
         <= cast(int, request["max_new_tokens"])
