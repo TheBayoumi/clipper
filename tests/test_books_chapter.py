@@ -2491,7 +2491,7 @@ def test_rejection_without_actionable_feedback_does_not_spend_an_identical_retry
     provider = Mock(return_value='{"ok": false, "plain": 1}')
 
     def validator(raw: object) -> dict:
-        raise chapter_hybrid.HybridStop("plain rejection without diagnostics")
+        raise chapter_hybrid.HybridStop("a rejection whose message is too long to forward " * 8)
 
     builder = Mock()
     with pytest.raises(chapter.ChapterStop, match="no actionable feedback"):

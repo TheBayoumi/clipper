@@ -2917,9 +2917,11 @@ def _evaluate_hybrid_chapter(
             "brief": brief,
             "human_semantic_review": human,
             "response_contract": (
-                "Existing chapter adaptation JSON: throughline, narrative_form, "
-                "choice_reason, beats, characters, locations, props. "
-                "Each beat retained with reason, qualification paraphrase and fiction label."
+                "Existing chapter adaptation JSON with exactly these top-level keys: throughline, "
+                "narrative_form, choice_reason, beats, characters, locations, props. "
+                "Each beat has exactly: beat_id, decision (keep, compress or omit), reason, "
+                "qualification, illustration (BOOK_GROUNDED or INVENTED_ILLUSTRATION). "
+                "Each character, location and prop has exactly: id, name, initial_state."
             ),
         },
         lambda raw: chapter_hybrid.validate_adaptation(raw, brief, stage_plan("adaptation")),
@@ -2941,9 +2943,16 @@ def _evaluate_hybrid_chapter(
             "human_semantic_review": human,
             "adaptation": treatment,
             "response_contract": (
-                "Existing chapter connected multi-scene script JSON: title, scenes "
-                "with scene graph links, narration, actions, beat_ids, dialogue and "
-                "fiction labels. Preserve factual meaning; paraphrase is allowed."
+                "Existing chapter connected multi-scene script JSON with top-level keys title "
+                "and scenes. Each scene has exactly: scene_id (scene-01, scene-02, ... in "
+                "order), previous_id (null for the first scene, else the prior scene_id), "
+                "next_id (null for the last scene, else the next scene_id), purpose, action, "
+                "environment_id (a location id from the adaptation), narration, dialogue "
+                "(a list of at most 2 objects with exactly speaker_id, text, fiction_label "
+                "INVENTED_DIALOGUE; empty unless illustration_label is INVENTED_ILLUSTRATION), "
+                "beat_ids (kept or compressed beat ids), illustration_label (SOURCE_ACCOUNT or "
+                "INVENTED_ILLUSTRATION), transition, consequence. "
+                "Preserve factual meaning; paraphrase is allowed."
             ),
         },
         lambda raw: chapter_hybrid.validate_script(raw, treatment, brief, stage_plan("script")),

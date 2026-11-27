@@ -328,6 +328,19 @@ def _messages(stage: str, payload: dict[str, object]) -> list[dict[str, str]]:
             f"{_json(feedback)}. Write the whole answer again and cite only ids that appear "
             "in the input above."
         )
+        if "DEGENERATE_LINKS" in _json(feedback):
+            guidance += (
+                f" Code DEGENERATE_LINKS means the {MIN_LINKS_FOR_DEGENERACY} or more links were "
+                f"too concentrated: more than {MAX_TOP_UNIT_SHARE:.0%} cited one unit, or more "
+                f"than {MAX_TOP_ROLE_SHARE:.0%} used one role. Cite more distinct units and "
+                "choose each role from what that unit does; use COUNTEREXAMPLE or "
+                "QUALIFICATION where the source contains them."
+            )
+        if isinstance(feedback, dict) and feedback.get("reason") == "STRUCTURE_INVALID":
+            guidance = guidance.replace(
+                "These citations were invalid (where, index, id, code; no text is shown): ",
+                "It broke the response contract: ",
+            )
     user = (
         f"{_INPUT_MARK}{_json(data)}{_TASK_MARK} write the {stage} answer for the input above.\n"
         f"{shape}\n{guidance}\nNow write the JSON object."
@@ -352,7 +365,11 @@ def retry_feedback(error: BaseException) -> dict[str, object] | None:
         return None
     diagnostics = error.diagnostics
     if not isinstance(diagnostics, list) or not diagnostics:
-        return None
+        # Validator messages are fixed, code-authored strings, never model text.
+        message = str(error)
+        if not message or len(message) > 200 or not message.isprintable():
+            return None
+        return {"reason": "STRUCTURE_INVALID", "message": message}
     links: list[dict[str, object]] = []
     for item in diagnostics[:MAX_DIAGNOSTICS]:
         if not isinstance(item, dict) or set(item) != {"where", "index", "id", "code"}:

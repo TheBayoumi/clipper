@@ -3213,7 +3213,13 @@ def test_rejection_reports_source_free_per_citation_diagnostics() -> None:
     assert feedback is not None and feedback["reason"] == "INVALID_CITATIONS"
     assert "ATTACKER-TEXT" not in json.dumps(feedback)
     assert len(feedback["invalid_links"]) == 4
-    assert hybrid.retry_feedback(hybrid.HybridStop("plain")) is None
+    # A message-only stop carries its fixed, code-authored message as structure feedback.
+    assert hybrid.retry_feedback(hybrid.HybridStop("plain")) == {
+        "reason": "STRUCTURE_INVALID",
+        "message": "plain",
+    }
+    assert hybrid.retry_feedback(hybrid.HybridStop("x" * 201)) is None
+    assert hybrid.retry_feedback(hybrid.HybridStop("bad\nmessage")) is None
     assert hybrid.retry_feedback(ValueError("x")) is None
 
 
