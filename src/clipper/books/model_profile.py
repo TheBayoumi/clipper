@@ -49,6 +49,11 @@ class ModelProfile:
     min_output_tokens: int = 1_024
 
     def __post_init__(self) -> None:
+        if not all(
+            isinstance(value, str)
+            for value in (self.name, self.model, self.revision, self.tokenizer_json_sha256)
+        ):
+            raise ModelProfileError("profile name, model, revision and tokenizer hash must be text")
         if not _NAME.fullmatch(self.name):
             raise ModelProfileError("profile name invalid")
         if not self.model or "/" not in self.model or self.model != self.model.strip():

@@ -110,6 +110,8 @@ def freeze(
         raise HybridStop("selected chapter work/gap cardinality exceeds finite cap")
     by_id: dict[str, dict[str, Any]] = {}
     for item in sources:
+        if not isinstance(item, dict):
+            raise HybridStop("selected chapter original source entry is malformed")
         sid = item.get("source_id")
         if not isinstance(sid, str) or not sid or sid in by_id:
             raise HybridStop("selected chapter original source IDs are not unique")
@@ -121,6 +123,8 @@ def freeze(
         elif item.get("kind") != "UNRECOVERED_OR_EMPTY_SOURCE_MARKER" or item["text"]:
             raise HybridStop("selected chapter gap has unsupported source content")
         by_id[sid] = item
+    if not all(isinstance(sid, str) for sid in reading_order):
+        raise HybridStop("selected chapter source traversal is incomplete or reordered")
     if set(reading_order) != set(by_id) or len(set(reading_order)) != len(reading_order):
         raise HybridStop("selected chapter source traversal is incomplete or reordered")
     entries: list[dict[str, Any]] = []
@@ -180,6 +184,8 @@ def validate_ledger(ledger: dict[str, Any]) -> list[dict[str, Any]]:
             or not isinstance(entry.get("source_id"), str)
             or entry["source_id"] in seen
             or entry.get("order") != index
+            or not isinstance(entry.get("kind"), str)
+            or not {"origin", "review_status", "research_link_status"} <= set(entry)
             or not isinstance(entry.get("text"), str)
             or hashlib.sha256(entry["text"].encode("utf-8")).hexdigest() != entry.get("text_sha256")
         ):

@@ -588,7 +588,8 @@ def _script_validate(
             "chapter scene schema",
         )
         if (
-            scene["scene_id"] != f"scene-{i + 1:02d}"
+            not isinstance(scene["environment_id"], str)
+            or scene["scene_id"] != f"scene-{i + 1:02d}"
             or scene["previous_id"] != (f"scene-{i:02d}" if i else None)
             or scene["next_id"] != (f"scene-{i + 2:02d}" if i + 1 < len(scenes) else None)
             or scene["environment_id"] not in locations
@@ -596,11 +597,15 @@ def _script_validate(
             raise ChapterStop("chapter scene graph has broken links or locations")
         for key in ("purpose", "action", "narration", "transition", "consequence"):
             _words(scene[key], "chapter scene needs causal narrative content", 3200)
-        if scene["illustration_label"] not in {"SOURCE_ACCOUNT", "INVENTED_ILLUSTRATION"}:
+        if not isinstance(scene["illustration_label"], str) or scene["illustration_label"] not in {
+            "SOURCE_ACCOUNT",
+            "INVENTED_ILLUSTRATION",
+        }:
             raise ChapterStop("chapter illustration factual/fiction label missing")
         beat_ids = _items(scene["beat_ids"], len(allowed), "chapter scene source coverage")
         if (
             not beat_ids
+            or not all(isinstance(bid, str) for bid in beat_ids)
             or len(set(beat_ids)) != len(beat_ids)
             or any(bid not in allowed for bid in beat_ids)
         ):
@@ -629,8 +634,10 @@ def _script_validate(
             utterance = _shape(
                 spoken, {"speaker_id", "text", "fiction_label"}, "chapter dialogue schema"
             )
-            if utterance["speaker_id"] not in characters or (
-                utterance["fiction_label"] != "INVENTED_DIALOGUE"
+            if (
+                not isinstance(utterance["speaker_id"], str)
+                or (utterance["speaker_id"] not in characters)
+                or (utterance["fiction_label"] != "INVENTED_DIALOGUE")
             ):
                 raise ChapterStop("chapter dialogue has unknown voice/fiction authority")
             _words(utterance["text"], "chapter dialogue must be substantive", 800)
