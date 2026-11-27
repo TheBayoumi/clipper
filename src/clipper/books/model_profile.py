@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _REVISION = re.compile(r"[0-9a-f]{40}\Z")
@@ -29,6 +29,24 @@ _NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
 
 class ModelProfileError(ValueError):
     """Raised for an invalid or unknown model profile."""
+
+
+def _freeze(value: Any) -> Any:
+    """Deep-freeze nested containers: mappings to read-only proxies, lists to tuples."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({k: _freeze(v) for k, v in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(v) for v in value)
+    return value
+
+
+def _thaw(value: Any) -> Any:
+    """Fresh mutable copy of a frozen value, safe to hand to callers."""
+    if isinstance(value, Mapping):
+        return {k: _thaw(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_thaw(v) for v in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -84,20 +102,16 @@ class ModelProfile:
             or not 0 <= self.output_margin_tokens < self.safe_context_tokens
         ):
             raise ModelProfileError("profile output budget must fit inside the safe context")
-        object.__setattr__(
-            self, "chat_template_kwargs", MappingProxyType(dict(self.chat_template_kwargs))
-        )
-        object.__setattr__(
-            self, "generation_settings", MappingProxyType(dict(self.generation_settings))
-        )
+        object.__setattr__(self, "chat_template_kwargs", _freeze(self.chat_template_kwargs))
+        object.__setattr__(self, "generation_settings", _freeze(self.generation_settings))
 
     @property
     def template_kwargs(self) -> dict[str, Any]:
-        return dict(self.chat_template_kwargs)
+        return cast(dict[str, Any], _thaw(self.chat_template_kwargs))
 
     @property
     def sampling(self) -> dict[str, Any]:
-        return dict(self.generation_settings)
+        return cast(dict[str, Any], _thaw(self.generation_settings))
 
     @property
     def fingerprint(self) -> str:
@@ -110,8 +124,8 @@ class ModelProfile:
             "context_window": self.context_window,
             "tokenizer_max_length": self.tokenizer_max_length,
             "safe_context_tokens": self.safe_context_tokens,
-            "chat_template_kwargs": dict(self.chat_template_kwargs),
-            "generation_settings": dict(self.generation_settings),
+            "chat_template_kwargs": _thaw(self.chat_template_kwargs),
+            "generation_settings": _thaw(self.generation_settings),
             "max_output_tokens": self.max_output_tokens,
             "output_margin_tokens": self.output_margin_tokens,
             "min_output_tokens": self.min_output_tokens,
