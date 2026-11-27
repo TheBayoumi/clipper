@@ -3358,3 +3358,25 @@ def test_audit_rejects_non_string_decision_fields_without_type_errors() -> None:
             raw["decisions"][0][field] = bad
             with pytest.raises(hybrid.HybridStop):
                 hybrid.validate_audit(raw, ledger, window)
+
+
+def _linked(ledger: dict[str, object], links: list[dict[str, object]]) -> dict[str, object]:
+    return {**_argument(ledger), "source_links": links}
+
+
+def test_degenerate_argument_links_fail_with_source_free_diagnostics() -> None:
+    ledger = _ledger()
+    roles = ["ASSERTION", "AUTHOR_EXAMPLE", "COUNTEREXAMPLE", "QUALIFICATION"]
+    one_unit = [{"id": "s0003", "start": 0, "end": 3 + i, "role": roles[i % 4]} for i in range(7)]
+    one_role = [{"id": f"s{n:04d}", "start": 0, "end": 3, "role": "ASSERTION"} for n in range(2, 9)]
+    mixed = [{"id": f"s{n:04d}", "start": 0, "end": 3, "role": roles[n % 4]} for n in range(2, 9)]
+    for links in (one_unit, one_role):
+        with pytest.raises(hybrid.HybridStop, match="degenerate") as caught:
+            hybrid.validate_argument(_linked(ledger, links), ledger)
+        assert caught.value.diagnostics == [
+            {"where": "source_links", "index": 0, "id": None, "code": "DEGENERATE_LINKS"}
+        ]
+        assert hybrid.retry_feedback(caught.value) is not None
+    assert hybrid.validate_argument(_linked(ledger, mixed), ledger)["source_links"]
+    # Small arguments are not judged on mix.
+    assert hybrid.validate_argument(_linked(ledger, one_role[:5]), ledger)["source_links"]

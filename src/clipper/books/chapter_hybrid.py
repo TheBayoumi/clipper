@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import Counter
 from collections.abc import Callable
 from typing import Any
 
@@ -59,6 +60,7 @@ _CODES = frozenset(
         "QUOTE_AMBIGUOUS",
         "SPAN_TOO_LONG",
         "BAD_OFFSETS",
+        "DEGENERATE_LINKS",
     }
 )
 
@@ -641,6 +643,31 @@ def reject_template_echo(raw: object) -> None:
         raise HybridStop("hybrid response repeated a contract placeholder")
 
 
+MIN_LINKS_FOR_DEGENERACY = 6
+MAX_TOP_UNIT_SHARE = 0.5
+MAX_TOP_ROLE_SHARE = 0.8
+
+
+def reject_degenerate_links(links: list[dict[str, Any]], where: str) -> None:
+    """Fail closed when most citations hit one source unit or all share one role.
+
+    A real argument over a chapter cites several units with a mix of roles. Counts
+    only; no text is read or reported.
+    """
+    if len(links) < MIN_LINKS_FOR_DEGENERACY:
+        return
+    units = Counter(link["id"] for link in links)
+    roles = Counter(link["role"] for link in links)
+    if (
+        max(units.values()) / len(links) > MAX_TOP_UNIT_SHARE
+        or max(roles.values()) / len(links) > MAX_TOP_ROLE_SHARE
+    ):
+        raise HybridStop(
+            "hybrid citations are degenerate: most links cite one unit or one role",
+            diagnostics=[{"where": where, "index": 0, "id": None, "code": "DEGENERATE_LINKS"}],
+        )
+
+
 def validate_argument(raw: object, ledger: dict[str, Any]) -> dict[str, Any]:
     reject_template_echo(raw)
     data = _object(raw, {"hypothesis", "questions", "source_links"})
@@ -653,6 +680,7 @@ def validate_argument(raw: object, ledger: dict[str, Any]) -> dict[str, Any]:
     if not links:
         raise HybridStop("revisable argument has no source-linked hypothesis")
     links[:] = _canonical_spans(links, source, "source_links")
+    reject_degenerate_links(links, "source_links")
     return data
 
 
