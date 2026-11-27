@@ -257,3 +257,16 @@ require human review; no images/video are generated here.
 Reviewed KEEP/COMPRESS source units retain at least one beat through adaptation
 and script coverage, regardless of whether their last beat was designated
 essential; changing that disposition requires a new brief and human review.
+
+## Argument stage input checks (model-free)
+
+- The argument may cite at most 24 `source_links`. More is rejected with the code
+  `TOO_MANY_LINKS` and the retry prompt names the limit.
+- When a retry follows invalid citations, the links that already passed are sent back as
+  bare id and role (never a quote) with the instruction to keep them. This is computed
+  from the rejected reply alone, so replay stays deterministic.
+- One outer wrapper object is removed when it is the only key and is named `argument`,
+  `answer`, `response`, `result` or `output`. Double wrappers, wrappers with other keys and
+  other names are still rejected. No text-level (code fence) stripping is done.
+- The argument request text changed, so request hashes moved. Journals of failed attempts
+  written before this change cannot be resumed under the new code.

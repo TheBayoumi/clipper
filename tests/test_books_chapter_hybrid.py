@@ -3276,10 +3276,11 @@ def test_repeated_legacy_offset_citations_keep_their_historical_normalized_form(
 
 def test_retry_feedback_is_bounded_sanitized_and_renders_into_a_distinct_request() -> None:
     ledger = _ledger(25)
-    argument = _argument(ledger)
-    argument["source_links"] = [{"id": "nope", "role": "ASSERTION"}] * 60
+    # The argument stage caps links at MAX_ARGUMENT_LINKS, so the diagnostics bound is
+    # exercised on the shared canonicalizer with more citations than the bound.
+    entries = {entry["id"]: entry for entry in hybrid.validate_ledger(ledger)}
     with pytest.raises(hybrid.HybridStop) as caught:
-        hybrid.validate_argument(argument, ledger)
+        hybrid._canonical_spans([{"id": "nope", "role": "ASSERTION"}] * 60, entries, "source_links")
     feedback = hybrid.retry_feedback(caught.value)
     assert feedback is not None and len(feedback["invalid_links"]) == hybrid.MAX_DIAGNOSTICS
     payload = {"response_contract": {"hypothesis": "<h>"}, "original_source": [{"id": "s0001"}]}

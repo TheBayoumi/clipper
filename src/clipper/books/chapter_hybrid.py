@@ -25,6 +25,7 @@ MAX_SOURCE_BYTES = 512_000
 MAX_AUDITS = 16
 MAX_CORE_UNITS = 12
 MAX_BEATS = 128
+MAX_ARGUMENT_LINKS = 24
 MAX_SPANS_PER_BEAT = 24
 MAX_AUDIT_RAW_BYTES = 100_000
 CHAT_TEMPLATE_CONTRACT = "pinned-qwen-chat-enable-thinking-false-v1"
@@ -41,9 +42,18 @@ class HybridStop(ValueError):
     carries model text and is not part of the error message.
     """
 
-    def __init__(self, message: str, *, diagnostics: list[dict[str, object]] | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostics: list[dict[str, object]] | None = None,
+        kept_links: list[dict[str, object]] | None = None,
+    ):
         super().__init__(message)
         self.diagnostics = diagnostics or []
+        # Argument links that passed the source check, as bare id and role (no quote),
+        # so a retry can keep them. Computed from the rejected response only.
+        self.kept_links = kept_links or []
 
 
 MAX_DIAGNOSTICS = 24
@@ -66,6 +76,7 @@ _CODES = frozenset(
         "SPAN_TOO_LONG",
         "BAD_OFFSETS",
         "DEGENERATE_LINKS",
+        "TOO_MANY_LINKS",
     }
 )
 
@@ -261,7 +272,9 @@ _STAGE_GUIDANCE = {
         "be copied exactly, once, from that unit's text. role is exactly one of ASSERTION, "
         "AUTHOR_EXAMPLE, COUNTEREXAMPLE or QUALIFICATION, chosen per unit from what that "
         "unit does in the argument. Link counterexamples and author qualifications "
-        "whenever the source contains them, not only assertions."
+        "whenever the source contains them, not only assertions. "
+        f"Use at most {MAX_ARGUMENT_LINKS} source_links: one per distinct unit that carries "
+        "the argument, not one per unit of the chapter."
     ),
     "audit": (
         "Give exactly one decision for every core id. A core id whose source is an "
@@ -322,12 +335,27 @@ def _messages(stage: str, payload: dict[str, object]) -> list[dict[str, str]]:
         )
     guidance = _STAGE_GUIDANCE.get(stage, "")
     if feedback is not None:
+        kept = feedback.get("kept_links") if isinstance(feedback, dict) else None
+        shown: object = feedback
+        if kept and isinstance(feedback, dict):
+            shown = {key: value for key, value in feedback.items() if key != "kept_links"}
         guidance += (
             "\nYour previous answer was rejected by the source check. These citations were "
             "invalid (where, index, id, code; no text is shown): "
-            f"{_json(feedback)}. Write the whole answer again and cite only ids that appear "
+            f"{_json(shown)}. Write the whole answer again and cite only ids that appear "
             "in the input above."
         )
+        if kept:
+            guidance += (
+                " These links already passed the source check, so keep them exactly as "
+                f"written (id and role): {_json(kept)}. Fix or replace only the invalid "
+                f"ones, and keep the total at most {MAX_ARGUMENT_LINKS}."
+            )
+        if "TOO_MANY_LINKS" in _json(feedback):
+            guidance += (
+                f" Code TOO_MANY_LINKS means you wrote more than {MAX_ARGUMENT_LINKS} "
+                f"links. Write at most {MAX_ARGUMENT_LINKS}."
+            )
         if "DEGENERATE_LINKS" in _json(feedback):
             guidance += (
                 f" Code DEGENERATE_LINKS means the {MIN_LINKS_FOR_DEGENERACY} or more links were "
@@ -386,7 +414,20 @@ def retry_feedback(error: BaseException) -> dict[str, object] | None:
         ):
             return None
         links.append({"where": where, "index": index, "id": sid, "code": code})
-    return {"reason": "INVALID_CITATIONS", "invalid_links": links}
+    feedback: dict[str, object] = {"reason": "INVALID_CITATIONS", "invalid_links": links}
+    kept: list[dict[str, object]] = []
+    for item in error.kept_links[:MAX_ARGUMENT_LINKS]:
+        if (
+            isinstance(item, dict)
+            and set(item) == {"id", "role"}
+            and isinstance(item["id"], str)
+            and _SAFE_LABEL.fullmatch(item["id"])
+            and item["role"] in SPAN_ROLES
+        ):
+            kept.append({"id": item["id"], "role": item["role"]})
+    if kept:
+        feedback["kept_links"] = kept
+    return feedback
 
 
 def request(
@@ -625,6 +666,7 @@ def _canonical_spans(
     out: list[dict[str, Any]] = []
     ref_spans: list[dict[str, Any]] = []
     failures: list[dict[str, object]] = []
+    kept: list[dict[str, object]] = []
     first: HybridStop | None = None
     for index, raw in enumerate(spans):
         try:
@@ -643,6 +685,10 @@ def _canonical_spans(
                     }
                 )
             continue
+        if where == "source_links" and len(kept) < MAX_ARGUMENT_LINKS:
+            link = {"id": span["id"], "role": span["role"]}
+            if link not in kept:
+                kept.append(link)
         # Only repeated id-reference citations are collapsed; legacy offset artifacts
         # keep their historical normalized form byte for byte.
         is_ref = isinstance(raw, dict) and "start" not in raw
@@ -654,7 +700,7 @@ def _canonical_spans(
             ref_spans.append(span)
         out.append(span)
     if first is not None:
-        raise HybridStop(str(first), diagnostics=failures)
+        raise HybridStop(str(first), diagnostics=failures, kept_links=kept)
     return out
 
 
@@ -712,7 +758,24 @@ def reject_degenerate_links(links: list[dict[str, Any]], where: str) -> None:
         )
 
 
+_WRAPPER_KEYS = frozenset({"argument", "answer", "response", "result", "output"})
+
+
+def unwrap_response(raw: object) -> object:
+    """Remove one outer wrapper object a small model sometimes adds around its answer.
+
+    Only a single-key object whose key is in a fixed list and whose value is an object is
+    unwrapped, once. Anything else is returned unchanged and judged by the normal checks.
+    """
+    if isinstance(raw, dict) and len(raw) == 1:
+        (key, value), *_ = raw.items()
+        if key in _WRAPPER_KEYS and isinstance(value, dict):
+            return value
+    return raw
+
+
 def validate_argument(raw: object, ledger: dict[str, Any]) -> dict[str, Any]:
+    raw = unwrap_response(raw)
     reject_template_echo(raw)
     data = _object(raw, {"hypothesis", "questions", "source_links"})
     _text(data["hypothesis"], 3000)
@@ -723,6 +786,18 @@ def validate_argument(raw: object, ledger: dict[str, Any]) -> dict[str, Any]:
     links = _list(data["source_links"], MAX_ENTRIES)
     if not links:
         raise HybridStop("revisable argument has no source-linked hypothesis")
+    if len(links) > MAX_ARGUMENT_LINKS:
+        raise HybridStop(
+            "revisable argument cites more source links than the argument limit",
+            diagnostics=[
+                {
+                    "where": "source_links",
+                    "index": MAX_ARGUMENT_LINKS,
+                    "id": None,
+                    "code": "TOO_MANY_LINKS",
+                }
+            ],
+        )
     links[:] = _canonical_spans(links, source, "source_links")
     reject_degenerate_links(links, "source_links")
     return data
