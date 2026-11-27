@@ -2550,6 +2550,7 @@ def test_replay_requires_and_rebuilds_the_retry_request_receipt(tmp_path: Path) 
     path.write_bytes(original)
     assert chapter._stage(*args, _feedback_validator, provider, retry_builder=builder)[3] == 0
 
+
 def test_recorded_rejection_that_now_validates_cannot_replay(tmp_path: Path) -> None:
     """A recorded rejection that passes the original validator on replay is forgery."""
     root = tmp_path / "private"
