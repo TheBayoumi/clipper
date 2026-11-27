@@ -2642,6 +2642,7 @@ def _evaluate_hybrid_chapter(
                 else value
             )
             for key, value in semantic.items()
+            if key != "argument_batch_tokens"
         }
         return replace(limits, **overrides)
 
@@ -2654,9 +2655,11 @@ def _evaluate_hybrid_chapter(
         *,
         replay_only: bool = False,
     ) -> tuple[dict[str, Any], str, str, int]:
-        config_name = {"audit": "audits", "chapter_script": "script"}.get(
-            request_stage, request_stage
-        )
+        config_name = {
+            "audit": "audits",
+            "chapter_script": "script",
+            "argument_batch": "argument",
+        }.get(request_stage, request_stage)
         effective = stage_plan(config_name)
         stage_producer = producer
         local_limits: dict[str, object] | None = None
@@ -2739,14 +2742,87 @@ def _evaluate_hybrid_chapter(
         return result
 
     replay = expected_brief_identity is not None
-    projection = chapter_hybrid.projection(chapter_hybrid.validate_ledger(ledger))
+    ledger_entries = chapter_hybrid.validate_ledger(ledger)
+    projection = chapter_hybrid.projection(ledger_entries)
+    argument_projection = projection
+    argument_extra: dict[str, object] = {}
+    batch_origins: list[str] = []
+    batch_tokens = (
+        configured["stages"]["argument"]["semantic"].get("argument_batch_tokens", 0)
+        if configured is not None
+        else 0
+    )
+    if batch_tokens:
+        # Dynamic batches: window edges come from the exact pinned-tokenizer size of each
+        # rendered request, so they follow the active profile and the configured budget.
+        batch_contract = {
+            "points": [chapter_hybrid.POINT_PLACEHOLDER],
+            "source_links": [
+                {
+                    "id": "<an id from original_source>",
+                    "role": "<one of ASSERTION, AUTHOR_EXAMPLE, COUNTEREXAMPLE, QUALIFICATION>",
+                }
+            ],
+        }
+
+        def batch_payload(window: list[dict[str, Any]], quota: int) -> dict[str, object]:
+            return {
+                "schema": chapter_hybrid.ARGUMENT_BATCH_SCHEMA,
+                "ledger_sha256": ledger["ledger_sha256"],
+                "original_source": chapter_hybrid.projection(window),
+                "max_source_links": quota,
+                "response_contract": batch_contract,
+            }
+
+        def batch_size(window: list[dict[str, Any]]) -> int:
+            counted = tokens(
+                chapter_hybrid._messages(
+                    "argument_batch", batch_payload(window, chapter_hybrid.MAX_ARGUMENT_LINKS)
+                )
+            )
+            return len(counted["token_ids"]) if isinstance(counted, dict) else int(counted)  # type: ignore[arg-type]
+
+        try:
+            batch_windows = chapter_hybrid.argument_batches(
+                ledger_entries, budget=batch_tokens, count=batch_size
+            )
+        except chapter_hybrid.HybridStop as error:
+            raise ChapterStop("hybrid argument batching refused") from error
+        quota = chapter_hybrid.argument_batch_quota(len(batch_windows))
+        batch_results: list[dict[str, Any]] = []
+
+        def validate_batch(raw: object, ids: list[str]) -> dict[str, Any]:
+            return chapter_hybrid.validate_argument_batch(raw, ledger, ids)
+
+        for batch_window in batch_windows:
+            window_ids = [entry["id"] for entry in batch_window]
+            result_batch, _key, origin_batch, _tries = stage(
+                "hybrid_argument_batch",
+                "argument_batch",
+                batch_payload(batch_window, quota),
+                partial(validate_batch, ids=window_ids),
+                argument_completion,
+                replay_only=replay,
+            )
+            batch_results.append(result_batch)
+            batch_origins.append(origin_batch)
+        try:
+            merged = chapter_hybrid.merge_argument_batches(batch_results, quota=quota)
+        except chapter_hybrid.HybridStop as error:
+            raise ChapterStop("hybrid argument batches produced no source links") from error
+        chosen = set(merged["candidate_ids"])
+        argument_projection = chapter_hybrid.projection(
+            [entry for entry in ledger_entries if entry["id"] in chosen]
+        )
+        argument_extra = {"batch_points": merged["points"]}
     argument, argument_key, argument_origin, argument_attempts = stage(
         "hybrid_argument",
         "argument",
         {
             "schema": chapter_hybrid.ARGUMENT_SCHEMA,
             "ledger_sha256": ledger["ledger_sha256"],
-            "original_source": projection,
+            "original_source": argument_projection,
+            **argument_extra,
             "response_contract": {
                 "hypothesis": chapter_hybrid.HYPOTHESIS_PLACEHOLDER,
                 "questions": [chapter_hybrid.QUESTION_PLACEHOLDER],
@@ -2762,6 +2838,8 @@ def _evaluate_hybrid_chapter(
         argument_completion,
         replay_only=replay,
     )
+    if any(origin != argument_origin for origin in batch_origins):
+        raise ChapterStop("argument batch provenance differs from argument")
     audits: list[dict[str, Any]] = []
     audit_keys: list[str] = []
     audit_attempts = 0

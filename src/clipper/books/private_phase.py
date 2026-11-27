@@ -39,7 +39,7 @@ NATIVE_PATH = re.compile(
     r"failed-phase\.json|"
     r"selected-scopes/[0-9a-f]{64}\.json|"
     r"section-scopes/[0-9a-f]{64}\.json|"
-    r"(?:hybrid_argument|hybrid_audit|hybrid_reconcile|adaptation|chapter_script)/"
+    r"(?:hybrid_argument_batch|hybrid_argument|hybrid_audit|hybrid_reconcile|adaptation|chapter_script)/"
     r"[0-9a-f]{64}/(?:validated|started-[12]|raw-[12]|failed-[12]|"
     r"log-[0-9a-f]{32})\.json|"
     r"chapter-evaluations/[0-9a-f]{64}/(?:source-ledger|"

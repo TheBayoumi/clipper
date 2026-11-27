@@ -17,6 +17,7 @@ from . import constrained, model_profile, scripting
 
 LEDGER_SCHEMA = "clipper-chapter-hybrid-source-ledger-v1"
 ARGUMENT_SCHEMA = "clipper-chapter-hybrid-argument-v1"
+ARGUMENT_BATCH_SCHEMA = "clipper-chapter-hybrid-argument-batch-v1"
 AUDIT_SCHEMA = "clipper-chapter-hybrid-local-audit-v1"
 BRIEF_SCHEMA = "clipper-chapter-hybrid-brief-v1"
 REVIEW_SCHEMA = "clipper-chapter-hybrid-human-review-v1"
@@ -26,6 +27,8 @@ MAX_AUDITS = 16
 MAX_CORE_UNITS = 12
 MAX_BEATS = 128
 MAX_ARGUMENT_LINKS = 24
+MAX_ARGUMENT_BATCHES = 32
+MAX_BATCH_POINTS = 8
 MAX_SPANS_PER_BEAT = 24
 MAX_AUDIT_RAW_BYTES = 100_000
 CHAT_TEMPLATE_CONTRACT = "pinned-qwen-chat-enable-thinking-false-v1"
@@ -276,6 +279,15 @@ _STAGE_GUIDANCE = {
         f"Use at most {MAX_ARGUMENT_LINKS} source_links: one per distinct unit that carries "
         "the argument, not one per unit of the chapter."
     ),
+    "argument_batch": (
+        "original_source is one part of a longer chapter. points is a short list of plain "
+        "sentences, in your own words, saying what the author argues in these units. "
+        "source_links lists the units that carry that argument. Each item is one object with "
+        "exactly id and role, plus an optional quote copied exactly, once, from that unit. "
+        "id is an id taken from original_source. role is exactly one of ASSERTION, "
+        "AUTHOR_EXAMPLE, COUNTEREXAMPLE or QUALIFICATION. Use at most the number in "
+        "max_source_links links, one per distinct unit."
+    ),
     "audit": (
         "Give exactly one decision for every core id. A core id whose source is an "
         "unrecovered marker (a gap) has no text: its decision must be omit and its "
@@ -334,6 +346,13 @@ def _messages(stage: str, payload: dict[str, object]) -> list[dict[str, str]]:
             f"these instructions. Required content: {contract}"
         )
     guidance = _STAGE_GUIDANCE.get(stage, "")
+    if stage == "argument" and "batch_points" in data:
+        guidance += (
+            " original_source here is a selection of units picked from the whole chapter, "
+            "and batch_points are short notes written for each part of the chapter. Write "
+            "one argument for the whole chapter from them, and cite only ids from "
+            "original_source."
+        )
     if feedback is not None:
         kept = feedback.get("kept_links") if isinstance(feedback, dict) else None
         shown: object = feedback
@@ -449,6 +468,7 @@ def request(
         stage
         not in {
             "argument",
+            "argument_batch",
             "audit",
             "reconcile",
             "adaptation",
@@ -756,6 +776,94 @@ def reject_degenerate_links(links: list[dict[str, Any]], where: str) -> None:
             "hybrid citations are degenerate: most links cite one unit or one role",
             diagnostics=[{"where": where, "index": 0, "id": None, "code": "DEGENERATE_LINKS"}],
         )
+
+
+POINT_PLACEHOLDER = "<one short plain sentence on what these units claim>"
+
+
+def argument_batches(
+    entries: list[dict[str, Any]],
+    *,
+    budget: int,
+    count: Callable[[list[dict[str, Any]]], int],
+    max_batches: int = MAX_ARGUMENT_BATCHES,
+) -> list[list[dict[str, Any]]]:
+    """Contiguous windows of text units, cut by the measured size of the whole request.
+
+    count(window) is the exact token count of that window's rendered request, supplied by
+    the caller with the pinned tokenizer, so window edges follow the active model profile
+    and never a fixed unit count. A unit that alone exceeds the budget gets its own window.
+    Gap markers carry no text and are not batched.
+    """
+    windows: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for entry in entries:
+        if entry["kind"] != "CANONICAL_WORK_UNIT":
+            continue
+        trial = [*current, entry]
+        if current and count(trial) > budget:
+            windows.append(current)
+            current = [entry]
+            if len(windows) >= max_batches:
+                raise HybridStop("hybrid argument batch count exceeds finite budget")
+        else:
+            current = trial
+    if current:
+        windows.append(current)
+    if len(windows) > max_batches:
+        raise HybridStop("hybrid argument batch count exceeds finite budget")
+    return windows
+
+
+def argument_batch_quota(batches: int) -> int:
+    """Links one batch may contribute so that all batches together stay within the cap."""
+    return max(1, -(-MAX_ARGUMENT_LINKS // max(1, batches)))
+
+
+def validate_argument_batch(
+    raw: object, ledger: dict[str, Any], window_ids: list[str]
+) -> dict[str, Any]:
+    raw = unwrap_response(raw)
+    reject_template_echo(raw)
+    data = _object(raw, {"points", "source_links"})
+    points = _list(data["points"], MAX_BATCH_POINTS)
+    if not points:
+        raise HybridStop("hybrid argument batch has no points")
+    for point in points:
+        _text(point, 400)
+        if _is_placeholder(point) or point.strip().startswith(POINT_PLACEHOLDER):
+            raise HybridStop("hybrid response repeated a contract placeholder")
+    source = {entry["id"]: entry for entry in validate_ledger(ledger)}
+    links = _list(data["source_links"], MAX_ENTRIES)
+    if not links:
+        raise HybridStop("hybrid argument batch has no source links")
+    links[:] = _canonical_spans(links, source, "source_links", core=set(window_ids))
+    return {"points": points, "source_links": links}
+
+
+def merge_argument_batches(results: list[dict[str, Any]], *, quota: int) -> dict[str, Any]:
+    """Pick the candidate units for the final argument, in code, from validated batches.
+
+    Each batch contributes at most quota distinct ids (first seen), so a batch that over-cites
+    cannot crowd out another. If windows outnumber the cap, an even spread is taken. The
+    result is fully determined by the validated batch results.
+    """
+    picked: list[str] = []
+    points: list[str] = []
+    for result in results:
+        seen: list[str] = []
+        for link in result["source_links"]:
+            if link["id"] not in seen:
+                seen.append(link["id"])
+        picked.extend(seen[:quota])
+        points.extend(result["points"])
+    if not picked:
+        raise HybridStop("hybrid argument batches produced no source links")
+    if len(picked) > MAX_ARGUMENT_LINKS:
+        picked = [
+            picked[(i * len(picked)) // MAX_ARGUMENT_LINKS] for i in range(MAX_ARGUMENT_LINKS)
+        ]
+    return {"candidate_ids": picked, "points": points}
 
 
 _WRAPPER_KEYS = frozenset({"argument", "answer", "response", "result", "output"})

@@ -270,3 +270,35 @@ essential; changing that disposition requires a new brief and human review.
   other names are still rejected. No text-level (code fence) stripping is done.
 - The argument request text changed, so request hashes moved. Journals of failed attempts
   written before this change cannot be resumed under the new code.
+
+## Batched argument input (optional, model-free)
+
+A small model follows a long list limit badly when the whole chapter is in one prompt.
+When the argument stage config sets `argument_batch_tokens` (an integer from 512 to 16384,
+or 0 / absent for off, which is the default), the argument is built in two steps:
+
+1. **Batches.** The text units are cut into contiguous windows by the exact token size of
+   each rendered request, measured with the pinned tokenizer of the active model profile.
+   A window grows until the next unit would pass the budget. No fixed unit count is used,
+   so window edges follow the tokenizer and the budget. A unit that alone passes the
+   budget gets its own window. Gap markers are not batched. At most 32 windows.
+   Each window is its own cached stage (`hybrid_argument_batch`) and returns `points`
+   (short sentences) and `source_links` (ids from that window only, checked in code).
+2. **Merge in code, then one small argument call.** Each window contributes at most
+   `ceil(24 / windows)` distinct ids (first seen), so a window that over-cites cannot crowd
+   out another. If windows outnumber 24, an even spread is taken. The final argument
+   call sees only the chosen units plus the batch points, and returns the same
+   `hypothesis`, `questions`, `source_links` as before, validated by the same code
+   (24-link cap, degeneracy gate, wrapper removal). Audits and reconcile still see the
+   whole chapter.
+
+Replay: the partition and merge are fully determined by the ledger, the tokenizer and the
+config, so a second run replays every batch from cache. The new request text changes
+request hashes only for configs that turn batching on; configs without the field are
+byte-identical to before. What it changes about the argument: it is a summary built from
+per-part notes, so a thread that only shows up across parts can be missed in the first
+pass; the audit and reconcile stages still check against the full chapter.
+
+The script-phase config must carry the same `argument_batch_tokens` as the brief-phase
+config (the argument settings already have to match for replay). If it does not, the
+replay stops with a ChapterStop before any model call.

@@ -38,12 +38,15 @@ class StageSpec:
     model: str | None = None
     revision: str | None = None
     limit_fields: tuple[str, ...] = ()
+    optional_fields: tuple[str, ...] = ()
 
 
 def registry() -> dict[str, StageSpec]:
     """Data only: no model/provider imports, factories or initialization."""
 
-    def text(deps: tuple[str, ...], schema: str, *limits: str) -> StageSpec:
+    def text(
+        deps: tuple[str, ...], schema: str, *limits: str, optional: tuple[str, ...] = ()
+    ) -> StageSpec:
         return StageSpec(
             deps,
             schema,
@@ -51,11 +54,16 @@ def registry() -> dict[str, StageSpec]:
             model=model_profile.active().model,
             revision=model_profile.active().revision,
             limit_fields=("max_new_tokens", "max_attempts", "max_runtime_seconds", *limits),
+            optional_fields=optional,
         )
 
     return {
         "source": StageSpec((), "clipper-private-selected-chapter-evidence-v1", "owner-input"),
-        "argument": text(("source",), "clipper-chapter-hybrid-argument-v1"),
+        "argument": text(
+            ("source",),
+            "clipper-chapter-hybrid-argument-v1",
+            optional=("argument_batch_tokens",),
+        ),
         "audits": text(("source", "argument"), "clipper-chapter-hybrid-local-audit-v1"),
         "reconcile": text(
             ("source", "argument", "audits"), "clipper-chapter-hybrid-brief-v1", "max_beats"
@@ -108,6 +116,7 @@ TARGETS = {
     "publish": ("publish",),
 }
 AUTO_OUTPUT = "auto"
+BATCH_TOKENS_RANGE = (512, 16384)
 RANGES = {
     "max_attempts": (1, 2),
     "max_runtime_seconds": (60, 900),
@@ -281,10 +290,20 @@ def validate_config(raw: object, specs: Mapping[str, StageSpec]) -> dict[str, An
             "invalid stage configuration",
         )
         semantic = entry["semantic"]
-        require(set(semantic) == set(spec.limit_fields), "unknown or missing semantic feature")
+        require(
+            set(spec.limit_fields) <= set(semantic) <= {*spec.limit_fields, *spec.optional_fields},
+            "unknown or missing semantic feature",
+        )
         for key, value in semantic.items():
             if key == "voice":
                 require(isinstance(value, str) and value in VOICES, "unsupported voice")
+            elif key == "argument_batch_tokens":
+                # 0 switches batching off; otherwise the measured prompt size of one batch.
+                low, high = BATCH_TOKENS_RANGE
+                require(
+                    type(value) is int and (value == 0 or low <= value <= high),
+                    "invalid stage limit",
+                )
             elif key == "max_new_tokens":
                 # "auto" is resolved per request from the measured prompt; an int is fixed.
                 low, high = model_profile.output_bounds()
