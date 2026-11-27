@@ -2453,3 +2453,86 @@ def test_real_signed_owner_free_allowance_host_lifecycle(
         chapter_host._VERIFIED_CLOCK.reset(token)
     with pytest.raises(chapter_host.PrivateHostStop):
         chapter_host._created_at(stamp)
+
+
+def _seeded_text_stage(
+    root: Path,
+    stage: str,
+    *,
+    provenance: str = "INJECTED_TEST_PRODUCER",
+    retroactive_failure: bool = False,
+) -> str:
+    """One canonical synthetic winning first-attempt stage directory."""
+    base = root / "book-candidates"
+    key = "1" * 64
+    raw = '{"synthetic":"text"}'
+    owner = "2" * 32
+    raw_digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    payload: dict[str, object] = {"shaped": "text"}
+    payload_sha = hashlib.sha256(evaluation._json_bytes(payload)).hexdigest()
+    identity = chapter._text_artifact_identity(stage, key, provenance, raw_digest, payload_sha)
+    directory = base / stage / key
+    directory.mkdir(parents=True)
+    evaluation._store(
+        base,
+        directory / "validated.json",
+        {
+            "request_key": key,
+            "provenance": provenance,
+            "contract": stage,
+            "validator_contract": chapter.TEXT_ARTIFACT_CONTRACT,
+            "payload": payload,
+            "owner": owner,
+            "attempt": 1,
+            "raw_sha256": raw_digest,
+            "payload_sha256": payload_sha,
+            "token_receipt": None,
+            "artifact_identity": identity,
+        },
+    )
+    evaluation._store(
+        base,
+        directory / "started-1.json",
+        {"request_key": key, "attempt": 1, "owner": owner, "status": "STARTED_UNRESOLVED"},
+    )
+    evaluation._store(
+        base,
+        directory / "raw-1.json",
+        {"attempt": 1, "owner": owner, "raw": raw, "sha256": raw_digest},
+    )
+    if retroactive_failure:
+        evaluation._store(
+            base,
+            directory / "failed-1.json",
+            {"attempt": 1, "owner": owner, "status": "SCHEMA_OR_SOURCE_REJECTED"},
+        )
+    return identity
+
+
+def test_scoped_recovery_text_stage_rejects_unsupported_stage(tmp_path: Path) -> None:
+    """Stages outside the reviewed text set fail closed without a validator."""
+    root = tmp_path / "private"
+    identity = _seeded_text_stage(root, "narration")
+    with pytest.raises(chapter_host.PrivateHostStop, match="unsupported reviewed chapter"):
+        chapter_host._stage_output_entries(root, 1, "narration", identity)
+
+
+def test_scoped_recovery_text_stage_rejects_forged_provenance(tmp_path: Path) -> None:
+    """A validated record with an identity-consistent forged provenance still fails."""
+    root = tmp_path / "private"
+    identity = _seeded_text_stage(root, "adaptation", provenance="FORGED_PROVENANCE")
+    with pytest.raises(chapter_host.PrivateHostStop, match="stage provenance invalid"):
+        chapter_host._stage_output_entries(root, 1, "adaptation", identity)
+
+
+def test_scoped_recovery_text_stage_rejects_retroactive_failed_attempt(tmp_path: Path) -> None:
+    """A winning first attempt cannot gain a retroactive failed-attempt record."""
+
+    def validate(value: object) -> dict:
+        assert isinstance(value, dict)
+        return {"shaped": value["synthetic"]}
+
+    root = tmp_path / "private"
+    identity = _seeded_text_stage(root, "adaptation", retroactive_failure=True)
+    with pytest.raises(chapter_host.PrivateHostStop, match="file history mismatch"):
+        chapter_host._stage_output_entries(root, 1, "adaptation", identity, validate=validate)

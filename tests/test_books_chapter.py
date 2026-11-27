@@ -2549,3 +2549,48 @@ def test_replay_requires_and_rebuilds_the_retry_request_receipt(tmp_path: Path) 
         chapter._stage(*args, _feedback_validator, provider, retry_builder=builder)
     path.write_bytes(original)
     assert chapter._stage(*args, _feedback_validator, provider, retry_builder=builder)[3] == 0
+
+def test_recorded_rejection_that_now_validates_cannot_replay(tmp_path: Path) -> None:
+    """A recorded rejection that passes the original validator on replay is forgery."""
+    root = tmp_path / "private"
+
+    def validator(value: object) -> dict:
+        assert isinstance(value, dict)
+        if value.get("value") == "rejected then accepted":
+            raise chapter.ChapterStop("synthetic source rejection")
+        return value
+
+    producer = Mock(
+        side_effect=['{"value":"rejected then accepted"}', '{"value":"accepted synthetic"}']
+    )
+    args = (root, "brief", {"fixture": "rejection-now-validates"}, _plan())
+    result, _identity, _origin, attempts = chapter._stage(*args, validator, producer)
+    assert (result, attempts) == ({"value": "accepted synthetic"}, 2)
+    no_provider = Mock(side_effect=AssertionError("unverifiable rejection must not re-call"))
+    with pytest.raises(chapter.ChapterStop, match="cannot be verified"):
+        chapter._stage(*args, lambda value: value, no_provider)
+    no_provider.assert_not_called()
+
+
+def test_incomplete_chapter_response_with_unbounded_raw_records_no_raw(tmp_path: Path) -> None:
+    """An oversize incomplete raw is never persisted, yet the attempt stays spent."""
+    root = tmp_path / "private"
+
+    def producer(_request: dict[str, object]) -> str:
+        raise scripting.IncompleteConstrainedResponse("x" * (chapter.MAX_RAW_BYTES + 1))
+
+    with pytest.raises(chapter.ChapterStop, match="without EOS"):
+        chapter._stage(
+            root,
+            "brief",
+            {"fixture": "incomplete-oversize-raw"},
+            _plan(),
+            lambda value: value,
+            producer,
+        )
+    directory = next((root / "brief").iterdir())
+    assert (directory / "started-1.json").is_file()
+    assert not list(directory.glob("raw-*.json"))
+    failed = json.loads((directory / "failed-1.json").read_bytes())
+    assert failed["status"] == "MISSING_EOS"
+    assert failed["attempt"] == 1
