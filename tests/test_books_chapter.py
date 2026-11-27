@@ -2374,3 +2374,157 @@ def test_real_synthetic_chapter_pipeline_journals_every_completed_subphase(
     assert dict(events)["SCRIPT_VERIFIED"] == result["script_identity"]
     assert dict(events)["NARRATION_VERIFIED"] == result["narration_report_identity"]
     assert dict(events)["DIRECTION_VERIFIED"] == result["direction_identity"]
+
+
+def _feedback_validator(raw: object) -> dict:
+    if raw == {"ok": False}:
+        raise chapter_hybrid.HybridStop(
+            "hybrid source span outside allowed original units",
+            diagnostics=[{"where": "source_links", "index": 3, "id": None, "code": "UNKNOWN_ID"}],
+        )
+    return raw  # type: ignore[return-value]
+
+
+def _run_feedback_stage(root: Path, seen: list[dict[str, object]], *, budget: int | None = None):
+    def provider(request: dict[str, object]) -> str:
+        seen.append(request)
+        return '{"ok": false}' if len(seen) == 1 else '{"ok": true}'
+
+    built: list[dict[str, object]] = []
+
+    def builder(feedback: dict[str, object]) -> tuple[dict[str, object], str]:
+        built.append(feedback)
+        retry = {**seen[0], "retry_feedback": feedback}
+        if budget is not None:
+            retry["max_new_tokens"] = budget
+        return retry, "c" * 64
+
+    args = (root, "brief", {"scope": "synthetic"}, _plan(max_attempts_per_stage=2))
+    result = chapter._stage(*args, _feedback_validator, provider, retry_builder=builder)
+    return args, provider, builder, built, result
+
+
+def test_rejected_attempt_with_diagnostics_gets_a_distinct_bounded_feedback_request(
+    tmp_path: Path,
+) -> None:
+    seen: list[dict[str, object]] = []
+    args, provider, builder, built, result = _run_feedback_stage(tmp_path / "root", seen)
+    assert result[3] == 2
+    assert "retry_feedback" not in seen[0] and "retry_feedback" in seen[1]
+    assert built == [
+        {
+            "reason": "INVALID_CITATIONS",
+            "invalid_links": [
+                {"where": "source_links", "index": 3, "id": None, "code": "UNKNOWN_ID"}
+            ],
+        }
+    ]
+    directory = next((tmp_path / "root" / "brief").iterdir())
+    # No new file kinds: the checkpoint and recovery allowlists stay valid.
+    assert {f.name for f in directory.iterdir()} == {
+        "started-1.json",
+        "raw-1.json",
+        "failed-1.json",
+        "started-2.json",
+        "raw-2.json",
+        "validated.json",
+    }
+    from clipper.books import private_phase
+
+    assert all(
+        private_phase.NATIVE_PATH.fullmatch(f"book-candidates/hybrid_argument/{'a' * 64}/{f.name}")
+        for f in directory.iterdir()
+    )
+    saved = json.loads((directory / "validated.json").read_bytes())
+    receipt = saved["attempt_request"]
+    assert receipt["request_sha256"] == "c" * 64
+    assert (
+        receipt["feedback_sha256"] == hashlib.sha256(evaluation._json_bytes(built[0])).hexdigest()
+    )
+    assert receipt["resolved_max_new_tokens"] == seen[1]["max_new_tokens"]
+    # Replay reconstructs the feedback from the exact rejected raw and re-verifies.
+    again = chapter._stage(*args, _feedback_validator, provider, retry_builder=builder)
+    assert again[3] == 0 and len(seen) == 2
+
+
+def test_winning_retry_receipt_is_bound_into_the_artifact_identity(tmp_path: Path) -> None:
+    seen: list[dict[str, object]] = []
+    args, provider, builder, _built, _result = _run_feedback_stage(tmp_path / "root", seen)
+    directory = next((tmp_path / "root" / "brief").iterdir())
+    path = directory / "validated.json"
+    original = path.read_bytes()
+    saved = json.loads(original)
+    for mutate in (
+        lambda d: d.pop("attempt_request"),
+        lambda d: d["attempt_request"].update(request_sha256="d" * 64),
+        lambda d: d["attempt_request"].update(feedback_sha256="e" * 64),
+        lambda d: d["attempt_request"].update(resolved_max_new_tokens=1),
+    ):
+        tampered = json.loads(original)
+        mutate(tampered)
+        path.write_bytes(evaluation._json_bytes(tampered))
+        with pytest.raises(chapter.ChapterStop):
+            chapter._stage(*args, _feedback_validator, provider, retry_builder=builder)
+    path.write_bytes(original)
+    assert chapter._stage(*args, _feedback_validator, provider, retry_builder=builder)[3] == 0
+    assert saved["attempt"] == 2
+
+
+def test_retry_resolves_its_own_output_budget_not_the_first_attempts(tmp_path: Path) -> None:
+    seen: list[dict[str, object]] = []
+    low = chapter.model_profile.output_bounds()[0]
+    first = seen
+    args, provider, builder, _built, _result = _run_feedback_stage(
+        tmp_path / "root", first, budget=low
+    )
+    assert seen[1]["max_new_tokens"] == low
+    assert (
+        seen[0]["max_new_tokens"] != seen[1]["max_new_tokens"] or low == seen[0]["max_new_tokens"]
+    )
+    directory = next((tmp_path / "root" / "brief").iterdir())
+    saved = json.loads((directory / "validated.json").read_bytes())
+    assert saved["attempt_request"]["resolved_max_new_tokens"] == low
+    assert chapter._stage(*args, _feedback_validator, provider, retry_builder=builder)[3] == 0
+
+
+def test_rejection_without_actionable_feedback_does_not_spend_an_identical_retry(
+    tmp_path: Path,
+) -> None:
+    provider = Mock(return_value='{"ok": false, "plain": 1}')
+
+    def validator(raw: object) -> dict:
+        raise chapter_hybrid.HybridStop("plain rejection without diagnostics")
+
+    builder = Mock()
+    with pytest.raises(chapter.ChapterStop, match="no actionable feedback"):
+        chapter._stage(
+            tmp_path / "root",
+            "brief",
+            {"scope": "synthetic"},
+            _plan(max_attempts_per_stage=2),
+            validator,
+            provider,
+            retry_builder=builder,
+        )
+    provider.assert_called_once()
+    builder.assert_not_called()
+
+
+def test_rejected_attempt_without_a_builder_retries_the_identical_request(tmp_path: Path) -> None:
+    seen: list[dict[str, object]] = []
+
+    def provider(request: dict[str, object]) -> str:
+        seen.append(request)
+        return '{"ok": false}' if len(seen) == 1 else '{"ok": true}'
+
+    chapter._stage(
+        tmp_path / "root",
+        "brief",
+        {"scope": "synthetic"},
+        _plan(max_attempts_per_stage=2),
+        _feedback_validator,
+        provider,
+    )
+    assert seen[0] == seen[1]
+    directory = next((tmp_path / "root" / "brief").iterdir())
+    assert "attempt_request" not in json.loads((directory / "validated.json").read_bytes())

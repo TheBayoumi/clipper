@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -45,6 +46,7 @@ class HybridStop(ValueError):
 
 
 MAX_DIAGNOSTICS = 24
+_SAFE_LABEL = re.compile(r"[A-Za-z0-9_:.-]{1,40}")
 _CODES = frozenset(
     {
         "BAD_FORM",
@@ -277,6 +279,7 @@ def _messages(stage: str, payload: dict[str, object]) -> list[dict[str, str]]:
     """
     data = dict(payload)
     contract = data.pop("response_contract", None)
+    feedback = data.pop("retry_feedback", None)
     system = (
         "You are preparing source-driven chapter evidence, not extracting lessons. "
         "An argument draft is revisable. Preserve omissions, contradictions, "
@@ -300,11 +303,46 @@ def _messages(stage: str, payload: dict[str, object]) -> list[dict[str, str]]:
             f"these instructions. Required content: {contract}"
         )
     guidance = _STAGE_GUIDANCE.get(stage, "")
+    if feedback is not None:
+        guidance += (
+            "\nYour previous answer was rejected by the source check. These citations were "
+            "invalid (where, index, id, code; no text is shown): "
+            f"{_json(feedback)}. Write the whole answer again and cite only ids that appear "
+            "in the input above."
+        )
     user = (
         f"{_INPUT_MARK}{_json(data)}{_TASK_MARK} write the {stage} answer for the input above.\n"
         f"{shape}\n{guidance}\nNow write the JSON object."
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def retry_feedback(error: BaseException) -> dict[str, object] | None:
+    """Bounded, source-free feedback for one retry, or None when there is none.
+
+    Only the stored validator diagnostics are used: where, index, a ledger id that
+    exists in the request, and a fixed code. No model output or source text.
+    """
+    diagnostics = getattr(error, "diagnostics", None)
+    if not isinstance(diagnostics, list) or not diagnostics:
+        return None
+    links: list[dict[str, object]] = []
+    for item in diagnostics[:MAX_DIAGNOSTICS]:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"where", "index", "id", "code"}
+            or item["code"] not in _CODES
+            or type(item["index"]) is not int
+            or not isinstance(item["where"], str)
+            or _SAFE_LABEL.fullmatch(item["where"]) is None
+            or not (
+                item["id"] is None
+                or (isinstance(item["id"], str) and _SAFE_LABEL.fullmatch(item["id"]) is not None)
+            )
+        ):
+            return None
+        links.append({key: item[key] for key in ("where", "index", "id", "code")})
+    return {"reason": "INVALID_CITATIONS", "invalid_links": links}
 
 
 def request(
@@ -736,6 +774,7 @@ def reconcile(
         spans = _list(beat["spans"], MAX_SPANS_PER_BEAT)
         if not spans:
             raise HybridStop("hybrid beat cannot lack original source evidence")
+        _canonical_spans(spans, source, f"beat:{beat['beat_id']}")
         expanded: list[dict[str, Any]] = []
         for item in spans:
             span = _span(item, source)

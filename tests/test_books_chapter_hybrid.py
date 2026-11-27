@@ -3209,6 +3209,12 @@ def test_rejection_reports_source_free_per_citation_diagnostics() -> None:
     # The message (and therefore the stored rejection digest) is the first failure's.
     assert str(caught.value) == "hybrid source span outside allowed original units"
     assert "ATTACKER-TEXT" not in json.dumps(caught.value.diagnostics)
+    feedback = hybrid.retry_feedback(caught.value)
+    assert feedback is not None and feedback["reason"] == "INVALID_CITATIONS"
+    assert "ATTACKER-TEXT" not in json.dumps(feedback)
+    assert len(feedback["invalid_links"]) == 4
+    assert hybrid.retry_feedback(hybrid.HybridStop("plain")) is None
+    assert hybrid.retry_feedback(ValueError("x")) is None
 
 
 def test_every_evidence_consumer_stores_canonical_offsets_from_id_references() -> None:
@@ -3260,3 +3266,45 @@ def test_repeated_legacy_offset_citations_keep_their_historical_normalized_form(
     link = {"id": "s0003", "start": 0, "end": 5, "role": "ASSERTION"}
     argument["source_links"] = [dict(link), dict(link)]
     assert hybrid.validate_argument(argument, ledger)["source_links"] == [link, link]
+
+
+def test_retry_feedback_is_bounded_sanitized_and_renders_into_a_distinct_request() -> None:
+    ledger = _ledger(25)
+    argument = _argument(ledger)
+    argument["source_links"] = [{"id": "nope", "role": "ASSERTION"}] * 60
+    with pytest.raises(hybrid.HybridStop) as caught:
+        hybrid.validate_argument(argument, ledger)
+    feedback = hybrid.retry_feedback(caught.value)
+    assert feedback is not None and len(feedback["invalid_links"]) == hybrid.MAX_DIAGNOSTICS
+    payload = {"response_contract": {"hypothesis": "<h>"}, "original_source": [{"id": "s0001"}]}
+    plain = hybrid._messages("argument", payload)
+    retried = hybrid._messages("argument", {**payload, "retry_feedback": feedback})
+    assert "UNKNOWN_ID" in retried[1]["content"] and "UNKNOWN_ID" not in plain[1]["content"]
+    assert "original_source" not in retried[1]["content"].split("rejected")[1]
+    assert hybrid.input_payload(plain) == hybrid.input_payload(retried)
+    # Diagnostics that are not plain short labels are refused, never forwarded.
+    bad = hybrid.HybridStop(
+        "x",
+        diagnostics=[
+            {"where": "free text with spaces", "index": 0, "id": None, "code": "BAD_ROLE"}
+        ],
+    )
+    assert hybrid.retry_feedback(bad) is None
+    bad = hybrid.HybridStop(
+        "x",
+        diagnostics=[{"where": "source_links", "index": 0, "id": "a b", "code": "BAD_ROLE"}],
+    )
+    assert hybrid.retry_feedback(bad) is None
+
+
+def test_final_beat_citation_errors_carry_actionable_diagnostics() -> None:
+    ledger = _ledger()
+    audits = _audit_outputs(ledger)
+    response = _reconciliation(ledger)
+    response["beats"][0]["spans"][0] = {"id": "s9999", "role": "ASSERTION"}
+    with pytest.raises(hybrid.HybridStop) as caught:
+        hybrid.reconcile(response, ledger, _argument(ledger), audits)
+    assert caught.value.diagnostics == [
+        {"where": "beat:beat-001", "index": 0, "id": None, "code": "UNKNOWN_ID"}
+    ]
+    assert hybrid.retry_feedback(caught.value) is not None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
@@ -1178,6 +1179,7 @@ def _text_artifact_identity(
     payload_sha256: str,
     token_receipt: dict[str, object] | None = None,
     prior_rejection_sha256: str | None = None,
+    attempt_request: dict[str, object] | None = None,
 ) -> str:
     return content_fingerprint(
         {
@@ -1193,6 +1195,7 @@ def _text_artifact_identity(
                 if prior_rejection_sha256 is not None
                 else {}
             ),
+            **({"attempt_request": attempt_request} if attempt_request is not None else {}),
         }
     )
 
@@ -1228,6 +1231,8 @@ def _verified_text_artifact(
         }
         if isinstance(raw_envelope, dict) and "prior_rejection_sha256" in raw_envelope:
             envelope_fields.add("prior_rejection_sha256")
+        if isinstance(raw_envelope, dict) and "attempt_request" in raw_envelope:
+            envelope_fields.add("attempt_request")
         saved = _shape(
             raw_envelope, envelope_fields, "chapter cached text artifact schema mismatch"
         )
@@ -1259,6 +1264,48 @@ def _verified_text_artifact(
             )
         ) or (recovery_evidence_only and attempt > 1 and prior_digest is None):
             raise ChapterStop("chapter winning attempt missing bound original rejection")
+        attempt_request = saved.get("attempt_request")
+        resolved_budget = max_new_tokens
+        if attempt_request is not None:
+            if (
+                attempt != 2
+                or prior_digest is None
+                or not isinstance(attempt_request, dict)
+                or set(attempt_request)
+                != {"request_sha256", "feedback_sha256", "resolved_max_new_tokens"}
+                or any(
+                    not isinstance(attempt_request[key], str)
+                    or re.fullmatch(r"[0-9a-f]{64}", attempt_request[key]) is None
+                    for key in ("request_sha256", "feedback_sha256")
+                )
+                or type(attempt_request["resolved_max_new_tokens"]) is not int
+                or not model_profile.output_bounds()[0]
+                <= attempt_request["resolved_max_new_tokens"]
+                <= model_profile.output_bounds()[1]
+            ):
+                raise ChapterStop("chapter retry request receipt is malformed")
+            resolved_budget = attempt_request["resolved_max_new_tokens"]
+            if not recovery_evidence_only:
+                # Independently rebuild the feedback from the exact rejected raw response.
+                prior_raw = _shape(
+                    whole_book.load_strict_reply(
+                        evaluation._read(directory / "raw-1.json", MAX_RAW_BYTES * 6 + 2048)
+                    ),
+                    {"attempt", "owner", "raw", "sha256"},
+                    "chapter raw attempt schema mismatch",
+                )
+                try:
+                    validate(whole_book.load_strict_reply(prior_raw["raw"]))
+                except (ValueError, TypeError, KeyError, RecursionError) as rejection:
+                    expected = chapter_hybrid.retry_feedback(rejection)
+                else:
+                    expected = None
+                if (
+                    expected is None
+                    or hashlib.sha256(evaluation._json_bytes(expected)).hexdigest()
+                    != attempt_request["feedback_sha256"]
+                ):
+                    raise ChapterStop("chapter retry feedback differs from the original rejection")
         for prior in range(1, attempt):
             _verified_rejected_attempt(
                 root,
@@ -1318,7 +1365,7 @@ def _verified_text_artifact(
                 != {"raw_sha256", "generated_token_count", "terminal_token_id", "eos_decision"}
                 or receipt["raw_sha256"] != saved["raw_sha256"]
                 or type(receipt["generated_token_count"]) is not int
-                or not 1 <= receipt["generated_token_count"] <= max_new_tokens
+                or not 1 <= receipt["generated_token_count"] <= resolved_budget
                 or type(receipt["terminal_token_id"]) is not int
                 or receipt["terminal_token_id"] < 0
                 or receipt["eos_decision"] != "EOS_VERIFIED"
@@ -1334,6 +1381,7 @@ def _verified_text_artifact(
             saved["payload_sha256"],
             receipt,
             prior_digest,
+            attempt_request,
         )
         if saved["artifact_identity"] != identity:
             raise ChapterStop("chapter cached text artifact digest mismatch")
@@ -1359,6 +1407,7 @@ def _stage(
     hybrid_request_identity: str | None = None,
     configured_stage_limits: dict[str, object] | None = None,
     tokenizer_context: tuple[Any, int] | None = None,
+    retry_builder: Callable[[dict[str, object]], tuple[dict[str, object], str]] | None = None,
 ) -> tuple[dict[str, Any], str, str, int]:
     """Reserve each irreversible provider attempt before calling any producer."""
     plan.validate()
@@ -1474,6 +1523,8 @@ def _stage(
     if directory.is_dir() and any(directory.iterdir()):
         raise ChapterStop("chapter stage has prior unresolved/failed attempts")
     previous_owner: str | None = None
+    feedback: dict[str, object] | None = None
+    attempt_request = request
     for index in range(1, plan.max_attempts_per_stage + 1):
         # Reverify the exact rejected claim, raw and failure before the next call.
         if previous_owner is not None:
@@ -1486,11 +1537,53 @@ def _stage(
                 validate,
                 previous_owner,
             )
+        attempt_receipt: dict[str, object] | None = None
+        if retry_builder is not None and index > 1:
+            if feedback is None:
+                # An unchanged greedy retry reproduces the same answer; do not spend it.
+                raise ChapterStop(
+                    "chapter rejection has no actionable feedback; no identical retry"
+                )
+            # A different, bounded request: rebuilt, re-tokenized and re-preflighted
+            # like the first one, with its own resolved output budget.
+            attempt_request, retry_key = retry_builder(feedback)
+            resolved = attempt_request["max_new_tokens"]
+            if (
+                type(resolved) is not int
+                or not model_profile.output_bounds()[0]
+                <= resolved
+                <= (model_profile.output_bounds()[1])
+            ):
+                raise ChapterStop("chapter retry output budget is outside the model profile")
+            if real_qwen:
+                try:
+                    retry_tokens = (
+                        scripting._chapter_context_tokens(attempt_request)
+                        if tokenizer_context is None
+                        else scripting._chapter_context_tokens(
+                            attempt_request, tokenizer_context=tokenizer_context
+                        )
+                    )
+                except scripting.NicheVideoError:
+                    raise ChapterStop(
+                        "chapter retry request does not fit pinned token context"
+                    ) from None
+                if safe_context_tokens is not None and (
+                    retry_tokens + resolved > safe_context_tokens
+                ):
+                    raise ChapterStop(
+                        "chapter retry prompt and reserved output exceed safe context"
+                    )
+            attempt_receipt = {
+                "request_sha256": retry_key,
+                "feedback_sha256": hashlib.sha256(evaluation._json_bytes(feedback)).hexdigest(),
+                "resolved_max_new_tokens": resolved,
+            }
         marker = directory / f"started-{index}.json"
         owner = _claim(root, marker, stage_key, index)
         try:
             response = evaluation._capture_private_generator(
-                root, directory, lambda: completion(request)
+                root, directory, functools.partial(completion, attempt_request)
             )
         except scripting.IncompleteConstrainedResponse as exc:
             if isinstance(exc.raw, str) and len(exc.raw.encode("utf-8")) <= MAX_RAW_BYTES:
@@ -1553,7 +1646,9 @@ def _stage(
             not isinstance(token_receipt, dict)
             or token_receipt["raw_sha256"] != hashlib.sha256(response.encode("utf-8")).hexdigest()
             or type(token_receipt["generated_token_count"]) is not int
-            or not 1 <= token_receipt["generated_token_count"] <= plan.max_new_tokens
+            or not 1
+            <= token_receipt["generated_token_count"]
+            <= cast(int, attempt_request["max_new_tokens"])
             or type(token_receipt["terminal_token_id"]) is not int
             or token_receipt["terminal_token_id"] < 0
             or token_receipt["eos_decision"] != "EOS_VERIFIED"
@@ -1588,6 +1683,8 @@ def _stage(
             if index == plan.max_attempts_per_stage:
                 raise ChapterStop("chapter stage exhausted all recorded attempts") from None
             previous_owner = owner
+            if retry_builder is not None:
+                feedback = chapter_hybrid.retry_feedback(error)
             continue
         _verified_owner(root, marker, stage_key, index, owner)
         raw_sha256 = hashlib.sha256(response.encode("utf-8")).hexdigest()
@@ -1607,6 +1704,7 @@ def _stage(
             payload_sha256,
             token_receipt,
             prior_rejection_sha256,
+            attempt_receipt,
         )
         evaluation._store(
             root,
@@ -1628,6 +1726,7 @@ def _stage(
                     if prior_rejection_sha256 is not None
                     else {}
                 ),
+                **({"attempt_request": attempt_receipt} if attempt_receipt is not None else {}),
             },
         )
         verified, verified_key = _verified_text_artifact(
@@ -2535,7 +2634,37 @@ def _evaluate_hybrid_chapter(
         except chapter_hybrid.HybridStop as error:
             raise ChapterStop("hybrid pinned-token request preflight refused") from error
         # The resolved request budget is the stage budget: receipts and replay check against it.
+        # The pre-resolution profile ceiling and the auto/fixed policy are kept so a retry
+        # resolves its own output budget against its own (larger) prompt.
+        output_ceiling = effective.max_new_tokens
+        auto_policy = (
+            local_limits is not None
+            and local_limits.get("max_new_tokens") == pipeline_plan.AUTO_OUTPUT
+        )
         effective = replace(effective, max_new_tokens=cast(int, prepared["max_new_tokens"]))
+
+        def retry_builder(
+            feedback: dict[str, object],
+            *,
+            _payload: dict[str, object] = payload,
+            _stage: str = request_stage,
+            _producer: dict[str, object] = stage_producer,
+            _ceiling: int = output_ceiling,
+            _auto: bool = auto_policy,
+        ) -> tuple[dict[str, object], str]:
+            try:
+                retry, key, _n = chapter_hybrid.request(
+                    _stage,
+                    {**_payload, "retry_feedback": feedback},
+                    output_tokens=_ceiling,
+                    token_count=tokens,
+                    producer_identity=_producer,
+                    auto_output=_auto,
+                )
+            except chapter_hybrid.HybridStop as error:
+                raise ChapterStop("hybrid retry request preflight refused") from error
+            return retry, key
+
         result = _stage(
             root,
             name,
@@ -2550,6 +2679,7 @@ def _evaluate_hybrid_chapter(
             hybrid_request_identity=request_key,
             configured_stage_limits=local_limits,
             tokenizer_context=retained_context,
+            retry_builder=retry_builder,
         )
         if configured is not None:
             if result[3] or configured_results.get(config_name) == "RAN":
