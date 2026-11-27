@@ -857,13 +857,31 @@ def merge_argument_batches(results: list[dict[str, Any]], *, quota: int) -> dict
             if link["id"] not in seen:
                 seen.append(link["id"])
         per_window.append(seen[:quota])
+    if sum(len(ids) for ids in per_window) > MAX_ARGUMENT_LINKS:
+        # Reserve one id per non-empty window first, then share the rest round-robin.
+        nonempty = [ids for ids in per_window if ids]
+        if len(nonempty) > MAX_ARGUMENT_LINKS:
+            flat = [sid for ids in per_window for sid in ids]
+            keep = {flat[(i * len(flat)) // MAX_ARGUMENT_LINKS] for i in range(MAX_ARGUMENT_LINKS)}
+            per_window = [[sid for sid in ids if sid in keep] for ids in per_window]
+        else:
+            taken = [0] * len(per_window)
+            slots = MAX_ARGUMENT_LINKS
+            rank = 0
+            while slots:
+                moved = False
+                for i, ids in enumerate(per_window):
+                    if slots and rank < len(ids):
+                        taken[i] = rank + 1
+                        slots -= 1
+                        moved = True
+                if not moved:
+                    break
+                rank += 1
+            per_window = [ids[:count] for ids, count in zip(per_window, taken, strict=True)]
     picked = [sid for ids in per_window for sid in ids]
     if not picked:
         raise HybridStop("hybrid argument batches produced no source links")
-    if len(picked) > MAX_ARGUMENT_LINKS:
-        picked = [
-            picked[(i * len(picked)) // MAX_ARGUMENT_LINKS] for i in range(MAX_ARGUMENT_LINKS)
-        ]
     # A note only travels with evidence that is still selected, and the notes together stay
     # small enough that the final request always fits, however many windows there were.
     chosen = set(picked)

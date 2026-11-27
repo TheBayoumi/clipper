@@ -2664,7 +2664,9 @@ def _evaluate_hybrid_chapter(
         stage_producer = producer
         local_limits: dict[str, object] | None = None
         if configured is not None:
-            local_limits = configured["stages"][config_name]["semantic"]
+            local_limits = pipeline_plan.canonical_semantic(
+                configured["stages"][config_name]["semantic"]
+            )
             stage_producer = {
                 **producer,
                 "configured_stage_lineage": configured_lineage[config_name],
@@ -2748,6 +2750,7 @@ def _evaluate_hybrid_chapter(
     argument_extra: dict[str, object] = {}
     batch_origins: list[str] = []
     batch_attempts: list[int] = []
+    batch_keys: list[str] = []
     batch_tokens = (
         configured["stages"]["argument"]["semantic"].get("argument_batch_tokens", 0)
         if configured is not None
@@ -2797,7 +2800,7 @@ def _evaluate_hybrid_chapter(
 
         for batch_window in batch_windows:
             window_ids = [entry["id"] for entry in batch_window]
-            result_batch, _key, origin_batch, tries = stage(
+            result_batch, batch_key, origin_batch, tries = stage(
                 "hybrid_argument_batch",
                 "argument_batch",
                 batch_payload(batch_window, quota),
@@ -2808,6 +2811,7 @@ def _evaluate_hybrid_chapter(
             batch_results.append(result_batch)
             batch_origins.append(origin_batch)
             batch_attempts.append(tries)
+            batch_keys.append(str(batch_key))
         try:
             merged = chapter_hybrid.merge_argument_batches(batch_results, quota=quota)
         except chapter_hybrid.HybridStop as error:
@@ -2816,7 +2820,11 @@ def _evaluate_hybrid_chapter(
         argument_projection = chapter_hybrid.projection(
             [entry for entry in ledger_entries if entry["id"] in chosen]
         )
-        argument_extra = {"batch_points": merged["points"]}
+        argument_extra = {
+            "batch_points": merged["points"],
+            # Binds the exact batch artifacts (including links and roles the notes drop).
+            "batch_receipt": hashlib.sha256("\n".join(batch_keys).encode()).hexdigest(),
+        }
     argument, argument_key, argument_origin, argument_attempts = stage(
         "hybrid_argument",
         "argument",

@@ -575,3 +575,67 @@ def test_summary_reports_how_many_calls_the_batches_used(tmp_path: Path) -> None
     seen: list[dict] = []
     result = _drive(tmp_path, _by_text, 700, seen)
     assert result["argument_batch_attempts"] == [s["kind"] for s in seen].count("batch")
+
+
+# 8. Codex review of 93b560a8 (reproduced first, then fixed) -------------------------------
+
+
+def test_explicit_zero_and_an_absent_field_are_the_same_identity() -> None:
+    plain = _config()
+    zero = _config(argument_batch_tokens=0)
+    registry = pipeline_plan.registry()
+    assert pipeline_plan.semantic_lineage(plain, registry) == pipeline_plan.semantic_lineage(
+        zero, registry
+    )
+
+
+def test_the_cap_never_removes_a_whole_window_when_every_window_fits() -> None:
+    ids = [e["id"] for e in _units()]
+    windows = [ids[i * 2 : i * 2 + 2] for i in range(12)] + [[ids[40]]]
+    merged = hybrid.merge_argument_batches(_results(windows), quota=2)
+    assert len(merged["candidate_ids"]) == hybrid.MAX_ARGUMENT_LINKS
+    assert all(set(merged["candidate_ids"]) & set(w) for w in windows)
+
+
+def _receipts(tmp_path: Path, role: str) -> str:
+    seen: list[dict] = []
+    final: list[dict] = []
+    base = _producer(seen)
+
+    def run(req: dict[str, object]) -> str:
+        context = hybrid.input_payload(req["messages"])  # type: ignore[arg-type]
+        if "batch_points" in context:
+            final.append(context)
+        if "max_source_links" in context:
+            units = [i for i in context["original_source"] if i[1] == "text"]
+            return json.dumps(
+                {
+                    "points": ["A point about these units."],
+                    "source_links": [{"id": units[0][0], "role": role}],
+                }
+            )
+        return base(req)
+
+    runner, selected, section = _selected_hybrid_source(tmp_path)
+    config = pipeline_plan.template(selected.stem, "brief")
+    config["stages"]["argument"]["semantic"]["argument_batch_tokens"] = 700
+    chapter.evaluate_hybrid_chapter(
+        runner,
+        selected,
+        section,
+        plan=chapter.ChapterPlan(brief_cpu=True),
+        pipeline_config=config,
+        argument_completion=run,
+        audit_completion=lambda r: _injected_hybrid_response("audit", r),
+        reconcile_completion=lambda r: _injected_hybrid_response("reconcile", r),
+        token_counter=_by_text,
+    )
+    return str(final[0]["batch_receipt"])
+
+
+def test_the_final_request_is_bound_to_the_exact_batch_artifacts(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    first = _receipts(tmp_path / "a", "ASSERTION")
+    second = _receipts(tmp_path / "b", "QUALIFICATION")
+    assert first != second

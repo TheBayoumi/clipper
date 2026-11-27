@@ -117,6 +117,7 @@ TARGETS = {
 }
 AUTO_OUTPUT = "auto"
 BATCH_TOKENS_RANGE = (512, 16384)
+OPTIONAL_OFF_ZERO = frozenset({"argument_batch_tokens"})
 RANGES = {
     "max_attempts": (1, 2),
     "max_runtime_seconds": (60, 900),
@@ -323,6 +324,11 @@ def validate_config(raw: object, specs: Mapping[str, StageSpec]) -> dict[str, An
     return copy.deepcopy(raw)
 
 
+def canonical_semantic(semantic: dict[str, Any]) -> dict[str, Any]:
+    """Drop an optional feature that is switched off, so absent and zero are one identity."""
+    return {k: v for k, v in semantic.items() if not (k in OPTIONAL_OFF_ZERO and v == 0)}
+
+
 def stage_input_identity(
     name: str,
     spec: StageSpec,
@@ -341,7 +347,7 @@ def stage_input_identity(
         source_hash=source,
         dependency_output_hashes=dependencies,
         model_revision=spec.revision,
-        decoding_parameters=semantic,
+        decoding_parameters=canonical_semantic(semantic),
     ).to_dict()
 
 
