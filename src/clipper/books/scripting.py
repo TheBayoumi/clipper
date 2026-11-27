@@ -848,7 +848,7 @@ def _local_chapter_completion(request: dict[str, object]) -> PinnedQwenRawReceip
     model, tokenizer = _script_pipeline()
     if _device_type(model) != _qwen_device():
         raise NicheVideoError("chapter requires pinned Qwen weights on the configured device")
-    torch.manual_seed(42)
+    torch.manual_seed(int(cast(int, request["seed"])))
     inputs = tokenizer.apply_chat_template(
         request["messages"],
         tokenize=True,

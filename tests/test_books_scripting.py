@@ -183,3 +183,32 @@ def test_inputs_follow_cuda_model_but_cpu_inputs_are_untouched():
     items = Inputs()
     assert scripting._to_model_device(items, cpu) is items
     assert scripting._to_model_device(items, cuda)[0] == "moved"
+
+
+@pytest.mark.parametrize("seed", [42, 43])
+def test_chapter_completion_seeds_generation_with_the_request_seed(
+    monkeypatch: pytest.MonkeyPatch, seed: int
+) -> None:
+    """The retry attempt's pinned seed must reach torch, not a hard-coded 42."""
+    seeds: list[int] = []
+    fake_torch = SimpleNamespace(
+        manual_seed=seeds.append,
+        inference_mode=nullcontext,
+    )
+    tokenizer = SimpleNamespace(
+        apply_chat_template=Mock(side_effect=RuntimeError("stop after seeding")),
+        eos_token_id=0,
+    )
+    model = SimpleNamespace()
+    request = {"seed": seed, "messages": [], "max_new_tokens": 8}
+    monkeypatch.setattr(scripting, "_chapter_context_tokens", lambda _request: 1)
+    monkeypatch.setattr(scripting, "_script_pipeline", lambda: (model, tokenizer))
+    monkeypatch.setattr(scripting, "_device_type", lambda _model: scripting._qwen_device())
+    monkeypatch.setattr(
+        scripting.importlib,
+        "import_module",
+        lambda name: fake_torch if name == "torch" else __import__(name),
+    )
+    with pytest.raises(RuntimeError, match="stop after seeding"):
+        scripting._local_chapter_completion(request)
+    assert seeds == [seed]
