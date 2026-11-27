@@ -762,3 +762,63 @@ def test_end_to_end_with_the_section_switch_on_batches_then_one_final_call(
     assert result["status"] == "BRIEF_READY_UNREVIEWED"
     kinds = [s["kind"] for s in seen]
     assert kinds.count("batch") >= 2 and kinds[-1] == "final"
+
+
+# 10. Codex review of 6b673843 ----------------------------------------------------------------
+
+
+class _ContextLimit(Exception):
+    pass
+
+
+def test_by_section_never_counts_a_whole_oversized_section() -> None:
+    entries = _sectioned([48])
+
+    def counter(window: list[dict]) -> int:
+        size = 200 + 1000 * len(window)
+        if size > 40_960:
+            raise _ContextLimit
+        return size
+
+    windows = hybrid.argument_batches(entries, budget=4096, count=counter, by_section=True)
+    assert [len(w) for w in windows] == [3] * 16
+
+
+def test_by_section_does_not_probe_a_combined_window_past_the_context_either() -> None:
+    entries = _sectioned([30, 30])
+
+    def counter(window: list[dict]) -> int:
+        size = 200 + 1000 * len(window)
+        if size > 40_960:
+            raise _ContextLimit
+        return size
+
+    windows = hybrid.argument_batches(entries, budget=4096, count=counter, by_section=True)
+    assert [e["section_id"] for w in windows for e in w].count("sec-1") == 30
+
+
+def test_the_section_switch_alone_does_not_change_identity_without_a_budget() -> None:
+    registry = pipeline_plan.registry()
+    assert pipeline_plan.semantic_lineage(_config(), registry) == pipeline_plan.semantic_lineage(
+        _config(argument_batch_sections=1), registry
+    )
+
+
+def test_the_greedy_partition_stops_counting_as_soon_as_the_window_limit_is_hit() -> None:
+    entries = _units(101)
+    calls = 0
+
+    def spy(window: list[dict]) -> int:
+        nonlocal calls
+        calls += 1
+        return 300 * len(window)
+
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.argument_batches(entries, budget=512, count=spy)
+    assert calls <= hybrid.MAX_ARGUMENT_BATCHES + 1
+
+
+def test_the_helper_can_switch_section_cutting_off_again() -> None:
+    config = pipeline_plan.with_argument_batching(_config(), by_section=True)
+    again = pipeline_plan.with_argument_batching(config, by_section=False)
+    assert "argument_batch_sections" not in again["stages"]["argument"]["semantic"]

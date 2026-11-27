@@ -300,7 +300,8 @@ Budget and section cutting. Batching is off unless `argument_batch_tokens` is se
 switch it on, 4,096 is the recommended budget (`pipeline_plan.DEFAULT_BATCH_TOKENS`; the
 helper `pipeline_plan.with_argument_batching(config)` returns a copy with it set). On the
 pinned tokenizer the whole of Atomic Habits chapter 1 is about 7.7K tokens, so 4,096 gives
-3 windows and 8,192 or more gives one window (same as no batching). The optional switch
+3 windows and 8,192 or more gives one window (one batch call, then the final call, so
+two model calls instead of one; the argument request is not the same as with batching off). The optional switch
 `argument_batch_sections` (0 or 1, off by default, only on the argument stage) cuts at
 section edges first: whole sections stay together while they fit, a section that alone
 exceeds the budget is cut by tokens, and the next section starts a new window. A config

@@ -338,12 +338,17 @@ def with_argument_batching(
     semantic["argument_batch_tokens"] = tokens
     if by_section:
         semantic["argument_batch_sections"] = 1
+    else:
+        semantic.pop("argument_batch_sections", None)
     return out
 
 
 def canonical_semantic(semantic: dict[str, Any]) -> dict[str, Any]:
     """Drop an optional feature that is switched off, so absent and zero are one identity."""
-    return {k: v for k, v in semantic.items() if not (k in OPTIONAL_OFF_ZERO and v == 0)}
+    out = {k: v for k, v in semantic.items() if not (k in OPTIONAL_OFF_ZERO and v == 0)}
+    if not out.get("argument_batch_tokens"):
+        out.pop("argument_batch_sections", None)  # inert without a budget
+    return out
 
 
 def stage_input_identity(

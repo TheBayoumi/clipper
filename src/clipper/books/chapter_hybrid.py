@@ -784,7 +784,10 @@ POINT_PLACEHOLDER = "<one short plain sentence on what these units claim>"
 
 
 def _greedy_windows(
-    units: list[dict[str, Any]], budget: int, count: Callable[[list[dict[str, Any]]], int]
+    units: list[dict[str, Any]],
+    budget: int,
+    count: Callable[[list[dict[str, Any]]], int],
+    max_batches: int,
 ) -> list[list[dict[str, Any]]]:
     windows: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
@@ -793,11 +796,29 @@ def _greedy_windows(
         if current and count(trial) > budget:
             windows.append(current)
             current = [entry]
+            if len(windows) >= max_batches:
+                raise HybridStop("hybrid argument batch count exceeds finite budget")
         else:
             current = trial
     if current:
         windows.append(current)
     return windows
+
+
+def _fits(
+    base: list[dict[str, Any]],
+    group: list[dict[str, Any]],
+    budget: int,
+    count: Callable[[list[dict[str, Any]]], int],
+) -> bool:
+    """Whether base plus group fits, counting one unit at a time and stopping at the first
+    over-budget size, so no request far larger than the budget is ever rendered."""
+    trial = list(base)
+    for entry in group:
+        trial.append(entry)
+        if count(trial) > budget:
+            return False
+    return True
 
 
 def argument_batches(
@@ -819,29 +840,28 @@ def argument_batches(
     """
     units = [entry for entry in entries if entry["kind"] == "CANONICAL_WORK_UNIT"]
     if not by_section:
-        windows = _greedy_windows(units, budget, count)
-    else:
-        groups: list[list[dict[str, Any]]] = []
-        for entry in units:
-            if groups and groups[-1][0].get("section_id") == entry.get("section_id"):
-                groups[-1].append(entry)
-            else:
-                groups.append([entry])
-        windows = []
-        current: list[dict[str, Any]] = []
-        for group in groups:
-            if current and count([*current, *group]) > budget:
-                windows.append(current)
-                current = []
-            if count(group) > budget:
-                if current:
-                    windows.append(current)
-                    current = []
-                windows.extend(_greedy_windows(group, budget, count))
-            else:
-                current = [*current, *group]
-        if current:
+        return _greedy_windows(units, budget, count, max_batches)
+    groups: list[list[dict[str, Any]]] = []
+    for entry in units:
+        if groups and groups[-1][0].get("section_id") == entry.get("section_id"):
+            groups[-1].append(entry)
+        else:
+            groups.append([entry])
+    windows: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for group in groups:
+        if current and not _fits(current, group, budget, count):
             windows.append(current)
+            current = []
+        if not current and not _fits([], group, budget, count):
+            windows.extend(_greedy_windows(group, budget, count, max_batches))
+            current = []
+        else:
+            current = [*current, *group]
+        if len(windows) > max_batches:
+            raise HybridStop("hybrid argument batch count exceeds finite budget")
+    if current:
+        windows.append(current)
     if len(windows) > max_batches:
         raise HybridStop("hybrid argument batch count exceeds finite budget")
     return windows
