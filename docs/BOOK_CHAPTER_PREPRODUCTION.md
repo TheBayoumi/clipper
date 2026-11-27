@@ -296,6 +296,16 @@ or 0 / absent for off, which is the default), the argument is built in two steps
    reports `argument_batch_attempts` (model calls used by the batches). Audits and
    reconcile still see the whole chapter.
 
+Budget and section cutting. Batching is off unless `argument_batch_tokens` is set. When you
+switch it on, 4,096 is the recommended budget (`pipeline_plan.DEFAULT_BATCH_TOKENS`; the
+helper `pipeline_plan.with_argument_batching(config)` returns a copy with it set). On the
+pinned tokenizer the whole of Atomic Habits chapter 1 is about 7.7K tokens, so 4,096 gives
+3 windows and 8,192 or more gives one window (same as no batching). The optional switch
+`argument_batch_sections` (0 or 1, off by default, only on the argument stage) cuts at
+section edges first: whole sections stay together while they fit, a section that alone
+exceeds the budget is cut by tokens, and the next section starts a new window. A config
+with the switch at 0 and a config without it have the same identity.
+
 Replay: the partition and merge are fully determined by the ledger, the tokenizer and the
 config, so a second run replays every batch from cache. The new request text changes
 request hashes only for configs that turn batching on; configs without the field are

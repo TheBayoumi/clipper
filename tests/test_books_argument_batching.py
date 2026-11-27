@@ -639,3 +639,126 @@ def test_the_final_request_is_bound_to_the_exact_batch_artifacts(tmp_path: Path)
     first = _receipts(tmp_path / "a", "ASSERTION")
     second = _receipts(tmp_path / "b", "QUALIFICATION")
     assert first != second
+
+
+# 9. boundary-aware cutting (option) and the 4,096 default budget ---------------------------
+
+
+def _sectioned(sizes: list[int]) -> list[dict]:
+    entries = _units(sum(sizes))
+    out: list[dict] = []
+    at = 0
+    for number, size in enumerate(sizes):
+        for entry in entries[at : at + size]:
+            out.append({**entry, "section_id": f"sec-{number}"})
+        at += size
+    return out
+
+
+def _by_count(window: list[dict]) -> int:
+    return len(window) * 10
+
+
+def test_by_section_windows_start_and_end_at_section_edges_when_sections_fit() -> None:
+    entries = _sectioned([5, 5, 4, 6])
+    windows = hybrid.argument_batches(entries, budget=100, count=_by_count, by_section=True)
+    assert [[e["section_id"] for e in w] for w in windows] == [
+        ["sec-0"] * 5 + ["sec-1"] * 5,
+        ["sec-2"] * 4 + ["sec-3"] * 6,
+    ]
+    flat = [e["id"] for w in windows for e in w]
+    assert flat == [e["id"] for e in entries]
+
+
+def test_by_section_never_splits_a_section_that_fits_even_if_greedy_would() -> None:
+    entries = _sectioned([6, 6, 6])
+    greedy = hybrid.argument_batches(entries, budget=90, count=_by_count)
+    aware = hybrid.argument_batches(entries, budget=90, count=_by_count, by_section=True)
+    assert any(len({e["section_id"] for e in w}) > 1 and len(w) == 9 for w in greedy)
+    assert all(len({e["section_id"] for e in w}) == 1 for w in aware)
+    assert [len(w) for w in aware] == [6, 6, 6]
+
+
+def test_by_section_splits_only_a_section_that_alone_exceeds_the_budget() -> None:
+    entries = _sectioned([3, 12, 3])
+    windows = hybrid.argument_batches(entries, budget=50, count=_by_count, by_section=True)
+    assert [len(w) for w in windows] == [3, 5, 5, 2, 3]
+    assert [e["id"] for w in windows for e in w] == [e["id"] for e in entries]
+    assert windows[0][0]["section_id"] == "sec-0" and windows[-1][0]["section_id"] == "sec-2"
+
+
+def test_by_section_off_is_exactly_the_greedy_partition() -> None:
+    entries = _sectioned([5, 5, 4, 6])
+    assert hybrid.argument_batches(
+        entries, budget=70, count=_by_count, by_section=False
+    ) == hybrid.argument_batches(entries, budget=70, count=_by_count)
+
+
+def test_by_section_still_respects_the_window_limit() -> None:
+    entries = _sectioned([1] * 40)
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.argument_batches(entries, budget=10, count=_by_count, by_section=True)
+
+
+def test_the_default_budget_is_4096_and_batching_stays_off_by_default() -> None:
+    assert pipeline_plan.DEFAULT_BATCH_TOKENS == 4096
+    plain = _config()
+    assert "argument_batch_tokens" not in plain["stages"]["argument"]["semantic"]
+    on = pipeline_plan.with_argument_batching(plain)
+    assert on["stages"]["argument"]["semantic"]["argument_batch_tokens"] == 4096
+    assert "argument_batch_sections" not in on["stages"]["argument"]["semantic"]
+    assert "argument_batch_tokens" not in plain["stages"]["argument"]["semantic"]
+    pipeline_plan.validate_config(on, pipeline_plan.registry())
+    sectioned = pipeline_plan.with_argument_batching(plain, by_section=True, tokens=2048)
+    semantic = sectioned["stages"]["argument"]["semantic"]
+    assert semantic["argument_batch_tokens"] == 2048 and semantic["argument_batch_sections"] == 1
+    pipeline_plan.validate_config(sectioned, pipeline_plan.registry())
+
+
+@pytest.mark.parametrize("value", [2, -1, True, "1", 1.0, None])
+def test_the_section_switch_accepts_only_integer_zero_or_one(value: object) -> None:
+    with pytest.raises(PlanError):
+        pipeline_plan.validate_config(
+            _config(argument_batch_tokens=2048, argument_batch_sections=value),
+            pipeline_plan.registry(),
+        )
+
+
+def test_section_switch_off_spellings_share_one_identity_and_it_is_argument_only() -> None:
+    registry = pipeline_plan.registry()
+    assert pipeline_plan.semantic_lineage(_config(), registry) == pipeline_plan.semantic_lineage(
+        _config(argument_batch_sections=0), registry
+    )
+    assert pipeline_plan.semantic_lineage(
+        _config(argument_batch_tokens=2048), registry
+    ) != pipeline_plan.semantic_lineage(
+        _config(argument_batch_tokens=2048, argument_batch_sections=1), registry
+    )
+    config = pipeline_plan.template("a" * 64, "brief")
+    config["stages"]["audits"]["semantic"]["argument_batch_sections"] = 1
+    with pytest.raises(PlanError):
+        pipeline_plan.validate_config(config, pipeline_plan.registry())
+
+
+def test_end_to_end_with_the_section_switch_on_batches_then_one_final_call(
+    tmp_path: Path,
+) -> None:
+    seen: list[dict] = []
+    runner, selected, section = _selected_hybrid_source(tmp_path)
+    config = pipeline_plan.with_argument_batching(
+        pipeline_plan.template(selected.stem, "brief"), by_section=True, tokens=700
+    )
+    result = chapter.evaluate_hybrid_chapter(
+        runner,
+        selected,
+        section,
+        plan=chapter.ChapterPlan(brief_cpu=True),
+        pipeline_config=config,
+        argument_completion=_producer(seen),
+        audit_completion=lambda r: _injected_hybrid_response("audit", r),
+        reconcile_completion=lambda r: _injected_hybrid_response("reconcile", r),
+        token_counter=_by_text,
+    )
+    assert result["status"] == "BRIEF_READY_UNREVIEWED"
+    kinds = [s["kind"] for s in seen]
+    assert kinds.count("batch") >= 2 and kinds[-1] == "final"

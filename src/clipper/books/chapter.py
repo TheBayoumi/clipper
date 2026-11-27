@@ -2642,7 +2642,7 @@ def _evaluate_hybrid_chapter(
                 else value
             )
             for key, value in semantic.items()
-            if key != "argument_batch_tokens"
+            if key not in pipeline_plan.OPTIONAL_OFF_ZERO
         }
         return replace(limits, **overrides)
 
@@ -2756,6 +2756,11 @@ def _evaluate_hybrid_chapter(
         if configured is not None
         else 0
     )
+    batch_sections = bool(
+        configured["stages"]["argument"]["semantic"].get("argument_batch_sections", 0)
+        if configured is not None
+        else 0
+    )
     if batch_tokens:
         # Dynamic batches: window edges come from the exact pinned-tokenizer size of each
         # rendered request, so they follow the active profile and the configured budget.
@@ -2788,7 +2793,10 @@ def _evaluate_hybrid_chapter(
 
         try:
             batch_windows = chapter_hybrid.argument_batches(
-                ledger_entries, budget=batch_tokens, count=batch_size
+                ledger_entries,
+                budget=batch_tokens,
+                count=batch_size,
+                by_section=batch_sections,
             )
         except chapter_hybrid.HybridStop as error:
             raise ChapterStop("hybrid argument batching refused") from error

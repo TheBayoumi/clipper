@@ -783,35 +783,65 @@ def reject_degenerate_links(links: list[dict[str, Any]], where: str) -> None:
 POINT_PLACEHOLDER = "<one short plain sentence on what these units claim>"
 
 
+def _greedy_windows(
+    units: list[dict[str, Any]], budget: int, count: Callable[[list[dict[str, Any]]], int]
+) -> list[list[dict[str, Any]]]:
+    windows: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for entry in units:
+        trial = [*current, entry]
+        if current and count(trial) > budget:
+            windows.append(current)
+            current = [entry]
+        else:
+            current = trial
+    if current:
+        windows.append(current)
+    return windows
+
+
 def argument_batches(
     entries: list[dict[str, Any]],
     *,
     budget: int,
     count: Callable[[list[dict[str, Any]]], int],
     max_batches: int = MAX_ARGUMENT_BATCHES,
+    by_section: bool = False,
 ) -> list[list[dict[str, Any]]]:
     """Contiguous windows of text units, cut by the measured size of the whole request.
 
     count(window) is the exact token count of that window's rendered request, supplied by
     the caller with the pinned tokenizer, so window edges follow the active model profile
     and never a fixed unit count. A unit that alone exceeds the budget gets its own window.
-    Gap markers carry no text and are not batched.
+    Gap markers carry no text and are not batched. With by_section, whole sections are kept
+    together while they fit and windows start and end at section edges; only a section that
+    alone exceeds the budget is cut by tokens, and the section after it starts a new window.
     """
-    windows: list[list[dict[str, Any]]] = []
-    current: list[dict[str, Any]] = []
-    for entry in entries:
-        if entry["kind"] != "CANONICAL_WORK_UNIT":
-            continue
-        trial = [*current, entry]
-        if current and count(trial) > budget:
+    units = [entry for entry in entries if entry["kind"] == "CANONICAL_WORK_UNIT"]
+    if not by_section:
+        windows = _greedy_windows(units, budget, count)
+    else:
+        groups: list[list[dict[str, Any]]] = []
+        for entry in units:
+            if groups and groups[-1][0].get("section_id") == entry.get("section_id"):
+                groups[-1].append(entry)
+            else:
+                groups.append([entry])
+        windows = []
+        current: list[dict[str, Any]] = []
+        for group in groups:
+            if current and count([*current, *group]) > budget:
+                windows.append(current)
+                current = []
+            if count(group) > budget:
+                if current:
+                    windows.append(current)
+                    current = []
+                windows.extend(_greedy_windows(group, budget, count))
+            else:
+                current = [*current, *group]
+        if current:
             windows.append(current)
-            current = [entry]
-            if len(windows) >= max_batches:
-                raise HybridStop("hybrid argument batch count exceeds finite budget")
-        else:
-            current = trial
-    if current:
-        windows.append(current)
     if len(windows) > max_batches:
         raise HybridStop("hybrid argument batch count exceeds finite budget")
     return windows

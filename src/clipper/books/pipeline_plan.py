@@ -62,7 +62,7 @@ def registry() -> dict[str, StageSpec]:
         "argument": text(
             ("source",),
             "clipper-chapter-hybrid-argument-v1",
-            optional=("argument_batch_tokens",),
+            optional=("argument_batch_tokens", "argument_batch_sections"),
         ),
         "audits": text(("source", "argument"), "clipper-chapter-hybrid-local-audit-v1"),
         "reconcile": text(
@@ -117,7 +117,9 @@ TARGETS = {
 }
 AUTO_OUTPUT = "auto"
 BATCH_TOKENS_RANGE = (512, 16384)
-OPTIONAL_OFF_ZERO = frozenset({"argument_batch_tokens"})
+OPTIONAL_OFF_ZERO = frozenset({"argument_batch_tokens", "argument_batch_sections"})
+# The batch budget to use when batching is switched on. Batching itself is off by default.
+DEFAULT_BATCH_TOKENS = 4096
 RANGES = {
     "max_attempts": (1, 2),
     "max_runtime_seconds": (60, 900),
@@ -305,6 +307,9 @@ def validate_config(raw: object, specs: Mapping[str, StageSpec]) -> dict[str, An
                     type(value) is int and (value == 0 or low <= value <= high),
                     "invalid stage limit",
                 )
+            elif key == "argument_batch_sections":
+                # 1 cuts windows at section edges first; 0 (or absent) is the plain token cut.
+                require(type(value) is int and value in (0, 1), "invalid stage limit")
             elif key == "max_new_tokens":
                 # "auto" is resolved per request from the measured prompt; an int is fixed.
                 low, high = model_profile.output_bounds()
@@ -322,6 +327,18 @@ def validate_config(raw: object, specs: Mapping[str, StageSpec]) -> dict[str, An
                 "input descriptor stage mismatch",
             )
     return copy.deepcopy(raw)
+
+
+def with_argument_batching(
+    config: dict[str, Any], *, tokens: int = DEFAULT_BATCH_TOKENS, by_section: bool = False
+) -> dict[str, Any]:
+    """A copy of config with argument batching switched on (the config is not changed)."""
+    out = copy.deepcopy(config)
+    semantic = out["stages"]["argument"]["semantic"]
+    semantic["argument_batch_tokens"] = tokens
+    if by_section:
+        semantic["argument_batch_sections"] = 1
+    return out
 
 
 def canonical_semantic(semantic: dict[str, Any]) -> dict[str, Any]:
