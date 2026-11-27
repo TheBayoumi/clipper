@@ -305,7 +305,9 @@ two model calls instead of one; the argument request is not the same as with bat
 `argument_batch_sections` (0 or 1, off by default, only on the argument stage) cuts at
 section edges first: whole sections stay together while they fit, a section that alone
 exceeds the budget is cut by tokens, and the next section starts a new window. A config
-with the switch at 0 and a config without it have the same identity.
+with the switch at 0 and a config without it have the same stage identity (the cache
+keys); the stored whole-config text still differs by the explicit 0. A ledger unit without a
+section id is cut like the plain token partition.
 
 Replay: the partition and merge are fully determined by the ledger, the tokenizer and the
 config, so a second run replays every batch from cache. The new request text changes

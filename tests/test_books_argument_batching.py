@@ -822,3 +822,40 @@ def test_the_helper_can_switch_section_cutting_off_again() -> None:
     config = pipeline_plan.with_argument_batching(_config(), by_section=True)
     again = pipeline_plan.with_argument_batching(config, by_section=False)
     assert "argument_batch_sections" not in again["stages"]["argument"]["semantic"]
+
+
+# 11. ChatGPT review of 6b673843 ----------------------------------------------------------------
+
+
+def test_plain_partition_keeps_the_exact_budget_boundary() -> None:
+    entries = _sectioned([5, 5, 4, 6])
+    windows = hybrid.argument_batches(entries, budget=70, count=_by_count, by_section=False)
+    assert [len(w) for w in windows] == [7, 7, 6]
+
+
+def test_unknown_section_ids_cut_like_the_plain_token_partition() -> None:
+    entries = _sectioned([5, 5, 4, 6])
+    for entry in entries:
+        entry["section_id"] = None
+    aware = hybrid.argument_batches(entries, budget=70, count=_by_count, by_section=True)
+    assert aware == hybrid.argument_batches(entries, budget=70, count=_by_count)
+
+
+@pytest.mark.parametrize(
+    ("brief", "script", "same"),
+    [
+        ({}, {"argument_batch_sections": 0}, True),
+        ({"argument_batch_sections": 0}, {}, True),
+        ({"argument_batch_sections": 1}, {"argument_batch_sections": 1}, True),
+        ({"argument_batch_sections": 1}, {}, False),
+        ({"argument_batch_sections": 1}, {"argument_batch_sections": 0}, False),
+        ({"argument_batch_sections": 0}, {"argument_batch_sections": 1}, False),
+    ],
+)
+def test_section_switch_identity_matrix_with_batching_on(
+    brief: dict, script: dict, same: bool
+) -> None:
+    registry = pipeline_plan.registry()
+    a = pipeline_plan.semantic_lineage(_config(argument_batch_tokens=2048, **brief), registry)
+    b = pipeline_plan.semantic_lineage(_config(argument_batch_tokens=2048, **script), registry)
+    assert (a == b) is same
