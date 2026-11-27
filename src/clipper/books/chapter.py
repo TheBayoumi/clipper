@@ -1628,7 +1628,12 @@ def _stage(
             evaluation._store(
                 root,
                 directory / f"failed-{index}.json",
-                {"attempt": index, "owner": owner, "status": "MISSING_EOS"},
+                {
+                    "attempt": index,
+                    "owner": owner,
+                    "status": "MISSING_EOS",
+                    **({"attempt_request": attempt_receipt} if attempt_receipt else {}),
+                },
             )
             _verified_owner(root, marker, stage_key, index, owner)
             raise ChapterStop("chapter generation ended without EOS; no retry") from None
@@ -1636,7 +1641,12 @@ def _stage(
             evaluation._store(
                 root,
                 directory / f"failed-{index}.json",
-                {"attempt": index, "owner": owner, "status": "PRODUCER_FAILURE"},
+                {
+                    "attempt": index,
+                    "owner": owner,
+                    "status": "PRODUCER_FAILURE",
+                    **({"attempt_request": attempt_receipt} if attempt_receipt else {}),
+                },
             )
             _verified_owner(root, marker, stage_key, index, owner)
             raise ChapterStop("private chapter producer failed; no automatic retry") from None
@@ -1653,7 +1663,12 @@ def _stage(
             evaluation._store(
                 root,
                 directory / f"failed-{index}.json",
-                {"attempt": index, "owner": owner, "status": "NON_TEXT_OR_OVERSIZE"},
+                {
+                    "attempt": index,
+                    "owner": owner,
+                    "status": "NON_TEXT_OR_OVERSIZE",
+                    **({"attempt_request": attempt_receipt} if attempt_receipt else {}),
+                },
             )
             _verified_owner(root, marker, stage_key, index, owner)
             raise ChapterStop("chapter producer returned invalid bounded raw output")
@@ -1684,7 +1699,12 @@ def _stage(
             evaluation._store(
                 root,
                 directory / f"failed-{index}.json",
-                {"attempt": index, "owner": owner, "status": "INVALID_ACTUAL_TOKEN_RECEIPT"},
+                {
+                    "attempt": index,
+                    "owner": owner,
+                    "status": "INVALID_ACTUAL_TOKEN_RECEIPT",
+                    **({"attempt_request": attempt_receipt} if attempt_receipt else {}),
+                },
             )
             raise ChapterStop("actual chapter generation token/EOS receipt unavailable")
         try:
