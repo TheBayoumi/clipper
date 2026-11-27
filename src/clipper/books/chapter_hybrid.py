@@ -560,7 +560,8 @@ def _span(
         type(start) is not int
         or type(end) is not int
         or not 0 <= start < end <= len(original["text"])
-        or end - start < MIN_SPAN_CHARS
+        or end - start < min(MIN_SPAN_CHARS, len(original["text"]))
+        or not original["text"][start:end].strip()
     ):
         raise _stop(invalid, "BAD_OFFSETS")
     # One bound for every citation form: whole-unit, quote and legacy offsets.
@@ -594,6 +595,7 @@ def _canonical_spans(
     unchanged. Repeated identical id-reference citations are kept once, first-seen order.
     """
     out: list[dict[str, Any]] = []
+    ref_spans: list[dict[str, Any]] = []
     failures: list[dict[str, object]] = []
     first: HybridStop | None = None
     for index, raw in enumerate(spans):
@@ -616,8 +618,13 @@ def _canonical_spans(
         # Only repeated id-reference citations are collapsed; legacy offset artifacts
         # keep their historical normalized form byte for byte.
         is_ref = isinstance(raw, dict) and "start" not in raw
-        if not (is_ref and span in out):
-            out.append(span)
+        # A legacy citation equal to an earlier id reference collapses too, so the
+        # result does not depend on which format came first.
+        if (is_ref and span in out) or (not is_ref and span in ref_spans):
+            continue
+        if is_ref:
+            ref_spans.append(span)
+        out.append(span)
     if first is not None:
         raise HybridStop(str(first), diagnostics=failures)
     return out
@@ -836,19 +843,25 @@ def reconcile(
             raise HybridStop("hybrid beat cannot lack original source evidence")
         _canonical_spans(spans, source, f"beat:{beat['beat_id']}")
         expanded: list[dict[str, Any]] = []
+        ref_keys: list[tuple[Any, ...]] = []
         for item in spans:
             span = _span(item, source)
+            span_key = (span["id"], span["start"], span["end"], span["role"])
+            is_ref = isinstance(item, dict) and "start" not in item
             if decisions[span["id"]]["decision"] == "omit":
                 raise HybridStop("hybrid beat cites editorially omitted source")
             linked.add(span["id"])
             if beat["beat_id"] not in beat_links[span["id"]]:
                 beat_links[span["id"]].append(beat["beat_id"])
-            if all(
-                (prior["id"], prior["start"], prior["end"], prior["role"])
-                != (span["id"], span["start"], span["end"], span["role"])
+            seen = any(
+                (prior["id"], prior["start"], prior["end"], prior["role"]) == span_key
                 for prior in expanded
-            ):
-                expanded.append(span)
+            )
+            if (is_ref and seen) or (not is_ref and span_key in ref_keys):
+                continue
+            if is_ref:
+                ref_keys.append(span_key)
+            expanded.append(span)
         beats.append({**beat, "spans": expanded, "unit_id": expanded[0]["original_source_id"]})
     if len(beats) < 2:
         raise HybridStop("hybrid coherent chapter requires multiple source-linked beats")
