@@ -859,3 +859,34 @@ def test_section_switch_identity_matrix_with_batching_on(
     a = pipeline_plan.semantic_lineage(_config(argument_batch_tokens=2048, **brief), registry)
     b = pipeline_plan.semantic_lineage(_config(argument_batch_tokens=2048, **script), registry)
     assert (a == b) is same
+
+
+def _tiny(texts: list[str], sections: list) -> list[dict]:
+    return [
+        {"kind": "CANONICAL_WORK_UNIT", "id": f"u{i}", "text": t, "section_id": s}
+        for i, (t, s) in enumerate(zip(texts, sections, strict=True))
+    ]
+
+
+@pytest.mark.parametrize("by_section", [False, True])
+def test_a_zero_window_allowance_refuses_any_partition(by_section: bool) -> None:
+    units = _tiny(["a"], ["s"])
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.argument_batches(units, budget=1, count=len, max_batches=0, by_section=by_section)
+
+
+def test_by_section_stops_before_tokenizing_past_an_exhausted_window_allowance() -> None:
+    units = _tiny(["a", "a", "b", "b", "b"], ["A", "A", "B", "B", "B"])
+
+    def count(window: list[dict]) -> int:
+        assert all(e["text"] != "b" for e in window), "probed past the exhausted allowance"
+        return len(window)
+
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.argument_batches(units, budget=1, count=count, max_batches=2, by_section=True)
+
+
+def test_mixed_known_and_unknown_section_ids_cut_like_plain_greedy_for_unknown_units() -> None:
+    units = _tiny(["a", "a", "a"], ["A", None, None])
+    windows = hybrid.argument_batches(units, budget=2, count=len, by_section=True)
+    assert [[e["id"] for e in w] for w in windows] == [["u0", "u1"], ["u2"]]
