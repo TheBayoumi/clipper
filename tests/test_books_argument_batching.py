@@ -890,3 +890,43 @@ def test_mixed_known_and_unknown_section_ids_cut_like_plain_greedy_for_unknown_u
     units = _tiny(["a", "a", "a"], ["A", None, None])
     windows = hybrid.argument_batches(units, budget=2, count=len, by_section=True)
     assert [[e["id"] for e in w] for w in windows] == [["u0", "u1"], ["u2"]]
+
+
+class _ContextLimit(Exception):
+    pass
+
+
+def test_a_combined_probe_past_the_hard_context_closes_the_window_instead_of_raising() -> None:
+    sizes = {"u0": 4000, "u1": 38000}
+    units = _tiny(["a", "b"], ["A", "B"])
+
+    def count(window: list[dict]) -> int:
+        size = 200 + sum(sizes[e["id"]] for e in window)
+        if size > 40960:
+            raise _ContextLimit
+        return size
+
+    for by_section in (False, True):
+        windows = hybrid.argument_batches(units, budget=4096, count=count, by_section=by_section)
+        assert [len(w) for w in windows] == [1, 1]
+
+
+def test_a_single_unit_the_counter_cannot_size_still_raises() -> None:
+    def count(window: list[dict]) -> int:
+        raise _ContextLimit
+
+    with pytest.raises(_ContextLimit):
+        hybrid.argument_batches(_tiny(["a"], ["A"]), budget=10, count=count, by_section=True)
+
+
+def test_section_that_fits_stays_open_and_a_huge_next_section_is_cut_incrementally() -> None:
+    units = _tiny(["x"] * 41, ["A", *["B"] * 40])
+
+    def count(window: list[dict]) -> int:
+        size = 200 + 1000 * len(window)
+        if size > 40960:
+            raise _ContextLimit
+        return size
+
+    windows = hybrid.argument_batches(units, budget=4096, count=count, by_section=True)
+    assert [len(w) for w in windows] == [1] + [3] * 13 + [1]

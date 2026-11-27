@@ -783,6 +783,21 @@ def reject_degenerate_links(links: list[dict[str, Any]], where: str) -> None:
 POINT_PLACEHOLDER = "<one short plain sentence on what these units claim>"
 
 
+def _over_budget(
+    trial: list[dict[str, Any]], budget: int, count: Callable[[list[dict[str, Any]]], int]
+) -> bool:
+    """Whether the trial window is over budget. A multi-unit trial the counter cannot size
+    at all (for example one past the model's hard context limit) is over budget by
+    definition, so the previous window closes; a single unit that cannot be sized is a
+    real failure and is raised."""
+    try:
+        return count(trial) > budget
+    except Exception:
+        if len(trial) <= 1:
+            raise
+        return True
+
+
 def _greedy_windows(
     units: list[dict[str, Any]],
     budget: int,
@@ -793,7 +808,7 @@ def _greedy_windows(
     current: list[dict[str, Any]] = []
     for entry in units:
         trial = [*current, entry]
-        if current and count(trial) > budget:
+        if current and _over_budget(trial, budget, count):
             windows.append(current)
             current = [entry]
             if len(windows) >= max_batches:
@@ -818,7 +833,7 @@ def _fits(
     trial = list(base)
     for entry in group:
         trial.append(entry)
-        if count(trial) > budget:
+        if _over_budget(trial, budget, count):
             return False
     return True
 
