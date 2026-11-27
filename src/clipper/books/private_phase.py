@@ -53,6 +53,19 @@ class PrivatePhaseError(ValueError):
     """Fixed-category failure without private text or filenames."""
 
 
+def _decoded(data: bytes) -> dict[str, Any]:
+    """Checkpoint member JSON as an object, or an empty mapping when it is not one."""
+    try:
+        return _mapping(pipeline_plan.strict_json(data))
+    except pipeline_plan.PlanError:
+        return {}
+
+
+def _mapping(value: object) -> dict[str, Any]:
+    """A decoded JSON value as a dict; anything else is an empty mapping, not a crash."""
+    return value if isinstance(value, dict) else {}
+
+
 def require(condition: bool, reason: str) -> None:
     if not condition:
         raise PrivatePhaseError(reason)
@@ -270,22 +283,19 @@ def _preflight(
             any(
                 name.startswith("book-candidates/hybrid_reconcile/")
                 and name.endswith("/validated.json")
-                and pipeline_plan.strict_json(data).get("artifact_identity")
-                == run["expected_brief_identity"]
+                and _decoded(data).get("artifact_identity") == run["expected_brief_identity"]
                 for name, data in restored.items()
             ),
             "checkpoint brief identity absent",
         )
         receipts = [
-            pipeline_plan.strict_json(data)
-            for name, data in restored.items()
-            if "/configured-execution-" in name
+            _decoded(data) for name, data in restored.items() if "/configured-execution-" in name
         ]
         require(
             any(
                 receipt.get("status") == "BRIEF_READY_UNREVIEWED"
                 and receipt.get("selected_source_bundle_sha256") == run["bundle_sha256"]
-                and receipt.get("artifacts", {}).get("brief_identity")
+                and _mapping(receipt.get("artifacts")).get("brief_identity")
                 == run["expected_brief_identity"]
                 for receipt in receipts
             ),

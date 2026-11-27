@@ -195,3 +195,12 @@ def test_partial_checkpoint_keeps_room_for_the_failed_phase_report(tmp_path: Pat
         (base / f"{i:064x}.json").write_bytes(b"{}")
     report, _out = phase.failed_phase(tmp_path, {"owner": "a" * 64}, {})
     assert report["omitted_members"] >= 1
+
+
+def test_preflight_malformed_checkpoint_json_is_a_stop_not_a_crash() -> None:
+    assert phase._mapping([]) == {}
+    assert phase._mapping("x") == {}
+    assert phase._mapping({"a": 1}) == {"a": 1}
+    assert phase._decoded(b"[]") == {}
+    assert phase._decoded(b"{not json") == {}
+    assert phase._decoded(b'{"a": 1}') == {"a": 1}
