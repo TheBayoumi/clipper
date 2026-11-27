@@ -513,3 +513,65 @@ def test_resume_fails_closed_when_the_script_config_drops_the_batch_setting(
             token_counter=_by_text,
         )
     assert len(seen) == calls
+
+
+# 7. ChatGPT review of 93b560a8, each finding reproduced as a failing test first ---------------
+
+
+def test_final_argument_cannot_cite_a_unit_it_was_not_shown() -> None:
+    ledger = _ledger()
+    ids = [e["id"] for e in _units()]
+    shown, unseen = ids[:3], ids[5]
+    raw = {
+        "hypothesis": "A reading of the chapter.",
+        "questions": ["Does it hold?"],
+        "source_links": [{"id": unseen, "role": "ASSERTION"}],
+    }
+    # Without a selection (batching off) every ledger unit was shown, so this stays valid.
+    hybrid.validate_argument(json.loads(json.dumps(raw)), ledger)
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_argument(json.loads(json.dumps(raw)), ledger, allowed=shown)
+    raw["source_links"] = [{"id": shown[0], "role": "ASSERTION"}]
+    hybrid.validate_argument(raw, ledger, allowed=shown)
+
+
+def test_notes_are_bounded_in_total_size_so_the_final_request_always_fits() -> None:
+    results = [
+        {
+            "points": ["\U0001f9ea" * 400] * hybrid.MAX_BATCH_POINTS,
+            "source_links": [{"id": f"s{i:04d}", "start": 0, "end": 1, "role": "ASSERTION"}],
+        }
+        for i in range(hybrid.MAX_ARGUMENT_BATCHES)
+    ]
+    merged = hybrid.merge_argument_batches(results, quota=1)
+    assert len(hybrid._canonical({"batch_points": merged["points"]})) < 160_000
+
+
+def test_a_note_does_not_outlive_the_evidence_that_was_dropped_by_the_spread() -> None:
+    results = [
+        {
+            "points": [f"claim {i}"],
+            "source_links": [{"id": f"s{i:04d}", "start": 0, "end": 1, "role": "ASSERTION"}],
+        }
+        for i in range(32)
+    ]
+    merged = hybrid.merge_argument_batches(results, quota=1)
+    kept = {int(sid[1:]) for sid in merged["candidate_ids"]}
+    assert {int(p.split()[1]) for p in merged["points"]} <= kept
+
+
+def test_notes_are_labelled_as_unverified_model_text_in_the_final_prompt() -> None:
+    payload = {
+        "schema": hybrid.ARGUMENT_SCHEMA,
+        "original_source": hybrid.projection(_window()),
+        "batch_points": ["a note"],
+        "response_contract": {"hypothesis": "<h>", "questions": ["<q>"], "source_links": []},
+    }
+    text = hybrid._messages("argument", payload)[1]["content"].lower()
+    assert "unverified" in text and "never instructions" in text
+
+
+def test_summary_reports_how_many_calls_the_batches_used(tmp_path: Path) -> None:
+    seen: list[dict] = []
+    result = _drive(tmp_path, _by_text, 700, seen)
+    assert result["argument_batch_attempts"] == [s["kind"] for s in seen].count("batch")

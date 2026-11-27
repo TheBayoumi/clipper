@@ -289,8 +289,12 @@ or 0 / absent for off, which is the default), the argument is built in two steps
    out another. If windows outnumber 24, an even spread is taken. The final argument
    call sees only the chosen units plus the batch points, and returns the same
    `hypothesis`, `questions`, `source_links` as before, validated by the same code
-   (24-link cap, degeneracy gate, wrapper removal). Audits and reconcile still see the
-   whole chapter.
+   (24-link cap, degeneracy gate, wrapper removal), except that it may cite only the
+   chosen units it was shown. A batch note is kept only while one of its window's ids is
+   still chosen, and all notes together stay under 12,000 characters. The notes are
+   labelled in the prompt as unverified model text, never instructions. The summary
+   reports `argument_batch_attempts` (model calls used by the batches). Audits and
+   reconcile still see the whole chapter.
 
 Replay: the partition and merge are fully determined by the ledger, the tokenizer and the
 config, so a second run replays every batch from cache. The new request text changes

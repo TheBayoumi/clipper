@@ -2747,6 +2747,7 @@ def _evaluate_hybrid_chapter(
     argument_projection = projection
     argument_extra: dict[str, object] = {}
     batch_origins: list[str] = []
+    batch_attempts: list[int] = []
     batch_tokens = (
         configured["stages"]["argument"]["semantic"].get("argument_batch_tokens", 0)
         if configured is not None
@@ -2796,7 +2797,7 @@ def _evaluate_hybrid_chapter(
 
         for batch_window in batch_windows:
             window_ids = [entry["id"] for entry in batch_window]
-            result_batch, _key, origin_batch, _tries = stage(
+            result_batch, _key, origin_batch, tries = stage(
                 "hybrid_argument_batch",
                 "argument_batch",
                 batch_payload(batch_window, quota),
@@ -2806,6 +2807,7 @@ def _evaluate_hybrid_chapter(
             )
             batch_results.append(result_batch)
             batch_origins.append(origin_batch)
+            batch_attempts.append(tries)
         try:
             merged = chapter_hybrid.merge_argument_batches(batch_results, quota=quota)
         except chapter_hybrid.HybridStop as error:
@@ -2834,7 +2836,13 @@ def _evaluate_hybrid_chapter(
                 ],
             },
         },
-        lambda raw: chapter_hybrid.validate_argument(raw, ledger),
+        lambda raw: (
+            chapter_hybrid.validate_argument(
+                raw, ledger, allowed=[str(entry[0]) for entry in argument_projection] or None
+            )
+            if batch_tokens
+            else chapter_hybrid.validate_argument(raw, ledger)
+        ),
         argument_completion,
         replay_only=replay,
     )
@@ -2954,6 +2962,7 @@ def _evaluate_hybrid_chapter(
             "argument_identity": argument_key,
             "audit_identities": audit_keys,
             "argument_attempts": argument_attempts,
+            **({"argument_batch_attempts": sum(batch_attempts)} if batch_tokens else {}),
             "audit_attempts": audit_attempts,
             "brief_attempts": brief_attempts,
             "brief_provenance": brief_origin,
