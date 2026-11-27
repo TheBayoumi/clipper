@@ -3403,3 +3403,92 @@ def test_retry_attempt_uses_its_own_pinned_seed_bound_into_the_request_key() -> 
     for bad in (0, 41, 44, True, "42"):
         with pytest.raises(hybrid.HybridStop, match="seed"):
             build(bad)  # type: ignore[arg-type]
+
+
+def test_one_character_spans_and_near_total_omission_are_rejected() -> None:
+    ledger = _ledger()
+    for end in (1, 2):
+        with pytest.raises(hybrid.HybridStop) as caught:
+            hybrid.validate_argument(
+                _linked(ledger, [{"id": "s0003", "start": 0, "end": end, "role": "ASSERTION"}]),
+                ledger,
+            )
+        assert caught.value.diagnostics[0]["code"] == "BAD_OFFSETS"
+    assert hybrid.validate_argument(
+        _linked(
+            ledger, [{"id": "s0003", "start": 0, "end": hybrid.MIN_SPAN_CHARS, "role": "ASSERTION"}]
+        ),
+        ledger,
+    )["source_links"]
+
+
+def _synthetic_ledger(count: int) -> dict[str, object]:
+    units = []
+    for i in range(1, count + 1):
+        text = f"Synthetic sentence number {i} about widgets. " * 5
+        units.append(
+            {
+                "source_id": f"u{i}",
+                "kind": "CANONICAL_WORK_UNIT",
+                "text": text,
+                "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+            }
+        )
+    return hybrid.freeze(units, [], [u["source_id"] for u in units], {"chapter": 1})
+
+
+def _keep_only(ledger: dict[str, object], keep: set[str]) -> list[dict[str, object]]:
+    return [
+        {
+            "audit_id": w["audit_id"],
+            "core_ids": w["core_ids"],
+            "decisions": [
+                {
+                    "id": s,
+                    "decision": "keep" if s in keep else "omit",
+                    "reason": "r",
+                    "evidence": [],
+                }
+                for s in w["core_ids"]
+            ],
+            "disagreements": [],
+        }
+        for w in hybrid.audit_windows(ledger)
+    ]
+
+
+def test_reconcile_refuses_to_omit_nearly_every_source_unit() -> None:
+    ledger = _synthetic_ledger(128)
+
+    def span(sid: str) -> dict[str, object]:
+        return {"id": sid, "start": 0, "end": 10, "role": "ASSERTION"}
+
+    def response(ids: list[str]) -> dict[str, object]:
+        return {
+            "argument": "a",
+            "amendments": [],
+            "resolutions": [],
+            "beats": [
+                {
+                    "beat_id": f"beat-{i:03d}",
+                    "spans": [span(sid)],
+                    "meaning": "m",
+                    "qualification": "",
+                    "causal_link": "c",
+                    "essential": True,
+                }
+                for i, sid in enumerate(ids, 1)
+            ],
+        }
+
+    argument = {"hypothesis": "h", "questions": [], "source_links": [span("s0001")]}
+    with pytest.raises(hybrid.HybridStop, match="omits nearly all"):
+        hybrid.reconcile(
+            response(["s0001", "s0002"]),
+            ledger,
+            argument,
+            _keep_only(ledger, {"s0001", "s0002"}),
+        )
+    kept = {f"s{n:04d}" for n in range(1, 11)}
+    brief = hybrid.reconcile(response(sorted(kept)), ledger, argument, _keep_only(ledger, kept))
+    assert len(brief["beats"]) == 10

@@ -47,6 +47,8 @@ class HybridStop(ValueError):
 
 
 MAX_DIAGNOSTICS = 24
+MIN_SPAN_CHARS = 3
+MIN_KEPT_SHARE = 0.05
 FIRST_ATTEMPT_SEED = 42
 RETRY_ATTEMPT_SEED = 43
 ALLOWED_SEEDS = (FIRST_ATTEMPT_SEED, RETRY_ATTEMPT_SEED)
@@ -558,6 +560,7 @@ def _span(
         type(start) is not int
         or type(end) is not int
         or not 0 <= start < end <= len(original["text"])
+        or end - start < MIN_SPAN_CHARS
     ):
         raise _stop(invalid, "BAD_OFFSETS")
     # One bound for every citation form: whole-unit, quote and legacy offsets.
@@ -852,6 +855,10 @@ def reconcile(
     for sid, decision in decisions.items():
         if (decision["decision"] != "omit") != (sid in linked):
             raise HybridStop("hybrid final beat grouping contradicts complete source coverage")
+    canonical = [e for e in entries if e["kind"] == "CANONICAL_WORK_UNIT"]
+    kept = sum(1 for e in canonical if decisions[e["id"]]["decision"] != "omit")
+    if canonical and kept / len(canonical) < MIN_KEPT_SHARE:
+        raise HybridStop("hybrid reconciliation omits nearly all source units")
     brief: dict[str, Any] = {
         "schema": BRIEF_SCHEMA,
         "ledger_sha256": ledger["ledger_sha256"],
