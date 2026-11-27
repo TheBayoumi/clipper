@@ -3104,3 +3104,159 @@ def test_hybrid_contracts_ask_for_ids_not_character_offsets() -> None:
     contract_region = source[source.index('"hybrid_argument"') :]
     assert "integer character offset" not in contract_region
     assert '"start": 0' not in contract_region
+
+
+def _unit_entries(text: str) -> dict[str, dict[str, object]]:
+    return {"s1": {"kind": "CANONICAL_WORK_UNIT", "text": text, "source_id": "u1"}}
+
+
+def test_quote_uniqueness_counts_overlapping_matches_and_rejects_blank_quotes() -> None:
+    entry = _unit_entries("aaaa")["s1"]
+    with pytest.raises(hybrid.HybridStop):
+        hybrid._resolve_reference({"id": "s1", "role": "ASSERTION", "quote": "aaa"}, entry)
+    for blank in (" ", "\n\t", ""):
+        with pytest.raises(hybrid.HybridStop):
+            hybrid._resolve_reference({"id": "s1", "role": "ASSERTION", "quote": blank}, entry)
+    unique = hybrid._resolve_reference({"id": "s1", "role": "ASSERTION", "quote": "aaaa"}, entry)
+    assert (unique["start"], unique["end"]) == (0, 4)
+    # Offsets are character positions, not UTF-8 byte positions.
+    entry = _unit_entries("é🧭 ok")["s1"]
+    unicode_ref = hybrid._resolve_reference({"id": "s1", "role": "ASSERTION", "quote": "ok"}, entry)
+    assert (unicode_ref["start"], unicode_ref["end"]) == (3, 5)
+
+
+def test_the_700_character_bound_applies_to_every_citation_form() -> None:
+    # A unit whose long tail is unique, so a quote of it is unambiguous.
+    entries = _unit_entries("head " + "".join(f"{n:04d}" for n in range(200)))
+    ok = {"id": "s1", "start": 0, "end": 700, "role": "ASSERTION"}
+    assert hybrid._canonical_span(ok, entries)["end"] == 700
+    tail = entries["s1"]["text"][5:]
+    assert len(tail) == 800
+    forms = {
+        "whole unit": {"id": "s1", "role": "ASSERTION"},
+        "quote": {"id": "s1", "role": "ASSERTION", "quote": tail[:701]},
+        "legacy offsets": {**ok, "end": 701},
+    }
+    for name, bad in forms.items():
+        with pytest.raises(hybrid.HybridStop) as caught:
+            hybrid._canonical_span(bad, entries)
+        assert caught.value.diagnostics == [{"code": "SPAN_TOO_LONG"}], name
+    quote = {"id": "s1", "role": "ASSERTION", "quote": tail[:700]}
+    assert hybrid._canonical_span(quote, entries) == {
+        "id": "s1",
+        "start": 5,
+        "end": 705,
+        "role": "ASSERTION",
+    }
+
+
+@pytest.mark.parametrize(
+    "link",
+    (
+        {"id": ["s0003"], "role": "ASSERTION"},
+        {"id": {"a": 1}, "role": "ASSERTION"},
+        {"id": "s0003", "role": ["ASSERTION"]},
+        {"id": "s0003", "role": {"x": 1}},
+        {"id": ["s0003"], "start": 0, "end": 3, "role": "ASSERTION"},
+        {"id": "s0003", "start": 0, "end": 3, "role": ["ASSERTION"]},
+    ),
+)
+def test_malformed_id_and_role_types_raise_hybrid_stop_not_type_error(
+    link: dict[str, object],
+) -> None:
+    ledger = _ledger(25)
+    argument = _argument(ledger)
+    argument["source_links"] = [link]
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_argument(argument, ledger)
+
+
+def test_identical_repeated_citations_are_kept_once_in_first_seen_order() -> None:
+    ledger = _ledger(25)
+    argument = _argument(ledger)
+    argument["source_links"] = [
+        {"id": "s0003", "role": "ASSERTION"},
+        {"id": "s0002", "role": "QUALIFICATION"},
+        {"id": "s0003", "role": "ASSERTION"},
+        {"id": "s0003", "role": "COUNTEREXAMPLE"},
+    ]
+    links = hybrid.validate_argument(argument, ledger)["source_links"]
+    assert [(link["id"], link["role"]) for link in links] == [
+        ("s0003", "ASSERTION"),
+        ("s0002", "QUALIFICATION"),
+        ("s0003", "COUNTEREXAMPLE"),
+    ]
+
+
+def test_rejection_reports_source_free_per_citation_diagnostics() -> None:
+    ledger = _ledger(25)
+    argument = _argument(ledger)
+    argument["source_links"] = [
+        {"id": "s0003", "role": "ASSERTION"},
+        {"id": "ATTACKER-TEXT", "role": "ASSERTION"},
+        {"id": "s0004", "role": "INVENTED"},
+        {"id": "s0005", "role": "ASSERTION", "quote": "never in the unit zzz"},
+        {"id": "s0004", "start": 0, "end": 9999, "role": "ASSERTION"},
+    ]
+    with pytest.raises(hybrid.HybridStop) as caught:
+        hybrid.validate_argument(argument, ledger)
+    assert caught.value.diagnostics == [
+        {"where": "source_links", "index": 1, "id": None, "code": "UNKNOWN_ID"},
+        {"where": "source_links", "index": 2, "id": "s0004", "code": "BAD_ROLE"},
+        {"where": "source_links", "index": 3, "id": "s0005", "code": "QUOTE_ABSENT"},
+        {"where": "source_links", "index": 4, "id": "s0004", "code": "BAD_OFFSETS"},
+    ]
+    # The message (and therefore the stored rejection digest) is the first failure's.
+    assert str(caught.value) == "hybrid source span outside allowed original units"
+    assert "ATTACKER-TEXT" not in json.dumps(caught.value.diagnostics)
+
+
+def test_every_evidence_consumer_stores_canonical_offsets_from_id_references() -> None:
+    ledger = _ledger()
+    audits = _audit_outputs(ledger)
+    ref = {"id": "s0004", "role": "COUNTEREXAMPLE"}
+    audits[0]["disagreements"] = [
+        {
+            "id": "a001-d01",
+            "issue": "Counterexample changes the opening claim.",
+            "proposed_change": "Qualify the initial chapter argument.",
+            "evidence": [dict(ref)],
+        }
+    ]
+    window = hybrid.audit_windows(ledger)[0]
+    checked = hybrid.validate_audit(audits[0], ledger, window)
+    text = _text_of(ledger, "s0004")
+    expected = {"id": "s0004", "start": 0, "end": len(text), "role": "COUNTEREXAMPLE"}
+    assert checked["disagreements"][0]["evidence"] == [expected]
+    response = _reconciliation(ledger)
+    response["resolutions"] = [
+        {
+            "id": "a001-d01",
+            "resolution": "qualified",
+            "reason": "A narrower argument survives the contrary example.",
+            "evidence": [dict(ref)],
+        }
+    ]
+    response["amendments"] = [
+        {
+            "id": "s0002",
+            "from": "keep",
+            "to": "omit",
+            "reason": "Superseded by an explicit counterexample.",
+            "evidence": [dict(ref)],
+        }
+    ]
+    response["beats"][0]["spans"] = [
+        span for span in response["beats"][0]["spans"] if span["id"] != "s0002"
+    ]
+    hybrid.reconcile(response, ledger, _argument(ledger), audits)
+    assert response["resolutions"][0]["evidence"] == [expected]
+    assert response["amendments"][0]["evidence"] == [expected]
+
+
+def test_repeated_legacy_offset_citations_keep_their_historical_normalized_form() -> None:
+    ledger = _ledger(25)
+    argument = _argument(ledger)
+    link = {"id": "s0003", "start": 0, "end": 5, "role": "ASSERTION"}
+    argument["source_links"] = [dict(link), dict(link)]
+    assert hybrid.validate_argument(argument, ledger)["source_links"] == [link, link]

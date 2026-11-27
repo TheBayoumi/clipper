@@ -32,7 +32,33 @@ DECISIONS = frozenset({"keep", "compress", "omit"})
 
 
 class HybridStop(ValueError):
-    """A sanitized, fail-closed source or model-contract error."""
+    """A sanitized, fail-closed source or model-contract error.
+
+    ``diagnostics`` optionally lists source-free per-citation failures
+    (where, index, id or None, code) for bounded retry feedback. It never
+    carries model text and is not part of the error message.
+    """
+
+    def __init__(self, message: str, *, diagnostics: list[dict[str, object]] | None = None):
+        super().__init__(message)
+        self.diagnostics = diagnostics or []
+
+
+MAX_DIAGNOSTICS = 24
+_CODES = frozenset(
+    {
+        "BAD_FORM",
+        "BAD_TYPE",
+        "UNKNOWN_ID",
+        "GAP_UNIT",
+        "BAD_ROLE",
+        "QUOTE_INVALID",
+        "QUOTE_ABSENT",
+        "QUOTE_AMBIGUOUS",
+        "SPAN_TOO_LONG",
+        "BAD_OFFSETS",
+    }
+)
 
 
 def _canonical(value: object) -> bytes:
@@ -425,40 +451,63 @@ def _resolve_reference(item: dict[str, Any], original: dict[str, Any]) -> dict[s
         start, end = 0, len(text)
     else:
         quote = item["quote"]
-        if not isinstance(quote, str) or not quote or text.count(quote) != 1:
-            raise HybridStop("hybrid source quote is absent, empty or ambiguous in its unit")
-        start = text.index(quote)
+        if not isinstance(quote, str) or not quote.strip():
+            raise HybridStop(_QUOTE_MESSAGE, diagnostics=[{"code": "QUOTE_INVALID"}])
+        start = text.find(quote)
+        if start == -1:
+            raise HybridStop(_QUOTE_MESSAGE, diagnostics=[{"code": "QUOTE_ABSENT"}])
+        # find() from start + 1 also sees overlapping matches that count() misses.
+        if text.find(quote, start + 1) != -1:
+            raise HybridStop(_QUOTE_MESSAGE, diagnostics=[{"code": "QUOTE_AMBIGUOUS"}])
         end = start + len(quote)
     return {"id": item["id"], "start": start, "end": end, "role": item["role"]}
+
+
+_QUOTE_MESSAGE = "hybrid source quote is absent, empty or ambiguous in its unit"
+
+
+def _stop(message: str, code: str) -> HybridStop:
+    return HybridStop(message, diagnostics=[{"code": code}])
 
 
 def _span(
     raw: object, entries: dict[str, dict[str, Any]], *, core: set[str] | None = None
 ) -> dict[str, Any]:
+    outside = "hybrid source span outside allowed original units"
+    invalid = "hybrid source character span or role is invalid"
     if isinstance(raw, dict) and set(raw) in ({"id", "role"}, {"id", "role", "quote"}):
-        sid = raw["id"]
-        if sid not in entries or (core is not None and sid not in core):
-            raise HybridStop("hybrid source span outside allowed original units")
-        if entries[sid]["kind"] == "CANONICAL_WORK_UNIT" and raw["role"] in SPAN_ROLES:
-            item = _resolve_reference(raw, entries[sid])
-        else:
-            raise HybridStop("hybrid source character span or role is invalid")
+        form = "ref"
+    elif isinstance(raw, dict) and set(raw) == {"id", "start", "end", "role"}:
+        form = "offsets"
     else:
-        item = _object(raw, {"id", "start", "end", "role"})
-    sid = item["id"]
+        # _object raises the established contract error for any other shape.
+        try:
+            _object(raw, {"id", "start", "end", "role"})
+        except HybridStop as error:
+            raise _stop(str(error), "BAD_FORM") from None
+        raise _stop(invalid, "BAD_FORM")
+    sid, role = raw["id"], raw["role"]
+    # A list or dict here would be unhashable in the lookups below.
+    if not isinstance(sid, str) or not isinstance(role, str):
+        raise _stop(invalid, "BAD_TYPE")
     if sid not in entries or (core is not None and sid not in core):
-        raise HybridStop("hybrid source span outside allowed original units")
+        raise _stop(outside, "UNKNOWN_ID")
     original = entries[sid]
+    if original["kind"] != "CANONICAL_WORK_UNIT":
+        raise _stop(invalid, "GAP_UNIT")
+    if role not in SPAN_ROLES:
+        raise _stop(invalid, "BAD_ROLE")
+    item = _resolve_reference(raw, original) if form == "ref" else dict(raw)
     start, end = item["start"], item["end"]
     if (
-        original["kind"] != "CANONICAL_WORK_UNIT"
-        or type(start) is not int
+        type(start) is not int
         or type(end) is not int
         or not 0 <= start < end <= len(original["text"])
-        or end - start > 700
-        or item["role"] not in SPAN_ROLES
     ):
-        raise HybridStop("hybrid source character span or role is invalid")
+        raise _stop(invalid, "BAD_OFFSETS")
+    # One bound for every citation form: whole-unit, quote and legacy offsets.
+    if end - start > 700:
+        raise _stop(invalid, "SPAN_TOO_LONG")
     return {
         **item,
         "quote": original["text"][start:end],
@@ -472,6 +521,48 @@ def _canonical_span(
     """Validate a cited span and return it as the stored id/start/end/role form."""
     span = _span(raw, entries, core=core)
     return {key: span[key] for key in ("id", "start", "end", "role")}
+
+
+def _canonical_spans(
+    spans: list[Any],
+    entries: dict[str, dict[str, Any]],
+    where: str,
+    *,
+    core: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Canonicalize a citation list; collect every failure as source-free diagnostics.
+
+    The raised error keeps the first failure's message, so its rejection digest is
+    unchanged. Repeated identical id-reference citations are kept once, first-seen order.
+    """
+    out: list[dict[str, Any]] = []
+    failures: list[dict[str, object]] = []
+    first: HybridStop | None = None
+    for index, raw in enumerate(spans):
+        try:
+            span = _canonical_span(raw, entries, core=core)
+        except HybridStop as error:
+            first = first or error
+            if len(failures) < MAX_DIAGNOSTICS:
+                code = error.diagnostics[0]["code"] if error.diagnostics else "BAD_FORM"
+                sid = raw.get("id") if isinstance(raw, dict) else None
+                failures.append(
+                    {
+                        "where": where,
+                        "index": index,
+                        "id": sid if isinstance(sid, str) and sid in entries else None,
+                        "code": code if code in _CODES else "BAD_FORM",
+                    }
+                )
+            continue
+        # Only repeated id-reference citations are collapsed; legacy offset artifacts
+        # keep their historical normalized form byte for byte.
+        is_ref = isinstance(raw, dict) and "start" not in raw
+        if not (is_ref and span in out):
+            out.append(span)
+    if first is not None:
+        raise HybridStop(str(first), diagnostics=failures)
+    return out
 
 
 _ECHO_KEYS = frozenset({"response_contract", "schema", "stage", "input", "original_source"})
@@ -514,7 +605,7 @@ def validate_argument(raw: object, ledger: dict[str, Any]) -> dict[str, Any]:
     links = _list(data["source_links"], MAX_ENTRIES)
     if not links:
         raise HybridStop("revisable argument has no source-linked hypothesis")
-    links[:] = [_canonical_span(link, source) for link in links]
+    links[:] = _canonical_spans(links, source, "source_links")
     return data
 
 
@@ -541,7 +632,7 @@ def validate_audit(
         if source[sid]["kind"] != "CANONICAL_WORK_UNIT" and item["decision"] != "omit":
             raise HybridStop("hybrid unresolved original gap cannot be retained")
         evidence = _list(item["evidence"], 12)
-        evidence[:] = [_canonical_span(span, source, core=expected) for span in evidence]
+        evidence[:] = _canonical_spans(evidence, source, f"decision:{sid}", core=expected)
     if seen != expected:
         raise HybridStop("hybrid audit silently omitted original units")
     disagreements = _list(data["disagreements"], 24)
@@ -553,9 +644,9 @@ def validate_audit(
         _text(item["proposed_change"], 1000)
         if not _list(item["evidence"], 12):
             raise HybridStop("hybrid disagreement has no source support")
-        item["evidence"][:] = [
-            _canonical_span(span, source, core=expected) for span in item["evidence"]
-        ]
+        item["evidence"][:] = _canonical_spans(
+            item["evidence"], source, f"disagreement:{index}", core=expected
+        )
     return data
 
 
@@ -606,7 +697,9 @@ def reconcile(
         _text(amendment["reason"], 800)
         if not _list(amendment["evidence"], 12):
             raise HybridStop("hybrid amendment has no exact supporting spans")
-        amendment["evidence"][:] = [_canonical_span(span, source) for span in amendment["evidence"]]
+        amendment["evidence"][:] = _canonical_spans(
+            amendment["evidence"], source, f"amendment:{sid}"
+        )
         decisions[sid] = {
             **decisions[sid],
             "decision": amendment["to"],
@@ -624,7 +717,7 @@ def reconcile(
         _text(item["reason"], 800)
         if not _list(item["evidence"], 12):
             raise HybridStop("hybrid disagreement was resolved without original evidence")
-        item["evidence"][:] = [_canonical_span(span, source) for span in item["evidence"]]
+        item["evidence"][:] = _canonical_spans(item["evidence"], source, f"resolution:{item['id']}")
     if resolved != disputes:
         raise HybridStop("hybrid global reconciliation left audit disagreements unresolved")
     beats: list[dict[str, Any]] = []
@@ -643,7 +736,7 @@ def reconcile(
         spans = _list(beat["spans"], MAX_SPANS_PER_BEAT)
         if not spans:
             raise HybridStop("hybrid beat cannot lack original source evidence")
-        expanded = []
+        expanded: list[dict[str, Any]] = []
         for item in spans:
             span = _span(item, source)
             if decisions[span["id"]]["decision"] == "omit":
@@ -651,7 +744,12 @@ def reconcile(
             linked.add(span["id"])
             if beat["beat_id"] not in beat_links[span["id"]]:
                 beat_links[span["id"]].append(beat["beat_id"])
-            expanded.append(span)
+            if all(
+                (prior["id"], prior["start"], prior["end"], prior["role"])
+                != (span["id"], span["start"], span["end"], span["role"])
+                for prior in expanded
+            ):
+                expanded.append(span)
         beats.append({**beat, "spans": expanded, "unit_id": expanded[0]["original_source_id"]})
     if len(beats) < 2:
         raise HybridStop("hybrid coherent chapter requires multiple source-linked beats")
