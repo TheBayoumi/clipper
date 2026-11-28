@@ -3520,3 +3520,16 @@ def test_quote_fold_still_rejects_absent_and_ambiguous_quotes() -> None:
         hybrid._resolve_reference({"id": "s1", "role": "ASSERTION", "quote": "Don't"}, entry)
     with pytest.raises(hybrid.HybridStop):
         hybrid._resolve_reference({"id": "s1", "role": "ASSERTION", "quote": "Do not go"}, entry)
+
+
+def test_malformed_json_gets_fixed_source_free_retry_feedback() -> None:
+    try:
+        json.loads('{"points": ["secret book words", "source_links": []}')
+    except json.JSONDecodeError as error:
+        feedback = hybrid.retry_feedback(error)
+    assert feedback == {"reason": "STRUCTURE_INVALID", "message": hybrid._MALFORMED_JSON_MESSAGE}
+    assert "secret" not in json.dumps(feedback)
+    messages = hybrid._messages("argument_batch", {"x": 1, "retry_feedback": feedback})
+    assert "It broke the response contract: " in messages[1]["content"]
+    assert hybrid._MALFORMED_JSON_MESSAGE in messages[1]["content"]
+    assert hybrid.retry_feedback(ValueError("other")) is None

@@ -403,6 +403,11 @@ _LOCATION = re.compile(
 )
 
 
+_MALFORMED_JSON_MESSAGE = (
+    "the reply was not valid JSON. Write one complete JSON object: close every list and brace."
+)
+
+
 def retry_feedback(error: BaseException) -> dict[str, object] | None:
     """Bounded, source-free feedback for one retry, or None when there is none.
 
@@ -410,6 +415,9 @@ def retry_feedback(error: BaseException) -> dict[str, object] | None:
     request, a fixed code), and only from a HybridStop. Anything else is refused.
     No model output or source text is ever forwarded.
     """
+    if isinstance(error, json.JSONDecodeError):
+        # Malformed JSON carries no model text worth forwarding: a fixed instruction only.
+        return {"reason": "STRUCTURE_INVALID", "message": _MALFORMED_JSON_MESSAGE}
     if not isinstance(error, HybridStop):
         return None
     diagnostics = error.diagnostics

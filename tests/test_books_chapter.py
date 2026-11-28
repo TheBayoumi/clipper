@@ -2595,3 +2595,32 @@ def test_incomplete_chapter_response_with_unbounded_raw_records_no_raw(tmp_path:
     failed = json.loads((directory / "failed-1.json").read_bytes())
     assert failed["status"] == "MISSING_EOS"
     assert failed["attempt"] == 1
+
+
+def test_malformed_json_first_attempt_retries_with_fixed_feedback_and_replays(
+    tmp_path: Path,
+) -> None:
+    seen: list[dict[str, object]] = []
+
+    def provider(request: dict[str, object]) -> str:
+        seen.append(request)
+        return '{"points": [}' if len(seen) == 1 else '{"ok": true}'
+
+    built: list[dict[str, object]] = []
+
+    def builder(feedback: dict[str, object]) -> tuple[dict[str, object], str]:
+        built.append(feedback)
+        return {**seen[0], "retry_feedback": feedback}, "c" * 64
+
+    args = (tmp_path / "root", "brief", {"scope": "synthetic"}, _plan(max_attempts_per_stage=2))
+    result = chapter._stage(*args, lambda raw: raw, provider, retry_builder=builder)
+    assert result[3] == 2 and len(seen) == 2
+    expected = {
+        "reason": "STRUCTURE_INVALID",
+        "message": chapter_hybrid._MALFORMED_JSON_MESSAGE,
+    }
+    assert built and all(item == expected for item in built)
+    assert "retry_feedback" not in seen[0] and seen[1]["retry_feedback"] == expected
+    # Replay rebuilds the same feedback from the rejected raw reply without the provider.
+    again = chapter._stage(*args, lambda raw: raw, provider, retry_builder=builder)
+    assert again[3] == 0 and len(seen) == 2
