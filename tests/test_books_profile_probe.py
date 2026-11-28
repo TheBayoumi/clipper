@@ -92,7 +92,9 @@ def test_probe_in_container_reports_facts_and_hashes_the_text(
         )
     )
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
-    monkeypatch.setenv("CLIPPER_QWEN_DEVICE", "cpu")  # the probe overwrites it; monkeypatch restores
+    monkeypatch.setenv(
+        "CLIPPER_QWEN_DEVICE", "cpu"
+    )  # the probe overwrites it; monkeypatch restores
     model = types.SimpleNamespace(generation_config=types.SimpleNamespace(eos_token_id=248044))
 
     def tokenizer(text: str, add_special_tokens: bool = True) -> dict[str, list[int]]:
