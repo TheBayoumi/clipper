@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib
 import json
+import types
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -445,6 +448,8 @@ def test_default_profile_fingerprint_is_unchanged_by_the_new_runtime_fields() ->
     }
     expected = hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
     assert p.fingerprint == expected
+    # Constant computed from the parent commit 8a2b6e40, independent of current attributes.
+    assert p.fingerprint == "0308400868be065aeca837ad8d6268f15253be21f136b3d9d40f406fcdad2b81"
     assert model_profile.QWEN3_5_4B.fingerprint != expected
 
 
@@ -472,7 +477,6 @@ def test_public_context_preflight_reads_nested_text_limits_and_profile_file_list
     import hashlib
     import importlib
     import types
-    from pathlib import Path
 
     tok = b'{"fake": "tokenizer"}'
     profile = dataclasses.replace(
@@ -515,7 +519,8 @@ def test_public_context_preflight_reads_nested_text_limits_and_profile_file_list
         _tokenizer, limit = scripting._public_book_context_cached("t", True)
     assert limit == 262_144
     assert seen["allow_patterns"] == list(profile.tokenizer_files)
-    assert Path(str(seen.get("repo_id", "x"))).name == "x" or seen["repo_id"] == "Qwen/Qwen3.5-4B"
+    assert seen["repo_id"] == profile.model == "Qwen/Qwen3.5-4B"
+    assert seen["revision"] == profile.revision
     scripting._public_book_context_cached.cache_clear()
 
 
@@ -589,3 +594,42 @@ def test_legacy_tokenizer_alias_is_restored_only_when_missing(
     legacy.PreTrainedTokenizerBase = other
     constrained._restore_legacy_tokenizer_alias()
     assert legacy.PreTrainedTokenizerBase is other
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"tokenizer_files": ("config.json", "tokenizer.json", "tokenizer_config.json", [])},
+        {"model_class": []},
+        {"model_class": {}},
+    ],
+)
+def test_malformed_runtime_fields_raise_the_typed_error(changes: dict[str, Any]) -> None:
+    import dataclasses
+
+    with pytest.raises(model_profile.ModelProfileError):
+        dataclasses.replace(model_profile.QWEN3_5_4B, **changes)
+
+
+def test_pinned_snapshot_requires_every_profile_tokenizer_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = model_profile.QWEN3_5_4B
+    snap = tmp_path / "models--Qwen--Qwen3.5-4B" / "snapshots" / profile.revision
+    snap.mkdir(parents=True)
+    for name in profile.tokenizer_files:
+        (snap / name).write_text("x")
+    (snap / "model.safetensors").write_text("w")
+    fake_hub = types.SimpleNamespace(snapshot_download=lambda *a, **k: str(snap))
+    real = importlib.import_module
+    monkeypatch.setattr(
+        importlib,
+        "import_module",
+        lambda name, *a: fake_hub if name == "huggingface_hub" else real(name, *a),
+    )
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    with model_profile.use(profile):
+        assert scripting._pinned_qwen_snapshot() == snap.resolve()
+        (snap / "chat_template.jinja").unlink()
+        with pytest.raises(scripting.PinnedQwenSnapshotError):
+            scripting._pinned_qwen_snapshot()

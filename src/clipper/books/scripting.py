@@ -367,7 +367,12 @@ def _pinned_qwen_snapshot() -> Path:
             != "models--" + model_profile.active().model.replace("/", "--")
         ):
             raise PinnedQwenSnapshotError("pinned Qwen snapshot identity mismatch")
-        for name in ("config.json", "tokenizer_config.json", "tokenizer.json"):
+        required = ["config.json", "tokenizer_config.json", "tokenizer.json"]
+        active = model_profile.active()
+        if active.tokenizer_files != model_profile.DEFAULT_TOKENIZER_FILES:
+            # A profile with its own file list needs every one of them (e.g. chat_template.jinja).
+            required += [n for n in active.tokenizer_files if n not in required]
+        for name in required:
             file = path / name
             if not file.is_file() or file.stat().st_size == 0:
                 raise PinnedQwenSnapshotError("pinned Qwen snapshot is incomplete")

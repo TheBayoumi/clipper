@@ -142,16 +142,16 @@ class ModelProfile:
         if (
             not isinstance(self.tokenizer_files, tuple)
             or not self.tokenizer_files
-            or len(set(self.tokenizer_files)) != len(self.tokenizer_files)
-            or not {"config.json", "tokenizer.json", "tokenizer_config.json"}
-            <= set(self.tokenizer_files)
             or any(
                 not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*", name)
                 for name in self.tokenizer_files
             )
+            or len(set(self.tokenizer_files)) != len(self.tokenizer_files)
+            or not {"config.json", "tokenizer.json", "tokenizer_config.json"}
+            <= set(self.tokenizer_files)
         ):
             raise ModelProfileError("profile tokenizer files invalid")
-        if self.model_class not in MODEL_CLASSES:
+        if not isinstance(self.model_class, str) or self.model_class not in MODEL_CLASSES:
             raise ModelProfileError("profile model class unsupported")
         object.__setattr__(self, "chat_template_kwargs", _freeze(self.chat_template_kwargs))
         object.__setattr__(self, "generation_settings", _freeze(self.generation_settings))
