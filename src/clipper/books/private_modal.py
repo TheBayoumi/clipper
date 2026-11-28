@@ -239,6 +239,7 @@ def factory(
     restrict_access: bool = True,
     volume: Any = None,
     profile: model_profile.ModelProfile | None = None,
+    entry: Any = None,
 ) -> tuple[Any, Any]:
     """Pinned public source and dependencies; no local file upload or secret mount.
 
@@ -302,7 +303,7 @@ def factory(
         timeout=manifest["timeout_seconds"],
         scaledown_window=2,
         **options,
-    )(_remote_phase if volume is None else _remote_phase_volume)
+    )(entry or (_remote_phase if volume is None else _remote_phase_volume))
     return app, function
 
 
