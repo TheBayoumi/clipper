@@ -3617,12 +3617,60 @@ def test_audit_positional_ids_refuse_rows_that_say_which_unit_they_mean() -> Non
     ctx["out"]["decisions"] = with_reason
     with pytest.raises(hybrid.HybridStop):
         hybrid.validate_audit(ctx["out"], ledger, window)
-    # Any evidence at all means the ids must be explicit, even when it cites its own slot.
-    cited = [dict(row) for row in base]
-    cited[1]["evidence"] = [{"id": core[1], "role": "ASSERTION"}]
-    ctx["out"]["decisions"] = cited
+    # Evidence citing another unit's slot means the order is not confirmed.
+    cross = [dict(row) for row in base]
+    cross[1]["evidence"] = [{"id": core[2], "role": "ASSERTION"}]
+    ctx["out"]["decisions"] = cross
     with pytest.raises(hybrid.HybridStop):
         hybrid.validate_audit(ctx["out"], ledger, window)
+    mixed_cites = [dict(row) for row in base]
+    mixed_cites[1]["evidence"] = [
+        {"id": core[1], "role": "ASSERTION"},
+        {"id": core[2], "role": "ASSERTION"},
+    ]
+    ctx["out"]["decisions"] = mixed_cites
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_audit(ctx["out"], ledger, window)
+
+
+def test_audit_positional_ids_accept_rows_whose_evidence_confirms_their_own_slot() -> None:
+    # The shape attempt 12's 4B actually produced: no id, no reason, one link on its own unit.
+    ledger, ctx, core = _settle_fixture()
+    entries = {e["id"]: e for e in hybrid.validate_ledger(ledger)}
+    rows = []
+    for sid in core:
+        gap = entries[sid]["kind"] != "CANONICAL_WORK_UNIT"
+        rows.append(
+            {"decision": "keep", "evidence": [] if gap else [{"id": sid, "role": "AUTHOR_EXAMPLE"}]}
+        )
+    ctx["out"]["decisions"] = rows
+    got = hybrid.validate_audit(ctx["out"], ledger, ctx["window"])
+    assert [d["id"] for d in got["decisions"]] == core
+    assert all(
+        d["reason"] == hybrid.NO_REASON_GIVEN or d["reason"] == hybrid.GAP_REASON
+        for d in got["decisions"]
+    )
+
+
+def test_audit_contract_prefills_ids_and_retry_restates_the_row_shape() -> None:
+    ledger, ctx, core = _settle_fixture()
+    rows = hybrid.audit_decision_rows(ledger, ctx["window"])
+    assert [row["id"] for row in rows] == core
+    entries = {e["id"]: e for e in hybrid.validate_ledger(ledger)}
+    for row in rows:
+        if entries[row["id"]]["kind"] != "CANONICAL_WORK_UNIT":
+            assert row["decision"] == "omit" and row["evidence"] == []
+    feedback = {
+        "reason": "STRUCTURE_INVALID",
+        "message": "hybrid audit silently omitted original units",
+    }
+    first = hybrid._messages("audit", {"window": ctx["window"]})[1]["content"]
+    retry = hybrid._messages("audit", {"window": ctx["window"], "retry_feedback": feedback})[1][
+        "content"
+    ]
+    assert f"Write exactly {len(core)} decisions rows" not in first
+    assert f"Write exactly {len(core)} decisions rows" in retry
+    assert "id, decision, reason, evidence" in first
 
 
 def test_gap_settlement_leaves_malformed_gap_rows_to_fail_and_resets_the_reason() -> None:
@@ -3648,3 +3696,55 @@ def test_gap_settlement_leaves_malformed_gap_rows_to_fail_and_resets_the_reason(
         row.update({"decision": "keep", "reason": "r", "evidence": [], **bad})
         with pytest.raises(hybrid.HybridStop):
             hybrid.validate_audit(copy.deepcopy(good), ledger, window)
+
+
+def test_audit_refuses_self_citing_gap_slot_and_unfilled_reason_placeholder() -> None:
+    ledger = _ledger()
+    entries = {e["id"]: e for e in hybrid.validate_ledger(ledger)}
+    window = next(
+        w
+        for w in hybrid.audit_windows(ledger)
+        if any(entries[sid]["kind"] != "CANONICAL_WORK_UNIT" for sid in w["core_ids"])
+    )
+    core = list(window["core_ids"])
+    ctx = {
+        "window": window,
+        "out": {
+            "audit_id": window["audit_id"],
+            "core_ids": core,
+            "decisions": [],
+            "disagreements": [],
+        },
+    }
+    rows = [{"decision": "keep", "evidence": [{"id": sid, "role": "ASSERTION"}]} for sid in core]
+    ctx["out"]["decisions"] = rows
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_audit(ctx["out"], ledger, ctx["window"])
+    assert any(entries[sid]["kind"] != "CANONICAL_WORK_UNIT" for sid in core)
+    good = [
+        {"id": sid, "decision": "keep", "reason": hybrid.REASON_PLACEHOLDER, "evidence": []}
+        for sid in core
+    ]
+    ctx["out"]["decisions"] = good
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.validate_audit(ctx["out"], ledger, ctx["window"])
+
+
+def test_gap_settlement_does_not_hide_placeholder_reason_or_bad_citation_contents() -> None:
+    ledger = _ledger()
+    window = hybrid.audit_windows(ledger)[-1]
+    gap = next(
+        e["id"] for e in hybrid.validate_ledger(ledger) if e["kind"] != "CANONICAL_WORK_UNIT"
+    )
+    good = _audit_outputs(ledger)[-1]
+    row = next(d for d in good["decisions"] if d["id"] == gap)
+    for bad in (
+        {"reason": hybrid.REASON_PLACEHOLDER},
+        {"evidence": [{"id": "unknown-unit", "role": "ASSERTION"}]},
+        {"evidence": [{"id": gap, "role": "INVALID_ROLE"}]},
+    ):
+        row.update({"decision": "keep", "reason": "r", "evidence": [], **bad})
+        with pytest.raises(hybrid.HybridStop):
+            hybrid.validate_audit(copy.deepcopy(good), ledger, window)
+    with pytest.raises(hybrid.HybridStop):
+        hybrid.audit_decision_rows(ledger, {**window, "core_ids": ["nope"]})

@@ -2883,19 +2883,7 @@ def _evaluate_hybrid_chapter(
                 "response_contract": {
                     "audit_id": window["audit_id"],
                     "core_ids": window["core_ids"],
-                    "decisions": [
-                        {
-                            "id": "source core ID",
-                            "decision": "keep/compress/omit",
-                            "reason": "source-grounded reason even for a gap",
-                            "evidence": [
-                                {
-                                    "id": "source core ID",
-                                    "role": "ASSERTION/COUNTEREXAMPLE/QUALIFICATION/AUTHOR_EXAMPLE",
-                                }
-                            ],
-                        }
-                    ],
+                    "decisions": chapter_hybrid.audit_decision_rows(ledger, window),
                     "disagreements": [
                         {
                             "id": f"{window['audit_id']}-d01",

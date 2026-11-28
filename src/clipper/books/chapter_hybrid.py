@@ -290,7 +290,9 @@ _STAGE_GUIDANCE = {
         "max_source_links links, one per distinct unit."
     ),
     "audit": (
-        "Give exactly one decision for every core id. A core id whose source is an "
+        "Give exactly one decision for every core id, in the order of core_ids. Every "
+        "decisions row has exactly these four fields: id, decision, reason, evidence. "
+        "A core id whose source is an "
         "unrecovered marker (a gap) has no text: its decision must be omit and its "
         "evidence must be an empty list. Never cite a gap id as evidence."
     ),
@@ -389,6 +391,15 @@ def _messages(stage: str, payload: dict[str, object]) -> list[dict[str, str]]:
             guidance = guidance.replace(
                 "These citations were invalid (where, index, id, code; no text is shown): ",
                 "It broke the response contract: ",
+            )
+    if feedback is not None and stage == "audit":
+        window = data.get("window")
+        core_ids = window.get("core_ids") if isinstance(window, dict) else None
+        if isinstance(core_ids, list):
+            guidance += (
+                f" Write exactly {len(core_ids)} decisions rows, one for each id in core_ids, in "
+                "that order. Each row has all four fields: id (copied from core_ids), decision, "
+                "reason (a short sentence) and evidence (a list; empty for a gap)."
             )
     user = (
         f"{_INPUT_MARK}{_json(data)}{_TASK_MARK} write the {stage} answer for the input above.\n"
@@ -1043,20 +1054,29 @@ def validate_argument(
 
 
 NO_REASON_GIVEN = "no reason given"
+REASON_PLACEHOLDER = "one short source-grounded sentence"
 GAP_REASON = "unrecovered source gap: no text, so omitted"
 
 
-def _positional_ids_are_safe(core: list[str], decisions: list[dict[str, Any]]) -> bool:
-    """Ids may be taken by position only when nothing in a row can say which unit it is
-    about: one row per core id, all keep, no reason text and no evidence."""
-    return (
-        len(decisions) == len(core)
-        and all("id" not in item for item in decisions)
-        and all(
-            "reason" not in item and item.get("decision") == "keep" and item.get("evidence") == []
-            for sid, item in zip(core, decisions, strict=True)
-        )
-    )
+def _positional_ids_are_safe(
+    core: list[str], decisions: list[dict[str, Any]], source: dict[str, dict[str, Any]]
+) -> bool:
+    """Ids may be taken by position only when nothing in a row can tie it to another unit:
+    one row per core id, all keep, no reason text, and evidence that is empty or cites only
+    the unit at that position (so the rows confirm their own order)."""
+    if len(decisions) != len(core) or any("id" in item for item in decisions):
+        return False
+    for sid, item in zip(core, decisions, strict=True):
+        evidence = item.get("evidence")
+        if (
+            "reason" in item
+            or item.get("decision") != "keep"
+            or not isinstance(evidence, list)
+            or any(not isinstance(link, dict) or link.get("id") != sid for link in evidence)
+            or (source[sid]["kind"] != "CANONICAL_WORK_UNIT" and evidence)
+        ):
+            return False
+    return True
 
 
 def _settle_audit_decisions(
@@ -1074,7 +1094,7 @@ def _settle_audit_decisions(
     decisions = data["decisions"]
     if not isinstance(decisions, list) or not all(isinstance(item, dict) for item in decisions):
         return
-    if _positional_ids_are_safe(core, decisions):
+    if _positional_ids_are_safe(core, decisions, source):
         for sid, item in zip(core, decisions, strict=True):
             item["id"] = sid
     for item in decisions:
@@ -1088,15 +1108,44 @@ def _settle_audit_decisions(
             source[sid]["kind"] != "CANONICAL_WORK_UNIT"
             and item.get("decision") in ("keep", "compress")
             and isinstance(item.get("reason"), str)
+            and item["reason"] != REASON_PLACEHOLDER
             and isinstance(evidence, list)
             and all(
                 isinstance(link, dict)
                 and isinstance(link.get("id"), str)
-                and isinstance(link.get("role"), str)
+                and link["id"] in source
+                and link.get("role") in SPAN_ROLES
                 for link in evidence
             )
         ):
             item.update({"decision": "omit", "evidence": [], "reason": GAP_REASON})
+
+
+def audit_decision_rows(ledger: dict[str, Any], window: dict[str, object]) -> list[dict[str, Any]]:
+    """One row per core id with its id already written, so the model fills in judgments
+    and never has to invent or copy ids. A gap row shows its contract-fixed answer."""
+    source = {entry["id"]: entry for entry in validate_ledger(ledger)}
+    core = window["core_ids"]
+    if not isinstance(core, list):
+        raise HybridStop("hybrid audit core identity malformed")
+    rows: list[dict[str, Any]] = []
+    for sid in core:
+        if sid not in source:
+            raise HybridStop("hybrid audit core identity malformed")
+        if source[sid]["kind"] != "CANONICAL_WORK_UNIT":
+            rows.append({"id": sid, "decision": "omit", "reason": GAP_REASON, "evidence": []})
+        else:
+            rows.append(
+                {
+                    "id": sid,
+                    "decision": "keep/compress/omit",
+                    "reason": REASON_PLACEHOLDER,
+                    "evidence": [
+                        {"id": sid, "role": "ASSERTION/COUNTEREXAMPLE/QUALIFICATION/AUTHOR_EXAMPLE"}
+                    ],
+                }
+            )
+    return rows
 
 
 def validate_audit(
@@ -1125,7 +1174,8 @@ def validate_audit(
         ):
             raise HybridStop("hybrid audit source decision missing or duplicated")
         seen.add(sid)
-        _text(item["reason"], 800)
+        if _text(item["reason"], 800) == REASON_PLACEHOLDER:
+            raise HybridStop("hybrid audit reason is the unfilled template text")
         if source[sid]["kind"] != "CANONICAL_WORK_UNIT" and item["decision"] != "omit":
             raise HybridStop("hybrid unresolved original gap cannot be retained")
         evidence = _list(item["evidence"], 12)
