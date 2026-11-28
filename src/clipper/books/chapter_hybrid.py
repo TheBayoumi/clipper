@@ -587,6 +587,17 @@ def audit_windows(ledger: dict[str, Any]) -> list[dict[str, object]]:
     return windows
 
 
+_TYPOGRAPHY_FOLD = str.maketrans(
+    {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u00a0": " ",
+    }
+)
+
+
 def _resolve_reference(item: dict[str, Any], original: dict[str, Any]) -> dict[str, Any]:
     """Resolve an ID reference to exact offsets in code, never from model arithmetic.
 
@@ -602,6 +613,12 @@ def _resolve_reference(item: dict[str, Any], original: dict[str, Any]) -> dict[s
         if not isinstance(quote, str) or not quote.strip():
             raise HybridStop(_QUOTE_MESSAGE, diagnostics=[{"code": "QUOTE_INVALID"}])
         start = text.find(quote)
+        if start == -1:
+            # A model often retypes a curly quote as its ASCII form. The fold is one character
+            # for one character, so offsets stay exact and the stored quote still comes from
+            # the ledger text. Dashes are never folded, since they can be meaningful.
+            text, quote = text.translate(_TYPOGRAPHY_FOLD), quote.translate(_TYPOGRAPHY_FOLD)
+            start = text.find(quote)
         if start == -1:
             raise HybridStop(_QUOTE_MESSAGE, diagnostics=[{"code": "QUOTE_ABSENT"}])
         # find() from start + 1 also sees overlapping matches that count() misses.

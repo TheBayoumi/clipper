@@ -3499,3 +3499,24 @@ def test_reconcile_refuses_to_omit_nearly_every_source_unit() -> None:
     kept = {f"s{n:04d}" for n in range(1, 11)}
     brief = hybrid.reconcile(response(sorted(kept)), ledger, argument, _keep_only(ledger, kept))
     assert len(brief["beats"]) == 10
+
+
+def test_quote_folds_curly_apostrophes_to_exact_ledger_offsets() -> None:
+    text = "It\u2019s a plain claim - stated twice."
+    entry = {"id": "s1", "text": text, "kind": "CANONICAL_WORK_UNIT", "source_id": "x"}
+    quote = "It's a plain claim - stated twice."
+    got = hybrid._resolve_reference({"id": "s1", "role": "ASSERTION", "quote": quote}, entry)
+    assert (got["start"], got["end"]) == (0, len(text))
+    part = hybrid._resolve_reference({"id": "s1", "role": "ASSERTION", "quote": "It's a"}, entry)
+    assert (part["start"], part["end"]) == (0, 6)
+    dash = {"id": "s1", "text": "flag is \u2013force", "kind": "X", "source_id": "x"}
+    with pytest.raises(hybrid.HybridStop):
+        hybrid._resolve_reference({"id": "s1", "role": "ASSERTION", "quote": "is -force"}, dash)
+
+
+def test_quote_fold_still_rejects_absent_and_ambiguous_quotes() -> None:
+    entry = {"id": "s1", "text": "Don\u2019t go. Don\u2019t go.", "kind": "X", "source_id": "x"}
+    with pytest.raises(hybrid.HybridStop):
+        hybrid._resolve_reference({"id": "s1", "role": "ASSERTION", "quote": "Don't"}, entry)
+    with pytest.raises(hybrid.HybridStop):
+        hybrid._resolve_reference({"id": "s1", "role": "ASSERTION", "quote": "Do not go"}, entry)
