@@ -58,7 +58,7 @@ def test_build_uses_the_probe_entry_on_an_l4_with_a_hard_timeout() -> None:
     assert any("transformers==5.24.1" in p for args in pins for p in args)
 
 
-@pytest.mark.parametrize("timeout", [0, 59, 1801])
+@pytest.mark.parametrize("timeout", [0, 59, 901, 1800])
 def test_timeout_out_of_range_is_refused(timeout: int) -> None:
     with pytest.raises(private_phase.PrivatePhaseError):
         profile_probe.build(FakeModal(), SHA, "qwen3.5-4b", timeout)
@@ -190,3 +190,12 @@ def test_an_empty_generation_is_not_a_pass(monkeypatch: pytest.MonkeyPatch) -> N
     report = profile_probe.probe_in_container("qwen3.5-4b")
     assert report["status"] == "PROBE_EMPTY_GENERATION"
     assert "chapter-generator" in str(report["scope"])
+
+
+def test_cli_exits_nonzero_unless_the_probe_passed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(profile_probe, "run", lambda *a, **k: {"status": "PROBE_EMPTY_GENERATION"})
+    assert profile_probe.main(["--commit", SHA, "--profile", "qwen3.5-4b"]) == 2
+    monkeypatch.setattr(profile_probe, "run", lambda *a, **k: {"status": "PROBE_OK"})
+    assert profile_probe.main(["--commit", SHA, "--profile", "qwen3.5-4b"]) == 0

@@ -24,7 +24,7 @@ from . import model_profile, private_modal, private_phase
 
 PROBE_PROMPT = "Reply with one short sentence about why the sky looks blue."
 PROBE_TOKENS = 24
-MAX_TIMEOUT = 1800
+MAX_TIMEOUT = 900  # the approved invocation ceiling for the load probe
 
 
 def probe_in_container(profile_name: str) -> dict[str, object]:
@@ -144,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": "PROBE_FAILED", "error": type(exc).__name__}))
         return 2
     print(json.dumps(result, sort_keys=True, default=str))
-    return 0
+    return 0 if result.get("status") in ("PLAN_ONLY", "PROBE_OK") else 2
 
 
 if __name__ == "__main__":
