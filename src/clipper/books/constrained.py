@@ -371,7 +371,7 @@ def _restore_legacy_tokenizer_alias() -> None:
         legacy = importlib.import_module("transformers.tokenization_utils")
         if not hasattr(legacy, "PreTrainedTokenizerBase"):
             base = importlib.import_module("transformers.tokenization_utils_base")
-            legacy.PreTrainedTokenizerBase = base.PreTrainedTokenizerBase
+            setattr(legacy, "PreTrainedTokenizerBase", base.PreTrainedTokenizerBase)
     except (ImportError, AttributeError):
         return
 
