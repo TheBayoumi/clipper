@@ -473,16 +473,7 @@ def _public_book_context_cached(
         os.environ.get(key, "").strip().casefold() in {"1", "true", "yes", "on"}
         for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
     )
-    public = (
-        "added_tokens.json",
-        "config.json",
-        "generation_config.json",
-        "merges.txt",
-        "special_tokens_map.json",
-        "tokenizer.json",
-        "tokenizer_config.json",
-        "vocab.json",
-    )
+    public = model_profile.active().tokenizer_files
 
     def fetch(*, local_files_only: bool) -> Path:
         return Path(
@@ -521,7 +512,9 @@ def _public_book_context_cached(
         tokenizer_config = json.loads(
             (snapshot / "tokenizer_config.json").read_text(encoding="utf-8")
         )
-        model_limit = model_config["max_position_embeddings"]
+        # Vision-language checkpoints keep the text model's limits under text_config.
+        limits = model_config.get("text_config", model_config)
+        model_limit = limits["max_position_embeddings"]
         tokenizer_limit = tokenizer_config["model_max_length"]
         if (
             type(model_limit) is not int
@@ -585,9 +578,8 @@ def _script_pipeline_cached(profile_fingerprint: str) -> tuple[Any, Any]:
     tokenizer = transformers.AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
     _public_cpu_smoke_phase("tokenizer_initialization_complete")
     _public_cpu_smoke_phase("cpu_weight_loading_start")
-    model = transformers.AutoModelForCausalLM.from_pretrained(
-        snapshot, local_files_only=True, dtype="auto"
-    ).eval()
+    loader = getattr(transformers, model_profile.active().model_class)
+    model = loader.from_pretrained(snapshot, local_files_only=True, dtype="auto").eval()
     _public_cpu_smoke_phase("cpu_weight_loading_complete")
     if _qwen_device() == "cuda":
         if not torch.cuda.is_available():
@@ -724,11 +716,13 @@ def _chapter_prompt_encoding(
     """Exact rendered token IDs plus effective-template/config digests; no weights."""
     if tokenizer is None:
         tokenizer, _limit = _public_book_context()
-    ids = tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=True,
-        **model_profile.active().template_kwargs,
+    ids = model_profile.template_token_ids(
+        tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            **model_profile.active().template_kwargs,
+        )
     )
     if (
         not isinstance(ids, list)
@@ -815,11 +809,13 @@ def _chapter_context_tokens(
                 raise NicheVideoError("chapter rendered input tokens or template changed")
             count = len(cast(list[int], encoded["token_ids"]))
         else:
-            tokens = tokenizer.apply_chat_template(
-                request["messages"],
-                tokenize=True,
-                add_generation_prompt=True,
-                **model_profile.active().template_kwargs,
+            tokens = model_profile.template_token_ids(
+                tokenizer.apply_chat_template(
+                    request["messages"],
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    **model_profile.active().template_kwargs,
+                )
             )
             count = len(tokens)
     except NicheVideoError:

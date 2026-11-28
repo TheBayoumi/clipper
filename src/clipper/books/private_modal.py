@@ -18,7 +18,7 @@ from typing import Any
 
 from clipper.stage_contracts import content_fingerprint
 
-from . import acquisition, evaluation, pipeline_plan, private_phase
+from . import acquisition, evaluation, model_profile, pipeline_plan, private_phase
 
 APP = re.compile(r"ap-[A-Za-z0-9]{22}")
 SOURCE = "https://github.com/TheBayoumi/clipper.git"
@@ -220,6 +220,7 @@ def factory(
     *,
     restrict_access: bool = True,
     volume: Any = None,
+    profile: model_profile.ModelProfile | None = None,
 ) -> tuple[Any, Any]:
     """Pinned public source and dependencies; no local file upload or secret mount.
 
@@ -234,6 +235,7 @@ def factory(
         f'test "$(git -C /opt/clipper rev-parse HEAD)" = {sha}; '
         'test -z "$(git -C /opt/clipper status --porcelain=v1 --untracked-files=all)"'
     )
+    profile = profile or model_profile.get(model_profile.DEFAULT_PROFILE)
     gpu = manifest["accelerator"] == "L4"
     torch_install = (
         # PyPI's torch 2.6.0 wheel carries its own CUDA 12.4 runtime libraries.
@@ -252,8 +254,8 @@ def factory(
             "opencv-python-headless==4.12.0.88",
             "gdown==6.1.0",
             "yt-dlp==2026.7.4",
-            "transformers==4.57.3",
-            "huggingface_hub==0.36.2",
+            f"transformers=={profile.transformers_requirement}",
+            f"huggingface_hub=={profile.huggingface_hub_requirement}",
             "lm-format-enforcer==0.11.3",
         )
         .run_commands(torch_install)
@@ -261,7 +263,9 @@ def factory(
         .run_commands(
             "python -c 'from clipper.books.private_modal import _remote_phase; "
             "from clipper.books import constrained, private_phase; "
+            "from clipper.books import model_profile; "
             "from clipper.books.scripting import _pinned_qwen_snapshot; "
+            f"scope = model_profile.use({profile.name!r}); scope.__enter__(); "
             "_pinned_qwen_snapshot()'"
         )
         .env({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
@@ -525,7 +529,7 @@ def _dispatch_qualified(
     output: Path,
 ) -> dict[str, object]:
     run, _, _ = private_phase.preflight(manifest, packet, checkpoint)
-    private_phase.require_default_profile(packet)
+    profile = private_phase.packet_profile(packet)
     identity = content_fingerprint(run)
     require(identity == approved_manifest_sha256, "reviewed manifest digest mismatch")
     require(type(execute) is bool, "explicit execution boolean required")
@@ -553,7 +557,7 @@ def _dispatch_qualified(
         modal, client = identify()
         journal.record("WORKSPACE_VERIFIED")
         journal.record("BUILD_BEGIN")
-        app, function = factory(modal, run)
+        app, function = factory(modal, run, profile=profile)
         journal.record("APP_RUN_BEGIN")
         with app.run(client=client, detach=False, environment_name="main"):
             candidate = app.app_id

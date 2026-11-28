@@ -346,8 +346,10 @@ def check_prompt_context(request: dict[str, object], tokenizer: Any, context_lim
             raise ConstraintError("invalid pinned book prompt budget")
         if type(context_limit) is not int or context_limit <= reserve:
             raise ConstraintError("invalid pinned model context limit")
-        tokens = tokenizer.apply_chat_template(
-            messages, tokenize=True, add_generation_prompt=True, enable_thinking=False
+        tokens = model_profile.template_token_ids(
+            tokenizer.apply_chat_template(
+                messages, tokenize=True, add_generation_prompt=True, enable_thinking=False
+            )
         )
         if not isinstance(tokens, list) or any(type(token) is not int for token in tokens):
             raise ConstraintError("invalid pinned tokenizer prompt encoding")
@@ -360,6 +362,20 @@ def check_prompt_context(request: dict[str, object], tokenizer: Any, context_lim
         raise ConstraintError("canonical book prompt context preflight failed") from exc
 
 
+def _restore_legacy_tokenizer_alias() -> None:
+    """lm-format-enforcer 0.11.3 imports PreTrainedTokenizerBase from
+    transformers.tokenization_utils, where transformers 5.x no longer exports it. Restore
+    only that one alias (same class, from its new home) before the integration is imported.
+    Nothing is changed on transformers 4.x, which still exports it."""
+    try:
+        legacy = importlib.import_module("transformers.tokenization_utils")
+        if not hasattr(legacy, "PreTrainedTokenizerBase"):
+            base = importlib.import_module("transformers.tokenization_utils_base")
+            legacy.PreTrainedTokenizerBase = base.PreTrainedTokenizerBase
+    except (ImportError, AttributeError):
+        return
+
+
 def _decoder() -> tuple[Any, Any]:
     try:
         installed = version(DECODER_PACKAGE)
@@ -369,6 +385,7 @@ def _decoder() -> tuple[Any, Any]:
         ) from exc
     if installed != DECODER_VERSION:
         raise DecoderUnavailable("local book decoder version does not match its exact pin")
+    _restore_legacy_tokenizer_alias()
     try:
         module = importlib.import_module("lmformatenforcer")
         integration = importlib.import_module("lmformatenforcer.integrations.transformers")

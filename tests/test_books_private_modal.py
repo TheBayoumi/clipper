@@ -149,7 +149,7 @@ def test_dispatch_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fau
     app.run.side_effect = scope
     monkeypatch.setattr(private_modal, "identify", lambda: (Mock(), client))
     monkeypatch.setattr(private_modal, "verify_checkout", lambda *_: None)
-    monkeypatch.setattr(private_modal, "factory", lambda *_: (app, function))
+    monkeypatch.setattr(private_modal, "factory", lambda *_, **__: (app, function))
     monkeypatch.setattr(private_modal, "cleanup", lambda *_: fault != "cleanup")
     kwargs = {
         "approved_manifest_sha256": identity,

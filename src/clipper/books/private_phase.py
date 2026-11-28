@@ -201,13 +201,14 @@ def _packet_profile_scope(packet: bytes) -> AbstractContextManager[None]:
     return pipeline_plan.profile_scope(config)
 
 
-def require_default_profile(packet: bytes) -> None:
-    """The Modal image build still downloads only the default profile's snapshot."""
+def packet_profile(packet: bytes) -> model_profile.ModelProfile:
+    """The registered model profile the packet's configuration selects.
+
+    The Modal image build follows this profile (package pins, tokenizer files, loader class,
+    snapshot download), so any registered profile can run; an unknown name is rejected.
+    """
     with _packet_profile_scope(packet):
-        require(
-            model_profile.active().name == model_profile.DEFAULT_PROFILE,
-            "Modal private phase supports only the default model profile",
-        )
+        return model_profile.active()
 
 
 def preflight(

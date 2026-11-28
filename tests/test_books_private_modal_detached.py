@@ -400,3 +400,32 @@ def test_container_sets_qwen_device_from_manifest(l4, monkeypatch):
     monkeypatch.setenv("CLIPPER_QWEN_DEVICE", "unset")
     private_modal._execute_in_container(manifest, b"", None)
     assert os.environ["CLIPPER_QWEN_DEVICE"] == ("cuda" if l4 else "cpu")
+
+
+def _image_calls(profile):
+    from clipper.books import model_profile
+
+    modal = Mock()
+    chain = modal.Image.debian_slim.return_value
+    for name in ("apt_install", "run_commands", "pip_install", "env"):
+        getattr(chain, name).return_value = chain
+    kwargs = {} if profile is None else {"profile": model_profile.get(profile)}
+    private_modal.factory(modal, _l4_manifest(), volume="V", **kwargs)
+    pins = [a for c in chain.pip_install.call_args_list for a in c.args]
+    cmds = [a for c in chain.run_commands.call_args_list for a in c.args]
+    return pins, cmds
+
+
+def test_factory_default_image_keeps_the_original_pins_and_default_snapshot():
+    pins, cmds = _image_calls(None)
+    assert "transformers==4.57.3" in pins and "huggingface_hub==0.36.2" in pins
+    assert any("scope = model_profile.use('qwen3-1.7b')" in c for c in cmds)
+
+
+def test_factory_image_follows_the_selected_profile():
+    pins, cmds = _image_calls("qwen3.5-4b")
+    assert "transformers==5.24.1" in pins and "huggingface_hub==2.5.0" in pins
+    assert "transformers==4.57.3" not in pins
+    snapshot = [c for c in cmds if "_pinned_qwen_snapshot" in c]
+    assert len(snapshot) == 1 and "model_profile.use('qwen3.5-4b')" in snapshot[0]
+    assert snapshot[0].index("scope.__enter__()") < snapshot[0].index("_pinned_qwen_snapshot()")

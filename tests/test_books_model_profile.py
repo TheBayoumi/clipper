@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from pathlib import Path
 
 import pytest
 
@@ -289,18 +290,27 @@ def test_fingerprint_changes_with_every_fact_and_keys_caches() -> None:
         scripting._public_book_context_cached = original
 
 
-def test_modal_phase_rejects_non_default_profile(fake_registered: ModelProfile) -> None:
+def test_modal_phase_follows_the_profile_the_packet_names(fake_registered: ModelProfile) -> None:
     from clipper.books import private_phase
 
     default = private_phase.pack(
         {"config.json": json.dumps(pipeline_plan.template("c" * 64)).encode()}
     )
-    private_phase.require_default_profile(default)
+    assert private_phase.packet_profile(default).name == "qwen3-1.7b"
     chosen = private_phase.pack(
         {"config.json": json.dumps(pipeline_plan.template("c" * 64, "script", FAKE.name)).encode()}
     )
-    with pytest.raises(private_phase.PrivatePhaseError):
-        private_phase.require_default_profile(chosen)
+    assert private_phase.packet_profile(chosen).name == FAKE.name
+    unknown = private_phase.pack(
+        {
+            "config.json": json.dumps(pipeline_plan.template("c" * 64, "script", "qwen3.5-4b"))
+            .encode()
+            .replace(b"qwen3.5-4b", b"nope")
+        }
+    )
+    assert (
+        private_phase.packet_profile(unknown).name == "qwen3-1.7b"
+    )  # validate_config rejects it later
     assert model_profile.active().name == "qwen3-1.7b"
 
 
@@ -395,3 +405,186 @@ def test_hybrid_request_resolves_auto_budget_before_hashing() -> None:
     assert fixed_key != long_key
     with pytest.raises(hybrid.HybridStop):
         build(32_768 - 512 - 1_023)
+
+
+# Qwen3.5-4B profile (model-free) ------------------------------------------------------
+
+
+def test_qwen35_profile_facts_and_registration() -> None:
+    p = model_profile.get("qwen3.5-4b")
+    assert p is model_profile.QWEN3_5_4B
+    assert p.model == "Qwen/Qwen3.5-4B"
+    assert p.revision == "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+    assert p.tokenizer_json_sha256.startswith("5f9e4d49")
+    assert (p.context_window, p.tokenizer_max_length) == (262_144, 262_144)
+    assert p.safe_context_tokens == 32_768 and p.template_kwargs == {"enable_thinking": False}
+    assert p.model_class == "AutoModelForImageTextToText"
+    assert p.transformers_requirement == "5.24.1"
+    assert "presence_penalty" not in p.sampling  # generate() does not implement it
+    assert model_profile.DEFAULT_PROFILE == "qwen3-1.7b"
+
+
+def test_default_profile_fingerprint_is_unchanged_by_the_new_runtime_fields() -> None:
+    import hashlib
+
+    p = model_profile.QWEN3_1_7B
+    material = {
+        "name": p.name,
+        "model": p.model,
+        "revision": p.revision,
+        "tokenizer_json_sha256": p.tokenizer_json_sha256,
+        "context_window": p.context_window,
+        "tokenizer_max_length": p.tokenizer_max_length,
+        "safe_context_tokens": p.safe_context_tokens,
+        "chat_template_kwargs": {"enable_thinking": False},
+        "generation_settings": {"do_sample": True, "temperature": 0.7, "top_p": 0.8},
+        "max_output_tokens": 16_384,
+        "output_margin_tokens": 512,
+        "min_output_tokens": 1_024,
+    }
+    expected = hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
+    assert p.fingerprint == expected
+    assert model_profile.QWEN3_5_4B.fingerprint != expected
+
+
+def test_runtime_fields_are_validated_and_enter_the_fingerprint() -> None:
+    import dataclasses
+
+    base = model_profile.QWEN3_5_4B
+    for bad in (
+        {"transformers_requirement": "latest"},
+        {"huggingface_hub_requirement": ">=1"},
+        {"model_class": "AutoModel"},
+        {"tokenizer_files": ()},
+        {"tokenizer_files": ("config.json", "tokenizer.json")},
+        {"tokenizer_files": ("../x", "config.json", "tokenizer.json", "tokenizer_config.json")},
+    ):
+        with pytest.raises(model_profile.ModelProfileError):
+            dataclasses.replace(base, **bad)
+    other = dataclasses.replace(base, transformers_requirement="5.24.0")
+    assert other.fingerprint != base.fingerprint
+
+
+def test_public_context_preflight_reads_nested_text_limits_and_profile_file_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+    import importlib
+    import types
+    from pathlib import Path
+
+    tok = b'{"fake": "tokenizer"}'
+    profile = dataclasses.replace(
+        model_profile.QWEN3_5_4B,
+        name="qwen35-nested-test",
+        tokenizer_json_sha256=hashlib.sha256(tok).hexdigest(),
+    )
+    snap = tmp_path / "models--Qwen--Qwen3.5-4B" / "snapshots" / profile.revision
+    snap.mkdir(parents=True)
+    for name in profile.tokenizer_files:
+        (snap / name).write_bytes(tok if name == "tokenizer.json" else b"{}")
+    (snap / "config.json").write_text(
+        json.dumps({"text_config": {"max_position_embeddings": 262_144}})
+    )
+    (snap / "tokenizer_config.json").write_text(json.dumps({"model_max_length": 262_144}))
+    seen: dict[str, object] = {}
+
+    def snapshot_download(**kwargs: object) -> str:
+        seen.update(kwargs)
+        return str(snap)
+
+    fake_hub = types.SimpleNamespace(snapshot_download=snapshot_download)
+    fake_tf = types.SimpleNamespace(
+        AutoTokenizer=types.SimpleNamespace(
+            from_pretrained=lambda path, local_files_only: types.SimpleNamespace(
+                model_max_length=262_144
+            )
+        )
+    )
+    real = importlib.import_module
+    monkeypatch.setattr(
+        importlib,
+        "import_module",
+        lambda name, *a: (
+            {"huggingface_hub": fake_hub, "transformers": fake_tf}.get(name) or real(name, *a)
+        ),
+    )
+    scripting._public_book_context_cached.cache_clear()
+    with model_profile.use(profile):
+        _tokenizer, limit = scripting._public_book_context_cached("t", True)
+    assert limit == 262_144
+    assert seen["allow_patterns"] == list(profile.tokenizer_files)
+    assert Path(str(seen.get("repo_id", "x"))).name == "x" or seen["repo_id"] == "Qwen/Qwen3.5-4B"
+    scripting._public_book_context_cached.cache_clear()
+
+
+class _MappingTokenizer:
+    """transformers 5.x: apply_chat_template(tokenize=True) returns a BatchEncoding mapping."""
+
+    name_or_path = ""
+
+    def __init__(self, ids: list[int], mapping: bool = True) -> None:
+        self.ids = ids
+        self.mapping = mapping
+
+    def apply_chat_template(self, messages: object, **kwargs: object) -> object:
+        if self.mapping:
+            return {"input_ids": list(self.ids), "attention_mask": [1] * len(self.ids)}
+        return list(self.ids)
+
+
+def test_template_token_ids_accepts_the_4x_list_and_the_5x_mapping() -> None:
+    assert model_profile.template_token_ids([1, 2, 3]) == [1, 2, 3]
+    assert model_profile.template_token_ids({"input_ids": [1, 2], "attention_mask": [1, 1]}) == [
+        1,
+        2,
+    ]
+    assert model_profile.template_token_ids({"attention_mask": [1]}) is None
+    assert model_profile.template_token_ids("text") == "text"
+
+
+@pytest.mark.parametrize("mapping", [False, True])
+def test_prompt_context_check_counts_tokens_not_mapping_keys(mapping: bool) -> None:
+    request = {"messages": [{"role": "user", "content": "x"}], "max_new_tokens": 960}
+    tok = _MappingTokenizer(list(range(100)), mapping)
+    assert constrained.check_prompt_context(request, tok, 4096) == 100
+    with pytest.raises(constrained.ConstraintError):
+        constrained.check_prompt_context(request, tok, 1000)
+
+
+def test_chapter_prompt_count_ignores_the_mapping_wrapper(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        scripting, "_chapter_tokenizer_material", lambda tokenizer: {"tokenizer_config_sha256": "a"}
+    )
+    for mapping in (False, True):
+        encoded = scripting._chapter_prompt_encoding(
+            [{"role": "user", "content": "x"}], tokenizer=_MappingTokenizer([5, 6, 7], mapping)
+        )
+        assert encoded["token_ids"] == [5, 6, 7]
+
+
+def test_legacy_tokenizer_alias_is_restored_only_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+    import types
+
+    class Base:
+        pass
+
+    legacy = types.SimpleNamespace()
+    modern = types.SimpleNamespace(PreTrainedTokenizerBase=Base)
+    real = importlib.import_module
+    table = {
+        "transformers.tokenization_utils": legacy,
+        "transformers.tokenization_utils_base": modern,
+    }
+    monkeypatch.setattr(
+        importlib, "import_module", lambda name, *a: table.get(name) or real(name, *a)
+    )
+    constrained._restore_legacy_tokenizer_alias()
+    assert legacy.PreTrainedTokenizerBase is Base
+    other = type("Other", (), {})
+    legacy.PreTrainedTokenizerBase = other
+    constrained._restore_legacy_tokenizer_alias()
+    assert legacy.PreTrainedTokenizerBase is other
