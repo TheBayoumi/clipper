@@ -15,6 +15,8 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _installed_version
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlsplit
@@ -460,6 +462,17 @@ def _public_book_context(*, local_files_only: bool = False) -> tuple[Any, int]:
     return _public_book_context_cached(model_profile.active().fingerprint, local_files_only)
 
 
+def _require_profile_transformers() -> None:
+    """Refuse to load under a transformers release other than the active profile's pin."""
+    expected = model_profile.active().transformers_requirement
+    try:
+        installed = _installed_version("transformers")
+    except PackageNotFoundError:
+        installed = "not-installed"
+    if installed != expected:
+        raise NicheVideoError("installed transformers does not match the model profile pin")
+
+
 @lru_cache(maxsize=4)
 def _public_book_context_cached(
     profile_fingerprint: str, local_files_only: bool
@@ -575,6 +588,7 @@ def _script_pipeline_cached(profile_fingerprint: str) -> tuple[Any, Any]:
         raise NicheVideoError(
             "Install the [niche-models] runtime for open-weight inference"
         ) from exc
+    _require_profile_transformers()
     _public_cpu_smoke_phase("pinned_snapshot_resolution_start")
     snapshot = _pinned_qwen_snapshot()
     _public_cpu_smoke_phase("pinned_snapshot_resolution_complete")

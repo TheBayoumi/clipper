@@ -633,3 +633,21 @@ def test_pinned_snapshot_requires_every_profile_tokenizer_file(
         (snap / "chat_template.jinja").unlink()
         with pytest.raises(scripting.PinnedQwenSnapshotError):
             scripting._pinned_qwen_snapshot()
+
+
+def test_loading_refuses_a_transformers_release_other_than_the_profile_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(scripting, "_installed_version", lambda name: "9.9.9")
+    with pytest.raises(scripting.NicheVideoError, match="does not match the model profile"):
+        scripting._require_profile_transformers()
+    monkeypatch.setattr(
+        scripting,
+        "_installed_version",
+        lambda name: model_profile.active().transformers_requirement,
+    )
+    scripting._require_profile_transformers()
+
+
+def test_producer_identity_records_the_installed_hub_version() -> None:
+    assert "huggingface_hub" in whole_book.local_producer_material()["runtime"]  # type: ignore[operator]
