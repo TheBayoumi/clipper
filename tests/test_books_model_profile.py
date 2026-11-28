@@ -649,5 +649,9 @@ def test_loading_refuses_a_transformers_release_other_than_the_profile_pin(
     scripting._require_profile_transformers()
 
 
-def test_producer_identity_records_the_installed_hub_version() -> None:
-    assert "huggingface_hub" in whole_book.local_producer_material()["runtime"]  # type: ignore[operator]
+def test_producer_identity_records_the_hub_version_only_for_non_default_profiles() -> None:
+    default = whole_book.local_producer_material()["runtime"]
+    assert set(default) == {"torch", "transformers", "lm-format-enforcer"}  # type: ignore[arg-type]
+    with model_profile.use("qwen3.5-4b"):
+        other = whole_book.local_producer_material()["runtime"]
+    assert "huggingface_hub" in other  # type: ignore[operator]

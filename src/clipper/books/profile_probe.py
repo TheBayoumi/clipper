@@ -12,10 +12,12 @@ import argparse
 import hashlib
 import importlib
 import json
+import os
 import re
 import sys
 import time
 from importlib.metadata import version
+from pathlib import Path
 from typing import Any
 
 from . import model_profile, private_modal, private_phase
@@ -58,12 +60,16 @@ def probe_in_container(profile_name: str) -> dict[str, object]:
         generation_started = time.monotonic()
         raw = scripting._run_pinned_qwen(request, normalize_script=True)
         report["generate_seconds"] = round(time.monotonic() - generation_started, 2)
-        report["generated_tokens"] = len(tokenizer(str(raw), add_special_tokens=False)["input_ids"])
+        report["reencoded_text_tokens"] = len(
+            tokenizer(str(raw), add_special_tokens=False)["input_ids"]
+        )
         report["generated_sha256"] = hashlib.sha256(str(raw).encode()).hexdigest()
         report["generated_chars"] = len(str(raw))
         if torch.cuda.is_available():
             report["peak_gpu_gib"] = round(torch.cuda.max_memory_allocated() / 2**30, 2)
-    report["status"] = "PROBE_OK"
+    report["scope"] = "load and basic generate only; not chapter-generator qualification"
+    # An empty generation is a failed probe, not a pass.
+    report["status"] = "PROBE_OK" if report.get("generated_chars") else "PROBE_EMPTY_GENERATION"
     return report
 
 
@@ -78,7 +84,14 @@ def build(modal: Any, commit: str, profile_name: str, timeout_seconds: int) -> t
     return private_modal.factory(modal, manifest, profile=profile, entry=probe_in_container)
 
 
-def run(commit: str, profile_name: str, timeout_seconds: int, *, execute: bool) -> dict[str, Any]:
+def run(
+    commit: str,
+    profile_name: str,
+    timeout_seconds: int,
+    *,
+    execute: bool,
+    journal_root: Path | None = None,
+) -> dict[str, Any]:
     plan = {
         "commit": commit,
         "profile": profile_name,
@@ -88,11 +101,26 @@ def run(commit: str, profile_name: str, timeout_seconds: int, *, execute: bool) 
     }
     if not execute:
         return {"status": "PLAN_ONLY", **plan}
-    import modal
-
-    app, function = build(modal, commit, profile_name, timeout_seconds)
-    with app.run():
-        result = function.remote(profile_name)
+    if journal_root is None:
+        raise private_phase.PrivatePhaseError("probe journal root required")
+    # Reviewed workspace identity first (same check the private phase uses), then a one-shot
+    # marker: the same probe plan cannot start twice.
+    modal, client = private_modal.identify()
+    try:
+        journal_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        marker = journal_root / (
+            hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest() + ".started"
+        )
+        try:
+            descriptor = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            raise private_phase.PrivatePhaseError("this probe plan already started") from None
+        os.close(descriptor)
+        app, function = build(modal, commit, profile_name, timeout_seconds)
+        with app.run(client=client, detach=False, environment_name="main"):
+            result = function.remote(profile_name)
+    finally:
+        private_modal.close_client(client)
     return {**result, "plan": plan}
 
 
@@ -101,10 +129,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--commit", required=True)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--timeout-seconds", type=int, default=900)
+    parser.add_argument("--journal-root", type=Path)
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
     try:
-        result = run(args.commit, args.profile, args.timeout_seconds, execute=args.execute)
+        result = run(
+            args.commit,
+            args.profile,
+            args.timeout_seconds,
+            execute=args.execute,
+            journal_root=args.journal_root,
+        )
     except Exception as exc:
         print(json.dumps({"status": "PROBE_FAILED", "error": type(exc).__name__}))
         return 2

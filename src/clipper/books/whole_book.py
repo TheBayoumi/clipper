@@ -66,7 +66,11 @@ def _local_generation() -> dict[str, object]:
 def local_producer_material() -> dict[str, object]:
     """Resolve installed runtime versions without importing torch or loading weights."""
     runtime: dict[str, str] = {}
-    for package in ("torch", "transformers", "huggingface_hub", constrained.DECODER_PACKAGE):
+    packages = ["torch", "transformers", constrained.DECODER_PACKAGE]
+    if model_profile.active().name != model_profile.DEFAULT_PROFILE:
+        # Default-profile identity stays byte-identical to earlier runs (cache keys, checkpoints).
+        packages.insert(2, "huggingface_hub")
+    for package in packages:
         try:
             runtime[package] = version(package)
         except PackageNotFoundError:

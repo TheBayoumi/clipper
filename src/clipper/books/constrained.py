@@ -371,7 +371,8 @@ def _restore_legacy_tokenizer_alias() -> None:
         legacy = importlib.import_module("transformers.tokenization_utils")
         if not hasattr(legacy, "PreTrainedTokenizerBase"):
             base = importlib.import_module("transformers.tokenization_utils_base")
-            legacy.PreTrainedTokenizerBase = base.PreTrainedTokenizerBase
+            # setattr keeps mypy quiet: the legacy module has no such attribute on 4.x stubs.
+            setattr(legacy, "PreTrainedTokenizerBase", base.PreTrainedTokenizerBase)  # noqa: B010
     except (ImportError, AttributeError):
         return
 
