@@ -308,9 +308,10 @@ def test_modal_phase_follows_the_profile_the_packet_names(fake_registered: Model
             .replace(b"qwen3.5-4b", b"nope")
         }
     )
-    assert (
-        private_phase.packet_profile(unknown).name == "qwen3-1.7b"
-    )  # validate_config rejects it later
+    with pytest.raises(private_phase.PrivatePhaseError, match="unknown model profile"):
+        private_phase.packet_profile(unknown)
+    with pytest.raises(private_phase.PrivatePhaseError, match="unreadable"):
+        private_phase.packet_profile(private_phase.pack({"config.json": b"not json"}))
     assert model_profile.active().name == "qwen3-1.7b"
 
 

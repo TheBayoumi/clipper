@@ -207,8 +207,14 @@ def packet_profile(packet: bytes) -> model_profile.ModelProfile:
     The Modal image build follows this profile (package pins, tokenizer files, loader class,
     snapshot download), so any registered profile can run; an unknown name is rejected.
     """
-    with _packet_profile_scope(packet):
-        return model_profile.active()
+    try:
+        config = pipeline_plan.strict_json(unpack(packet)["config.json"])
+    except Exception:
+        raise PrivatePhaseError("packet configuration unreadable") from None
+    try:
+        return model_profile.get(pipeline_plan.config_profile_name(config))
+    except pipeline_plan.PlanError:
+        raise PrivatePhaseError("unknown model profile") from None
 
 
 def preflight(

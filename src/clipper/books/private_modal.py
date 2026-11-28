@@ -9,6 +9,7 @@ import json
 import lzma
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -109,6 +110,23 @@ def close_client(client: Any) -> bool:
     except Exception:
         return False
     return True
+
+
+def _snapshot_command(profile_name: str) -> str:
+    """Shell command that pre-downloads the pinned snapshot for one profile.
+
+    The whole Python program is quoted as a single shell argument, so the profile name's own
+    quotes survive the shell.
+    """
+    program = (
+        "from clipper.books.private_modal import _remote_phase; "
+        "from clipper.books import constrained, private_phase; "
+        "from clipper.books import model_profile; "
+        "from clipper.books.scripting import _pinned_qwen_snapshot; "
+        f"scope = model_profile.use({profile_name!r}); scope.__enter__(); "
+        "_pinned_qwen_snapshot()"
+    )
+    return f"python -c {shlex.quote(program)}"
 
 
 def _execute_in_container(
@@ -260,14 +278,7 @@ def factory(
         )
         .run_commands(torch_install)
         .env({"PYTHONPATH": "/opt/clipper/src", "HF_HOME": "/opt/hf"})
-        .run_commands(
-            "python -c 'from clipper.books.private_modal import _remote_phase; "
-            "from clipper.books import constrained, private_phase; "
-            "from clipper.books import model_profile; "
-            "from clipper.books.scripting import _pinned_qwen_snapshot; "
-            f"scope = model_profile.use({profile.name!r}); scope.__enter__(); "
-            "_pinned_qwen_snapshot()'"
-        )
+        .run_commands(_snapshot_command(profile.name))
         .env({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
     )
     app = modal.App(include_source=False)

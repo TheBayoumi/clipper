@@ -419,13 +419,26 @@ def _image_calls(profile):
 def test_factory_default_image_keeps_the_original_pins_and_default_snapshot():
     pins, cmds = _image_calls(None)
     assert "transformers==4.57.3" in pins and "huggingface_hub==0.36.2" in pins
-    assert any("scope = model_profile.use('qwen3-1.7b')" in c for c in cmds)
+    assert _snapshot_program(cmds, "qwen3-1.7b")
 
 
 def test_factory_image_follows_the_selected_profile():
     pins, cmds = _image_calls("qwen3.5-4b")
     assert "transformers==5.24.1" in pins and "huggingface_hub==2.5.0" in pins
     assert "transformers==4.57.3" not in pins
+    program = _snapshot_program(cmds, "qwen3.5-4b")
+    assert program.index("scope.__enter__()") < program.index("_pinned_qwen_snapshot()")
+
+
+def _snapshot_program(cmds: list[str], name: str) -> str:
+    """The python program after the shell has parsed the command (what Python really gets)."""
+    import ast
+    import shlex
+
     snapshot = [c for c in cmds if "_pinned_qwen_snapshot" in c]
-    assert len(snapshot) == 1 and "model_profile.use('qwen3.5-4b')" in snapshot[0]
-    assert snapshot[0].index("scope.__enter__()") < snapshot[0].index("_pinned_qwen_snapshot()")
+    assert len(snapshot) == 1
+    argv = shlex.split(snapshot[0])
+    assert argv[:2] == ["python", "-c"] and len(argv) == 3
+    ast.parse(argv[2])  # a syntax error here is what the real image build would hit
+    assert f"model_profile.use({name!r})" in argv[2]
+    return argv[2]
