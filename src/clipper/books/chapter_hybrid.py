@@ -23,8 +23,8 @@ BRIEF_SCHEMA = "clipper-chapter-hybrid-brief-v1"
 REVIEW_SCHEMA = "clipper-chapter-hybrid-human-review-v1"
 MAX_ENTRIES = 128
 MAX_SOURCE_BYTES = 512_000
-MAX_AUDITS = 16
-MAX_CORE_UNITS = 12
+MAX_AUDITS = 24
+MAX_CORE_UNITS = 8
 MAX_BEATS = 128
 MAX_ARGUMENT_LINKS = 24
 MAX_ARGUMENT_BATCHES = 32
@@ -1042,6 +1042,63 @@ def validate_argument(
     return data
 
 
+NO_REASON_GIVEN = "no reason given"
+GAP_REASON = "unrecovered source gap: no text, so omitted"
+
+
+def _positional_ids_are_safe(core: list[str], decisions: list[dict[str, Any]]) -> bool:
+    """Ids may be taken by position only when nothing in a row can say which unit it is
+    about: one row per core id, all keep, no reason text and no evidence."""
+    return (
+        len(decisions) == len(core)
+        and all("id" not in item for item in decisions)
+        and all(
+            "reason" not in item and item.get("decision") == "keep" and item.get("evidence") == []
+            for sid, item in zip(core, decisions, strict=True)
+        )
+    )
+
+
+def _settle_audit_decisions(
+    data: dict[str, Any], core: list[str], source: dict[str, dict[str, Any]]
+) -> None:
+    """Let code decide what the contract already fixes, so a small model is not failed on it.
+
+    Three repairs. A keep or compress on a gap unit (no text) with well-formed evidence
+    becomes omit with no evidence and a fixed reason, as the contract already says. Ids
+    missing from every row are taken by position, only when that is unambiguous (see
+    _positional_ids_are_safe). A missing reason becomes a fixed marker; a non-string reason
+    still fails. Every other defect (wrong count, unknown or duplicate ids, malformed rows)
+    still fails closed in the strict checks that follow.
+    """
+    decisions = data["decisions"]
+    if not isinstance(decisions, list) or not all(isinstance(item, dict) for item in decisions):
+        return
+    if _positional_ids_are_safe(core, decisions):
+        for sid, item in zip(core, decisions, strict=True):
+            item["id"] = sid
+    for item in decisions:
+        sid = item.get("id")
+        if not isinstance(sid, str) or sid not in source or sid not in core:
+            continue
+        if "reason" not in item and set(item) <= {"id", "decision", "evidence"}:
+            item["reason"] = NO_REASON_GIVEN
+        evidence = item.get("evidence")
+        if (
+            source[sid]["kind"] != "CANONICAL_WORK_UNIT"
+            and item.get("decision") in ("keep", "compress")
+            and isinstance(item.get("reason"), str)
+            and isinstance(evidence, list)
+            and all(
+                isinstance(link, dict)
+                and isinstance(link.get("id"), str)
+                and isinstance(link.get("role"), str)
+                for link in evidence
+            )
+        ):
+            item.update({"decision": "omit", "evidence": [], "reason": GAP_REASON})
+
+
 def validate_audit(
     raw: object, ledger: dict[str, Any], window: dict[str, object]
 ) -> dict[str, Any]:
@@ -1053,6 +1110,7 @@ def validate_audit(
     data = _object(raw, {"audit_id", "core_ids", "decisions", "disagreements"})
     if data["audit_id"] != window["audit_id"] or data["core_ids"] != core:
         raise HybridStop("hybrid audit identity or core order changed")
+    _settle_audit_decisions(data, core, source)
     decisions = _list(data["decisions"], len(core))
     seen: set[str] = set()
     for value in decisions:
